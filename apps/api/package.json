@@ -49,7 +49,7 @@
     "mustache": "^4.2.0",
     "openid-client": "^6.8.4",
     "pg": "^8",
-    "pino": "^9.6.0",
+    "pino": "^10.3.1",
     "pino-roll": "^4.0.0",
     "sanitize-html": "^2.17.5",
     "undici": "^7.29.0",
