@@ -3,7 +3,7 @@
 # only exchange compiled JS today, but a musl builder feeding a glibc runtime is one
 # `COPY --from=builder node_modules` away from shipping .node binaries built against
 # the wrong libc/ABI — a failure that appears only at runtime, never at build time.
-FROM node:22-slim AS builder
+FROM node:25-slim AS builder
 
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 # python3/make/g++: fallback toolchain for node-gyp to compile native modules (e.g. better-sqlite3).
@@ -34,7 +34,7 @@ RUN cd packages/shared && ../../node_modules/.bin/tsup src/index.ts --format esm
 
 # --- Stage 2: Production ---
 # Use Debian slim (glibc) so the glibc-compiled p4 binary runs natively
-FROM node:22-slim AS production
+FROM node:25-slim AS production
 
 # Redeclared because ARGs do not cross stage boundaries; the release workflow passes the
 # tag via --build-arg APP_VERSION, and a plain `docker build` falls back to "dev" rather
