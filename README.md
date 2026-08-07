@@ -210,11 +210,8 @@ By participating you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## Contributors
 
-Thanks to everyone who has contributed to a2wave!
-
-<a href="https://github.com/LilithGames/a2wave/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=LilithGames/a2wave" alt="a2wave contributors" />
-</a>
+Thanks to everyone who has contributed to a2wave — see the
+[contributors graph](https://github.com/LilithGames/a2wave/graphs/contributors).
 
 ## License
 

@@ -187,11 +187,8 @@ typecheck 门禁，以及人工评审。AI 辅助的贡献以同样的标准欢�
 
 ## 贡献者
 
-感谢每一位为 a2wave 做出贡献的伙伴！
-
-<a href="https://github.com/LilithGames/a2wave/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=LilithGames/a2wave" alt="a2wave contributors" />
-</a>
+感谢每一位为 a2wave 做出贡献的伙伴——完整名单见
+[贡献者图谱](https://github.com/LilithGames/a2wave/graphs/contributors)。
 
 ## 开源协议
 
