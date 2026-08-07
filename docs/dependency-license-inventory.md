@@ -1,29 +1,34 @@
 # Dependency License Inventory
 
-Generated: 2026-08-07 · `node scripts/gates/check-license-inventory.mjs --write` · 834 packages
+Generated: 2026-08-07 · `node scripts/gates/check-license-inventory.mjs --write` · 825 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
+
+Platform-specific native binaries (`@esbuild/linux-x64`, `lightningcss-darwin-arm64`,
+`fsevents`, …) are omitted: pnpm installs only the ones matching the host, so listing them
+would make this file differ between a macOS laptop and a Linux CI runner. They are still
+checked for forbidden licenses, and each carries the same license as its parent package.
 
 ## Summary
 
 | License | Packages |
 |---|---|
-| MIT | 710 |
+| MIT | 703 |
 | ISC | 41 |
 | Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
 | BSD-2-Clause | 7 |
 | BlueOak-1.0.0 | 3 |
-| MIT OR Apache-2.0 | 2 |
-| MPL-2.0 | 2 |
 | (BSD-2-Clause OR MIT OR Apache-2.0) | 1 |
 | (MIT OR CC0-1.0) | 1 |
 | (MIT OR WTFPL) | 1 |
 | 0BSD | 1 |
 | CC-BY-4.0 | 1 |
 | MIT AND ISC | 1 |
+| MIT OR Apache-2.0 | 1 |
 | MIT-0 | 1 |
+| MPL-2.0 | 1 |
 | OFL-1.1 | 1 |
 
 Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inventory includes notice, attribution, font, and file-level copyleft licenses such as MPL-2.0; release artifacts must retain all applicable notices.
@@ -79,7 +84,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/types | 7.29.0 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
 | @biomejs/biome | 1.9.4 | MIT OR Apache-2.0 |
-| @biomejs/cli-darwin-arm64 | 1.9.4 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.0 | MIT |
 | @codemirror/commands | 6.10.2 | MIT |
 | @codemirror/language | 6.12.2 | MIT |
@@ -101,7 +105,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @emotion/unitless | 0.7.5 | MIT |
 | @esbuild-kit/core-utils | 3.3.2 | MIT |
 | @esbuild-kit/esm-loader | 2.6.5 | MIT |
-| @esbuild/darwin-arm64 | 0.25.12, 0.27.3 | MIT |
 | @fastify/deepmerge | 3.2.1 | MIT |
 | @floating-ui/core | 1.7.5 | MIT |
 | @floating-ui/dom | 1.7.6 | MIT |
@@ -142,11 +145,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @marijn/find-cluster-break | 1.0.2 | MIT |
 | @modelcontextprotocol/sdk | 1.27.1 | MIT |
 | @node-rs/argon2 | 2.0.2 | MIT |
-| @node-rs/argon2-darwin-arm64 | 2.0.2 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
-| @oxc-parser/binding-darwin-arm64 | 0.142.0 | MIT |
 | @oxc-project/types | 0.142.0 | MIT |
-| @oxc-resolver/binding-darwin-arm64 | 11.24.2 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
 | @playwright/test | 1.58.2 | Apache-2.0 |
@@ -204,7 +204,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @rc-component/virtual-list | 1.0.2 | MIT |
 | @reduxjs/toolkit | 2.12.0 | MIT |
 | @rolldown/pluginutils | 1.0.0-beta.27 | MIT |
-| @rollup/rollup-darwin-arm64 | 4.61.0 | MIT |
 | @sapphire/async-queue | 1.5.5 | MIT |
 | @sapphire/shapeshift | 4.0.0 | MIT |
 | @sapphire/snowflake | 3.5.5 | MIT |
@@ -223,7 +222,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @stryker-mutator/vitest-runner | 9.6.1 | Apache-2.0 |
 | @tailwindcss/node | 4.1.18 | MIT |
 | @tailwindcss/oxide | 4.1.18 | MIT |
-| @tailwindcss/oxide-darwin-arm64 | 4.1.18 | MIT |
 | @tailwindcss/vite | 4.1.18 | MIT |
 | @tanstack/query-core | 5.90.20 | MIT |
 | @tanstack/react-query | 5.90.20 | MIT |
@@ -446,7 +444,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | forwarded | 0.2.0 | MIT |
 | fresh | 2.0.0 | MIT |
 | fs-constants | 1.0.0 | MIT |
-| fsevents | 2.3.2, 2.3.3 | MIT |
 | function-bind | 1.1.2 | MIT |
 | gel | 2.2.0 | Apache-2.0 |
 | gensync | 1.0.0-beta.2 | MIT |
@@ -525,7 +522,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | knip | 6.32.0 | ISC |
 | launder | 1.7.1 | MIT |
 | lightningcss | 1.30.2 | MPL-2.0 |
-| lightningcss-darwin-arm64 | 1.30.2 | MPL-2.0 |
 | lilconfig | 3.1.3 | MIT |
 | lines-and-columns | 1.2.4 | MIT |
 | lint-staged | 15.5.2 | MIT |

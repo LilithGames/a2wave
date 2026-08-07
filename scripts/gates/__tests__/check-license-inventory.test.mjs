@@ -95,6 +95,60 @@ test('renderInventory records the total and every package row', () => {
   assert.ok(rendered.endsWith('\n'), 'file must end with a trailing newline')
 })
 
+// The inventory is committed once but regenerated on whatever machine runs the gate. Native
+// toolchains (esbuild, rollup, biome, lightningcss, @node-rs/argon2, oxc, tailwind oxide) ship
+// one prebuilt binary package per platform, and pnpm installs only the ones matching the host.
+// A macOS developer therefore resolves 8 darwin-arm64 packages where a linux-x64 CI runner
+// resolves 14 linux/musl ones — drift that no regeneration can reconcile, because fixing one
+// host breaks the other. These packages carry the same license as their parent and add nothing
+// to a compliance claim, so the inventory excludes them and becomes host-independent.
+test('summarise drops platform-specific native binary packages', () => {
+  const { packages, total } = summarise({
+    MIT: [
+      { name: 'zod', versions: ['3.25.76'] },
+      { name: '@esbuild/darwin-arm64', versions: ['0.25.12'] },
+      { name: '@esbuild/linux-x64', versions: ['0.25.12'] },
+      { name: '@rollup/rollup-win32-x64-msvc', versions: ['4.61.0'] },
+      { name: 'lightningcss-linux-x64-musl', versions: ['1.30.2'] },
+      { name: '@node-rs/argon2-android-arm64', versions: ['2.0.2'] },
+      { name: 'fsevents', versions: ['2.3.3'] },
+    ],
+  })
+
+  assert.deepEqual(
+    packages.map((p) => p.name),
+    ['zod'],
+  )
+  assert.equal(total, 1)
+})
+
+// The exclusion keys off a platform suffix, not a substring: a package whose name merely
+// contains a platform word is a normal dependency and must stay in the inventory.
+test('summarise keeps packages that only mention a platform in passing', () => {
+  const { packages } = summarise({
+    MIT: [
+      { name: 'darwin-notify', versions: ['1.0.0'] },
+      { name: 'is-wsl', versions: ['2.2.0'] },
+      { name: 'linuxify', versions: ['1.0.0'] },
+    ],
+  })
+
+  assert.deepEqual(
+    packages.map((p) => p.name),
+    ['darwin-notify', 'is-wsl', 'linuxify'],
+  )
+})
+
+// A forbidden license must still fail even on a platform package: dropping it from the rendered
+// inventory is a noise decision, not a licensing exemption.
+test('findForbidden still inspects platform-specific packages', () => {
+  const violations = findForbidden(
+    summarise({ 'GPL-3.0': [{ name: '@esbuild/linux-x64', versions: ['0.25.12'] }] }),
+  )
+  assert.equal(violations.length, 1)
+  assert.equal(violations[0].name, '@esbuild/linux-x64')
+})
+
 test('existingGeneratedOn recovers the committed stamp, or null when absent', () => {
   assert.equal(existingGeneratedOn(renderInventory(summarise(REPORT), '2026-01-02')), '2026-01-02')
   assert.equal(existingGeneratedOn('# No stamp here\n'), null)

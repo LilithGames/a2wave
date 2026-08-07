@@ -18,7 +18,8 @@
 # (`useDefault = true` loads them; redefining an id overrides that entry wholesale, so the
 # pattern must be restated to attach a rule-scoped allowlist).
 #
-# Verify with:  gitleaks detect --source . --redact --no-banner
+# Verify with:  gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+# (the same command CI runs; see the secret-scan job in .github/workflows/ci.yml)
 # Regression-tested by: scripts/gates/__tests__/gitleaks-config.test.mjs
 
 [extend]

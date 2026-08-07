@@ -32,6 +32,74 @@ const FORBIDDEN_PATTERNS = [/\bA?GPL\b/i, /\bLGPL\b/i, /\bSSPL\b/i]
 
 const UNKNOWN_LICENSES = new Set(['', 'Unknown', 'UNKNOWN', 'unknown', 'UNLICENSED'])
 
+/**
+ * Operating systems that native toolchains publish per-platform binary packages for. Sourced
+ * from the `os:` fields pnpm records in the lockfile, so it covers the long tail (openharmony,
+ * loong64 hosts) rather than just the three platforms developers run.
+ */
+const PLATFORMS = [
+  'aix',
+  'android',
+  'darwin',
+  'freebsd',
+  'linux',
+  'netbsd',
+  'openbsd',
+  'openharmony',
+  'sunos',
+  'win32',
+]
+
+/**
+ * CPU architectures and libc/ABI tails that follow the platform token in these package names.
+ * Matching against a closed list rather than "any trailing word" is what separates
+ * `@esbuild/darwin-arm64` from `darwin-notify`: only the former's tail is an architecture.
+ */
+const ARCH_TAILS = [
+  'arm',
+  'arm64',
+  'ia32',
+  'x64',
+  'x86',
+  'loong64',
+  'mips64el',
+  'ppc64',
+  'riscv64',
+  's390x',
+  'gnu',
+  'musl',
+  'gnueabihf',
+  'musleabihf',
+  'msvc',
+]
+
+/**
+ * Matches a package whose name ends in `<platform>` followed by one or more architecture/libc
+ * segments: `@esbuild/darwin-arm64`, `lightningcss-linux-x64-musl`, `@rollup/rollup-win32-x64-msvc`,
+ * `@node-rs/argon2-linux-arm-gnueabihf`. The platform must sit on a `-` or `/` boundary and every
+ * trailing segment must be a known arch/libc token, so ordinary packages that merely contain a
+ * platform word — `linuxify`, `darwin-notify`, `is-wsl` — are not swept up.
+ */
+const PLATFORM_PACKAGE = new RegExp(
+  `(?:^|[-/])(?:${PLATFORMS.join('|')})(?:-(?:${ARCH_TAILS.join('|')}))+$`,
+)
+
+/**
+ * `fsevents` is a macOS-only dependency with no name-encoded platform, so the suffix rule cannot
+ * see it. It is the only such package in the tree; a new one shows up as inventory drift on the
+ * first CI run after it lands, which is exactly when it should be reviewed.
+ */
+const PLATFORM_ONLY_PACKAGES = new Set(['fsevents'])
+
+/**
+ * True when a package ships only on some platforms, so pnpm resolves a different set of them on
+ * a macOS laptop than on a linux CI runner. Excluded from the rendered inventory to keep the
+ * committed file host-independent — never from the forbidden-license check.
+ */
+export function isPlatformSpecific(name) {
+  return PLATFORM_ONLY_PACKAGES.has(name) || PLATFORM_PACKAGE.test(name)
+}
+
 /** Run `pnpm licenses list --json` and parse it. Throws with a tagged cause on a cold store. */
 export function readLicenseReport(runner = defaultRunner) {
   let raw
@@ -62,19 +130,30 @@ function defaultRunner() {
  * counts. pnpm reports one entry per (name, license) pair with all resolved versions attached,
  * so a package appearing under two licenses is deliberately counted once per license — that is
  * the compliance-relevant unit.
+ *
+ * Platform-specific native binaries are dropped (see `isPlatformSpecific`): pnpm resolves a
+ * different subset of them per host, which would make the committed file unreproducible off the
+ * machine that generated it. `platformPackages` keeps them for `findForbidden`, so the exclusion
+ * is cosmetic and never a licensing blind spot.
  */
 export function summarise(report) {
   const packages = []
+  const platformPackages = []
   const counts = new Map()
 
   for (const [license, entries] of Object.entries(report)) {
-    counts.set(license, (counts.get(license) ?? 0) + entries.length)
     for (const entry of entries) {
-      packages.push({
+      const pkg = {
         name: entry.name,
         versions: [...new Set(entry.versions ?? [])].join(', '),
         license,
-      })
+      }
+      if (isPlatformSpecific(entry.name)) {
+        platformPackages.push(pkg)
+        continue
+      }
+      counts.set(license, (counts.get(license) ?? 0) + 1)
+      packages.push(pkg)
     }
   }
 
@@ -82,13 +161,18 @@ export function summarise(report) {
   const summary = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   const total = packages.length
 
-  return { packages, summary, total }
+  return { packages, platformPackages, summary, total }
 }
 
-/** Licenses that must never appear. Returns the offending `license → packages` pairs. */
-export function findForbidden({ packages }) {
+/**
+ * Licenses that must never appear. Returns the offending `license → packages` pairs.
+ *
+ * Scans the platform-specific packages too, even though they are absent from the rendered
+ * inventory — they are still shipped code, and only their *listing* is host-dependent noise.
+ */
+export function findForbidden({ packages, platformPackages = [] }) {
   const violations = []
-  for (const pkg of packages) {
+  for (const pkg of [...packages, ...platformPackages]) {
     if (UNKNOWN_LICENSES.has(pkg.license)) {
       violations.push({ ...pkg, reason: 'unknown license' })
       continue
@@ -113,6 +197,11 @@ export function renderInventory({ packages, summary, total }, generatedOn) {
     '',
     'Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches',
     'the installed dependency tree and is enforced in CI.',
+    '',
+    'Platform-specific native binaries (`@esbuild/linux-x64`, `lightningcss-darwin-arm64`,',
+    '`fsevents`, …) are omitted: pnpm installs only the ones matching the host, so listing them',
+    'would make this file differ between a macOS laptop and a Linux CI runner. They are still',
+    'checked for forbidden licenses, and each carries the same license as its parent package.',
     '',
     '## Summary',
     '',
