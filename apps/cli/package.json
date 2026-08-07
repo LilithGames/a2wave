@@ -33,7 +33,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "citty": "^0.1.6",
+    "citty": "^0.2.2",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
