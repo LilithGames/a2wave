@@ -653,8 +653,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | picocolors | 1.1.1 | ISC |
 | picomatch | 2.3.2, 4.0.4, 4.0.5 | MIT |
 | pidtree | 0.6.0 | MIT |
-| pino | 9.14.0 | MIT |
-| pino-abstract-transport | 2.0.0, 3.0.0 | MIT |
+| pino | 10.3.1 | MIT |
+| pino-abstract-transport | 3.0.0 | MIT |
 | pino-pretty | 13.1.3 | MIT |
 | pino-roll | 4.0.0 | MIT |
 | pino-std-serializers | 7.1.0 | MIT |
@@ -672,7 +672,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | prebuild-install | 7.1.3 | MIT |
 | pretty-format | 27.5.1 | MIT |
 | pretty-ms | 9.3.0 | MIT |
-| process-warning | 5.0.0 | MIT |
+| process-warning | 5.1.0 | MIT |
 | progress | 2.0.3 | MIT |
 | property-information | 7.1.0 | MIT |
 | protobufjs | 7.6.5 | BSD-3-Clause |
@@ -699,7 +699,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | react-router-dom | 7.18.2 | MIT |
 | readable-stream | 3.6.2 | MIT |
 | readdirp | 4.1.2 | MIT |
-| real-require | 0.2.0 | MIT |
+| real-require | 0.2.0, 1.0.0 | MIT |
 | recharts | 3.10.1 | MIT |
 | redent | 3.0.0 | MIT |
 | redux | 5.0.1 | MIT |
@@ -749,7 +749,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | simple-get | 4.0.1 | MIT |
 | slice-ansi | 5.0.0, 7.1.2 | MIT |
 | smol-toml | 1.7.1 | BSD-3-Clause |
-| sonic-boom | 4.2.0 | MIT |
+| sonic-boom | 4.2.0, 4.2.1 | MIT |
 | source-map | 0.6.1, 0.7.6 | BSD-3-Clause |
 | source-map-js | 1.2.1 | BSD-3-Clause |
 | source-map-support | 0.5.21 | MIT |
@@ -783,7 +783,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | tar-stream | 2.2.0 | MIT |
 | thenify | 3.3.1 | MIT |
 | thenify-all | 1.6.0 | MIT |
-| thread-stream | 3.1.0 | MIT |
+| thread-stream | 4.2.0 | MIT |
 | throttle-debounce | 5.0.2 | MIT |
 | tiny-invariant | 1.3.3 | MIT |
 | tinybench | 2.9.0 | MIT |
