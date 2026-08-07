@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # fetch-depth: 0 — git describe needs the full tag history.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
