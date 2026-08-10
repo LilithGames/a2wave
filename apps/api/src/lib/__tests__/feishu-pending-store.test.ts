@@ -17,7 +17,9 @@ const {
       asyncQuery({ run: mockInsertRun }),
   )
   const mockDeleteRun = vi.fn()
-  const mockDeleteWhere = vi.fn(() => asyncQuery({ run: mockDeleteRun }))
+  // The condition is declared (rather than `() => ...`) so tests can read back
+  // which columns the `where` filtered on.
+  const mockDeleteWhere = vi.fn((_condition?: unknown) => asyncQuery({ run: mockDeleteRun }))
   const mockSelectAll = vi.fn().mockReturnValue([])
   const mockSelectFrom = vi.fn(() => asyncQuery({ all: mockSelectAll }))
   return {
@@ -39,7 +41,15 @@ vi.mock('../../db/client.js', () => ({
 }))
 
 vi.mock('../../db/schema.js', () => ({
-  feishuPendingMessages: Symbol('feishuPendingMessages'),
+  // Columns are distinct symbols rather than one opaque table symbol, so a test
+  // can read back which column a `where` clause was actually built against.
+  feishuPendingMessages: {
+    messageId: Symbol('feishuPendingMessages.messageId'),
+    agentId: Symbol('feishuPendingMessages.agentId'),
+    runId: Symbol('feishuPendingMessages.runId'),
+    payload: Symbol('feishuPendingMessages.payload'),
+    createdAt: Symbol('feishuPendingMessages.createdAt'),
+  },
 }))
 
 import {
@@ -156,6 +166,27 @@ const payload = {
   sender: { sender_id: { open_id: 'usr_1' } },
 }
 
+/**
+ * Walk a drizzle SQL condition and collect every bound value.
+ *
+ * `drizzle-orm` is NOT mocked in this file, so `eq()` / `and()` build real SQL
+ * objects. Because the schema here is a bare Symbol rather than a real table,
+ * drizzle inlines each bound value as a boxed `String` chunk while the SQL
+ * operators (`' = '`, `' and '`) stay wrapped in `StringChunk.value` arrays.
+ * Collecting the boxed strings is how a test asserts *which columns* a `where`
+ * actually filters on, without depending on the exact chunk layout.
+ */
+function collectBoundValues(node: unknown): string[] {
+  if (node == null) return []
+  // Checked via the string tag rather than `instanceof String` or a `typeof`
+  // guard: drizzle inlines the value as a *boxed* String under plain node and
+  // as a *primitive* under vitest's transform, and this matches both.
+  if (Object.prototype.toString.call(node) === '[object String]') return [String(node)]
+  if (typeof node !== 'object') return []
+  if (Array.isArray(node)) return node.flatMap(collectBoundValues)
+  return collectBoundValues((node as { queryChunks?: unknown }).queryChunks)
+}
+
 describe('feishu-pending-store', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -192,6 +223,19 @@ describe('feishu-pending-store', () => {
     await expect(persistPendingMessage('msg_1', 'agt_1', payload)).resolves.toBeUndefined()
   })
 
+  it('persistPendingMessage 为同一 messageId 的不同 Agent 各写一行', async () => {
+    // Two Agents in one Feishu chat receive the SAME message_id. Each needs its
+    // own row, so neither insert may be swallowed as a duplicate delivery.
+    await persistPendingMessage('msg_1', 'agt_a', payload)
+    await persistPendingMessage('msg_1', 'agt_b', payload)
+
+    expect(mockInsertValues).toHaveBeenCalledTimes(2)
+    const agentIds = mockInsertValues.mock.calls.map(
+      (call) => (call[0] as { agentId: string }).agentId,
+    )
+    expect(agentIds).toEqual(['agt_a', 'agt_b'])
+  })
+
   it('persistPendingMessage 其它错误应抛出', async () => {
     mockInsertValues.mockImplementationOnce(() => {
       throw new Error('disk is on fire')
@@ -203,9 +247,19 @@ describe('feishu-pending-store', () => {
   })
 
   it('removePendingMessage 调用 db.delete', async () => {
-    await removePendingMessage('msg_1')
+    await removePendingMessage('msg_1', 'agt_1')
     expect(mockDeleteWhere).toHaveBeenCalled()
     expect(mockDeleteRun).toHaveBeenCalled()
+  })
+
+  it('removePendingMessage 按 (messageId, agentId) 定位，不误删同群另一 Agent 的行', async () => {
+    await removePendingMessage('msg_1', 'agt_1')
+
+    // Feishu delivers the same message_id to every bot in the chat, so each
+    // Agent owns its own row. Deleting by message_id alone destroys the other
+    // Agent's restart-recovery record.
+    const condition = mockDeleteWhere.mock.calls[0][0]
+    expect(collectBoundValues(condition)).toEqual(expect.arrayContaining(['msg_1', 'agt_1']))
   })
 
   it('listPendingMessages 解析 JSON 并返回结构化行', async () => {

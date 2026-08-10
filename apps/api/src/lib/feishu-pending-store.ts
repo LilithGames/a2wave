@@ -10,7 +10,7 @@
  * Entries are created at the top of `handleMessage` and removed when the
  * message completes (either success, failure, or was identified as a dupe).
  */
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { feishuPendingMessages } from '../db/schema.js'
 import { isUniqueViolation } from './db-errors.js'
@@ -62,8 +62,12 @@ export interface FeishuPendingRow {
 
 /**
  * Idempotently record a pending Feishu message. Safe to call multiple times
- * for the same message_id — SQLite PK conflict is silently ignored, mirroring
- * INSERT OR IGNORE semantics.
+ * for the same (message_id, agent_id) — a PK conflict is silently ignored,
+ * mirroring INSERT OR IGNORE semantics.
+ *
+ * The conflict target is the *pair*, not the message alone: Feishu delivers one
+ * message_id to every bot in a chat, so two Agents sharing a group legitimately
+ * insert the same message_id and neither may be swallowed as a duplicate.
  */
 export async function persistPendingMessage(
   messageId: string,
@@ -84,9 +88,22 @@ export async function persistPendingMessage(
   }
 }
 
-/** Remove the persisted event for a completed/aborted message. No-op if absent. */
-export async function removePendingMessage(messageId: string): Promise<void> {
-  await db.delete(feishuPendingMessages).where(eq(feishuPendingMessages.messageId, messageId))
+/**
+ * Remove the persisted event for a completed/aborted message. No-op if absent.
+ *
+ * Scoped to the owning Agent: deleting by message_id alone would also erase the
+ * row of the *other* Agent in the same Feishu group, destroying its restart
+ * recovery record the moment this Agent finished first.
+ */
+export async function removePendingMessage(messageId: string, agentId: string): Promise<void> {
+  await db
+    .delete(feishuPendingMessages)
+    .where(
+      and(
+        eq(feishuPendingMessages.messageId, messageId),
+        eq(feishuPendingMessages.agentId, agentId),
+      ),
+    )
 }
 
 /** List every persisted event — used by startup recovery to replay. */
@@ -107,7 +124,7 @@ export async function listPendingMessages(): Promise<FeishuPendingRow[]> {
       // loop rather than flatMap): the delete is async, so firing it off would
       // let this function resolve — and the caller start replaying — while the
       // corrupt row is still present, and its rejection would escape unhandled.
-      await removePendingMessage(row.messageId)
+      await removePendingMessage(row.messageId, row.agentId)
     }
   }
   return parsed

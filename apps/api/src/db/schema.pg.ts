@@ -884,13 +884,20 @@ export const a2aTasks = pgTable(
 // Entry: INSERT OR IGNORE at the start of handleMessage, DELETE after normal completion or
 // failure.
 // Startup recovery: scan the leftover rows and replay their payloads into handleMessage, so
-// streaming card contexts can be rebuilt after a restart. message_id is the PK, which guarantees
-// event-level idempotence.
+// streaming card contexts can be rebuilt after a restart.
+//
+// The PK is (message_id, agent_id), NOT message_id alone. Feishu delivers the SAME message_id
+// to every bot application in a chat, so when two a2wave Agents share a group each must own its
+// own row. Under a message_id-only PK the second Agent's insert collided with the first, was
+// swallowed as "duplicate delivery", and that Agent never answered; worse, whichever Agent
+// finished first deleted the row by message_id and destroyed the other's restart-recovery
+// record. Event-level idempotence is therefore per (message, agent) — which is the real unit
+// of work — and every read/write of this table must filter on BOTH columns.
 // ============================================================
 export const feishuPendingMessages = pgTable(
   'feishu_pending_messages',
   {
-    messageId: text('message_id').primaryKey(),
+    messageId: text('message_id').notNull(),
     agentId: text('agent_id')
       .notNull()
       .references(() => agents.id, { onDelete: 'cascade' }),
@@ -901,6 +908,7 @@ export const feishuPendingMessages = pgTable(
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   },
   (table) => ({
+    pk: primaryKey({ columns: [table.messageId, table.agentId] }),
     agentIdIdx: index('feishu_pending_messages_agent_id_idx').on(table.agentId),
   }),
 )

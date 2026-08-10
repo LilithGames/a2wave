@@ -729,6 +729,13 @@
       "when": 1786011499447,
       "tag": "0103_normalize_pi_auth_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "6",
+      "when": 1786336388601,
+      "tag": "0104_ambiguous_sunspot",
+      "breakpoints": true
     }
   ]
 }
