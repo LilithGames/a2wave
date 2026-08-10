@@ -1,8 +1,12 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { is } from 'drizzle-orm'
-import { PgTable, getTableConfig as getPgTableConfig } from 'drizzle-orm/pg-core'
-import { SQLiteTable, getTableConfig as getSqliteTableConfig } from 'drizzle-orm/sqlite-core'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  generateDrizzleJson,
+  generateMigration,
+  generateSQLiteDrizzleJson,
+  generateSQLiteMigration,
+} from 'drizzle-kit/api'
 import { describe, expect, it } from 'vitest'
 import * as pgSchema from '../schema.pg.js'
 import * as sqliteSchema from '../schema.sqlite.js'
@@ -16,71 +20,63 @@ import * as sqliteSchema from '../schema.sqlite.js'
  * boot via migrate-runtime. Regression: 0102_git_trigger_channels landed
  * without a snapshot, so a no-op generate reproduced its CREATE TABLE.
  *
- * These tests pin the invariant: the latest snapshot of each lineage must
- * describe exactly the tables and columns the schema module defines.
+ * Two invariants pin that failure mode for both lineages:
+ * 1. The journal head must have a matching snapshot — a journal entry landing
+ *    ahead of the newest snapshot is exactly how the baseline got stranded.
+ *    (`drizzle-kit generate --custom` satisfies this; hand-editing does not.)
+ * 2. Diffing the latest snapshot against the schema module through
+ *    drizzle-kit's own migration engine must produce zero statements — the
+ *    in-process equivalent of "a no-op `db:generate` generates nothing",
+ *    covering column types, defaults, indexes, and foreign keys, not just
+ *    table/column names.
  */
 
-interface SnapshotTable {
-  name: string
-  columns: Record<string, unknown>
+type SqliteSnapshot = Parameters<typeof generateSQLiteMigration>[0]
+type PgSnapshot = Parameters<typeof generateMigration>[0]
+
+const apiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+
+function metaDir(lineage: 'drizzle' | 'drizzle-pg'): string {
+  return resolve(apiRoot, lineage, 'meta')
 }
 
-interface Snapshot {
-  tables: Record<string, SnapshotTable>
-}
-
-function latestSnapshot(metaDir: string): Snapshot {
-  const names = readdirSync(metaDir)
+function readLatestSnapshot(dir: string): unknown {
+  const latest = readdirSync(dir)
     .filter((name) => name.endsWith('_snapshot.json'))
     .sort()
-  const latest = names.at(-1)
-  if (!latest) throw new Error(`No snapshot found in ${metaDir}`)
-  return JSON.parse(readFileSync(resolve(metaDir, latest), 'utf8')) as Snapshot
+    .at(-1)
+  if (!latest) throw new Error(`No snapshot found in ${dir}`)
+  return JSON.parse(readFileSync(resolve(dir, latest), 'utf8'))
 }
 
-function snapshotShape(snapshot: Snapshot): Map<string, string[]> {
-  const shape = new Map<string, string[]>()
-  for (const table of Object.values(snapshot.tables)) {
-    shape.set(table.name, Object.keys(table.columns).sort())
+function expectJournalHeadSnapshot(dir: string): void {
+  const journal = JSON.parse(readFileSync(resolve(dir, '_journal.json'), 'utf8')) as {
+    entries: Array<{ idx: number }>
   }
-  return shape
-}
-
-function schemaShape(
-  schema: Record<string, unknown>,
-  describeTable: (table: never) => { name: string; columns: Array<{ name: string }> },
-  isTable: (value: unknown) => boolean,
-): Map<string, string[]> {
-  const shape = new Map<string, string[]>()
-  for (const value of Object.values(schema)) {
-    if (!isTable(value)) continue
-    const config = describeTable(value as never)
-    shape.set(config.name, config.columns.map((column) => column.name).sort())
-  }
-  return shape
-}
-
-function expectAligned(schema: Map<string, string[]>, snapshot: Map<string, string[]>): void {
-  expect([...snapshot.keys()].sort()).toEqual([...schema.keys()].sort())
-  for (const [tableName, columns] of schema) {
-    expect(snapshot.get(tableName), `columns of ${tableName}`).toEqual(columns)
-  }
+  const head = journal.entries.at(-1)
+  if (!head) throw new Error(`Empty journal in ${dir}`)
+  const snapshotName = `${String(head.idx).padStart(4, '0')}_snapshot.json`
+  expect(existsSync(resolve(dir, snapshotName)), `${snapshotName} for journal head`).toBe(true)
 }
 
 describe('drizzle snapshot baseline', () => {
-  it('sqlite: latest snapshot matches schema.sqlite.ts tables and columns', () => {
-    const snapshot = latestSnapshot(resolve(process.cwd(), 'drizzle/meta'))
-    expectAligned(
-      schemaShape(sqliteSchema, getSqliteTableConfig, (value) => is(value, SQLiteTable)),
-      snapshotShape(snapshot),
-    )
+  it('sqlite: journal head has a matching snapshot', () => {
+    expectJournalHeadSnapshot(metaDir('drizzle'))
   })
 
-  it('postgres: latest snapshot matches schema.pg.ts tables and columns', () => {
-    const snapshot = latestSnapshot(resolve(process.cwd(), 'drizzle-pg/meta'))
-    expectAligned(
-      schemaShape(pgSchema, getPgTableConfig, (value) => is(value, PgTable)),
-      snapshotShape(snapshot),
-    )
+  it('postgres: journal head has a matching snapshot', () => {
+    expectJournalHeadSnapshot(metaDir('drizzle-pg'))
+  })
+
+  it('sqlite: latest snapshot yields a no-op diff against schema.sqlite.ts', async () => {
+    const previous = readLatestSnapshot(metaDir('drizzle')) as SqliteSnapshot
+    const current = await generateSQLiteDrizzleJson(sqliteSchema, previous.id)
+    expect(await generateSQLiteMigration(previous, current)).toEqual([])
+  })
+
+  it('postgres: latest snapshot yields a no-op diff against schema.pg.ts', async () => {
+    const previous = readLatestSnapshot(metaDir('drizzle-pg')) as PgSnapshot
+    const current = await generateDrizzleJson(pgSchema, previous.id)
+    expect(await generateMigration(previous, current)).toEqual([])
   })
 })
