@@ -22,6 +22,23 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
 type JsonPath = readonly [string, ...string[]]
 
 /**
+ * The PostgreSQL operators below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are
+ * defined for json/jsonb only. Columns declared `text(..., { mode: 'json' })`
+ * become `jsonb` via db/schema-transform.ts and need nothing extra — but a
+ * column holding JSON while declared as plain `text` does, or PostgreSQL fails
+ * the statement outright with `42883 operator does not exist: text -> unknown`.
+ *
+ * `a2a_tasks.data` is that column: a2a/sqlite-task-store.ts serialises and
+ * parses the envelope by hand instead of through drizzle, so it is plain text
+ * on both dialects while `list()` still filters on `scope`/`task` paths inside
+ * it. Keying the cast off the column's declared `dataType` fixes that without
+ * adding a redundant cast to the jsonb columns every other call site passes.
+ */
+function pgJsonSource(column: SQLiteColumn): SQL {
+  return column.dataType === 'json' ? sql`${column}` : sql`(${column})::jsonb`
+}
+
+/**
  * Build the PostgreSQL accessor chain: every segment but the last uses `->`
  * (which yields jsonb, so it can be chained), and the final one uses `->>`
  * (which yields text, so it can be cast or compared).
@@ -29,7 +46,7 @@ type JsonPath = readonly [string, ...string[]]
 function pgAccessor(column: SQLiteColumn, path: JsonPath): SQL {
   const parents = path.slice(0, -1)
   const leaf = path[path.length - 1]
-  let expr = sql`${column}`
+  let expr = pgJsonSource(column)
   for (const segment of parents) {
     expr = sql`${expr} -> ${segment}`
   }
@@ -81,7 +98,7 @@ export function jsonArrayContainsKeyValue(
   value: string,
 ): SQL {
   if (isPostgresRuntime()) {
-    let target = sql`${column}`
+    let target = pgJsonSource(column)
     for (const segment of arrayPath) {
       target = sql`${target} -> ${segment}`
     }
@@ -105,7 +122,7 @@ export function jsonArrayContainsKeyValue(
 export function jsonSet(column: SQLiteColumn, path: JsonPath, value: unknown): SQL {
   const serialized = JSON.stringify(value)
   if (isPostgresRuntime()) {
-    return sql`jsonb_set(COALESCE(${column}, '{}'::jsonb), ${`{${path.join(',')}}`}, ${serialized}::jsonb, true)`
+    return sql`jsonb_set(COALESCE(${pgJsonSource(column)}, '{}'::jsonb), ${`{${path.join(',')}}`}, ${serialized}::jsonb, true)`
   }
   return sql`json_set(COALESCE(${column}, '{}'), ${sqlitePath(path)}, json(${serialized}))`
 }
@@ -120,7 +137,7 @@ export function jsonSet(column: SQLiteColumn, path: JsonPath, value: unknown): S
 export function jsonPathIsAbsent(column: SQLiteColumn, path: JsonPath): SQL {
   if (isPostgresRuntime()) {
     const leaf = path[path.length - 1]
-    let parent = sql`${column}`
+    let parent = pgJsonSource(column)
     for (const segment of path.slice(0, -1)) {
       parent = sql`${parent} -> ${segment}`
     }
