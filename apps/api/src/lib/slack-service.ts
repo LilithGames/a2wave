@@ -73,6 +73,24 @@ export function shouldTriggerSlackEvent(
   return (config.groupTriggerOnAt && isMentioned) || config.groupTriggerOnNewMessage
 }
 
+/**
+ * Key the run reservation by message identity, never by `event_id`.
+ *
+ * A single @-mention in a channel that subscribes both `app_mention` and
+ * `message.channels` is delivered as two envelopes carrying two *different*
+ * `event_id`s. Keying on the envelope therefore reserved two runs for one
+ * message, and the agent answered twice at twice the token cost. Team + channel
+ * + `ts` names the message itself, so every duplicate delivery collapses onto
+ * the `runs_native_chat_event_unique` index.
+ *
+ * Slack redeliveries of the *same* envelope already collapse here too, so this
+ * key strictly widens the existing dedup guarantee rather than trading one
+ * class of duplicate for another.
+ */
+export function buildSlackDedupKey(teamId: string, channel: string, ts?: string): string {
+  return `slack:${teamId}:${channel}:${ts ?? 'unknown'}`
+}
+
 export function extractSlackNativeAttachments(
   event: Pick<SlackMessageEvent, 'files'>,
 ): NativeChatAttachment[] {
@@ -147,9 +165,24 @@ export function neutralizeSlackMentions(text: string): string {
   return text.replace(/<(?=[!@])/g, '<\u200b')
 }
 
+/**
+ * How long an `app_mention` waits for the richer `message` twin to arrive.
+ *
+ * Both envelopes describe the same message, but only `message` carries
+ * `files` and `channel_type`. Slack emits them together, so a short wait lets
+ * the better payload win the dedup race deterministically instead of by
+ * arrival order. Workspaces that subscribe `app_mention` alone simply see the
+ * timer elapse and proceed unchanged.
+ */
+const SLACK_APP_MENTION_GRACE_MS = 1_500
+
 export class SlackConnectionManager {
   private readonly connections = new Map<string, SlackConnection>()
   private readonly appHolders = new Map<string, string>()
+  private readonly pendingMentions = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; ack: () => Promise<void> }
+  >()
 
   async start(agentId: string, rawConfig: SlackConfig | Record<string, unknown>): Promise<void> {
     const config = slackConfigSchema.parse(rawConfig)
@@ -165,6 +198,9 @@ export class SlackConnectionManager {
         this.appHolders.delete(previous.config.appId)
       }
       previous.socketOpen = false
+      // The replaced connection's deferred mentions close over its stale socket
+      // and config, so they must not survive it.
+      this.clearPendingMentions(agentId)
     }
     // Reserve synchronously before the first await so concurrent starters cannot both pass.
     this.appHolders.set(config.appId, agentId)
@@ -220,6 +256,9 @@ export class SlackConnectionManager {
     } catch (error) {
       this.connections.delete(agentId)
       if (this.appHolders.get(config.appId) === agentId) this.appHolders.delete(config.appId)
+      // Listeners are attached before `socket.start()`, so a failed startup can
+      // still have deferred a mention against the connection being discarded.
+      this.clearPendingMentions(agentId)
       throw error
     }
   }
@@ -253,33 +292,97 @@ export class SlackConnectionManager {
       senderUserId: event.user ?? '',
       chatType: isDirectMessage ? 'p2p' : 'channel',
     })
-    const eventId =
-      envelope.body?.event_id ??
-      `slack:${connection.teamId}:${event.channel}:${event.ts ?? 'unknown'}`
+    const eventId = buildSlackDedupKey(
+      envelope.body?.team_id ?? connection.teamId,
+      event.channel,
+      event.ts,
+    )
+
+    // A `message` envelope supersedes any deferred `app_mention` for the same
+    // message: it carries the attachments the mention payload lacks. Scope the
+    // key by Agent so two Agents in one workspace never cancel each other.
+    const pendingKey = `${agentId} ${eventId}`
+    const deferred = this.pendingMentions.get(pendingKey)
+    if (deferred) {
+      clearTimeout(deferred.timer)
+      this.pendingMentions.delete(pendingKey)
+      // The superseding envelope owns this message now, so acknowledge the
+      // mention we are dropping instead of leaving it for redelivery.
+      await deferred
+        .ack()
+        .catch((error) =>
+          logger.warn({ error, agentId, eventId }, 'Failed to ack a superseded Slack mention'),
+        )
+    }
+    if (event.type === 'app_mention') {
+      // Register before the first await: `stop()` sweeps this map, and a timer
+      // armed after that sweep would outlive the connection it belongs to.
+      const timer = setTimeout(() => {
+        this.pendingMentions.delete(pendingKey)
+        void this.reserve(agentId, eventId, {
+          connection,
+          event,
+          intent,
+          ctx: ctx as RunChannelContextSlack,
+          displayName,
+          nativeAttachments,
+        })
+          // Acknowledge only once the reservation has committed, exactly as the
+          // immediate path does: a transient failure must leave the envelope
+          // un-acked so Slack redelivers rather than dropping the mention.
+          .then(() => envelope.ack())
+          .catch((error) =>
+            logger.error({ error, agentId, eventId }, 'Failed to reserve deferred Slack mention'),
+          )
+      }, SLACK_APP_MENTION_GRACE_MS)
+      // Never hold the process open for a pending mention.
+      timer.unref?.()
+      this.pendingMentions.set(pendingKey, { timer, ack: envelope.ack })
+      return
+    }
 
     try {
-      const result = await reserveNativeChatRun({
-        agentId,
-        source: 'slack',
-        eventId,
-        conversationId: buildSlackConversationId(connection.teamId, event),
+      await this.reserve(agentId, eventId, {
+        connection,
+        event,
         intent,
-        channel: ctx as RunChannelContextSlack,
+        ctx: ctx as RunChannelContextSlack,
         displayName,
         nativeAttachments,
       })
       // Acknowledge only after the unique event reservation has committed.
       await envelope.ack()
-      if (result.status === 'queue_full') {
-        await this.sendMessageByContext(
-          agentId,
-          ctx as RunChannelContextSlack,
-          'Agent queue is full.',
-        )
-      }
     } catch (error) {
       // No acknowledgement on persistence failure: Slack will redeliver the event.
       logger.error({ error, agentId, eventId }, 'Failed to reserve Slack event')
+    }
+  }
+
+  private async reserve(
+    agentId: string,
+    eventId: string,
+    input: {
+      connection: SlackConnection
+      event: SlackMessageEvent
+      intent: string
+      ctx: RunChannelContextSlack
+      displayName?: string | null
+      nativeAttachments: NativeChatAttachment[]
+    },
+  ): Promise<void> {
+    const { connection, event, intent, ctx, displayName, nativeAttachments } = input
+    const result = await reserveNativeChatRun({
+      agentId,
+      source: 'slack',
+      eventId,
+      conversationId: buildSlackConversationId(connection.teamId, event),
+      intent,
+      channel: ctx,
+      displayName,
+      nativeAttachments,
+    })
+    if (result.status === 'queue_full') {
+      await this.sendMessageByContext(agentId, ctx, 'Agent queue is full.')
     }
   }
 
@@ -385,11 +488,24 @@ export class SlackConnectionManager {
       this.appHolders.delete(connection.config.appId)
     }
     connection.socketOpen = false
+    // Drop deferred mentions: a stopped Agent must not start a run afterwards.
+    this.clearPendingMentions(agentId)
     await connection.socket
       .disconnect()
       .catch((error) =>
         logger.warn({ error, agentId }, 'Failed to disconnect Slack Socket Mode cleanly'),
       )
+  }
+
+  private clearPendingMentions(agentId: string): void {
+    for (const [key, pending] of this.pendingMentions) {
+      if (key.startsWith(`${agentId} `)) {
+        clearTimeout(pending.timer)
+        this.pendingMentions.delete(key)
+        // Leave the envelope un-acked: the Agent is going away, so let Slack
+        // redeliver to whatever connection takes over.
+      }
+    }
   }
 
   stopAll(): void {
