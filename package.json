@@ -77,7 +77,7 @@
     "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@biomejs/biome": "^2.5.7",
     "@playwright/test": "^1.58.2",
     "husky": "^9.1.7",
     "knip": "^6.32.0",
