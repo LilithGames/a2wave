@@ -1,6 +1,6 @@
 {
   "name": "a2wave",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Command-line client for the a2wave agent orchestration platform",
   "license": "Apache-2.0",
   "homepage": "https://github.com/LilithGames/a2wave#readme",

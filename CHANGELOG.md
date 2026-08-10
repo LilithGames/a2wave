@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.7.2
+
+- **`a2wave setup` now works with no flags**: `--image` is optional and defaults to the published image matching the CLI's own version (`ghcr.io/lilithgames/a2wave:<cli-version>`), so `npm i -g a2wave && a2wave setup` installs a running platform without cloning or building anything. Pass the flag only for a locally built or mirrored image.
+- **`a2wave setup --upgrade` picks up the same default**: `a2wave update` followed by `a2wave setup --upgrade` moves an existing install to the matching release without retyping the image ref.
+- **The container image is now public**: `ghcr.io/lilithgames/a2wave` can be pulled anonymously (tags `<version>` and `latest`); the READMEs document the CLI quick start and the direct `docker pull` path.
+
 ## v0.7.1
 
 First public release, shipping the `a2wave` CLI to npm and multi-arch container images to GHCR.
