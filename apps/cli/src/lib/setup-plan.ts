@@ -8,6 +8,54 @@ export function generateAuthSecret(): string {
 }
 
 /**
+ * Password for the bundled postgres sidecar. Hex only: the same value is
+ * embedded verbatim in DATABASE_URL's userinfo, so any character that needs
+ * percent-encoding would make the two .env keys disagree.
+ */
+export function generatePostgresPassword(): string {
+  return randomBytes(16).toString('hex')
+}
+
+/**
+ * Reject a --database-url that is not a PostgreSQL URL.
+ *
+ * The scheme alone selects the backend server-side; anything else is treated
+ * as a SQLite file path, and a HOST path is meaningless inside the container —
+ * the flag exists for external databases only. Whitespace is checked before
+ * URL parsing because `new URL()` silently STRIPS tabs and newlines: parsing
+ * alone would accept an injection payload and then write a different string
+ * into .env (where a newline starts a new env line).
+ */
+export function validateDatabaseUrl(url: string): void {
+  if (/[\s\p{Cc}]/u.test(url)) {
+    throw new Error('Invalid --database-url: whitespace and control characters are not allowed.')
+  }
+  // The value is written unquoted into .env, whose values Compose interpolates:
+  // a literal `$` in a password silently becomes a variable expansion and the
+  // connection fails with a wrong-password error that never names the cause.
+  // Escaping as `$$` would gamble on two consumption paths (interpolation and
+  // env_file) agreeing across Compose versions; the URL's own escape does not.
+  if (url.includes('$')) {
+    throw new Error(
+      'Invalid --database-url: a literal $ would be mangled by docker compose variable interpolation. Percent-encode it as %24.',
+    )
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(
+      `Invalid --database-url: ${JSON.stringify(url)} is not a URL. Expected postgres://user:password@host:5432/dbname`,
+    )
+  }
+  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+    throw new Error(
+      `Invalid --database-url: only postgres:// (or postgresql://) URLs are supported, got ${JSON.stringify(url)}. SQLite needs no flag — it is the default.`,
+    )
+  }
+}
+
+/**
  * Unique, stable Compose project name persisted per install. Without it,
  * Compose defaults the project name to the directory BASENAME — /srv/a/a2wave
  * and /srv/b/a2wave would resolve to the same `a2wave_a2wave-data` volume,
@@ -41,6 +89,10 @@ export interface EnvFileInput {
   projectName: string
   /** Container image; drives A2WAVE_IMAGE, which `setup --upgrade` rewrites. */
   image?: string
+  /** PostgreSQL URL (external or sidecar-derived); omitted means SQLite. */
+  databaseUrl?: string
+  /** Password of the bundled postgres sidecar; only set with --with-postgres. */
+  postgresPassword?: string
 }
 
 /**
@@ -71,6 +123,23 @@ export function buildEnvFile(input: EnvFileInput): string {
     '# Browser origin allowed to call the API',
     `CORS_ORIGIN=${input.baseUrl}`,
   ]
+  if (input.databaseUrl) {
+    lines.push(
+      '',
+      '# Database backend. A postgres:// URL selects PostgreSQL — EXPERIMENTAL:',
+      '# no production soak time yet, and there is NO SQLite -> PostgreSQL data',
+      '# migration path. Remove the key to fall back to SQLite in the data volume.',
+      `DATABASE_URL=${input.databaseUrl}`,
+    )
+  }
+  if (input.postgresPassword) {
+    lines.push(
+      '',
+      '# Password of the bundled postgres sidecar (also embedded in DATABASE_URL',
+      '# above — keep the two in sync when rotating it).',
+      `POSTGRES_PASSWORD=${input.postgresPassword}`,
+    )
+  }
   // Gateway signing only reaches its standards path (URL issuer + discovery)
   // over https, so only prefill the origin when the install is already https;
   // an http value would be accepted by env validation but rejected as an issuer.
@@ -106,6 +175,18 @@ export function readEnvImage(env: string): string | null {
   // Strip surrounding quotes: a hand-written `A2WAVE_IMAGE="a2wave:1.0"` is a
   // valid env value, but keeping the quotes would surface a ref the operator
   // cannot paste into a docker command in the rollback messages.
+  const unquoted = raw.replace(/^(['"])(.*)\1$/, '$2')
+  return unquoted ? unquoted : null
+}
+
+/**
+ * Read the `DATABASE_URL` value from an install's .env, or null when absent.
+ * Used by `setup --upgrade` to warn that the data-volume backup does not cover
+ * a PostgreSQL backend's data.
+ */
+export function readEnvDatabaseUrl(env: string): string | null {
+  const raw = env.match(/^DATABASE_URL=(.*)$/m)?.[1]?.trim()
+  if (!raw) return null
   const unquoted = raw.replace(/^(['"])(.*)\1$/, '$2')
   return unquoted ? unquoted : null
 }
@@ -202,6 +283,8 @@ export function migrateComposeImageToVariable(compose: string): string | null {
 export interface ComposeFileInput {
   image: string
   port: number
+  /** Add the bundled postgres:16-alpine sidecar (EXPERIMENTAL backend). */
+  withPostgres?: boolean
 }
 
 /**
@@ -218,7 +301,20 @@ export function buildComposeFile(input: ComposeFileInput): string {
     // YAML with regexes and mis-targeted the wrong service in six distinct
     // valid-compose shapes. The generation-time ref stays as the fallback so
     // the file still works standalone.
+    //
+    // Must stay the FIRST key of this service: `setup --upgrade` recognizes a
+    // generated file by `services:\n  a2wave:\n    image: ${A2WAVE_IMAGE...`
+    // and refuses anything else as hand-edited.
     `    image: \${A2WAVE_IMAGE:-${input.image}}`,
+    ...(input.withPostgres
+      ? [
+          // Migrations run at startup and exit(1) on failure, so without this a
+          // cold start races initdb and surfaces as a migration failure.
+          '    depends_on:',
+          '      postgres:',
+          '        condition: service_healthy',
+        ]
+      : []),
     '    ports:',
     // Read the host port from .env so editing A2WAVE_PORT there actually works;
     // the generation-time port is only the fallback default.
@@ -228,7 +324,10 @@ export function buildComposeFile(input: ComposeFileInput): string {
     '    environment:',
     '      - NODE_ENV=production',
     '      - PORT=3502',
-    '      - DATABASE_URL=/app/data/a2wave.db',
+    // From .env, like the image: switching backends must be a one-line .env
+    // edit. A hardcoded value here would override env_file and make a
+    // DATABASE_URL added to .env silently inert.
+    '      - DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}',
     '      - A2WAVE_SKILLS_STORAGE=/app/data/skills',
     '    volumes:',
     '      - a2wave-data:/app/data',
@@ -237,10 +336,39 @@ export function buildComposeFile(input: ComposeFileInput): string {
     // rebuild wipes those logins.
     '      - a2wave-cli-home:/home/appuser',
     '    restart: unless-stopped',
+    ...(input.withPostgres
+      ? [
+          '',
+          '  # PostgreSQL backend — EXPERIMENTAL: no production soak time, and no',
+          '  # SQLite -> PostgreSQL data migration path.',
+          '  postgres:',
+          '    image: postgres:16-alpine',
+          '    environment:',
+          '      - POSTGRES_USER=a2wave',
+          // The password lives in .env only (0600); an inline literal here
+          // would duplicate it into a world-readable file.
+          '      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set in .env}',
+          '      - POSTGRES_DB=a2wave',
+          '    volumes:',
+          '      - a2wave-postgres:/var/lib/postgresql/data',
+          // Not published on the host: the API reaches it over the compose
+          // network, and binding 5432 would expose the database to anything
+          // that can reach the machine.
+          '    expose:',
+          '      - "5432"',
+          '    healthcheck:',
+          '      test: ["CMD-SHELL", "pg_isready -U a2wave -d a2wave"]',
+          '      interval: 10s',
+          '      timeout: 5s',
+          '      retries: 5',
+          '    restart: unless-stopped',
+        ]
+      : []),
     '',
     'volumes:',
     '  a2wave-data:',
     '  a2wave-cli-home:',
+    ...(input.withPostgres ? ['  a2wave-postgres:'] : []),
     '',
   ].join('\n')
 }

@@ -153,6 +153,26 @@ curl -fsS localhost:<端口>/api/health/ready
 
 `curl -fsS` 会在非 2xx 时以非零码退出，比只看输出可靠。除了健康检查，**再登录确认业务数据确实回来了**（Agent 列表、运行记录），然后才删除旧卷。
 
+## 能用 PostgreSQL 作为数据库吗？
+
+可以，但**默认且推荐的仍是 SQLite**——单容器、零外部依赖，单实例部署下它就是最优解。PostgreSQL 是**实验性**后端，面向需要多实例部署的场景；注意**没有 SQLite → PostgreSQL 的数据迁移工具**，切换意味着从空数据库开始。
+
+安装时选择（由运维人员执行）：
+
+```bash
+# 连接外部 PostgreSQL（9.6 及以上）
+a2wave setup --database-url postgres://用户:密码@数据库地址:5432/a2wave
+
+# 或让安装器在 compose 里内置一个 postgres:16-alpine 服务，
+# 密码自动生成到安装目录的 .env（权限 0600）
+a2wave setup --with-postgres
+```
+
+两个参数互斥，也不能与 `--upgrade` 同用。已装好的实例要切换后端，编辑安装目录 `.env` 里的 `DATABASE_URL` 再 `docker compose up -d` 即可（同样从空库开始）。
+
+> [!WARNING]
+> 数据库地址不要写 `localhost`——容器里的 localhost 是容器自己。数据库跑在宿主机上时，用 `host.docker.internal`（Docker Desktop）或宿主机 IP。另外，PostgreSQL 实例升级时的自动备份只覆盖数据卷、**不包含数据库本身**，升级前请先自行 `pg_dump`。
+
 ## 还有问题？
 
 查站内 API 文档 `/api/docs`（Swagger UI），或联系平台管理员。

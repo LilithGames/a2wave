@@ -153,6 +153,26 @@ curl -fsS localhost:<port>/api/health/ready
 
 `curl -fsS` exits non-zero on a non-2xx response, which a bare `curl` does not. Beyond the health check, **log in and confirm your actual data is back** (agent list, run history) before deleting the old volume.
 
+## Can I use PostgreSQL as the database?
+
+Yes, but **SQLite remains the default and recommended backend** — one container, no external dependency, and the best choice for a single-instance deployment. PostgreSQL is an **experimental** backend aimed at multi-instance deployments; note there is **no SQLite → PostgreSQL data migration tool**, so switching means starting from an empty database.
+
+Choose it at install time (performed by the operator):
+
+```bash
+# Connect to an external PostgreSQL (9.6+)
+a2wave setup --database-url postgres://user:password@db-host:5432/a2wave
+
+# Or let the installer bundle a postgres:16-alpine service in compose;
+# the password is generated into the install directory's .env (mode 0600)
+a2wave setup --with-postgres
+```
+
+The two flags are mutually exclusive and cannot be combined with `--upgrade`. To switch an existing install, edit `DATABASE_URL` in the install directory's `.env` and run `docker compose up -d` (again starting from an empty database).
+
+> [!WARNING]
+> Do not point the database URL at `localhost` — inside the container, localhost is the container itself. For a database on the host machine, use `host.docker.internal` (Docker Desktop) or the host IP. Also, on a PostgreSQL install the automatic pre-upgrade backup covers only the data volume, **not** the database itself — take a `pg_dump` before upgrading.
+
 ## Still have questions?
 
 Check the in-app API docs at `/api/docs` (Swagger UI), or contact the platform admin.

@@ -22,10 +22,13 @@ import {
   buildComposeFile,
   buildEnvFile,
   generateAuthSecret,
+  generatePostgresPassword,
   generateProjectName,
   migrateComposeImageToVariable,
+  readEnvDatabaseUrl,
   readEnvImage,
   replaceEnvImage,
+  validateDatabaseUrl,
   validateImageRef,
 } from '../lib/setup-plan.js'
 import { getVersion } from '../version.js'
@@ -91,6 +94,15 @@ function composeChildEnv(image: string | null, port: number | null): NodeJS.Proc
   // biome-ignore lint/performance/noDelete: same — see above
   if (port === null) delete env.A2WAVE_PORT
   else env.A2WAVE_PORT = String(port)
+  // Always deleted, never set: the install .env is the sole source of truth
+  // for the database keys in every path (fresh install writes them before the
+  // first compose call; an upgrade never rewrites them). DATABASE_URL is the
+  // likeliest inherited key of them all — every dev machine running this repo
+  // exports or .env-scopes one — and Compose would prefer it over the file.
+  // biome-ignore lint/performance/noDelete: same — see above
+  delete env.DATABASE_URL
+  // biome-ignore lint/performance/noDelete: same — see above
+  delete env.POSTGRES_PASSWORD
   return env
 }
 
@@ -1296,6 +1308,16 @@ export const setupCommand = defineCommand({
       description:
         'External URL the instance is reached at (default: http://localhost:<port>). Set for LAN/reverse-proxy installs; drives CORS_ORIGIN and cookie security',
     },
+    'database-url': {
+      type: 'string',
+      description:
+        'External PostgreSQL URL (postgres://user:password@host:5432/dbname). EXPERIMENTAL backend; no SQLite -> PostgreSQL data migration. Default: SQLite inside the data volume',
+    },
+    'with-postgres': {
+      type: 'boolean',
+      description:
+        'Bundle a postgres:16-alpine sidecar and point DATABASE_URL at it (EXPERIMENTAL; generates the password into .env)',
+    },
     'health-timeout': {
       type: 'string',
       description: `Seconds to wait for /api/health after start (default: ${HEALTH_TIMEOUT_SECONDS})`,
@@ -1318,6 +1340,8 @@ export const setupCommand = defineCommand({
       backup?: boolean
       'yes-destroy-all-data'?: boolean
       'base-url'?: string
+      'database-url'?: string
+      'with-postgres'?: boolean
       'health-timeout'?: string
       'reset-password'?: boolean
     }
@@ -1336,6 +1360,8 @@ export const setupCommand = defineCommand({
           ['--down', args.down],
           ['--reset-password', args['reset-password']],
           ['--base-url', args['base-url'] !== undefined],
+          ['--database-url', args['database-url'] !== undefined],
+          ['--with-postgres', args['with-postgres']],
           ['--port', args.port !== undefined],
           ['--no-start', args.start === false],
         ] as const
@@ -1395,6 +1421,22 @@ export const setupCommand = defineCommand({
       throw new CliError((err as Error).message)
     }
 
+    // The sidecar derives its own DATABASE_URL; accepting an external URL at
+    // the same time would silently drop one of the two.
+    if (args['database-url'] !== undefined && args['with-postgres']) {
+      throw new CliError(
+        '--database-url and --with-postgres are mutually exclusive: the bundled sidecar derives its own DATABASE_URL.',
+      )
+    }
+    const externalDatabaseUrl = args['database-url']?.trim()
+    if (externalDatabaseUrl !== undefined) {
+      try {
+        validateDatabaseUrl(externalDatabaseUrl)
+      } catch (err) {
+        throw new CliError((err as Error).message)
+      }
+    }
+
     if (args.upgrade) {
       // Conflicting flags (including --port) were already rejected up front,
       // before any mode branch could dispatch and return.
@@ -1405,6 +1447,19 @@ export const setupCommand = defineCommand({
       // Distinguish a port genuinely recorded in .env from a guess: only the
       // former may be pushed into compose's environment (see `upgrade`).
       const recordedPort = readInstalledPort(dir)
+      // The pre-upgrade backup archives the volume mounted at /app/data; a
+      // PostgreSQL backend keeps the real data elsewhere (external server or
+      // the sidecar's own volume), so stay honest about what the snapshot holds
+      // before a possibly irreversible migration runs against that database.
+      const upgradeEnvPath = join(dir, '.env')
+      const recordedDatabaseUrl = existsSync(upgradeEnvPath)
+        ? readEnvDatabaseUrl(readFileSync(upgradeEnvPath, 'utf-8'))
+        : null
+      if (recordedDatabaseUrl?.startsWith('postgres')) {
+        console.log(
+          'Note: this install runs on PostgreSQL. The pre-upgrade backup covers only the /app/data volume, NOT the PostgreSQL data — take a pg_dump first if you need a database snapshot.',
+        )
+      }
       await upgrade(
         dir,
         image,
@@ -1472,19 +1527,53 @@ export const setupCommand = defineCommand({
     await checkPortFree(port)
 
     const authSecret = generateAuthSecret()
+    const withPostgres = !!args['with-postgres']
+    const postgresPassword = withPostgres ? generatePostgresPassword() : undefined
+    // `postgres` is the sidecar's compose service name, resolvable only on the
+    // compose network — which is exactly where the API container lives.
+    const databaseUrl = withPostgres
+      ? `postgres://a2wave:${postgresPassword}@postgres:5432/a2wave`
+      : externalDatabaseUrl
 
     mkdirSync(dir, { recursive: true })
     const projectName = generateProjectName()
-    writeFileSync(envPath, buildEnvFile({ authSecret, port, baseUrl, projectName, image }), {
-      encoding: 'utf-8',
-      mode: 0o600, // contains AUTH_SECRET
-    })
+    writeFileSync(
+      envPath,
+      buildEnvFile({
+        authSecret,
+        port,
+        baseUrl,
+        projectName,
+        image,
+        databaseUrl,
+        postgresPassword,
+      }),
+      {
+        encoding: 'utf-8',
+        mode: 0o600, // contains AUTH_SECRET
+      },
+    )
     chmodSync(envPath, 0o600) // like config.ts: writeFileSync mode is umask-filtered on some platforms
-    writeFileSync(composePath, buildComposeFile({ image, port }), 'utf-8')
+    writeFileSync(composePath, buildComposeFile({ image, port, withPostgres }), 'utf-8')
     // Ownership marker: teardown refuses directories without it
     writeFileSync(join(dir, INSTALL_MARKER), `created by a2wave setup v${getVersion()}\n`, 'utf-8')
     console.log(`Generated ${envPath}`)
     console.log(`Generated ${composePath}`)
+    if (databaseUrl) {
+      console.log(
+        withPostgres
+          ? 'Database: PostgreSQL sidecar (EXPERIMENTAL) — password generated into .env'
+          : 'Database: external PostgreSQL (EXPERIMENTAL) — no SQLite data migration path',
+      )
+    }
+    if (
+      externalDatabaseUrl &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(new URL(externalDatabaseUrl).hostname)
+    ) {
+      console.log(
+        'Warning: inside the container, localhost is the container itself — a database on this machine is reached as host.docker.internal (Docker Desktop) or the host IP.',
+      )
+    }
 
     if (args.start === false) {
       console.log('\nSkipped start (--no-start). To launch later:')

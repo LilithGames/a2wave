@@ -99,6 +99,28 @@ checkout. Closing this properly needs the database to hold the invariant — a
 partial unique index on `(agent_id) WHERE status = 'running'` — which means a
 migration on both lineages and is not implemented.
 
+## Installing with the CLI
+
+`a2wave setup` can select the PostgreSQL backend at install time:
+
+```bash
+# External server (validated as a postgres:// / postgresql:// URL)
+a2wave setup --yes --database-url postgres://a2wave:pw@db.internal:5432/a2wave
+
+# Bundled postgres:16-alpine sidecar; the password is generated into the
+# install's .env (0600) and wired into DATABASE_URL
+a2wave setup --yes --with-postgres
+```
+
+The generated compose file reads `DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}`
+from the install's `.env`, so switching an existing install is a one-line `.env`
+edit followed by `docker compose up -d`. The two flags are mutually exclusive,
+and both are rejected with `--upgrade` (an upgrade never rewrites `.env`).
+Remember that inside the container `localhost` is the container itself — an
+external database on the host machine is reached as `host.docker.internal`
+(Docker Desktop) or the host IP. On a PostgreSQL install, `setup --upgrade`'s
+data-volume backup does **not** cover the database; take a `pg_dump` first.
+
 ## Running with Docker Compose
 
 The bundled PostgreSQL service sits behind a compose profile, so the default

@@ -4,10 +4,13 @@ import {
   buildComposeFile,
   buildEnvFile,
   generateAuthSecret,
+  generatePostgresPassword,
   generateProjectName,
   migrateComposeImageToVariable,
+  readEnvDatabaseUrl,
   readEnvImage,
   replaceEnvImage,
+  validateDatabaseUrl,
   validateImageRef,
 } from '../setup-plan.js'
 
@@ -237,6 +240,154 @@ describe('migrateComposeImageToVariable', () => {
   it('names the exact edit to make so the error is actionable', () => {
     const yaml = 'services:\n  redis:\n    image: redis:7\n  a2wave:\n    image: a2wave:1.2.0\n'
     expect(() => migrateComposeImageToVariable(yaml)).toThrow(/A2WAVE_IMAGE/)
+  })
+})
+
+describe('generatePostgresPassword', () => {
+  it('produces a hex string safe to embed in a postgres:// URL, unique per call', () => {
+    const a = generatePostgresPassword()
+    const b = generatePostgresPassword()
+    // Hex only: the password is embedded in DATABASE_URL userinfo, so any
+    // character needing percent-encoding would desynchronize the two .env keys.
+    expect(a).toMatch(/^[0-9a-f]{32}$/)
+    expect(a).not.toBe(b)
+  })
+})
+
+describe('validateDatabaseUrl', () => {
+  it('accepts postgres:// and postgresql:// URLs', () => {
+    for (const url of [
+      'postgres://a2wave:pw@db.internal:5432/a2wave',
+      'postgresql://user@10.0.0.5/a2wave',
+      'postgres://a2wave:pw@db:5432/a2wave?sslmode=require',
+    ]) {
+      expect(() => validateDatabaseUrl(url)).not.toThrow()
+    }
+  })
+
+  it('rejects non-postgres schemes and SQLite paths', () => {
+    // A file path is the SQLite selector, but a HOST path is meaningless inside
+    // the container — the flag exists for external databases only.
+    for (const url of ['mysql://db/a2wave', 'http://db:5432/a2wave', '/app/data/a2wave.db', '']) {
+      expect(() => validateDatabaseUrl(url)).toThrow(/postgres/i)
+    }
+  })
+
+  it('rejects a literal $ — Compose interpolates unquoted .env values', () => {
+    // `pa$sword` written to .env reaches the container as `pa` + the expansion
+    // of `$sword` (usually empty): the connection fails with a wrong-password
+    // error that looks nothing like its cause. %24 is the safe spelling.
+    expect(() => validateDatabaseUrl('postgres://a2wave:pa$sword@db:5432/a2wave')).toThrow(/%24/)
+    expect(() => validateDatabaseUrl('postgres://a2wave:pa%24sword@db:5432/a2wave')).not.toThrow()
+  })
+
+  it('rejects whitespace so a value cannot inject extra .env lines', () => {
+    // `new URL()` silently STRIPS tabs and newlines, so URL parsing alone would
+    // accept an injection payload and then write a different string to .env.
+    for (const url of [
+      'postgres://db/a2wave\nADMIN_PASSWORD=x',
+      'postgres://db/a2wave\tx',
+      'postgres://db/a2 wave',
+    ]) {
+      expect(() => validateDatabaseUrl(url)).toThrow(/whitespace|control/i)
+    }
+  })
+})
+
+describe('buildEnvFile database keys', () => {
+  const base = {
+    authSecret: 'a'.repeat(64),
+    port: 3502,
+    baseUrl: 'http://localhost:3502',
+    projectName: 'a2wave-ab12cd34',
+  }
+
+  it('omits DATABASE_URL by default so the compose fallback keeps SQLite', () => {
+    expect(buildEnvFile(base)).not.toContain('DATABASE_URL')
+  })
+
+  it('persists DATABASE_URL when a database URL is chosen', () => {
+    const env = buildEnvFile({ ...base, databaseUrl: 'postgres://a2wave:pw@db:5432/a2wave' })
+    expect(env).toContain('DATABASE_URL=postgres://a2wave:pw@db:5432/a2wave')
+  })
+
+  it('persists POSTGRES_PASSWORD for the bundled sidecar', () => {
+    const env = buildEnvFile({
+      ...base,
+      databaseUrl: 'postgres://a2wave:deadbeef@postgres:5432/a2wave',
+      postgresPassword: 'deadbeef',
+    })
+    expect(env).toContain('POSTGRES_PASSWORD=deadbeef')
+  })
+
+  it('omits POSTGRES_PASSWORD when no sidecar is generated', () => {
+    const env = buildEnvFile({ ...base, databaseUrl: 'postgres://a2wave:pw@db:5432/a2wave' })
+    expect(env).not.toContain('POSTGRES_PASSWORD')
+  })
+})
+
+describe('readEnvDatabaseUrl', () => {
+  it('reads the recorded database URL', () => {
+    expect(readEnvDatabaseUrl('AUTH_SECRET=x\nDATABASE_URL=postgres://db/a2wave\n')).toBe(
+      'postgres://db/a2wave',
+    )
+  })
+
+  it('returns null when the key is absent or empty', () => {
+    expect(readEnvDatabaseUrl('AUTH_SECRET=x\n')).toBeNull()
+    expect(readEnvDatabaseUrl('DATABASE_URL=\n')).toBeNull()
+  })
+})
+
+describe('buildComposeFile database wiring', () => {
+  const image = 'ghcr.io/a2wave/a2wave:v1.3.1'
+
+  it('reads DATABASE_URL from .env with the SQLite path as fallback', () => {
+    // Same rationale as A2WAVE_IMAGE: switching backends must be a one-line
+    // .env edit, never a YAML rewrite. A hardcoded line in `environment:`
+    // would override env_file and make the .env key silently inert.
+    const compose = buildComposeFile({ image, port: DEFAULT_PORT })
+    expect(compose).toContain('DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}')
+  })
+
+  it('declares no postgres service by default', () => {
+    const compose = buildComposeFile({ image, port: DEFAULT_PORT })
+    expect(compose).not.toContain('postgres')
+  })
+
+  describe('with the bundled postgres sidecar', () => {
+    const compose = buildComposeFile({ image, port: DEFAULT_PORT, withPostgres: true })
+
+    it('adds a postgres:16-alpine service with a healthcheck', () => {
+      expect(compose).toContain('image: postgres:16-alpine')
+      expect(compose).toContain('pg_isready')
+    })
+
+    it('reads the password from .env and never hardcodes one', () => {
+      expect(compose).toContain('POSTGRES_PASSWORD=${POSTGRES_PASSWORD')
+    })
+
+    it('waits for postgres health before booting a2wave (migrations run at startup)', () => {
+      expect(compose).toContain('depends_on:')
+      expect(compose).toContain('condition: service_healthy')
+    })
+
+    it('keeps 5432 off the host — the API reaches it over the compose network', () => {
+      expect(compose).not.toContain('5432:5432')
+      expect(compose).toContain('expose:')
+    })
+
+    it('persists postgres data in its own named volume', () => {
+      expect(compose).toContain('a2wave-postgres:/var/lib/postgresql/data')
+    })
+
+    it('keeps image: as the first key of the a2wave service so the upgrade path still recognizes the file', () => {
+      // migrateComposeImageToVariable's "already migrated" check matches
+      // `services:\n  a2wave:\n    image: ${A2WAVE_IMAGE...` literally; a key
+      // inserted before image: would make --upgrade misread this generated
+      // file as hand-edited and refuse.
+      expect(migrateComposeImageToVariable(compose)).toBeNull()
+    })
   })
 })
 
