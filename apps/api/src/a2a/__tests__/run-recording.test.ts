@@ -88,16 +88,42 @@ vi.mock('../caller.js', () => ({
 // run-channel pulls in jose via gateway-auth → oidc; we mock at the
 // builder seam so this test stays focused on the recording path.
 vi.mock('../../lib/run-channel.js', () => ({
-  buildGatewayChannel: vi.fn().mockReturnValue({
-    ctx: {
-      channel_type: 'a2a',
-      channel_info: {
-        auth: 'none',
-        caller_agent: { agent_id: 'agt_caller', agent_name: 'Caller' },
+  buildGatewayChannel: vi.fn((_c: unknown, opts: Record<string, unknown>) => {
+    const callerAgent = opts.callerAgent as { agentId?: string; agentName?: string } | undefined
+    const assertedCallerAgent = opts.assertedCallerAgent as
+      | { agentId?: string; agentName?: string }
+      | undefined
+    const assertedDisplayName = opts.assertedDisplayName as string | undefined
+    const oauthCaller = opts.oauthCaller as
+      | { userInfo?: { username?: string; email?: string } }
+      | undefined
+    const effectiveCallerAgent = assertedCallerAgent ?? (oauthCaller ? undefined : callerAgent)
+    const displayName = oauthCaller?.userInfo?.username ?? assertedDisplayName ?? null
+    return {
+      ctx: {
+        channel_type: 'a2a',
+        channel_info: {
+          auth: oauthCaller ? 'oauth' : 'none',
+          ...(effectiveCallerAgent
+            ? {
+                caller_agent: {
+                  ...(effectiveCallerAgent.agentId
+                    ? { agent_id: effectiveCallerAgent.agentId }
+                    : {}),
+                  ...(effectiveCallerAgent.agentName
+                    ? { agent_name: effectiveCallerAgent.agentName }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        user_info: oauthCaller?.userInfo?.email
+          ? { email: oauthCaller.userInfo.email, name: displayName, source: 'idaas' }
+          : null,
+        ...(displayName ? { display_name: displayName } : {}),
       },
-      user_info: null,
-    },
-    displayName: null,
+      displayName,
+    }
   }),
 }))
 
@@ -326,6 +352,99 @@ describe('createRecordedA2AExecuteFn', () => {
     }
     expect(channel.channel_type).toBe('a2a')
     expect(channel.channel_info.caller_agent?.agent_id).toBe('agt_caller')
+  })
+
+  it('records cross-instance message provenance without promoting it to user_info', async () => {
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    mockExecuteWithRetry.mockResolvedValue({
+      result: { success: true, output: 'done', durationMs: 100 },
+      retries: [],
+    })
+
+    const executeFn = await createRecordedA2AExecuteFn(fakeContext, fakeAgent)
+    await executeFn('task_remote', defaultPayload, {
+      provenance: {
+        userName: '张鑫',
+        callerAgent: { id: 'agt_foreign_instance', name: 'Remote Router' },
+      },
+    })
+
+    const builderCalls = (buildGatewayChannel as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(builderCalls.at(-1)?.[1]).toMatchObject({
+      assertedDisplayName: '张鑫',
+      assertedCallerAgent: {
+        agentId: 'agt_foreign_instance',
+        agentName: 'Remote Router',
+      },
+    })
+
+    const runValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
+    expect(runValues).toMatchObject({
+      triggerUserName: '张鑫',
+      triggerAgentName: 'Remote Router',
+    })
+
+    const payload = mockExecuteWithRetry.mock.calls[0][1] as {
+      context: {
+        channel: {
+          user_info: unknown
+          display_name?: string
+          channel_info: { caller_agent?: { agent_id?: string; agent_name?: string } }
+        }
+      }
+    }
+    expect(payload.context.channel).toMatchObject({
+      user_info: null,
+      display_name: '张鑫',
+      channel_info: {
+        caller_agent: { agent_id: 'agt_foreign_instance', agent_name: 'Remote Router' },
+      },
+    })
+  })
+
+  it('combines the authenticated OAuth user with extension-asserted caller Agent provenance', async () => {
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    mockExecuteWithRetry.mockResolvedValue({
+      result: { success: true, output: 'done', durationMs: 100 },
+      retries: [],
+    })
+    const oauthContext = {
+      get: (key: string) =>
+        key === 'oauthCaller'
+          ? {
+              kind: 'idaas_user',
+              userInfo: {
+                issuer: 'https://idaas.example',
+                sub: 'sub-42',
+                username: 'Authenticated Alice',
+                email: 'alice@example.com',
+              },
+            }
+          : undefined,
+    } as unknown as Parameters<typeof createRecordedA2AExecuteFn>[0]
+
+    const executeFn = await createRecordedA2AExecuteFn(oauthContext, fakeAgent)
+    await executeFn('task_oauth_provenance', defaultPayload, {
+      provenance: {
+        userName: 'Untrusted Alice',
+        callerAgent: { id: 'agt_foreign_instance', name: 'Remote Router' },
+      },
+    })
+
+    const builderCalls = (buildGatewayChannel as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(builderCalls.at(-1)?.[1]).toMatchObject({
+      assertedCallerAgent: {
+        agentId: 'agt_foreign_instance',
+        agentName: 'Remote Router',
+      },
+    })
+    expect(builderCalls.at(-1)?.[1]).not.toHaveProperty('assertedDisplayName')
+
+    const runValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
+    expect(runValues).toMatchObject({
+      triggerUserName: 'Authenticated Alice',
+      triggerAgentName: 'Remote Router',
+    })
   })
 
   it('preserves any pre-existing payload.context fields when merging channel', async () => {

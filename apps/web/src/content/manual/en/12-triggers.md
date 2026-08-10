@@ -104,6 +104,9 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 - Full queue returns `429`; unpublished returns `403`; auth failure `401/403`; occupied worktree `409`.
 - Authentication: `/api/gateway` uses `api_key` (Bearer) / IP allowlist; enterprise SSO JWTs use the separate `/api/oauth` channel.
 
+> [!NOTE]
+> An API key identifies the integration calling the endpoint, not the end user behind that integration, so run history normally shows only `API`. If a direct invocation must be attributed to a specific enterprise user, use the OAuth endpoint with that user's own SSO JWT. Supplying a user name inside `context` is not a substitute for identity verification.
+
 > [!IMPORTANT]
 > Behind a reverse proxy, set `TRUSTED_PROXY=true` and list only the proxy's direct TCP addresses or CIDRs in `TRUSTED_PROXY_ADDRESSES`. Gateway, OAuth, and A2A then use the first untrusted hop found by walking `X-Forwarded-For` from right to left for IP allowlists, audit/channel context, and rate limits. The proxy must overwrite XFF or append every hop; never preserve an unvalidated, non-standard chain.
 
@@ -287,13 +290,22 @@ For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and can
 
 Locally, `pnpm a2a-demo -- <agentId> "..."` provides a quick test. A2A messages can carry images/files as well as text; A2A 1.0 and 0.3 use different part fields, shown under **Attachments** below.
 
+### Call provenance
+
+When both the caller and receiver support the A2A provenance extension, a remote invocation carries the **immediate calling Agent's name** and, when an upstream channel has already identified a user, that user's display name. The receiver's run list can therefore show `user·calling Agent·A2A`, or `calling Agent·A2A` when no user is available.
+
+The extension is negotiated through the Agent Card. Routes using **Agent Card discovery** enable it automatically when the peer advertises support. A **Direct endpoint** has no card for capability discovery: select A2A 1.0 and then explicitly enable **Send caller provenance** only when the receiver supports the a2wave extension. The switch is off by default, and direct A2A 0.3 routes never send the extension. A2A peers without the extension remain fully interoperable; their run history simply falls back to fewer layers, down to `A2A` when only the source is known.
+
+> [!IMPORTANT]
+> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key or OAuth / enterprise SSO JWT authentication, and a receiver must not grant access from a display name in the provenance extension.
+
 ### Invoke a remote standard A2A service
 
 Open **A2A Route** on the Agent's Configuration tab and add a remote Agent:
 
 1. Enter a name used to identify the target during routing.
 2. Prefer **Agent Card discovery** and paste the remote service's Agent Card URL. The platform reads the card and automatically selects its advertised A2A 1.0 or 0.3 JSON-RPC interface.
-3. If the service has no reachable Agent Card, choose **Direct endpoint**, enter its JSON-RPC URL, and explicitly select `A2A 1.0` or `A2A 0.3`.
+3. If the service has no reachable Agent Card, choose **Direct endpoint**, enter its JSON-RPC URL, and explicitly select `A2A 1.0` or `A2A 0.3`. For a compatible A2A 1.0 receiver, optionally enable **Send caller provenance**.
 4. If the remote service requires a Bearer key, enter its API Key. After saving, the credential is shown only as a mask and is never included in the Agent Card or routing result.
 
 > [!NOTE]

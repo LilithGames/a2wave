@@ -1,6 +1,7 @@
 import { AgentCard } from '@a2a-js/sdk'
 import { type A2ASkill, ATTACHMENT_MIME_TYPES } from '@a2wave/shared'
 import { normalizeAuthType } from '../middleware/gateway-auth.js'
+import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from './provenance.js'
 
 export interface AgentLike {
   id: string
@@ -33,7 +34,18 @@ export function buildAgentCard(agent: AgentLike, baseUrl: string): AgentCard {
         tenant: '',
       },
     ],
-    capabilities: { streaming: true, extensions: [] },
+    capabilities: {
+      streaming: true,
+      extensions: [
+        {
+          uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+          description:
+            'Carries audit-only original user and immediate caller Agent display names across A2A hops.',
+          required: false,
+          params: { metadataKey: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI },
+        },
+      ],
+    },
     defaultInputModes: ['text/plain', ...ATTACHMENT_MIME_TYPES],
     defaultOutputModes: ['text/plain'],
     provider: { organization: 'a2wave', url: baseUrl },

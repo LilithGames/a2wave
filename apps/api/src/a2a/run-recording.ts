@@ -164,17 +164,41 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
     }
   }
 
-  const channelResult = buildGatewayChannel(c, {
+  const baseChannelOpts = {
     channel: 'a2a',
     // A2A 入站走独立鉴权方式（与 REST 渠道解耦）；a2aAuthType 列 notNull，迁移已 backfill。
     authType: normalizeAuthType(agent.a2aAuthType),
     trustForwardedIdentity: Boolean(agent.trustForwardedIdentity),
     oauthCaller,
     ...(callerAgent ? { callerAgent } : {}),
-  })
-  const channel = channelResult.ctx
+  } as const
+  const baseChannelResult = buildGatewayChannel(c, baseChannelOpts)
 
   return async (taskId, payload, options) => {
+    const provenance = options?.provenance
+    const channelResult = provenance
+      ? buildGatewayChannel(c, {
+          ...baseChannelOpts,
+          ...(!oauthCaller && provenance.userName
+            ? { assertedDisplayName: provenance.userName }
+            : {}),
+          ...(provenance.callerAgent
+            ? {
+                assertedCallerAgent: {
+                  ...(provenance.callerAgent.id ? { agentId: provenance.callerAgent.id } : {}),
+                  ...(provenance.callerAgent.name
+                    ? { agentName: provenance.callerAgent.name }
+                    : {}),
+                },
+              }
+            : {}),
+        })
+      : baseChannelResult
+    const channel = channelResult.ctx
+    const triggerAgentName =
+      channel.channel_type === 'a2a'
+        ? (channel.channel_info.caller_agent?.agent_name ?? null)
+        : null
     // --- Idempotency: same A2A taskId → reuse prior run ---
     // Prevents duplicate execution on client retries or on transport-level
     // re-delivery. Uses runs.triggerSessionId (indexed) as the A2A task-id key.
@@ -199,6 +223,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         triggerSource: 'a2a',
         triggerSessionId: taskId,
         triggerUserName: channelResult.displayName,
+        triggerAgentName,
         ...(agent.userId ? { userId: agent.userId } : {}),
       })
     } catch (err) {
@@ -294,8 +319,9 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         content: payload.prompt,
       })
 
+      const { provenance: _provenance, ...executeOptions } = options ?? {}
       const { result, retries, logs } = await executeWithRetry(taskId, enrichedPayload, {
-        ...options,
+        ...executeOptions,
         runId,
       })
 

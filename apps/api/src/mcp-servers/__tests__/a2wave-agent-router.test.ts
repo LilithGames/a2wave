@@ -21,6 +21,7 @@ import {
   A2WAVE_CALLER_AGENT_NAME_B64_HEADER,
   encodeCallerAgentNameHeader,
 } from '../../a2a/caller.js'
+import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../../a2a/provenance.js'
 import {
   collectSSEResult,
   getAgentCardHandler,
@@ -54,7 +55,12 @@ function mockFetch(response: {
   }) as unknown as typeof fetch
 }
 
-function standardAgentCard(interfaceUrl: string, protocolVersion = '1.0', streaming = true) {
+function standardAgentCard(
+  interfaceUrl: string,
+  protocolVersion = '1.0',
+  streaming = true,
+  extensions: Array<Record<string, unknown>> = [],
+) {
   return {
     name: 'Standard Agent',
     description: 'External standards-compatible agent',
@@ -66,7 +72,7 @@ function standardAgentCard(interfaceUrl: string, protocolVersion = '1.0', stream
       },
     ],
     version: '1.0.0',
-    capabilities: { streaming },
+    capabilities: { streaming, extensions },
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
     skills: [],
@@ -571,6 +577,157 @@ describe('invokeAgentHandler', () => {
     expect(new Headers(rpcCall[1]?.headers).get('A2A-Version')).toBe('1.0')
   })
 
+  it('sends display-only provenance when a discovered v1 Agent Card supports it', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    vi.stubEnv('A2WAVE_CALLER_AGENT_ID', 'agt_sdk_manager')
+    vi.stubEnv('A2WAVE_CALLER_AGENT_NAME', 'SDK Manager大神')
+    vi.stubEnv(
+      'A2WAVE_CHANNEL_B64',
+      Buffer.from(
+        JSON.stringify({
+          channel_type: 'feishu',
+          channel_info: { sender_open_id: 'ou_private' },
+          user_info: {
+            email: 'private@example.com',
+            mobile: '13800000000',
+            name: '张鑫',
+            source: 'feishu',
+            source_id: 'ou_private',
+          },
+          display_name: '张鑫',
+        }),
+        'utf8',
+      ).toString('base64url'),
+    )
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'provenance-v1',
+          url: 'https://v1.example.com/cards/agent.json',
+          connectionMode: 'agent_card',
+        },
+      ]
+      const spy = vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/cards/agent.json')) {
+          return new Response(
+            JSON.stringify(
+              standardAgentCard('https://v1.example.com/a2a', '1.0', true, [
+                { uri: extensionUri, required: false },
+              ]),
+            ),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        return new Response(standardArtifactStream('provenance response'), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      await invokeAgentHandler({ agentId: 'remote:provenance-v1', message: 'trace me' }, targets)
+
+      const requestInit = spy.mock.calls[1][1] as RequestInit
+      const body = JSON.parse(requestInit.body as string)
+      expect(new Headers(requestInit.headers).get('A2A-Extensions')).toBe(extensionUri)
+      expect(body.params.message.extensions).toEqual([extensionUri])
+      expect(body.params.message.metadata).toEqual({
+        [extensionUri]: {
+          userName: '张鑫',
+          callerAgent: { id: 'agt_sdk_manager', name: 'SDK Manager大神' },
+        },
+      })
+      expect(JSON.stringify(body.params.message.metadata)).not.toContain('private@example.com')
+      expect(JSON.stringify(body.params.message.metadata)).not.toContain('13800000000')
+      expect(JSON.stringify(body.params.message.metadata)).not.toContain('ou_private')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('sends the caller Agent without inventing an original user name', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    vi.stubEnv('A2WAVE_CALLER_AGENT_ID', 'agt_automation')
+    vi.stubEnv('A2WAVE_CALLER_AGENT_NAME', 'Automation Router')
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'agent-only-v1',
+          url: 'https://v1.example.com/cards/agent.json',
+          connectionMode: 'agent_card',
+        },
+      ]
+      const spy = vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/cards/agent.json')) {
+          return new Response(
+            JSON.stringify(
+              standardAgentCard('https://v1.example.com/a2a', '1.0', true, [
+                { uri: extensionUri, required: false },
+              ]),
+            ),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        return new Response(standardArtifactStream('agent-only response'), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      await invokeAgentHandler({ agentId: 'remote:agent-only-v1', message: 'run' }, targets)
+
+      const body = JSON.parse(spy.mock.calls[1][1]?.body as string)
+      expect(body.params.message.metadata).toEqual({
+        [extensionUri]: {
+          callerAgent: { id: 'agt_automation', name: 'Automation Router' },
+        },
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('does not send provenance when a discovered Agent Card lacks extension support', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'plain-v1',
+        url: 'https://v1.example.com/cards/agent.json',
+        connectionMode: 'agent_card',
+      },
+    ]
+    vi.stubEnv('A2WAVE_CALLER_AGENT_ID', 'agt_private')
+    vi.stubEnv('A2WAVE_CALLER_AGENT_NAME', 'Private Router')
+    try {
+      const spy = vi.fn().mockImplementation(async (url: string) => {
+        if (url.endsWith('/cards/agent.json')) {
+          return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(standardArtifactStream('plain response'), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      await invokeAgentHandler({ agentId: 'remote:plain-v1', message: 'hello' }, targets)
+
+      const requestInit = spy.mock.calls[1][1] as RequestInit
+      const body = JSON.parse(requestInit.body as string)
+      expect(new Headers(requestInit.headers).has('A2A-Extensions')).toBe(false)
+      expect(body.params.message).not.toHaveProperty('extensions')
+      expect(body.params.message).not.toHaveProperty('metadata')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('accepts a completed standard stream with no text or artifacts', async () => {
     const targets: RouteTarget[] = [
       {
@@ -944,6 +1101,77 @@ describe('invokeAgentHandler', () => {
     expect(spy).toHaveBeenCalledTimes(1)
     const body = JSON.parse(spy.mock.calls[0][1]?.body as string)
     expect(body.method).toBe('SendMessage')
+  })
+
+  it.each([
+    {
+      title: 'does not infer provenance support from direct A2A 1.0 alone',
+      callerProvenance: undefined,
+      shouldSend: false,
+    },
+    {
+      title: 'sends provenance when the direct endpoint explicitly opts in',
+      callerProvenance: true,
+      shouldSend: true,
+    },
+  ])('$title', async ({ callerProvenance, shouldSend }) => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'direct-v1-provenance',
+        url: 'https://direct.example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+        ...(callerProvenance ? { callerProvenance } : {}),
+      },
+    ]
+    vi.stubEnv('A2WAVE_CALLER_AGENT_ID', 'agt_direct_caller')
+    vi.stubEnv('A2WAVE_CALLER_AGENT_NAME', 'Direct Caller')
+    try {
+      const spy = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              message: {
+                messageId: 'message-direct-provenance',
+                role: 'ROLE_AGENT',
+                parts: [{ text: 'direct provenance response', mediaType: 'text/plain' }],
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      await invokeAgentHandler(
+        { agentId: 'remote:direct-v1-provenance', message: 'hello' },
+        targets,
+      )
+
+      const requestInit = spy.mock.calls[0][1] as RequestInit
+      const body = JSON.parse(requestInit.body as string)
+      if (shouldSend) {
+        expect(new Headers(requestInit.headers).get('A2A-Extensions')).toBe(extensionUri)
+        expect(body.params.message).toMatchObject({
+          extensions: [extensionUri],
+          metadata: {
+            [extensionUri]: {
+              callerAgent: { id: 'agt_direct_caller', name: 'Direct Caller' },
+            },
+          },
+        })
+      } else {
+        expect(new Headers(requestInit.headers).has('A2A-Extensions')).toBe(false)
+        expect(body.params.message).not.toHaveProperty('extensions')
+        expect(body.params.message).not.toHaveProperty('metadata')
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('rejects a standard result whose declared size exceeds the result budget', async () => {

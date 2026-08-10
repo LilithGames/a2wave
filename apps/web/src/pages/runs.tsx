@@ -260,6 +260,7 @@ export function RunsPage() {
                       <span className="text-xs text-muted-foreground truncate block">
                         <RunCallerPrefix
                           name={run.triggerUserName}
+                          callerAgentName={run.triggerAgentName}
                           source={run.triggerSource as RunTriggerSource | null}
                         />
                         {run.intent}

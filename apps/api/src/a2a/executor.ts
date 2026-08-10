@@ -8,6 +8,11 @@ import {
   type RequestContext,
 } from '@a2a-js/sdk/server'
 import type { AttachmentSource } from '../lib/attachment-materializer.js'
+import {
+  type A2ACallerProvenance,
+  A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+  extractA2ACallerProvenance,
+} from './provenance.js'
 
 export interface A2waveExecutorConfig {
   agentConfig: Record<string, unknown>
@@ -27,7 +32,11 @@ export type ExecuteFn = (
     /** A2A attachment sources; run-recording materializes them inside the Agent runtime. */
     attachments?: AttachmentSource[]
   },
-  options?: { onUpdate?: (content: string) => void },
+  options?: {
+    onUpdate?: (content: string) => void
+    /** Remote caller assertion for display/audit only; never an authoritative identity. */
+    provenance?: A2ACallerProvenance
+  },
 ) => Promise<{
   success: boolean
   output: string
@@ -63,6 +72,10 @@ export class A2waveAgentExecutor implements AgentExecutor {
       .map((part) => (part.content?.$case === 'text' ? part.content.value : ''))
       .join('\n')
     const attachments = extractAttachments(parts)
+    const provenance = extractA2ACallerProvenance(ctx.userMessage, ctx.context)
+    if (provenance) {
+      ctx.context.addActivatedExtension(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI)
+    }
     const existingHistory = ctx.task?.history ?? []
     const history = existingHistory.some(
       (message) => message.messageId === ctx.userMessage.messageId,
@@ -112,6 +125,7 @@ export class A2waveAgentExecutor implements AgentExecutor {
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         {
+          ...(provenance ? { provenance } : {}),
           onUpdate: (content: string) => {
             eventBus.publish(
               AgentEvent.statusUpdate({

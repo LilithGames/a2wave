@@ -2,6 +2,7 @@ import { DefaultAgentCardResolver } from '@a2a-js/sdk/client'
 import { ATTACHMENT_MIME_TYPES } from '@a2wave/shared'
 import { describe, expect, it } from 'vitest'
 import { buildAgentCard, serializeAgentCard } from '../agent-card.js'
+import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../provenance.js'
 
 const BASE_URL = 'https://example.com'
 
@@ -38,7 +39,20 @@ describe('buildAgentCard', () => {
         tenant: '',
       },
     ])
-    expect(card.capabilities).toEqual({ streaming: true, extensions: [] })
+    expect(card.capabilities).toEqual({
+      streaming: true,
+      extensions: [
+        {
+          uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+          description:
+            'Carries audit-only original user and immediate caller Agent display names across A2A hops.',
+          required: false,
+          params: {
+            metadataKey: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+          },
+        },
+      ],
+    })
     expect(card.defaultInputModes).toEqual(['text/plain', ...ATTACHMENT_MIME_TYPES])
     expect(card.defaultOutputModes).toEqual(['text/plain'])
     expect(card.provider).toEqual({ organization: 'a2wave', url: BASE_URL })

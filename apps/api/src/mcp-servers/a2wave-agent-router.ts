@@ -15,6 +15,8 @@ import {
   ClientFactory,
   DefaultAgentCardResolver,
   JsonRpcTransportFactory,
+  ServiceParameters,
+  withA2AExtensions,
 } from '@a2a-js/sdk/client'
 import { z } from 'zod'
 import {
@@ -23,6 +25,11 @@ import {
   X_A2WAVE_CHANNEL_B64_HEADER,
   encodeCallerAgentNameHeader,
 } from '../a2a/caller.js'
+import {
+  type A2ACallerProvenance,
+  A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+  buildOutboundA2AProvenance,
+} from '../a2a/provenance.js'
 import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
 import { UnsafeUrlError, assertSafeHttpUrl } from '../lib/url-safety-core.js'
 
@@ -157,6 +164,8 @@ export interface RouteTarget {
   connectionMode?: 'agent_card' | 'direct'
   /** Direct endpoints default to v0.3 for backward compatibility. */
   protocolVersion?: '1.0' | '0.3'
+  /** Explicit direct-v1 opt-in for the display-only caller provenance extension. */
+  callerProvenance?: boolean
 }
 
 export function parseRouteTargets(env?: string): RouteTarget[] | null {
@@ -263,10 +272,22 @@ function buildDirectAgentCard(target: RemoteRouteTarget): AgentCard {
       },
     ],
     version: 'unknown',
-    // Direct configuration has no Agent Card from which to learn optional
-    // capabilities. Prefer the mandatory SendMessage method; Card discovery
-    // remains the way to opt into streaming safely.
-    capabilities: { streaming: false },
+    // Direct configuration has no remote Agent Card from which to negotiate
+    // optional capabilities. Protocol selection alone must not imply extension
+    // support, so provenance requires its own explicit operator opt-in.
+    capabilities: {
+      streaming: false,
+      extensions:
+        target.protocolVersion === '1.0' && target.callerProvenance === true
+          ? [
+              {
+                uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+                description: 'Configured direct a2wave v1 provenance support.',
+                required: false,
+              },
+            ]
+          : [],
+    },
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
   })
@@ -331,12 +352,18 @@ async function createRemoteClient(target: RemoteRouteTarget): Promise<RemoteClie
   return { client: await factory.createFromAgentCard(card), card }
 }
 
-function buildStandardSendRequest(message: string) {
+function buildStandardSendRequest(message: string, provenance?: A2ACallerProvenance) {
   return SendMessageRequest.fromJSON({
     message: {
       messageId: randomUUID(),
       role: 'ROLE_USER',
       parts: [{ text: message, mediaType: 'text/plain' }],
+      ...(provenance
+        ? {
+            extensions: [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI],
+            metadata: { [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI]: provenance },
+          }
+        : {}),
     },
   })
 }
@@ -1001,11 +1028,26 @@ async function createRemoteUpdateCallback(
 async function invokeStandardRemoteAgent(target: RemoteRouteTarget, message: string) {
   const { client, card } = await createRemoteClient(target)
   const onUpdate = await createRemoteUpdateCallback(target.name)
-  const request = buildStandardSendRequest(message)
+  const supportsProvenance =
+    client.protocolVersion === '1.0' &&
+    card.capabilities?.extensions.some(
+      (extension) => extension.uri === A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+    )
+  const provenance = supportsProvenance ? buildOutboundA2AProvenance() : undefined
+  const request = buildStandardSendRequest(message, provenance)
   const signal = AbortSignal.timeout(REMOTE_REQUEST_TIMEOUT_MS)
+  const serviceParameters = provenance
+    ? ServiceParameters.create(withA2AExtensions(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI))
+    : undefined
   const result = card.capabilities?.streaming
-    ? await collectClientResult(client.sendMessageStream(request, { signal }), onUpdate)
-    : collectSendMessageResult(await client.sendMessage(request, { signal }), onUpdate)
+    ? await collectClientResult(
+        client.sendMessageStream(request, { signal, serviceParameters }),
+        onUpdate,
+      )
+    : collectSendMessageResult(
+        await client.sendMessage(request, { signal, serviceParameters }),
+        onUpdate,
+      )
   if (!result) {
     return {
       content: [{ type: 'text' as const, text: 'No result received from remote agent' }],

@@ -31,6 +31,7 @@ vi.mock('../../db/client.js', async () => {
       initiator_agent_id text,
       user_id text,
       trigger_user_name text,
+      trigger_agent_name text,
       input_tokens integer,
       output_tokens integer,
       reasoning_tokens integer,

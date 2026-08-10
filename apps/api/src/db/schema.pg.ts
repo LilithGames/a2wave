@@ -710,13 +710,15 @@ export const runs = pgTable(
     /** Owning user */
     userId: text('user_id').references(() => users.id),
     /**
-     * Trigger user's display name, unified across channels (denormalized from
-     * channel.user_info.name).
+     * Trigger user's best available display name, unified across channels.
      * Feishu takes user.name (independent of whether an email exists), debug takes the logged-in
      * user's displayName, and oauth/api/a2a take oauthCaller.userInfo.username; NULL for schedule
-     * and pure api_key.
+     * and pure api_key. Remote A2A may carry an audit-only asserted display name
+     * through the optional caller-provenance extension without creating user_info.
      */
     triggerUserName: text('trigger_user_name'),
+    /** Immediate caller Agent display name for remote and local A2A provenance. */
+    triggerAgentName: text('trigger_agent_name'),
     /** Cumulative input tokens across turns; NULL means untracked. */
     inputTokens: bigint('input_tokens', { mode: 'number' }),
     /** Cumulative output tokens. */

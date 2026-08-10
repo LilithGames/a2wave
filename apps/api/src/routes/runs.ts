@@ -421,6 +421,7 @@ app.get('/', async (c) => {
       result: runs.result,
       triggerSource: runs.triggerSource,
       triggerUserName: runs.triggerUserName,
+      triggerAgentName: runs.triggerAgentName,
       initiatorAgentId: runs.initiatorAgentId,
       createdAt: runs.createdAt,
       updatedAt: runs.updatedAt,
@@ -985,6 +986,7 @@ app.post('/:id/rerun', async (c) => {
         // askerCount / topAskers. Other channels (chat/gateway/oauth-gateway/a2a)
         // denormalize at insert time; rerun has to read from the prior row.
         triggerUserName: originalRun.triggerUserName,
+        triggerAgentName: originalRun.triggerAgentName,
         userId,
         // 带上原 run 的附件（若有），供 executeChatRun 出队时重新 materialize。
         ...(rerunAttachments && rerunAttachments.length > 0

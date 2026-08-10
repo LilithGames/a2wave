@@ -31,8 +31,10 @@ export const runSchema = z.object({
   status: runStatusEnum,
   result: z.record(z.unknown()).nullable().optional(),
   triggerSource: runTriggerSourceEnum.nullable().optional(),
-  /** Cross-channel display name of the asker (denormalized from channel.user_info.name) */
+  /** Best available cross-channel display name of the asker. */
   triggerUserName: z.string().nullable().optional(),
+  /** Immediate caller Agent display name for A2A provenance. */
+  triggerAgentName: z.string().nullable().optional(),
   initiatorAgentId: z.string().nullable().optional(),
   inputTokens: z.number().nullable().optional(),
   outputTokens: z.number().nullable().optional(),

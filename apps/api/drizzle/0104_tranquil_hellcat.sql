@@ -1,0 +1,1 @@
+ALTER TABLE `runs` ADD `trigger_agent_name` text;

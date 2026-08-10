@@ -2,6 +2,7 @@ import { type Message, type Part, Role, type Task, TaskState } from '@a2a-js/sdk
 import { RequestContext, ServerCallContext } from '@a2a-js/sdk/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { A2waveAgentExecutor, type ExecuteFn } from '../executor.js'
+import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../provenance.js'
 
 function createMockEventBus() {
   return {
@@ -43,12 +44,13 @@ function createRequestContext(
   taskId: string,
   contextId: string,
   task?: Task,
+  serverContext = new ServerCallContext({ requestedVersion: '1.0' }),
 ): RequestContext {
   return new RequestContext(
     { tenant: '', message, configuration: undefined, metadata: undefined },
     taskId,
     contextId,
-    new ServerCallContext({ requestedVersion: '1.0' }),
+    serverContext,
     task,
   )
 }
@@ -93,6 +95,83 @@ describe('A2waveAgentExecutor', () => {
       workDir: '/tmp/test',
       agentConfig: { provider: 'openai' },
     })
+  })
+
+  it('passes validated caller provenance from an activated v1 message to recording', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    const message = createMessage(['Trace this call'])
+    message.extensions = [extensionUri]
+    message.metadata = {
+      [extensionUri]: {
+        userName: '张鑫',
+        callerAgent: { id: 'agt_remote_router', name: 'SDK Manager大神' },
+      },
+    }
+    const serverContext = new ServerCallContext({
+      requestedVersion: '1.0',
+      requestedExtensions: [extensionUri],
+    })
+
+    await executor.execute(
+      createRequestContext(message, 'task_provenance', 'ctx_provenance', undefined, serverContext),
+      eventBus,
+    )
+
+    expect(executeFn.mock.calls[0][2]).toMatchObject({
+      provenance: {
+        userName: '张鑫',
+        callerAgent: { id: 'agt_remote_router', name: 'SDK Manager大神' },
+      },
+    })
+    expect(serverContext.activatedExtensions).toEqual([extensionUri])
+  })
+
+  it('accepts caller Agent provenance when the original user is unavailable', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    const message = createMessage(['System initiated call'])
+    message.extensions = [extensionUri]
+    message.metadata = {
+      [extensionUri]: {
+        callerAgent: { id: 'agt_remote_router', name: 'Remote Router' },
+      },
+    }
+
+    await executor.execute(
+      createRequestContext(
+        message,
+        'task_agent_only',
+        'ctx_agent_only',
+        undefined,
+        new ServerCallContext({
+          requestedVersion: '1.0',
+          requestedExtensions: [extensionUri],
+        }),
+      ),
+      eventBus,
+    )
+
+    expect(executeFn.mock.calls[0][2]).toMatchObject({
+      provenance: { callerAgent: { id: 'agt_remote_router', name: 'Remote Router' } },
+    })
+  })
+
+  it('ignores provenance metadata when the extension was not activated', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    const message = createMessage(['Do not trust metadata alone'])
+    message.extensions = [extensionUri]
+    message.metadata = {
+      [extensionUri]: {
+        userName: 'Unactivated User',
+        callerAgent: { id: 'agt_unactivated', name: 'Unactivated Agent' },
+      },
+    }
+
+    await executor.execute(
+      createRequestContext(message, 'task_unactivated', 'ctx_unactivated'),
+      eventBus,
+    )
+
+    expect(executeFn.mock.calls[0][2]).not.toHaveProperty('provenance')
   })
 
   it('preserves v1 raw and URL attachments for materialization', async () => {

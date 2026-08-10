@@ -1,4 +1,4 @@
-import { A2A_VERSION_HEADER } from '@a2a-js/sdk'
+import { A2A_VERSION_HEADER, Extensions, HTTP_EXTENSION_HEADER } from '@a2a-js/sdk'
 import { isLegacyJsonRpcMethod, isV1JsonRpcMethod } from '@a2a-js/sdk/compat/v0_3'
 import { LegacyJsonRpcTransportHandler } from '@a2a-js/sdk/compat/v0_3/server'
 import { RequestMalformedError } from '@a2a-js/sdk/errors'
@@ -138,11 +138,19 @@ function buildServerCallContext(
   })
 
   return new ServerCallContext({
+    requestedExtensions: Extensions.parseServiceParameter(c.req.header(HTTP_EXTENSION_HEADER)),
     requestedVersion,
     tenant: agent.id,
     user,
     state: new Map([['headers', headers]]),
   })
+}
+
+function exposeActivatedExtensions(c: Context, callContext: ServerCallContext): void {
+  const activated = callContext.activatedExtensions
+  if (activated?.length) {
+    c.header(HTTP_EXTENSION_HEADER, Extensions.toServiceParameter(activated))
+  }
 }
 
 export async function handleA2ARequest(
@@ -271,6 +279,7 @@ export async function handleA2ARequest(
       // validate task visibility and state inside the generator, so errors such
       // as TaskNotFound must still be returned as ordinary JSON-RPC errors.
       first = await iterator.next()
+      exposeActivatedExtensions(c, callContext)
     } catch (error) {
       return c.json({ jsonrpc: '2.0', id: requestId, error: mapJsonRpcError(error, useLegacy) })
     }
@@ -299,5 +308,6 @@ export async function handleA2ARequest(
     })
   }
 
+  exposeActivatedExtensions(c, callContext)
   return c.json(rpcResult)
 }

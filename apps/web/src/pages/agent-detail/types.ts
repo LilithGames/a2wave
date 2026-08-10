@@ -60,6 +60,8 @@ export type RemoteEntry = {
   connectionMode?: 'agent_card' | 'direct'
   /** Only applies to direct targets; discovery negotiates from the Agent Card. */
   protocolVersion?: '1.0' | '0.3'
+  /** Explicit opt-in for sending display-only caller provenance to a direct v1 endpoint. */
+  callerProvenance?: boolean
   description: string
   apiKey: string
   showApiKey: boolean

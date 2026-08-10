@@ -294,6 +294,26 @@ export function RouteSection({
                       {t('agentRoute.remoteDirectStreamingHint')}
                     </div>
                   )}
+                  {(entry.connectionMode ?? 'direct') === 'direct' &&
+                    (entry.protocolVersion ?? '0.3') === '1.0' && (
+                      <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+                        <Checkbox
+                          aria-label={t('agentRoute.remoteCallerProvenance')}
+                          checked={Boolean(entry.callerProvenance)}
+                          onChange={(event) =>
+                            updateRemoteEntry(entry.id, 'callerProvenance', event.target.checked)
+                          }
+                        />
+                        <div className="space-y-0.5">
+                          <div className="text-sm text-foreground">
+                            {t('agentRoute.remoteCallerProvenance')}
+                          </div>
+                          <p className="text-muted-foreground text-xs">
+                            {t('agentRoute.remoteCallerProvenanceHint')}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <Label className="text-xs text-muted-foreground">

@@ -344,6 +344,10 @@ describe('GET /runs', () => {
     const pagination = json.pagination as Json
     expect(pagination.total).toBe(1)
     expect(pagination.page).toBe(1)
+    expect(mockDb.select).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ triggerAgentName: expect.anything() }),
+    )
   })
 
   it('respects page and pageSize query params', async () => {
@@ -1260,6 +1264,7 @@ const ORIGINAL_RUN = {
   initiatorAgentId: 'agt_1',
   triggerSource: 'api' as string | null,
   triggerUserName: 'Alice' as string | null,
+  triggerAgentName: 'Router Agent' as string | null,
   createdAt: new Date('2025-01-01'),
   updatedAt: new Date('2025-01-01'),
 }
@@ -1369,11 +1374,13 @@ describe('POST /runs/:id/rerun', () => {
     expect(data.id).toBe('run_new1')
     expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), { key: 'value' })
 
-    // Regression: rerun must carry triggerUserName forward, otherwise the
-    // rerun row silently undercounts askerCount / topAskers compared to the
-    // other channels that denormalize at insert time.
+    // Reruns preserve the original visible caller provenance so the new row
+    // remains attributable in the same way as the source run.
     expect(insertChain.values).toHaveBeenCalledWith(
-      expect.objectContaining({ triggerUserName: 'Alice' }),
+      expect.objectContaining({
+        triggerUserName: 'Alice',
+        triggerAgentName: 'Router Agent',
+      }),
     )
   })
 

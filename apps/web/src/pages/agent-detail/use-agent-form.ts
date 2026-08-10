@@ -205,6 +205,7 @@ export function useAgentForm(
           entry.url === b[i].url &&
           (entry.connectionMode ?? 'direct') === (b[i].connectionMode ?? 'direct') &&
           (entry.protocolVersion ?? '0.3') === (b[i].protocolVersion ?? '0.3') &&
+          Boolean(entry.callerProvenance) === Boolean(b[i].callerProvenance) &&
           entry.description === b[i].description &&
           entry.apiKey === b[i].apiKey,
       )
@@ -625,6 +626,7 @@ export function useAgentForm(
             // URL, so preserve their direct A2A 0.3 behavior on first edit.
             connectionMode: t.connectionMode ?? 'direct',
             protocolVersion: t.protocolVersion ?? '0.3',
+            callerProvenance: t.callerProvenance ?? false,
             description: t.description || '',
             apiKey: t.apiKey || '',
             showApiKey: false,
@@ -785,18 +787,23 @@ export function useAgentForm(
         })),
         ...remoteEntries
           .filter((e) => e.name.trim() && e.url.trim())
-          .map((e) => ({
-            type: 'remote' as const,
-            name: e.name.trim(),
-            url: e.url.trim(),
-            connectionMode: e.connectionMode ?? 'direct',
-            protocolVersion:
-              (e.connectionMode ?? 'direct') === 'direct'
-                ? (e.protocolVersion ?? '0.3')
-                : undefined,
-            description: e.description.trim() || undefined,
-            apiKey: e.apiKey.trim() || undefined,
-          })),
+          .map((e) => {
+            const connectionMode = e.connectionMode ?? 'direct'
+            const protocolVersion =
+              connectionMode === 'direct' ? (e.protocolVersion ?? '0.3') : undefined
+            return {
+              type: 'remote' as const,
+              name: e.name.trim(),
+              url: e.url.trim(),
+              connectionMode,
+              protocolVersion,
+              ...(protocolVersion === '1.0' && e.callerProvenance
+                ? { callerProvenance: true }
+                : {}),
+              description: e.description.trim() || undefined,
+              apiKey: e.apiKey.trim() || undefined,
+            }
+          }),
       ]
       return targets.length > 0 ? targets : null
     })()

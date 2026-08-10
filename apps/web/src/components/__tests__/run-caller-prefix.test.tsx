@@ -17,11 +17,16 @@ import { RunCallerPrefix, SOURCE_LABEL } from '../run-caller-prefix'
 
 function renderPrefix(props: {
   name?: string | null
+  callerAgentName?: string | null
   source?: RunTriggerSource | null
 }) {
   return render(
     <I18nextProvider i18n={i18n}>
-      <RunCallerPrefix name={props.name ?? null} source={props.source ?? null} />
+      <RunCallerPrefix
+        name={props.name ?? null}
+        callerAgentName={props.callerAgentName ?? null}
+        source={props.source ?? null}
+      />
     </I18nextProvider>,
   )
 }
@@ -69,6 +74,24 @@ describe('RunCallerPrefix', () => {
     await i18n.changeLanguage('zh')
     renderPrefix({ name: 'Zhang Li', source: 'glab' })
     expect(screen.getByText('Zhang Li·GitLab 触发')).toBeInTheDocument()
+  })
+
+  it('renders user, caller Agent, and source when all provenance is known', async () => {
+    await i18n.changeLanguage('zh')
+    renderPrefix({ name: '张鑫', callerAgentName: 'SDK Manager大神', source: 'a2a' })
+    expect(screen.getByText('张鑫·SDK Manager大神·A2A')).toBeInTheDocument()
+  })
+
+  it('falls back to caller Agent and source when the user is unknown', async () => {
+    await i18n.changeLanguage('zh')
+    renderPrefix({ name: null, callerAgentName: 'SDK Manager大神', source: 'a2a' })
+    expect(screen.getByText('SDK Manager大神·A2A')).toBeInTheDocument()
+  })
+
+  it('falls back to source when no user or caller Agent is known', async () => {
+    await i18n.changeLanguage('zh')
+    renderPrefix({ name: null, callerAgentName: null, source: 'a2a' })
+    expect(screen.getByText('A2A')).toBeInTheDocument()
   })
 
   it('still names the channel when the forge reported no author', async () => {

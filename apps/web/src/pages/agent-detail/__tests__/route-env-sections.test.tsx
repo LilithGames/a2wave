@@ -124,6 +124,11 @@ describe('RouteSection', () => {
     expect(
       screen.getByText(/Direct endpoints use blocking SendMessage|直连端点没有 Agent Card/),
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', {
+        name: /Send caller provenance|发送调用来源信息/,
+      }),
+    ).not.toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/\.well-known\/agent-card\.json/)).not.toBeInTheDocument()
   })
 
@@ -149,6 +154,30 @@ describe('RouteSection', () => {
     expect(
       screen.queryByText(/Direct endpoints use blocking SendMessage|直连端点没有 Agent Card/),
     ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', {
+        name: /Send caller provenance|发送调用来源信息/,
+      }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('offers caller provenance as a separate opt-in for direct A2A 1.0', async () => {
+    const user = userEvent.setup()
+    const entry = remote({
+      connectionMode: 'direct',
+      protocolVersion: '1.0',
+      callerProvenance: false,
+    })
+    const props = renderRoute({ remoteEntries: [entry] })
+
+    await user.click(screen.getByTestId('route-configure'))
+
+    const checkbox = await screen.findByRole('checkbox', {
+      name: /Send caller provenance|发送调用来源信息/,
+    })
+    expect(checkbox).not.toBeChecked()
+    await user.click(checkbox)
+    expect(props.updateRemoteEntry).toHaveBeenCalledWith(entry.id, 'callerProvenance', true)
   })
 
   it('counts local and remote targets separately in the summary', () => {

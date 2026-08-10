@@ -224,6 +224,28 @@ describe('buildGatewayChannel', () => {
     }
   })
 
+  it('keeps remote A2A display provenance schema-valid and audit-only', () => {
+    const result = _buildGatewayChannelRaw(makeCtx(), {
+      channel: 'a2a',
+      authType: 'api_key',
+      callerAgent: { agentId: 'agt_foreign', agentName: 'Remote Router' },
+      assertedDisplayName: '张鑫',
+    })
+
+    expect(() => runChannelContextSchema.parse(result.ctx)).not.toThrow()
+    expect(result).toMatchObject({
+      displayName: '张鑫',
+      ctx: {
+        channel_type: 'a2a',
+        user_info: null,
+        display_name: '张鑫',
+        channel_info: {
+          caller_agent: { agent_id: 'agt_foreign', agent_name: 'Remote Router' },
+        },
+      },
+    })
+  })
+
   it('a2a + OAuth + caller_agent header → caller_agent DROPPED (anti-spoof)', () => {
     const ctx = buildGatewayChannel(makeCtx(), {
       channel: 'a2a',
@@ -238,6 +260,29 @@ describe('buildGatewayChannel', () => {
     }
     // user_info still wins
     expect(ctx.user_info?.email).toBe('alice@example.com')
+  })
+
+  it('keeps extension-asserted caller Agent as audit provenance on an OAuth A2A hop', () => {
+    const result = _buildGatewayChannelRaw(makeCtx(), {
+      channel: 'a2a',
+      authType: 'oauth',
+      oauthCaller: makeOauthCaller({ username: 'Authenticated Alice' }),
+      assertedDisplayName: 'Spoofed Alice',
+      assertedCallerAgent: { agentId: 'agt_remote', agentName: 'Remote Router' },
+    })
+
+    expect(() => runChannelContextSchema.parse(result.ctx)).not.toThrow()
+    expect(result).toMatchObject({
+      displayName: 'Authenticated Alice',
+      ctx: {
+        display_name: 'Authenticated Alice',
+        user_info: { name: 'Authenticated Alice', source: 'idaas' },
+        channel_info: {
+          auth: 'oauth',
+          caller_agent: { agent_id: 'agt_remote', agent_name: 'Remote Router' },
+        },
+      },
+    })
   })
 
   it('forwards upstream channel header (sub-agent hop) and overlays current caller_agent', () => {

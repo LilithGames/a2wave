@@ -49,11 +49,13 @@ vi.mock('@a2a-js/sdk/server', () => ({
   },
   ServerCallContext: class {
     requestedVersion: string | undefined
+    requestedExtensions?: string[]
     tenant?: string
     user?: unknown
     state: Map<string, unknown>
     constructor(options: Record<string, unknown> = {}) {
       this.requestedVersion = options.requestedVersion as string | undefined
+      this.requestedExtensions = options.requestedExtensions as string[] | undefined
       this.tenant = options.tenant as string | undefined
       this.user = options.user
       this.state = (options.state as Map<string, unknown>) ?? new Map()
@@ -84,6 +86,7 @@ vi.mock('hono/streaming', () => ({
 
 import { UnusableProviderChainError } from '../../lib/errors.js'
 import { handleA2ARequest } from '../handle-request.js'
+import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../provenance.js'
 
 function createMockContext(
   headers: Record<string, string> = {},
@@ -245,6 +248,21 @@ describe('handleA2ARequest', () => {
       requestedVersion: '1.0',
       tenant: 'agt_1',
       user: { userName: 'internal:platform' },
+    })
+  })
+
+  it('parses the standard v1 extension activation header into the call context', async () => {
+    const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
+    const c = createMockContext(
+      { 'A2A-Version': '1.0', 'A2A-Extensions': extensionUri },
+      { jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'v1-extension' },
+    )
+
+    await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)
+
+    expect(mockV1Handle.mock.calls[1][1]).toMatchObject({
+      requestedVersion: '1.0',
+      requestedExtensions: [extensionUri],
     })
   })
 

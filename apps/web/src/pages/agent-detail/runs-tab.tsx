@@ -164,6 +164,7 @@ export function RunsTab({ agentId, refetchRef, onFetchingChange }: RunsTabProps)
                 <span className="text-sm font-medium text-foreground truncate block">
                   <RunCallerPrefix
                     name={run.triggerUserName}
+                    callerAgentName={run.triggerAgentName}
                     source={run.triggerSource as RunTriggerSource | null}
                   />
                   {run.intent}

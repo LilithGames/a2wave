@@ -115,6 +115,16 @@ export interface BuildGatewayChannelOpts {
   oauthCaller?: GatewayCaller
   callerAgent?: { agentId?: string; agentName?: string }
   /**
+   * Remote A2A message assertion used only for display/audit. Unlike a trusted
+   * forwarded channel, it never creates or modifies authoritative user_info.
+   */
+  assertedDisplayName?: string
+  /**
+   * Caller Agent asserted through the negotiated A2A provenance extension.
+   * It remains audit-only even when this hop authenticates an OAuth user.
+   */
+  assertedCallerAgent?: { agentId?: string; agentName?: string }
+  /**
    * Receiving agent's opt-in to trust the upstream-forwarded user identity
    * (X-A2WAVE-Channel-B64). Only meaningful on a2a hops. Combined with
    * `authType === 'api_key'` this is the trust anchor for cross-hop identity
@@ -260,19 +270,20 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
       )
     }
     displayName = u.username || null
+  } else if (opts.channel === 'a2a' && opts.assertedDisplayName) {
+    displayName = opts.assertedDisplayName
   }
-  // caller_agent only meaningful on a2a hops (api-channel callers don't carry
-  // an internal a2wave agent identity).
+  // caller_agent is audit provenance on A2A hops, never an authorization input.
   if (opts.channel === 'a2a') {
-    // Anti-spoof: when an end-user OAuth token authenticated the request, the
-    // X-A2WAVE-Caller-Agent-* headers must NOT be honored — otherwise an
-    // attacker's user-token request could impersonate an internal agent. Only
-    // accept the headers when the channel is api_key/none (the caller already
-    // possesses a shared agent key, i.e. is itself a trusted a2wave agent).
-    if (!opts.oauthCaller && opts.callerAgent) {
+    // Private caller headers are accepted only without OAuth. The standards
+    // extension is separate: it is explicitly marked as an assertion and may
+    // coexist with an independently authenticated OAuth user for display.
+    const effectiveCallerAgent =
+      opts.assertedCallerAgent ?? (!opts.oauthCaller ? opts.callerAgent : undefined)
+    if (effectiveCallerAgent) {
       channelInfo.caller_agent = {
-        ...(opts.callerAgent.agentId ? { agent_id: opts.callerAgent.agentId } : {}),
-        ...(opts.callerAgent.agentName ? { agent_name: opts.callerAgent.agentName } : {}),
+        ...(effectiveCallerAgent.agentId ? { agent_id: effectiveCallerAgent.agentId } : {}),
+        ...(effectiveCallerAgent.agentName ? { agent_name: effectiveCallerAgent.agentName } : {}),
       }
     }
   }

@@ -102,6 +102,9 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 - 队列满返回 `429`；未发布返回 `403`；鉴权失败 `401/403`；worktree 被占用 `409`。
 - 认证：`/api/gateway` 使用 `api_key`（Bearer）/ IP 白名单；企业 SSO JWT 使用独立的 `/api/oauth` 渠道。
 
+> [!NOTE]
+> API Key 只能识别调用该接口的集成，不能自动知道集成背后的最终用户，因此运行记录通常只显示 `API`。如果需要把一次直接调用明确归因到某位企业用户，请使用 OAuth 接口并携带该用户自己的 SSO JWT；在 `context` 中自行填写用户名不能替代身份鉴别。
+
 > [!IMPORTANT]
 > 部署在反向代理后时，设置 `TRUSTED_PROXY=true`，并在 `TRUSTED_PROXY_ADDRESSES` 中只填写代理与 a2wave 直接建立 TCP 连接的 IP 或 CIDR。Gateway、OAuth、A2A 会从右向左扫描 `X-Forwarded-For`，取第一个不受信任的节点，统一用于 IP 白名单、审计/渠道上下文和限流。代理必须覆盖 XFF，或按标准逐跳追加；不要保留未经校验的非标准链。
 
@@ -281,13 +284,22 @@ A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别�
 
 本地也可用 `pnpm a2a-demo -- <agentId> "..."` 脚本快速测试。A2A 消息除文本外还可携带图片/文件；A2A 1.0 与 0.3 的分片字段不同，示例见下方「附件」。
 
+### 调用链来源
+
+当调用方和接收方都支持 A2A 来源扩展时，远程调用会携带**直接调用方 Agent 名称**，并在上游已经识别用户时继续携带该用户的显示名。接收方的运行列表因此可以显示 `用户·调用方 Agent·A2A`；没有用户时显示 `调用方 Agent·A2A`。
+
+来源扩展通过 Agent Card 协商。使用「Agent Card 发现」的路由会在对端声明支持时自动启用。「直连端点」没有 Agent Card 可供能力发现：选择 A2A 1.0 后，只有确认接收方支持 a2wave 来源扩展时，才显式开启「发送调用来源信息」。该开关默认关闭，直连 A2A 0.3 也不会发送扩展。未支持扩展的 A2A 服务仍可正常互通，只是运行记录会退化为较少层级，最少仍显示 `A2A`。
+
+> [!IMPORTANT]
+> 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 或 OAuth / 企业 SSO JWT 完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
+
 ### 调用远程标准 A2A 服务
 
 在 Agent 的「配置」页打开「A2A 路由」并添加远程 Agent：
 
 1. 填写一个用于路由识别的名称。
 2. 推荐选择「Agent Card 发现」，粘贴远程服务的 Agent Card URL。平台会读取 Card，并自动选择其中声明的 A2A 1.0 或 0.3 JSON-RPC 接口。
-3. 如果对方没有可访问的 Agent Card，选择「直连端点」，填写 JSON-RPC URL 并明确选择 `A2A 1.0` 或 `A2A 0.3`。
+3. 如果对方没有可访问的 Agent Card，选择「直连端点」，填写 JSON-RPC URL 并明确选择 `A2A 1.0` 或 `A2A 0.3`。接收方兼容 a2wave A2A 1.0 来源扩展时，可再开启「发送调用来源信息」。
 4. 远端要求 Bearer Key 时填写 API Key。保存后凭据只以掩码显示，不会出现在 Agent Card 或路由结果中。
 
 > [!NOTE]

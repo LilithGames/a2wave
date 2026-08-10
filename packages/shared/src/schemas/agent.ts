@@ -285,6 +285,8 @@ export const a2aRouteTargetSchema = z.discriminatedUnion('type', [
     connectionMode: z.enum(['agent_card', 'direct']).optional(),
     /** Only used by direct targets; Agent Card targets negotiate automatically. */
     protocolVersion: z.enum(['1.0', '0.3']).optional(),
+    /** Explicit opt-in for sending caller provenance to a direct A2A 1.0 endpoint. */
+    callerProvenance: z.boolean().optional(),
     description: z.string().optional(),
     apiKey: z.string().optional(),
   }),

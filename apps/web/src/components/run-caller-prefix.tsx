@@ -23,28 +23,28 @@ export const SOURCE_LABEL: Record<RunTriggerSource, string> = {
 }
 
 /**
- * Inline caller chip for run rows: renders a muted rounded pill in front of the
- * run intent. Three modes (in order of fallback):
- *   - name + source → `⟨张立成·飞书⟩`
- *   - name only     → `⟨张立成⟩`
- *   - source only   → `⟨飞书⟩`  ← keeps the channel signal visible for
- *                                 api_key / schedule / no-email-scope feishu /
- *                                 anonymous OAuth runs.
- * Returns null only when BOTH are missing.
+ * Inline provenance chip for run rows: renders a muted rounded pill in front
+ * of the run intent. Known layers are displayed in order:
+ *   - user + caller Agent + source → `⟨张鑫·SDK Manager大神·A2A⟩`
+ *   - caller Agent + source        → `⟨SDK Manager大神·A2A⟩`
+ *   - source only                  → `⟨A2A⟩`
+ * Existing user + source and single-layer combinations remain supported.
  */
 export function RunCallerPrefix({
   name,
+  callerAgentName,
   source,
 }: {
   name: string | null | undefined
+  callerAgentName?: string | null
   source: RunTriggerSource | null | undefined
 }) {
   const { t } = useTranslation()
-  if (!name && !source) return null
   const channelLabel = source ? t(SOURCE_LABEL[source]) : null
-  const label = name ? (channelLabel ? `${name}·${channelLabel}` : name) : (channelLabel ?? '')
+  const label = [name, callerAgentName, channelLabel].filter(Boolean).join('·')
+  if (!label) return null
   return (
-    <span className="mr-1.5 inline-block max-w-[14rem] truncate rounded bg-muted px-1.5 py-0.5 align-middle text-xs font-normal text-muted-foreground">
+    <span className="mr-1.5 inline-block max-w-[24rem] truncate rounded bg-muted px-1.5 py-0.5 align-middle text-xs font-normal text-muted-foreground">
       {label}
     </span>
   )

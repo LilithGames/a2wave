@@ -24,11 +24,11 @@ Old fields (`caller`, `sender_*`, `sender_user`, etc.) are no longer written to 
 
 ```ts
 type RunChannelContext =
-  | { channel_type: 'api';      channel_info: GatewayChannelInfo;  user_info: UserInfo | null }
-  | { channel_type: 'a2a';      channel_info: GatewayChannelInfo;  user_info: UserInfo | null }
-  | { channel_type: 'feishu';   channel_info: FeishuChannelInfo;   user_info: UserInfo | null }
-  | { channel_type: 'schedule'; channel_info: ScheduleChannelInfo; user_info: null }
-  | { channel_type: 'debug';    channel_info: DebugChannelInfo;    user_info: UserInfo | null }
+  | { channel_type: 'api';      channel_info: GatewayChannelInfo;  user_info: UserInfo | null; display_name?: string }
+  | { channel_type: 'a2a';      channel_info: GatewayChannelInfo;  user_info: UserInfo | null; display_name?: string }
+  | { channel_type: 'feishu';   channel_info: FeishuChannelInfo;   user_info: UserInfo | null; display_name?: string }
+  | { channel_type: 'schedule'; channel_info: ScheduleChannelInfo; user_info: null;            display_name?: string }
+  | { channel_type: 'debug';    channel_info: DebugChannelInfo;    user_info: UserInfo | null; display_name?: string }
 
 interface UserInfo {
   email: string                                       // always present; zod-validated z.string().email()
@@ -111,7 +111,12 @@ This is a system/anonymous trigger, no user identity available.
 
 ## Cross-agent pass-through
 
-When calling a downstream agent, the `a2wave-agent-router` MCP packs the upstream `channel` as a whole, base64url-encodes it, and stuffs it into the `X-A2WAVE-Channel-B64` header. When the trust conditions are met, the downstream a2wave's `buildGatewayChannel` uses this header to restore the original `user_info`, without overwriting it with the downstream machine's own auth info. This way the cross-agent call chain fully preserves the initiator's identity (solving the "upstream user → downstream agent can't see it" regression), and it also supports cross-instance calls.
+There are two deliberately different pass-through mechanisms:
+
+- **Private a2wave hop headers** are used for local/internal routing. The `a2wave-agent-router` MCP packs the upstream `channel` as a whole, base64url-encodes it, and sends it in `X-A2WAVE-Channel-B64`. When the trust conditions below are met, the downstream `buildGatewayChannel` restores the authoritative `user_info` without overwriting the current hop's authentication facts.
+- **The optional A2A 1.0 caller-provenance extension** is used for standards-compatible remote routing. It carries only the immediate caller Agent name/id and the upstream user's display name. It never carries email, mobile, provider subject identifiers, or the serialized channel payload, and the receiver stores it as display/audit provenance rather than authoritative `user_info`. Agent Card routes negotiate support; a direct A2A 1.0 endpoint requires the separate caller-provenance opt-in. See [Caller provenance extension v1](../extensions/caller-provenance-v1.md).
+
+This separation keeps interoperable remote calls useful in run history without silently turning a self-asserted display name into an authenticated enterprise identity.
 
 ### Trust model (opt-in, not default)
 
@@ -121,7 +126,7 @@ The forwarded `user_info` becomes the identity the downstream agent runs and is 
 2. the inbound auth of this hop is **`a2aAuthType === 'api_key'`** — the caller proves it holds this agent's A2A-specific key (shared key). This excludes `none` (with no key, anyone could forge an identity) and `oauth` (the end-user token must not overwrite its own `user_info`);
 3. the called agent explicitly enables **`trustForwardedIdentity`** (default `false`) — the owner declares "a caller holding my A2A key may speak on behalf of a user's identity".
 
-If any of the three is missing, the header is ignored, and the downstream rebuilds the context based on the current request's own credentials (`user_info` is usually `null`). **Trust anchor = holding the A2A-specific key + owner opt-in**; holding this key is equivalent to being able to impersonate any user to the gateway, so manage it like a highly sensitive secret. `caller_agent` is only an audit record and is no longer a trust gate (a cross-instance upstream agent is not in the local registry, so it may be empty).
+If any of the three is missing, the private header is ignored, and the downstream rebuilds the context based on the current request's own credentials (`user_info` is usually `null`). **Trust anchor = holding the A2A-specific key + owner opt-in**; holding this key is equivalent to being able to impersonate any user to the gateway, so manage it like a highly sensitive secret. `caller_agent` remains an audit record rather than an authorization input.
 
 > A2A inbound auth (`a2aAuthType` / `a2aEndpointApiKey`, prefix `a2ak_`) is fully decoupled from the REST channel (`publishAuthType` / `endpointApiKey`, prefix `ak_`) and can be rotated/revoked independently.
 

@@ -335,6 +335,50 @@ describe('useAgentForm — initialization (edit mode)', () => {
     ])
   })
 
+  it('tracks and persists direct caller provenance as an explicit opt-in', async () => {
+    vi.mocked(useAgent).mockReturnValueOnce({
+      data: {
+        data: {
+          ...agentFixture,
+          a2aRouteTargets: [
+            {
+              type: 'remote',
+              name: 'Direct',
+              url: 'https://direct.example.com/a2a',
+              connectionMode: 'direct',
+              protocolVersion: '1.0',
+            },
+          ],
+        },
+        permission: 'owner',
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useAgent>)
+
+    const { result } = renderForm()
+    await waitFor(() => expect(result.current.remoteEntries).toHaveLength(1))
+    expect(result.current.remoteEntries[0].callerProvenance).toBe(false)
+    expect(result.current.hasSelectionChanges).toBe(false)
+
+    act(() => {
+      result.current.setRemoteEntries((entries) =>
+        entries.map((entry) => ({ ...entry, callerProvenance: true })),
+      )
+    })
+    await waitFor(() => expect(result.current.hasSelectionChanges).toBe(true))
+
+    await act(async () => {
+      await result.current.onSubmit(result.current.form.getValues())
+    })
+    expect(mutateAsyncStub.mock.calls[0][0].a2aRouteTargets).toEqual([
+      expect.objectContaining({
+        type: 'remote',
+        name: 'Direct',
+        callerProvenance: true,
+      }),
+    ])
+  })
+
   it('preserves the Provider default when a Pi chain entry omits authMode', async () => {
     vi.mocked(useAgent).mockReturnValueOnce({
       data: {

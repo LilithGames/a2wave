@@ -42,8 +42,13 @@ describe('A2A route target compatibility', () => {
         url: 'https://example.com/a2a',
         connectionMode: 'direct',
         protocolVersion: '1.0',
+        callerProvenance: true,
       }),
-    ).toMatchObject({ connectionMode: 'direct', protocolVersion: '1.0' })
+    ).toMatchObject({
+      connectionMode: 'direct',
+      protocolVersion: '1.0',
+      callerProvenance: true,
+    })
   })
 
   it('rejects unknown connection modes and protocol versions', () => {
@@ -61,6 +66,16 @@ describe('A2A route target compatibility', () => {
         name: 'future-agent',
         url: 'https://example.com/a2a',
         protocolVersion: '2.0',
+      }).success,
+    ).toBe(false)
+    expect(
+      a2aRouteTargetSchema.safeParse({
+        type: 'remote',
+        name: 'future-agent',
+        url: 'https://example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+        callerProvenance: 'yes',
       }).success,
     ).toBe(false)
   })

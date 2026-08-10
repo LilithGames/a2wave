@@ -15,9 +15,20 @@ A Run is a single execution record of an Agent. Regardless of the trigger method
 
 Concurrency is controlled by the Agent's `maxConcurrency`: it runs immediately if a slot is free, otherwise it enters the queue.
 
-## Trigger source (triggerSource)
+## Trigger source and call provenance
 
-Each Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page), and records the initiator's display name, making it easy to trace "who, from where, triggered what".
+Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page). The run list places all known provenance layers before the input intent in this order:
+
+| Available information | Display example |
+|-----------------------|-----------------|
+| User, calling Agent, and source | `Alex Chen·SDK Manager Agent·A2A` |
+| User is unavailable | `SDK Manager Agent·A2A` |
+| Only the source is known | `A2A` |
+
+The Agent in the row title is the **Agent that executed this Run**. The Agent inside the provenance label is the **immediate upstream Agent that called it**. Missing layers are omitted without hiding the provenance that is known.
+
+> [!NOTE]
+> Identity availability depends on the trigger: Feishu must be configured and permitted to resolve the sender; OAuth / enterprise SSO can identify the user from the caller token; and A2A can include the calling Agent and upstream user only when the peer supports and sends the provenance extension. A regular API key proves that an integration holds the credential, not which end user is behind it, so those Runs normally show only `API`. These names support auditing and troubleshooting; access is still controlled by each channel's real authentication, and provenance data never replaces it.
 
 ## Viewing runs
 

@@ -15,6 +15,13 @@
       "when": 1786031386010,
       "tag": "0001_sloppy_wolfsbane",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786195762613,
+      "tag": "0002_narrow_lightspeed",
+      "breakpoints": true
     }
   ]
 }
