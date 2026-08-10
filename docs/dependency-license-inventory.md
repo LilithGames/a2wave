@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-07 · `node scripts/gates/check-license-inventory.mjs --write` · 825 packages
+Generated: 2026-08-10 · `node scripts/gates/check-license-inventory.mjs --write` · 826 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -14,7 +14,7 @@ checked for forbidden licenses, and each carries the same license as its parent 
 
 | License | Packages |
 |---|---|
-| MIT | 703 |
+| MIT | 704 |
 | ISC | 41 |
 | Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
@@ -146,7 +146,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @modelcontextprotocol/sdk | 1.27.1 | MIT |
 | @node-rs/argon2 | 2.0.2 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
-| @oxc-project/types | 0.142.0 | MIT |
+| @oxc-project/types | 0.142.0, 0.143.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
 | @playwright/test | 1.62.1 | Apache-2.0 |
@@ -203,7 +203,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @rc-component/util | 1.9.0 | MIT |
 | @rc-component/virtual-list | 1.0.2 | MIT |
 | @reduxjs/toolkit | 2.12.0 | MIT |
-| @rolldown/pluginutils | 1.0.0-beta.27 | MIT |
+| @rolldown/pluginutils | 1.0.0-beta.27, 1.0.1 | MIT |
 | @sapphire/async-queue | 1.5.5 | MIT |
 | @sapphire/shapeshift | 4.0.0 | MIT |
 | @sapphire/snowflake | 3.5.5 | MIT |
@@ -521,7 +521,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | kind-of | 6.0.3 | MIT |
 | knip | 6.32.0 | ISC |
 | launder | 1.7.1 | MIT |
-| lightningcss | 1.32.0 | MPL-2.0 |
+| lightningcss | 1.32.0, 1.33.0 | MPL-2.0 |
 | lilconfig | 3.1.3 | MIT |
 | lines-and-columns | 1.2.4 | MIT |
 | lint-staged | 15.5.2 | MIT |
@@ -612,7 +612,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | mutation-testing-report-schema | 3.7.3 | Apache-2.0 |
 | mute-stream | 3.0.0 | ISC |
 | mz | 2.7.0 | MIT |
-| nanoid | 3.3.16 | MIT |
+| nanoid | 3.3.16, 3.3.17 | MIT |
 | napi-build-utils | 2.0.0 | MIT |
 | negotiator | 1.0.0 | MIT |
 | node-abi | 3.87.0 | MIT |
@@ -651,7 +651,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | pg-types | 2.2.0 | MIT |
 | pgpass | 1.0.5 | MIT |
 | picocolors | 1.1.1 | ISC |
-| picomatch | 2.3.2, 4.0.4, 4.0.5 | MIT |
+| picomatch | 2.3.2, 4.0.5 | MIT |
 | pidtree | 0.6.0 | MIT |
 | pino | 10.3.1 | MIT |
 | pino-abstract-transport | 3.0.0 | MIT |
@@ -663,7 +663,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | pkg-types | 1.3.1 | MIT |
 | playwright | 1.62.1 | Apache-2.0 |
 | playwright-core | 1.62.1 | Apache-2.0 |
-| postcss | 8.5.25 | MIT |
+| postcss | 8.5.25, 8.5.26 | MIT |
 | postcss-load-config | 6.0.1 | MIT |
 | postgres-array | 2.0.0 | MIT |
 | postgres-bytea | 1.0.1 | MIT |
@@ -715,6 +715,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | restore-cursor | 5.1.0 | MIT |
 | retry | 0.13.1 | MIT |
 | rfdc | 1.4.1 | MIT |
+| rolldown | 1.2.3 | MIT |
 | rollup | 4.61.0 | MIT |
 | router | 2.2.0 | MIT |
 | rrweb-cssom | 0.7.1, 0.8.0 | MIT |
@@ -832,7 +833,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | vfile | 6.0.3 | MIT |
 | vfile-message | 4.0.3 | MIT |
 | victory-vendor | 37.3.6 | MIT AND ISC |
-| vite | 6.4.3 | MIT |
+| vite | 8.2.0 | MIT |
 | vitest | 4.1.10 | MIT |
 | void-elements | 3.1.0 | MIT |
 | w3c-keyname | 2.2.8 | MIT |
