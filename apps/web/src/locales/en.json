@@ -1377,7 +1377,6 @@
     "stopFail": "Failed to stop, please try again",
     "resumeSuccess": "Agent resumed",
     "resumeFail": "Failed to resume, please try again",
-    "createFail": "Create failed, please try again",
     "cloneFail": "Clone failed, please try again",
     "deleteFail": "Delete failed, please try again",
     "templateVarsAvailable": "Available variables",

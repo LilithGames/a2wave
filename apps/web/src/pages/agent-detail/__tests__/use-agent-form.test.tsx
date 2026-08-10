@@ -416,6 +416,25 @@ describe('useAgentForm — initialization (edit mode)', () => {
     expect(message.error).toHaveBeenCalledWith(diagnosis)
   })
 
+  /**
+   * Create used to swallow every server message behind a generic "create failed"
+   * toast, unlike the update path. The masked-env rejection names the offending
+   * variable, and that name is the only way to act on it — the field itself renders
+   * as dots, so a generic toast leaves the user with nothing to go on.
+   */
+  it('surfaces the server message when creating is rejected', async () => {
+    const diagnosis =
+      "Environment variable 'API_TOKEN' was sent masked but no stored value exists to restore. Re-enter its value."
+    mutateAsyncStub.mockRejectedValueOnce(new Error(diagnosis))
+    const { result } = renderForm({ createMode: true })
+
+    await act(async () => {
+      await result.current.onSubmit(result.current.form.getValues())
+    })
+
+    expect(message.error).toHaveBeenCalledWith(diagnosis)
+  })
+
   it('shows the actionable Provider/MCP diagnosis when publishing is rejected', async () => {
     const diagnosis =
       'Agent "agt_test1" uses MCP-backed capabilities, but Provider "Pi CLI" (pi) does not support MCP delivery; remove mounted MCP Servers and A2A routes, or choose a Provider with MCP support'

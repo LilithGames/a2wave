@@ -768,7 +768,11 @@ export function useAgentForm(
         navigate(target, { replace: true })
       } catch (error) {
         console.error('Failed to create agent:', error)
-        message.error(t('agentDetail.createFail'))
+        // Match the update path: the server message often carries the only actionable
+        // detail (which env variable was rejected, which Provider is incompatible),
+        // and a generic toast throws it away. formatApiError falls back to generic
+        // copy when there is no message worth showing.
+        message.error(formatApiError(error, t))
       }
       return
     }

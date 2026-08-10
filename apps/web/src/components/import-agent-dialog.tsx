@@ -14,6 +14,43 @@ interface ImportResult {
   warnings: string[]
 }
 
+/**
+ * Surface every warning the import reported.
+ *
+ * The server clears credentials it cannot restore — masked env values, Slack and
+ * Discord tokens — and says so here. The dialog closes on success, so an unreported
+ * warning is one the user never sees: the cleared secret is masked back to dots on
+ * the edit page and looks configured, and the first sign of trouble is a run failing
+ * to authenticate. These are already user-facing prose from the API, like the error
+ * strings `formatApiError` passes through.
+ */
+export function reportImportWarnings(warnings: string[] | undefined) {
+  for (const warning of warnings ?? []) message.warning(warning)
+}
+
+/**
+ * Everything both import paths do once the server accepts the bundle.
+ *
+ * Extracted so the two callsites cannot drift: the warning surface in particular is
+ * easy to lose in one branch and keep in the other, and neither dialog handler can be
+ * driven from a component test (the antd Modal footer does not render under jsdom).
+ */
+export function handleImportSuccess(
+  result: ImportResult,
+  deps: {
+    t: (key: string, opts?: Record<string, unknown>) => string
+    invalidate: (key: string) => void
+    onSuccess?: (result: ImportResult) => void
+    onClose: () => void
+  },
+) {
+  message.success(deps.t('agentImport.success', { name: result.agent.name }))
+  reportImportWarnings(result.warnings)
+  for (const key of ['agents', 'skills', 'mcp-servers']) deps.invalidate(key)
+  deps.onSuccess?.(result)
+  deps.onClose()
+}
+
 interface ImportAgentDialogProps {
   open: boolean
   onClose: () => void
@@ -28,6 +65,7 @@ export function ImportAgentDialog({ open, onClose, onSuccess }: ImportAgentDialo
   const [headerKey, setHeaderKey] = useState('')
   const [headerValue, setHeaderValue] = useState('')
   const [activeTab, setActiveTab] = useState('file')
+  const invalidate = (key: string) => queryClient.invalidateQueries({ queryKey: [key] })
 
   const handleFileUpload = async (file: File) => {
     setLoading(true)
@@ -35,12 +73,7 @@ export function ImportAgentDialog({ open, onClose, onSuccess }: ImportAgentDialo
       const formData = new FormData()
       formData.append('file', file)
       const result = await api.upload<ImportResult>('/agents/import', formData)
-      message.success(t('agentImport.success', { name: result.data.agent.name }))
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-      queryClient.invalidateQueries({ queryKey: ['skills'] })
-      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      onSuccess?.(result.data)
-      onClose()
+      handleImportSuccess(result.data, { t, invalidate, onSuccess, onClose })
     } catch (err) {
       message.error(formatApiError(err, t))
     } finally {
@@ -61,12 +94,7 @@ export function ImportAgentDialog({ open, onClose, onSuccess }: ImportAgentDialo
         url: url.trim(),
         headers: customHeaders,
       })
-      message.success(t('agentImport.success', { name: result.data.agent.name }))
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-      queryClient.invalidateQueries({ queryKey: ['skills'] })
-      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      onSuccess?.(result.data)
-      onClose()
+      handleImportSuccess(result.data, { t, invalidate, onSuccess, onClose })
       setUrl('')
       setHeaderKey('')
       setHeaderValue('')

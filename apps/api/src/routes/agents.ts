@@ -148,6 +148,7 @@ import {
   maskA2ARouteTargetSecrets,
   maskSensitiveEnv,
   preserveA2ARouteTargetSecrets,
+  preserveSensitiveEnvSecrets,
 } from './agent-route-secrets.js'
 import { feishuConfigBodySchema } from './publish-feishu-config.js'
 
@@ -158,6 +159,34 @@ const MEMORY_SKILL_NAME = 'a2wave-memory'
 // trips a false "connection lost".
 const SSE_HEARTBEAT_INTERVAL_MS = 30_000
 const MASKED_SECRET = '********'
+
+/**
+ * Resolve a masked channel secret against the stored one.
+ *
+ * The placeholder means "unchanged", so it restores the stored value — but when there is
+ * none (a config row that exists with an empty secret), writing it through would make
+ * '********' the credential itself: the channel fails to authenticate on every callback
+ * while the edit page renders dots and reads as configured. Blanking keeps that state
+ * honest, and the publish preflight already refuses to take a channel live on an empty
+ * secret, so the failure surfaces where the user can act on it.
+ */
+const resolveMaskedChannelSecret = <T extends string | null | undefined>(
+  submitted: T,
+  stored: string | null | undefined,
+): T | string => (submitted === MASKED_SECRET ? (stored ?? '') : submitted)
+
+/**
+ * Shared 400 body for a masked env value with no stored counterpart to restore.
+ *
+ * `code` is for direct API consumers only: `api.ts` builds its thrown Error from `error`
+ * alone, so the web UI shows the prose and never reads the code. That matches the sibling
+ * A2A masked-secret rejection below, which carries the same code for the same reason.
+ */
+const maskedEnvWithoutStoredValue = (key: string) =>
+  ({
+    error: `Environment variable '${key}' was sent masked but no stored value exists to restore. Re-enter its value.`,
+    code: 'MASKED_SECRET_WITHOUT_STORED_VALUE',
+  }) as const
 
 type AgentRow = typeof agents.$inferSelect
 
@@ -1159,6 +1188,15 @@ app.post('/', async (c) => {
   )
   if (groupAccessError) return c.json({ error: groupAccessError }, 403)
 
+  // Nothing is stored yet, so a masked sensitive value is an echoed placeholder (a
+  // cloned draft, say) with no counterpart — and no secret it could strand. It is
+  // blanked rather than rejected, which is why this never fails on create; the point
+  // is only that the literal placeholder must not reach the database.
+  const envRestore = preserveSensitiveEnvSecrets(parsed.data.env, null)
+  if (!envRestore.ok) {
+    return c.json(maskedEnvWithoutStoredValue(envRestore.key), 400)
+  }
+
   const id = createId('agt')
   const authMode = await effectiveProviderAuthMode(parsed.data.providerId, parsed.data.authMode)
   const newAgent = (
@@ -1170,6 +1208,7 @@ app.post('/', async (c) => {
         // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
         oauthAccessMode: 'all_idaas_users',
         ...parsed.data,
+        env: envRestore.value,
         authMode,
         userId,
       })
@@ -1250,19 +1289,14 @@ app.patch('/:id', async (c) => {
   )
   if (groupAccessError) return c.json({ error: groupAccessError }, 403)
 
-  // Preserve existing sensitive env values when frontend sends '********' (masked placeholder)
-  let envToSave = parsed.data.env
-  if (envToSave && existing.env) {
-    const existingEnv = existing.env as Record<string, { value: string; sensitive: boolean }>
-    envToSave = Object.fromEntries(
-      Object.entries(envToSave).map(([key, entry]) => {
-        if (entry.sensitive && entry.value === '********' && existingEnv[key]) {
-          return [key, { ...entry, value: existingEnv[key].value }]
-        }
-        return [key, entry]
-      }),
-    )
+  // Preserve existing sensitive env values when frontend sends '********' (masked placeholder).
+  // A masked value with no stored counterpart — a renamed key, most often — is rejected rather
+  // than written through, which would replace the real secret with the literal placeholder.
+  const envRestore = preserveSensitiveEnvSecrets(parsed.data.env, existing.env)
+  if (!envRestore.ok) {
+    return c.json(maskedEnvWithoutStoredValue(envRestore.key), 400)
   }
+  const envToSave = envRestore.value
 
   // Provider credential placeholders: client may echo '********' from masked chain rows.
   // Treat them as "keep existing" for top-level legacy columns too.
@@ -1307,29 +1341,32 @@ app.patch('/:id', async (c) => {
   let feishuConfigToSave = parsed.data.feishuConfig
     ? normalizeFeishuConfig(parsed.data.feishuConfig as Record<string, unknown>)
     : parsed.data.feishuConfig
-  if (feishuConfigToSave && feishuConfigToSave.appSecret === '********' && existing.feishuConfig) {
-    const existingFeishu = existing.feishuConfig as { appSecret: string }
-    feishuConfigToSave = { ...feishuConfigToSave, appSecret: existingFeishu.appSecret }
+  if (feishuConfigToSave?.appSecret === MASKED_SECRET) {
+    const storedFeishuSecret = (existing.feishuConfig as { appSecret?: string } | null)?.appSecret
+    feishuConfigToSave = { ...feishuConfigToSave, appSecret: storedFeishuSecret ?? '' }
   }
   let slackConfigToSave = parsed.data.slackConfig
-  if (slackConfigToSave && existing.slackConfig) {
+  if (slackConfigToSave) {
     slackConfigToSave = {
       ...slackConfigToSave,
-      appToken:
-        slackConfigToSave.appToken === '********'
-          ? existing.slackConfig.appToken
-          : slackConfigToSave.appToken,
-      botToken:
-        slackConfigToSave.botToken === '********'
-          ? existing.slackConfig.botToken
-          : slackConfigToSave.botToken,
+      appToken: resolveMaskedChannelSecret(
+        slackConfigToSave.appToken,
+        existing.slackConfig?.appToken,
+      ),
+      botToken: resolveMaskedChannelSecret(
+        slackConfigToSave.botToken,
+        existing.slackConfig?.botToken,
+      ),
     }
   }
   let discordConfigToSave = parsed.data.discordConfig
-  if (discordConfigToSave?.botToken === '********' && existing.discordConfig?.botToken) {
+  if (discordConfigToSave) {
     discordConfigToSave = {
       ...discordConfigToSave,
-      botToken: existing.discordConfig.botToken,
+      botToken: resolveMaskedChannelSecret(
+        discordConfigToSave.botToken,
+        existing.discordConfig?.botToken,
+      ),
     }
   }
 

@@ -26,6 +26,7 @@ import {
   REBINDABLE_SYSTEM_SKILL_NAMES,
   computeExportedSkillPackageDigest,
   isRetiredOauthAccessMode,
+  isSensitiveKey,
 } from './agent-export.js'
 import { createId } from './id.js'
 import { resolveUsageScope } from './mcp-stdio.js'
@@ -305,6 +306,35 @@ export function preflightAgentImportArchive(
 }
 
 /**
+ * Blank out placeholder values in an imported MCP `env` / `headers` record.
+ *
+ * `sanitizeMcpServer` masks these with `maskAllStringRecord`, which replaces *every*
+ * value unconditionally — so a placeholder arriving here can never be restored, and
+ * writing it through would make '********' the credential itself. The field then reads
+ * as configured while the remote answers 401 on every run. Blanking leaves the key
+ * visible (the operator still sees which headers the server expects) with an obviously
+ * empty value, which is the honest state.
+ */
+function clearMaskedRecord<T extends Record<string, string> | null | undefined>(record: T): T {
+  if (!record) return record
+  let cleared = false
+  const next = Object.fromEntries(
+    Object.entries(record).map(([key, value]) => {
+      if (value !== MASKED_CREDENTIAL) return [key, value]
+      cleared = true
+      return [key, '']
+    }),
+  )
+  return (cleared ? next : record) as T
+}
+
+/** True when any imported MCP `env` / `headers` value is a masked placeholder. */
+function hasMaskedMcpCredential(mcp: ExportedMcpServer): boolean {
+  const values = [...Object.values(mcp.headers ?? {}), ...Object.values(mcp.env ?? {})]
+  return values.some((value) => value === MASKED_CREDENTIAL)
+}
+
+/**
  * True when an imported MCP server would introduce stdio command execution
  * (host RCE) — a top-level stdio server, or a group with an inline stdio
  * backend. Import must reject these for non-admins, mirroring the create gate,
@@ -408,6 +438,9 @@ export async function importAgentFromZip(
     // 3. Import MCP Servers
     const mcpIdMap = new Map<string, string>() // ref filename -> new ID
     const importedMcps: Array<{ id: string; name: string }> = []
+    // One warning covers the whole import: a bundle with ten servers should not stack
+    // ten identical toasts.
+    let warnedMaskedMcpCredential = false
 
     for (const ref of exportedAgent.mcpServerRefs) {
       if (!ref || ref.includes('/') || ref.includes('\\') || ref === '.' || ref === '..') {
@@ -428,6 +461,11 @@ export async function importAgentFromZip(
       }
       assertImportedMcpUrlsSafe(mcpData)
 
+      if (hasMaskedMcpCredential(mcpData) && !warnedMaskedMcpCredential) {
+        warnedMaskedMcpCredential = true
+        warnings.push('MCP Server credentials are not imported; re-enter them before use')
+      }
+
       // Always create new - add suffix if name exists
       const existingMcp = (
         await tx.select().from(mcpServers).where(eq(mcpServers.name, mcpData.name)).limit(1)
@@ -444,8 +482,8 @@ export async function importAgentFromZip(
         args: mcpData.args,
         cwd: mcpData.cwd,
         url: mcpData.url,
-        headers: mcpData.headers,
-        env: mcpData.env,
+        headers: clearMaskedRecord(mcpData.headers),
+        env: clearMaskedRecord(mcpData.env),
         isEnabled: mcpData.isEnabled,
         // Imported groupConfig is opaque JSON shaped by sanitizeMcpServer;
         // cast to the schema's typed variant without revalidating backends.
@@ -870,6 +908,40 @@ export async function importAgentFromZip(
       )
     }
 
+    // Export masks sensitive values to the placeholder, so importing one verbatim would
+    // make '********' the credential itself: every run authenticates with the literal
+    // dots while the UI, which renders any sensitive value as dots, looks correctly
+    // configured. Clear it so the field reads as empty and asks to be filled in.
+    //
+    // The condition mirrors `sanitizeAgent`'s `v.sensitive || isSensitiveKey(k)` exactly.
+    // Matching on the flag alone would miss a key-name-detected secret, which exports as
+    // dots while keeping `sensitive: false`.
+    //
+    // Such an entry is also promoted to `sensitive: true`. Export judged it a secret by
+    // name, and importing that judgement is the whole point: leaving the flag false means
+    // the value the user retypes is stored unmasked and returned verbatim by every
+    // `GET /agents/:id` — `maskSensitiveEnv` masks on the flag alone — so every viewer of
+    // the Agent reads a live credential that the source instance at least masked.
+    let omittedSensitiveEnv = false
+    const importedEnv = exportedAgent.env
+      ? Object.fromEntries(
+          Object.entries(
+            exportedAgent.env as Record<string, { value: string; sensitive: boolean }>,
+          ).map(([key, entry]) => {
+            if (entry?.value === MASKED_CREDENTIAL && (entry.sensitive || isSensitiveKey(key))) {
+              omittedSensitiveEnv = true
+              return [key, { ...entry, value: '', sensitive: true }]
+            }
+            return [key, entry]
+          }),
+        )
+      : exportedAgent.env
+    if (omittedSensitiveEnv) {
+      warnings.push(
+        'Sensitive environment variable values are not imported; re-enter them before use',
+      )
+    }
+
     await tx.insert(agents).values({
       id: agentId,
       name: agentName,
@@ -929,7 +1001,7 @@ export async function importAgentFromZip(
       publishedAt: null,
       providerId,
       authMode: providerAuthMode,
-      env: exportedAgent.env as (typeof agents.$inferInsert)['env'],
+      env: importedEnv as (typeof agents.$inferInsert)['env'],
       workspaceType: exportedAgent.workspaceType as 'scm' | 'temp',
       scmSourceId,
       maxConcurrency: exportedAgent.maxConcurrency,

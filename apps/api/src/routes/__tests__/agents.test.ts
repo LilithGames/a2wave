@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
 import { registerAgentSecretRedactionTests } from './agents-secret-redaction-cases.js'
 import { registerSkillVisibilityCloneTests } from './agents-skill-visibility-clone-cases.js'
@@ -2349,6 +2350,12 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
 })
 
 registerAgentSecretRedactionTests({
+  SAMPLE_AGENT,
+  makeAgentsApp,
+  makeSelectChain,
+  mockDb,
+})
+registerAgentEnvMaskingTests({
   SAMPLE_AGENT,
   makeAgentsApp,
   makeSelectChain,
