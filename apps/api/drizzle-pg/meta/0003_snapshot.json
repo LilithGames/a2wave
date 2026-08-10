@@ -1,6 +1,6 @@
 {
-  "id": "6e1c5b54-328c-461c-8011-be6eefd9595d",
-  "prevId": "be29f401-d562-44ad-b674-1aca14995302",
+  "id": "f990efa0-0925-4002-9cea-5d73a87cb4f4",
+  "prevId": "6e1c5b54-328c-461c-8011-be6eefd9595d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2698,6 +2698,12 @@
         },
         "trigger_user_name": {
           "name": "trigger_user_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trigger_agent_name": {
+          "name": "trigger_agent_name",
           "type": "text",
           "primaryKey": false,
           "notNull": false

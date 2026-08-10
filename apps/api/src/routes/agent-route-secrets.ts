@@ -22,6 +22,75 @@ export function maskSensitiveEnv<T extends { env: Record<string, AgentEnvEntry> 
   return { ...agent, env: maskedEnv }
 }
 
+/**
+ * Restore masked sensitive env values, and refuse the write when there is nothing
+ * to restore — rather than persisting the placeholder as if it were the secret.
+ *
+ * The UI never receives a sensitive value in plaintext: it renders the masked
+ * placeholder and submits the whole record back verbatim. A key is the only handle
+ * on the stored value, so renaming one (fixing a typo, say) while leaving the dots
+ * untouched used to look up the *new* name, find nothing, and store '********' as
+ * the value. The Agent then injects that literal at every run, the Provider fails
+ * to authenticate, and the original secret is gone — with the UI still showing dots,
+ * so it reads as configured. Every subsequent save "preserves" the placeholder again,
+ * leaving no way to notice, let alone recover.
+ *
+ * Rejecting mirrors `preserveA2ARouteTargetSecrets`: the user re-enters the value
+ * once, which is the only way the server can learn a secret it was never sent.
+ *
+ * Rejection is deliberately narrow — only a key with no stored entry at all, or one
+ * whose stored value is already the placeholder. Anything else that exists is restored,
+ * because the alternative is blocking saves on Agents whose env is in a perfectly
+ * ordinary state (a blank secret from clone/import, a variable just marked sensitive).
+ */
+/**
+ * True when the stored env holds at least one sensitive value a rename could strand.
+ *
+ * A blank value and the placeholder itself are both "nothing to lose", so renaming a key
+ * that only ever held one of those is harmless and must not be rejected.
+ */
+function hasRestorableSecret(
+  existingEnv: Record<string, AgentEnvEntry> | null | undefined,
+): boolean {
+  return Object.values(existingEnv ?? {}).some(
+    (entry) => entry.sensitive && entry.value && entry.value !== MASKED_SECRET,
+  )
+}
+
+export function preserveSensitiveEnvSecrets(
+  nextEnv: Record<string, AgentEnvEntry> | null | undefined,
+  existingEnv: Record<string, AgentEnvEntry> | null | undefined,
+): { ok: true; value: typeof nextEnv } | { ok: false; key: string } {
+  if (!nextEnv) return { ok: true, value: nextEnv }
+
+  const restored: Record<string, AgentEnvEntry> = {}
+  for (const [key, entry] of Object.entries(nextEnv)) {
+    // A non-sensitive value round-trips in plaintext, so '********' there is
+    // the user's own text and is stored as typed.
+    if (!entry.sensitive || entry.value !== MASKED_SECRET) {
+      restored[key] = entry
+      continue
+    }
+    const stored = existingEnv?.[key]
+    // No entry under this key: the key is the only handle on the stored value, so the
+    // placeholder can never be resolved. That is the rename case — reject, but only when
+    // a real secret would actually be stranded. If nothing stored holds one, the rename
+    // costs nothing, and refusing it would demand the user "re-enter" a value that never
+    // existed (renaming a blank row from clone or import is exactly that).
+    if (!stored) {
+      if (hasRestorableSecret(existingEnv)) return { ok: false, key }
+      restored[key] = { ...entry, value: '' }
+      continue
+    }
+    // A stored placeholder is a row already corrupted by the pre-fix bug. Blank it rather
+    // than reject: rejecting locks those Agents out of every unrelated edit — and they are
+    // the ones this guard exists for — while blanking heals the row, stops the bad value
+    // reaching the runtime, and lets the save through.
+    restored[key] = { ...entry, value: stored.value === MASKED_SECRET ? '' : stored.value }
+  }
+  return { ok: true, value: restored }
+}
+
 export function maskProviderChainConfig<T>(
   config: T,
   replacement: string | null = MASKED_SECRET,

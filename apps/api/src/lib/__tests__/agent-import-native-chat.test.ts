@@ -180,4 +180,173 @@ describe('agent import native chat credentials', () => {
     })
     expect(insertedAgent.a2aRouteTargets[0]).not.toHaveProperty('apiKey')
   })
+
+  /**
+   * Export masks sensitive env values to '********', so importing one verbatim
+   * would hand the new Agent a literal placeholder as its credential — the run
+   * fails to authenticate while the UI shows a configured-looking masked field.
+   * Clear it instead, exactly as the masked A2A key is dropped above.
+   */
+  it('clears masked sensitive env values instead of importing the placeholder', async () => {
+    const result = await importAgentFromZip(
+      buildNativeChatExportZip(null, {
+        env: {
+          API_TOKEN: { value: '********', sensitive: true },
+          LOG_LEVEL: { value: 'debug', sensitive: false },
+        },
+      }),
+      'usr_test',
+    )
+    const insertedAgent = insertValues.mock.calls[0]?.[0] as {
+      env: Record<string, { value: string; sensitive: boolean }>
+    }
+
+    expect(insertedAgent.env).toEqual({
+      API_TOKEN: { value: '', sensitive: true },
+      LOG_LEVEL: { value: 'debug', sensitive: false },
+    })
+    expect(result.warnings).toContain(
+      'Sensitive environment variable values are not imported; re-enter them before use',
+    )
+  })
+
+  /**
+   * Export masks on `v.sensitive || isSensitiveKey(k)`, so a key-name-detected secret
+   * is exported as dots while keeping `sensitive: false`. Clearing only on the flag
+   * would import that placeholder as the credential itself — and because the entry is
+   * not sensitive the UI renders it in plaintext as '********', which reads as a
+   * deliberate mask rather than the broken credential it is.
+   */
+  it('clears a key-name-detected masked value that carries sensitive:false', async () => {
+    const result = await importAgentFromZip(
+      buildNativeChatExportZip(null, {
+        env: {
+          API_KEY: { value: '********', sensitive: false },
+          LOG_LEVEL: { value: 'debug', sensitive: false },
+        },
+      }),
+      'usr_test',
+    )
+    const insertedAgent = insertValues.mock.calls[0]?.[0] as {
+      env: Record<string, { value: string; sensitive: boolean }>
+    }
+
+    // Promoted to sensitive: the export classified it as a secret by name, and dropping
+    // that classification means the value the user retypes is stored unmasked and served
+    // in plaintext by GET /agents/:id — a worse leak than the placeholder it replaced.
+    expect(insertedAgent.env).toEqual({
+      API_KEY: { value: '', sensitive: true },
+      LOG_LEVEL: { value: 'debug', sensitive: false },
+    })
+    expect(result.warnings).toContain(
+      'Sensitive environment variable values are not imported; re-enter them before use',
+    )
+  })
+
+  /**
+   * A non-sensitive variable whose name looks harmless may legitimately hold the
+   * literal text — export never masked it, so import must not erase it.
+   */
+  it('keeps a literal placeholder typed into a non-secret-looking variable', async () => {
+    await importAgentFromZip(
+      buildNativeChatExportZip(null, {
+        env: { MASK_STYLE: { value: '********', sensitive: false } },
+      }),
+      'usr_test',
+    )
+    const insertedAgent = insertValues.mock.calls[0]?.[0] as {
+      env: Record<string, { value: string; sensitive: boolean }>
+    }
+
+    expect(insertedAgent.env).toEqual({ MASK_STYLE: { value: '********', sensitive: false } })
+  })
+
+  /**
+   * `sanitizeMcpServer` runs `maskAllStringRecord` over env and headers, replacing every
+   * value unconditionally — so a masked value on import is never restorable. Writing it
+   * back verbatim gives the new server '********' as its Authorization header: it renders
+   * fully configured, and the only symptom is a 401 from the remote on every run.
+   */
+  it('clears masked MCP env and headers instead of importing the placeholders', async () => {
+    const zip = new AdmZip()
+    zip.addFile(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ version: '1.0', exportedAt: '2026-01-01' })),
+    )
+    zip.addFile(
+      'mcp-servers/remote.json',
+      Buffer.from(
+        JSON.stringify({
+          name: 'Remote MCP',
+          description: null,
+          type: 'http',
+          url: 'https://mcp.example.com/sse',
+          headers: { Authorization: '********' },
+          env: { API_TOKEN: '********' },
+          isEnabled: true,
+          groupConfig: null,
+        }),
+      ),
+    )
+    zip.addFile(
+      'agent.json',
+      Buffer.from(
+        JSON.stringify({
+          name: 'Agent with MCP',
+          description: null,
+          type: 'cursor',
+          icon: 'bot',
+          systemPrompt: null,
+          config: {},
+          workspaceType: 'temp',
+          maxConcurrency: 1,
+          env: null,
+          feishuConfig: null,
+          slackConfig: null,
+          discordConfig: null,
+          scheduleConfig: null,
+          publishChannels: ['api'],
+          oauthAccessMode: 'all_idaas_users',
+          a2aSkills: null,
+          a2aRouteTargets: null,
+          showLocalChildOutput: null,
+          showRemoteChildOutput: null,
+          mcpServerRefs: ['remote.json'],
+          skillRefs: [],
+          kbDocumentRefs: [],
+          providerRef: null,
+          scmSourceRef: null,
+        }),
+      ),
+    )
+
+    const result = await importAgentFromZip(zip.toBuffer(), 'usr_test')
+    const insertedMcp = insertValues.mock.calls[0]?.[0] as {
+      headers: Record<string, string> | null
+      env: Record<string, string> | null
+    }
+
+    expect(insertedMcp.headers).toEqual({ Authorization: '' })
+    expect(insertedMcp.env).toEqual({ API_TOKEN: '' })
+    expect(result.warnings).toContain(
+      'MCP Server credentials are not imported; re-enter them before use',
+    )
+  })
+
+  it('imports a plain env untouched and warns nothing about it', async () => {
+    const result = await importAgentFromZip(
+      buildNativeChatExportZip(null, {
+        env: { LOG_LEVEL: { value: 'debug', sensitive: false } },
+      }),
+      'usr_test',
+    )
+    const insertedAgent = insertValues.mock.calls[0]?.[0] as {
+      env: Record<string, { value: string; sensitive: boolean }>
+    }
+
+    expect(insertedAgent.env).toEqual({ LOG_LEVEL: { value: 'debug', sensitive: false } })
+    expect(result.warnings).not.toContain(
+      'Sensitive environment variable values are not imported; re-enter them before use',
+    )
+  })
 })

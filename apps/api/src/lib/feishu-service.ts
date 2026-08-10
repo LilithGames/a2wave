@@ -1948,7 +1948,7 @@ class FeishuConnectionManager {
       try {
         // Awaited inside the try: the delete is async, so a bare call rejects
         // after this frame has returned and the catch below can never see it.
-        await removePendingMessage(message.message_id)
+        await removePendingMessage(message.message_id, agentId)
       } catch (err) {
         logger.warn({ err, messageId: message.message_id }, 'Feishu: removePendingMessage failed')
       }
@@ -1960,7 +1960,15 @@ class FeishuConnectionManager {
         await tx
           .select({ runId: feishuPendingMessages.runId })
           .from(feishuPendingMessages)
-          .where(eq(feishuPendingMessages.messageId, message.message_id))
+          // Scoped to this Agent: the same message_id is delivered to every bot
+          // in the chat, so an unscoped read picks up the *other* Agent's row
+          // and skips this message as a duplicate of a run that is not ours.
+          .where(
+            and(
+              eq(feishuPendingMessages.messageId, message.message_id),
+              eq(feishuPendingMessages.agentId, agentId),
+            ),
+          )
           .limit(1)
       )[0]
 
@@ -2015,6 +2023,7 @@ class FeishuConnectionManager {
           .where(
             and(
               eq(feishuPendingMessages.messageId, message.message_id),
+              eq(feishuPendingMessages.agentId, agentId),
               eq(feishuPendingMessages.runId, existingRunId),
             ),
           )
@@ -2029,6 +2038,7 @@ class FeishuConnectionManager {
           .where(
             and(
               eq(feishuPendingMessages.messageId, message.message_id),
+              eq(feishuPendingMessages.agentId, agentId),
               isNull(feishuPendingMessages.runId),
             ),
           )

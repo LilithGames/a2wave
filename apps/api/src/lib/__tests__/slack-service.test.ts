@@ -1,4 +1,30 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const reserveNativeChatRun = vi.hoisted(() => vi.fn())
+
+vi.mock('../native-chat-runner.js', () => ({
+  reserveNativeChatRun,
+}))
+
+// The Slack SDK must never reach the network: `start()` calls `auth.test()`,
+// which would hang indefinitely under fake timers.
+const socketStart = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+vi.mock('@slack/socket-mode', () => ({
+  SocketModeClient: class {
+    on = vi.fn()
+    start = socketStart
+    disconnect = vi.fn().mockResolvedValue(undefined)
+  },
+}))
+
+vi.mock('@slack/web-api', () => ({
+  WebClient: class {
+    auth = { test: vi.fn().mockResolvedValue({ user_id: 'UBOT', team_id: 'T123' }) }
+    chat = { postMessage: vi.fn().mockResolvedValue(undefined) }
+    filesUploadV2 = vi.fn().mockResolvedValue(undefined)
+  },
+}))
 
 vi.mock('../artifact-links.js', () => ({
   buildArtifactLinkLinesSync: (
@@ -29,6 +55,14 @@ const config = {
 }
 
 describe('Slack service helpers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('always accepts human direct messages', async () => {
     expect(
       shouldTriggerSlackEvent(config, {
@@ -124,6 +158,406 @@ describe('Slack service helpers', () => {
     expect(stripSlackBotMention('<@UBOT> ask <@UOTHER> for help', 'UBOT')).toBe(
       'ask <@UOTHER> for help',
     )
+  })
+
+  it('derives one dedup key per message so a doubly-delivered mention runs once', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const connection = {
+      config: {
+        appId: 'A123',
+        appToken: 'xapp-test',
+        botToken: 'xoxb-test',
+        groupTriggerOnAt: true,
+        groupTriggerOnNewMessage: true,
+        groupReplyMode: 'new',
+        p2pReplyMode: 'new',
+        sendArtifactsAsFile: true,
+      },
+      botUserId: 'UBOT',
+      teamId: 'T123',
+    }
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    // One user @-mention in a channel that also subscribes message.channels:
+    // Slack delivers an app_mention envelope and a message envelope, each with
+    // its own event_id, but both describe the same message ts.
+    const event = {
+      channel: 'C123',
+      channel_type: 'channel',
+      user: 'U123',
+      text: '<@UBOT> hello',
+      ts: '1710000000.000001',
+    }
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: { ...event, type: 'app_mention' },
+    })
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_MESSAGE', team_id: 'T123' },
+      event: { ...event, type: 'message' },
+    })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    // The message envelope supersedes the deferred mention, so only one
+    // reservation is made — and it is keyed by message identity, not by the
+    // per-envelope event_id, so any redelivery collapses onto it too.
+    expect(reserveNativeChatRun).toHaveBeenCalledTimes(1)
+    const { eventId } = reserveNativeChatRun.mock.calls[0]?.[0] as { eventId: string }
+    expect(eventId).toBe('slack:T123:C123:1710000000.000001')
+  })
+
+  it('prefers the message envelope so a mentioned file upload keeps its attachments', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const connection = {
+      config: {
+        appId: 'A123',
+        appToken: 'xapp-test',
+        botToken: 'xoxb-test',
+        groupTriggerOnAt: true,
+        groupTriggerOnNewMessage: true,
+        groupReplyMode: 'new',
+        p2pReplyMode: 'new',
+        sendArtifactsAsFile: true,
+      },
+      botUserId: 'UBOT',
+      teamId: 'T123',
+    }
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    // Slack's app_mention payload carries no `files` array, so if that envelope
+    // wins the dedup race the upload is silently dropped.
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        user: 'U123',
+        text: '<@UBOT> review this',
+        ts: '1710000000.000001',
+      },
+    })
+
+    expect(reserveNativeChatRun).not.toHaveBeenCalled()
+
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_MESSAGE', team_id: 'T123' },
+      event: {
+        type: 'message',
+        channel: 'C123',
+        channel_type: 'channel',
+        user: 'U123',
+        text: '<@UBOT> review this',
+        ts: '1710000000.000001',
+        subtype: 'file_share',
+        files: [{ id: 'F123', name: 'report.pdf', mimetype: 'application/pdf', size: 42 }],
+      },
+    })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(reserveNativeChatRun).toHaveBeenCalledTimes(1)
+    const reserved = reserveNativeChatRun.mock.calls[0]?.[0] as {
+      nativeAttachments: unknown[]
+    }
+    expect(reserved.nativeAttachments).toHaveLength(1)
+  })
+
+  it('still triggers on app_mention when message.channels is not subscribed', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const connection = {
+      config: {
+        appId: 'A123',
+        appToken: 'xapp-test',
+        botToken: 'xoxb-test',
+        groupTriggerOnAt: true,
+        groupTriggerOnNewMessage: false,
+        groupReplyMode: 'new',
+        p2pReplyMode: 'new',
+        sendArtifactsAsFile: true,
+      },
+      botUserId: 'UBOT',
+      teamId: 'T123',
+    }
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    // The documented default workspace setup subscribes app_mention only, so no
+    // message envelope ever follows. Dropping it outright would break every
+    // existing channel deployment.
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        user: 'U123',
+        text: '<@UBOT> hello',
+        ts: '1710000000.000001',
+      },
+    })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reserveNativeChatRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops deferred mentions when the Agent connection stops', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const config = {
+      appId: 'A123',
+      appToken: 'xapp-test',
+      botToken: 'xoxb-test',
+      groupTriggerOnAt: true,
+      groupTriggerOnNewMessage: false,
+      groupReplyMode: 'new',
+      p2pReplyMode: 'new',
+      sendArtifactsAsFile: true,
+    }
+    const connection = { config, botUserId: 'UBOT', teamId: 'T123' }
+    ;(manager as unknown as { connections: Map<string, unknown> }).connections.set('agt_1', {
+      ...connection,
+      socket: { disconnect: vi.fn().mockResolvedValue(undefined) },
+    })
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        user: 'U123',
+        text: '<@UBOT> hello',
+        ts: '1710000000.000001',
+      },
+    })
+    const pending = manager as unknown as {
+      pendingMentions: Map<string, unknown>
+      connections: Map<string, unknown>
+    }
+    expect([...pending.pendingMentions.keys()]).toEqual(['agt_1 slack:T123:C123:1710000000.000001'])
+    expect(pending.connections.has('agt_1')).toBe(true)
+
+    await manager.stop('agt_1')
+    expect([...pending.pendingMentions.keys()]).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reserveNativeChatRun).not.toHaveBeenCalled()
+  })
+
+  it('leaves a failed deferred mention un-acked so Slack redelivers it', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockRejectedValue(new Error('database unavailable'))
+    const manager = new SlackConnectionManager()
+    const connection = {
+      config: {
+        appId: 'A123',
+        appToken: 'xapp-test',
+        botToken: 'xoxb-test',
+        groupTriggerOnAt: true,
+        groupTriggerOnNewMessage: false,
+        groupReplyMode: 'new',
+        p2pReplyMode: 'new',
+        sendArtifactsAsFile: true,
+      },
+      botUserId: 'UBOT',
+      teamId: 'T123',
+    }
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    const ack = vi.fn().mockResolvedValue(undefined)
+    await handleEnvelope('agt_1', connection, {
+      ack,
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        user: 'U123',
+        text: '<@UBOT> hello',
+        ts: '1710000000.000001',
+      },
+    })
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(reserveNativeChatRun).toHaveBeenCalledTimes(1)
+    // Acking here would tell Slack the mention was handled and lose it forever.
+    expect(ack).not.toHaveBeenCalled()
+  })
+
+  it('acks a superseded mention and drops timers when the connection is replaced', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const connection = {
+      config: {
+        appId: 'A123',
+        appToken: 'xapp-test',
+        botToken: 'xoxb-test',
+        groupTriggerOnAt: true,
+        groupTriggerOnNewMessage: true,
+        groupReplyMode: 'new',
+        p2pReplyMode: 'new',
+        sendArtifactsAsFile: true,
+      },
+      botUserId: 'UBOT',
+      teamId: 'T123',
+    }
+    const handleEnvelope = (
+      manager as unknown as {
+        handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+      }
+    ).handleEnvelope.bind(manager)
+
+    const mentionAck = vi.fn().mockResolvedValue(undefined)
+    const event = {
+      channel: 'C123',
+      channel_type: 'channel',
+      user: 'U123',
+      text: '<@UBOT> hello',
+      ts: '1710000000.000001',
+    }
+    await handleEnvelope('agt_1', connection, {
+      ack: mentionAck,
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: { ...event, type: 'app_mention' },
+    })
+    await handleEnvelope('agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_MESSAGE', team_id: 'T123' },
+      event: { ...event, type: 'message' },
+    })
+
+    // The message envelope took over, so the mention must be acknowledged
+    // rather than left for Slack to redeliver.
+    expect(mentionAck).toHaveBeenCalledTimes(1)
+
+    const pending = manager as unknown as { pendingMentions: Map<string, unknown> }
+    expect([...pending.pendingMentions.keys()]).toEqual([])
+  })
+
+  it('drops deferred mentions belonging to a replaced connection', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const config = {
+      appId: 'A123',
+      appToken: 'xapp-test',
+      botToken: 'xoxb-test',
+      groupTriggerOnAt: true,
+      groupTriggerOnNewMessage: false,
+      groupReplyMode: 'new',
+      p2pReplyMode: 'new',
+      sendArtifactsAsFile: true,
+    }
+    const connection = { config, botUserId: 'UBOT', teamId: 'T123' }
+    const internals = manager as unknown as {
+      connections: Map<string, unknown>
+      pendingMentions: Map<string, unknown>
+      handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+    }
+    internals.connections.set('agt_1', {
+      ...connection,
+      socket: { disconnect: vi.fn().mockResolvedValue(undefined) },
+    })
+
+    await internals.handleEnvelope.call(manager, 'agt_1', connection, {
+      ack: vi.fn().mockResolvedValue(undefined),
+      body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        user: 'U123',
+        text: '<@UBOT> hello',
+        ts: '1710000000.000001',
+      },
+    })
+    expect([...internals.pendingMentions.keys()]).toHaveLength(1)
+
+    // Restarting the Agent replaces the connection; the old timer closes over a
+    // disconnected socket and must not fire against it.
+    await manager.start('agt_1', config).catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(reserveNativeChatRun).not.toHaveBeenCalled()
+    expect([...internals.pendingMentions.keys()]).toEqual([])
+  })
+
+  it('drops deferred mentions when startup fails', async () => {
+    reserveNativeChatRun.mockReset()
+    reserveNativeChatRun.mockResolvedValue({ status: 'started', runId: 'run_1' })
+    const manager = new SlackConnectionManager()
+    const config = {
+      appId: 'A123',
+      appToken: 'xapp-test',
+      botToken: 'xoxb-test',
+      groupTriggerOnAt: true,
+      groupTriggerOnNewMessage: false,
+      groupReplyMode: 'new',
+      p2pReplyMode: 'new',
+      sendArtifactsAsFile: true,
+    }
+    const internals = manager as unknown as {
+      pendingMentions: Map<string, unknown>
+      handleEnvelope: (agentId: string, connection: unknown, envelope: unknown) => Promise<void>
+    }
+
+    // Socket listeners are attached before start() resolves, so an event can be
+    // deferred against a connection whose startup then fails.
+    await internals.handleEnvelope.call(
+      manager,
+      'agt_1',
+      { config, botUserId: 'UBOT', teamId: 'T123' },
+      {
+        ack: vi.fn().mockResolvedValue(undefined),
+        body: { event_id: 'Ev_APP_MENTION', team_id: 'T123' },
+        event: {
+          type: 'app_mention',
+          channel: 'C123',
+          user: 'U123',
+          text: '<@UBOT> hello',
+          ts: '1710000000.000001',
+        },
+      },
+    )
+    expect([...internals.pendingMentions.keys()]).toHaveLength(1)
+
+    socketStart.mockRejectedValueOnce(new Error('socket refused'))
+    await expect(manager.start('agt_1', config)).rejects.toThrow('socket refused')
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(reserveNativeChatRun).not.toHaveBeenCalled()
+    expect([...internals.pendingMentions.keys()]).toEqual([])
   })
 
   it('neutralizes outbound Slack mentions without changing ordinary links', async () => {

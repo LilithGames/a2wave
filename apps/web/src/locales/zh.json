@@ -1377,7 +1377,6 @@
     "stopFail": "停止失败，请重试",
     "resumeSuccess": "Agent 已恢复运行",
     "resumeFail": "恢复失败，请重试",
-    "createFail": "创建失败，请重试",
     "cloneFail": "克隆失败，请重试",
     "deleteFail": "删除失败，请重试",
     "templateVarsAvailable": "可用变量",

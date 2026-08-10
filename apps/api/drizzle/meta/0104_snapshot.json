@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ae3af151-f212-45ea-92b7-c3e600ae892c",
+  "id": "16c4a244-436e-4961-b8c4-a76363303cb6",
   "prevId": "747313bb-a8e8-4b1f-b58e-f19aba1ebe31",
   "tables": {
     "a2a_tasks": {
@@ -1839,7 +1839,7 @@
         "message_id": {
           "name": "message_id",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
@@ -1896,7 +1896,15 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "feishu_pending_messages_message_id_agent_id_pk": {
+          "columns": [
+            "message_id",
+            "agent_id"
+          ],
+          "name": "feishu_pending_messages_message_id_agent_id_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -2627,13 +2635,6 @@
         },
         "trigger_user_name": {
           "name": "trigger_user_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "trigger_agent_name": {
-          "name": "trigger_agent_name",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

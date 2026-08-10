@@ -170,6 +170,71 @@ describe('a2wave setup', () => {
     expect(out).toMatch(/set.*password/i)
   })
 
+  describe('database backend flags', () => {
+    it('writes --database-url into .env; the compose file reads it with a SQLite fallback', async () => {
+      await runSetup({
+        dir: '/tmp/a2wave',
+        'database-url': 'postgres://a2wave:pw@db.internal:5432/a2wave',
+      })
+      const env = writtenFile('.env')
+      expect(env).toContain('DATABASE_URL=postgres://a2wave:pw@db.internal:5432/a2wave')
+      expect(env).not.toContain('POSTGRES_PASSWORD')
+      const compose = writtenFile('docker-compose.yml')
+      expect(compose).toContain('DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}')
+      expect(compose).not.toContain('image: postgres')
+    })
+
+    it('omits DATABASE_URL from .env by default so SQLite stays the backend', async () => {
+      await runSetup({ dir: '/tmp/a2wave' })
+      expect(writtenFile('.env')).not.toContain('DATABASE_URL')
+    })
+
+    it('rejects a non-postgres --database-url before writing any file', async () => {
+      await expect(
+        runSetup({ dir: '/tmp/a2wave', 'database-url': 'mysql://db/a2wave' }),
+      ).rejects.toThrow(/postgres/i)
+      expect(mockWriteFileSync).not.toHaveBeenCalled()
+    })
+
+    it('rejects --database-url combined with --with-postgres', async () => {
+      // The sidecar derives its own URL; accepting both would silently drop one.
+      await expect(
+        runSetup({
+          dir: '/tmp/a2wave',
+          'database-url': 'postgres://db/a2wave',
+          'with-postgres': true,
+        }),
+      ).rejects.toThrow(/--database-url.*--with-postgres|--with-postgres.*--database-url/)
+      expect(mockWriteFileSync).not.toHaveBeenCalled()
+    })
+
+    it('--with-postgres generates the sidecar with a fresh password wired into DATABASE_URL', async () => {
+      await runSetup({ dir: '/tmp/a2wave', 'with-postgres': true })
+      const env = writtenFile('.env')
+      const password = env?.match(/^POSTGRES_PASSWORD=([0-9a-f]{32})$/m)?.[1]
+      expect(password).toBeDefined()
+      expect(env).toContain(`DATABASE_URL=postgres://a2wave:${password}@postgres:5432/a2wave`)
+      const compose = writtenFile('docker-compose.yml')
+      expect(compose).toContain('image: postgres:16-alpine')
+      expect(compose).toContain('condition: service_healthy')
+      // The password reaches the sidecar via .env interpolation, never a literal.
+      expect(compose).not.toContain(String(password))
+    })
+
+    it('warns when an external database URL points at localhost (unreachable from the container)', async () => {
+      const out = await runSetup({
+        dir: '/tmp/a2wave',
+        'database-url': 'postgres://a2wave:pw@localhost:5432/a2wave',
+      })
+      expect(out).toContain('host.docker.internal')
+    })
+
+    it('mentions the EXPERIMENTAL status when PostgreSQL is selected', async () => {
+      const out = await runSetup({ dir: '/tmp/a2wave', 'with-postgres': true })
+      expect(out).toMatch(/EXPERIMENTAL/i)
+    })
+  })
+
   describe('admin password prompt', () => {
     /** Health passes, then POST /auth/setup succeeds. */
     function mockSetupApiOk(): void {
@@ -1329,6 +1394,37 @@ describe('a2wave setup --upgrade', () => {
     ).rejects.toThrow(/base-url/)
   })
 
+  it('rejects --upgrade with --database-url / --with-postgres (an upgrade never rewrites .env)', async () => {
+    await expect(
+      runSetup({
+        dir: DIR,
+        upgrade: true,
+        image: 'a2wave:1.3.0',
+        'database-url': 'postgres://db/a2wave',
+      }),
+    ).rejects.toThrow(/database-url/)
+    await expect(
+      runSetup({ dir: DIR, upgrade: true, image: 'a2wave:1.3.0', 'with-postgres': true }),
+    ).rejects.toThrow(/with-postgres/)
+  })
+
+  it('warns that the pre-upgrade backup covers the data volume only, not PostgreSQL', async () => {
+    // The backup archives the volume mounted at /app/data; a PostgreSQL
+    // backend keeps the real data elsewhere (external server or the sidecar's
+    // own volume), so reporting a good snapshot without this caveat would let
+    // an operator upgrade believing the database is covered.
+    mockReadFileSync.mockImplementation((p: string) =>
+      p.endsWith('.env')
+        ? `${ENV}DATABASE_URL=postgres://a2wave:pw@postgres:5432/a2wave\n`
+        : p.endsWith('docker-compose.yml')
+          ? COMPOSE
+          : '',
+    )
+    const out = await runSetup({ dir: DIR, upgrade: true, image: 'a2wave:1.3.0' })
+    expect(out).toMatch(/PostgreSQL/)
+    expect(out).toMatch(/backup/i)
+  })
+
   it('rejects --upgrade with --no-start (an upgrade is a restart by definition)', async () => {
     await expect(
       runSetup({ dir: DIR, upgrade: true, image: 'a2wave:1.3.0', start: false }),
@@ -2094,9 +2190,12 @@ describe('a2wave setup --upgrade under a polluted parent environment', () => {
     mockFetch.mockImplementation(
       async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),
     )
-    // The pollution the operator's shell carries in.
+    // The pollution the operator's shell carries in. DATABASE_URL is the most
+    // likely of the three in the wild — every dev machine running this repo
+    // has one in scope.
     process.env.A2WAVE_PORT = 'notaport'
     process.env.A2WAVE_IMAGE = 'someone-elses:image'
+    process.env.DATABASE_URL = 'postgres://someone-elses-db:5432/prod'
   })
 
   afterEach(() => {
@@ -2107,6 +2206,32 @@ describe('a2wave setup --upgrade under a polluted parent environment', () => {
     delete process.env.A2WAVE_PORT
     // biome-ignore lint/performance/noDelete: same — see above
     delete process.env.A2WAVE_IMAGE
+    // biome-ignore lint/performance/noDelete: same — see above
+    delete process.env.DATABASE_URL
+  })
+
+  it('never lets an exported DATABASE_URL reach a compose child', async () => {
+    // The generated compose interpolates ${DATABASE_URL:-...}, and Compose
+    // prefers the process environment over the install .env — an inherited
+    // value would silently point the recreated container at the exported
+    // database while .env still records the real one.
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd.includes('.Mounts')) {
+        return JSON.stringify([{ Name: 'a2wave-deadbeef_a2wave-data', Destination: '/app/data' }])
+      }
+      if (cmd.includes('ps ')) return '{"Name":"proj-a2wave-1","State":"running"}'
+      return ''
+    })
+    await runSetup({ dir: DIR, upgrade: true, image: 'a2wave:1.3.0' })
+    // Project-scoped calls only: the bare `docker compose version` preflight
+    // interpolates nothing, so its inherited env is inert.
+    const composeCalls = mockExecSync.mock.calls.filter(
+      ([c]) => c.includes('docker compose') && c.includes('-p '),
+    )
+    expect(composeCalls.length).toBeGreaterThan(0)
+    for (const [, opts] of composeCalls) {
+      expect(childEnv(opts).DATABASE_URL).toBeUndefined()
+    }
   })
 
   it('backs up the external restore volume, not the stale conventional one', async () => {
