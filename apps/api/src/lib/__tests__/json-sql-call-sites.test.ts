@@ -183,18 +183,16 @@ function resolveSymbol(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | unde
 function isProvablyNotJsonSql(node: ts.Expression): boolean {
   if (!ts.isTemplateExpression(node)) return false
 
-  // A specifier that starts with an absolute-URL or absolute-path scheme names a
-  // resolved file on disk, not a module specifier. json-sql is imported only as
-  // a relative `../lib/json-sql.js`, and TypeScript would not resolve this form
-  // to it in the first place, so such an import cannot be the escape hatch this
-  // check exists to close.
-  const head = node.head.text
-  if (/^(file:\/\/|https?:\/\/|\/)/.test(head)) return true
-
-  // Otherwise, a non-empty tail that is a concrete non-json-sql file suffix pins
-  // the module loaded; a substitution before it cannot change the ending.
-  const tail = node.templateSpans[node.templateSpans.length - 1]?.literal.text ?? ''
-  return tail.length > 0 && !/json-sql/.test(tail) && /\.[a-z]+$/.test(tail)
+  // ONLY an absolute-URL or absolute-path head is exempt. Such a specifier names
+  // a resolved file on disk rather than a module specifier; json-sql is imported
+  // only as a relative `../lib/json-sql.js`, so this form cannot reach it.
+  //
+  // A trailing-suffix exemption used to live here too, and it was wrong: in
+  // `` `../lib/${part}.js` `` the tail `.js` says nothing about the substitution
+  // before it, so `const part: string = 'json-sql'` imported the real module
+  // while the analyzer stayed silent. Proving a *suffix* never proves the
+  // *module*; only an interpolation-free prefix that cannot resolve here does.
+  return /^(file:\/\/|https?:\/\/|\/)/.test(node.head.text)
 }
 
 /**
@@ -245,6 +243,17 @@ function isPropertyNameOfBinding(node: ts.Node): boolean {
  * and nothing else in the program declares a function assignable to either by
  * identity. It is compared by the type object's own identity, not structurally,
  * so an unrelated `(c, p) => SQL` does not collide.
+ *
+ * Type identity alone is not quite enough, because a use site can be given a
+ * *different* type object than the declaration:
+ *
+ *   const { jsonExtractText: extract }: { jsonExtractText: Extractor } = jsonSql
+ *
+ * The annotation supplies a fresh `Extractor` type, so the binding is neither
+ * the export symbol nor the declaration's type object. Provenance closes it: ask
+ * what object the binding was destructured *from*, and look the property up
+ * there. That is still not syntax-enumeration — it is one more identity
+ * question, asked of the source rather than the binding.
  */
 function helperNameOf(
   checker: ts.TypeChecker,
@@ -258,7 +267,54 @@ function helperNameOf(
     if (direct) return direct
   }
 
-  return helperTypes.get(checker.getTypeAtLocation(node))
+  const byType = helperTypes.get(checker.getTypeAtLocation(node))
+  if (byType) return byType
+
+  return helperNameByProvenance(checker, symbol, helperSymbols, helperTypes)
+}
+
+/**
+ * Resolve a destructured binding through the object it came from.
+ *
+ * `const { jsonExtractText: extract }: {...} = jsonSql` creates a local symbol
+ * whose declaration is a BindingElement. Reading the property off the
+ * *initializer's* type — the namespace, whose properties are the real export
+ * aliases — recovers the helper even when an annotation has replaced the
+ * binding's own type.
+ */
+function helperNameByProvenance(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol | undefined,
+  helperSymbols: Map<ts.Symbol, string>,
+  helperTypes: Map<ts.Type, string>,
+): string | undefined {
+  const declaration = symbol?.valueDeclaration
+  if (!declaration || !ts.isBindingElement(declaration)) return undefined
+
+  // The property read: `{ key: local }` uses propertyName, `{ key }` uses name.
+  const key = declaration.propertyName ?? declaration.name
+  if (!ts.isIdentifier(key) && !ts.isStringLiteralLike(key)) return undefined
+
+  const pattern = declaration.parent
+  if (!ts.isObjectBindingPattern(pattern)) return undefined
+  const variable = pattern.parent
+  if (!ts.isVariableDeclaration(variable) || !variable.initializer) return undefined
+
+  const property = checker.getPropertyOfType(
+    checker.getTypeAtLocation(variable.initializer),
+    key.text,
+  )
+  if (!property) return undefined
+
+  const target =
+    property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
+  const bySymbol = helperSymbols.get(target)
+  if (bySymbol) return bySymbol
+
+  const valueDeclaration = target.valueDeclaration
+  return valueDeclaration
+    ? helperTypes.get(checker.getTypeOfSymbolAtLocation(target, valueDeclaration))
+    : undefined
 }
 
 /**
@@ -387,9 +443,14 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
                 message: `${helper}(${argument.expression.text}.${argument.name.text}) — ${argument.expression.text} is not a schema table (declared in ${relative(SRC, declaredIn) || 'an unknown location'})`,
               })
             } else {
+              // Record the CANONICAL export name, not the local spelling. The
+              // schema assertion below looks the table up in the real schema
+              // module, so `import { runSteps as steps }` must be stored as
+              // `runSteps` — storing `steps` would report the legitimate alias
+              // as "not a schema table" and fail the gate on correct code.
               resolved.push({
                 file,
-                table: argument.expression.text,
+                table: tableSymbol?.getName() ?? argument.expression.text,
                 column: argument.name.text,
               })
             }
@@ -633,6 +694,21 @@ describe('the analyzer itself, against every known evasion shape', () => {
        extract10(users.email, ['x'])`,
     ],
     [
+      'dynamic import through a widened interpolation with a static tail',
+      `const part: string = 'json-sql'
+       const { jsonExtractText: extract12 } = await import(\`../lib/\${part}.js\`)
+       extract12(users.email, ['x'])`,
+    ],
+    [
+      'contextually typed namespace destructure',
+      `import type { SQL } from 'drizzle-orm'
+       import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
+       import * as jsonSql from '../lib/json-sql.js'
+       type Extractor = (c: SQLiteColumn, p: readonly [string, ...string[]]) => SQL<string | null>
+       const { jsonExtractText: extract13 }: { jsonExtractText: Extractor } = jsonSql
+       extract13(users.email, ['x'])`,
+    ],
+    [
       'dynamic import through a concatenated specifier',
       `const specifier = '../lib/' + 'json-sql.js'
        const { jsonExtractText: extract11 } = await import(specifier)
@@ -741,6 +817,27 @@ describe('the analyzer itself, against every known evasion shape', () => {
        jsonExtractText(steps.output, ['usage'])`,
     )
     expect(result.findings).toEqual([])
-    expect(result.resolved.map((r) => `${r.table}.${r.column}`)).toEqual(['steps.output'])
+    // The CANONICAL name, not the local alias `steps`. The schema assertion
+    // resolves this against the real schema module, so recording the alias
+    // would fail the repo-wide gate on legitimate code.
+    expect(result.resolved.map((r) => `${r.table}.${r.column}`)).toEqual(['runSteps.output'])
+  })
+
+  it('resolves an aliased table against the real schema, not just by name', () => {
+    // The assertion above pins the string; this one proves the string is
+    // usable — the alias must reach a real json column in the schema module,
+    // which is what the repo-wide gate does with every resolved entry.
+    const result = analyzeFixture(
+      `import { jsonExtractText } from '../lib/json-sql.js'
+       import { runSteps as steps } from '../db/schema.js'
+       jsonExtractText(steps.output, ['usage'])`,
+    )
+    for (const { table, column } of result.resolved) {
+      const tableObject = (schema as Record<string, unknown>)[table] as
+        | Record<string, { dataType?: string }>
+        | undefined
+      expect(tableObject, `${table} should resolve in the schema module`).toBeDefined()
+      expect(tableObject?.[column]?.dataType).toBe('json')
+    }
   })
 })
