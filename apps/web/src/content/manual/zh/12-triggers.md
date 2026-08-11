@@ -283,7 +283,7 @@ curl -X POST ".../api/a2a/<agentId>" -H "Authorization: Bearer <key>" \
 
 Agent Card 同样参与版本协商：请求 A2A 1.0 结构时应携带 `A2A-Version: 1.0`；省略该请求头会有意返回兼容 A2A 0.3 的 Card。
 
-A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别为 `GetTask`、`CancelTask`。异步调用把 `returnImmediately` 设为 `true`，返回 Task 后用 `GetTask` 轮询到终态。A2A 0.3 客户端仍可继续使用 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel`，以及小写的角色与任务状态。鉴权支持 API Key 与 OAuth（企业 OIDC JWT）。
+A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别为 `GetTask`、`CancelTask`。异步调用把 `returnImmediately` 设为 `true`，返回 Task 后用 `GetTask` 轮询到终态。A2A 0.3 客户端仍可继续使用 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel`，以及小写的角色与任务状态。鉴权使用 Agent 的 A2A API Key（`a2aAuthType` 仅支持 `none` / `api_key`）。OAuth 渠道的 OIDC JWT 在这里**不被接受**，会返回 `401`。
 
 本地也可用 `pnpm a2a-demo -- <agentId> "..."` 脚本快速测试。A2A 消息除文本外还可携带图片/文件；A2A 1.0 与 0.3 的分片字段不同，示例见下方「附件」。
 
@@ -294,7 +294,7 @@ A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别�
 来源扩展通过 Agent Card 协商。使用「Agent Card 发现」的路由会在对端声明支持时自动启用。「直连端点」没有 Agent Card 可供能力发现：选择 A2A 1.0 后，只有确认接收方支持 a2wave 来源扩展时，才显式开启「发送调用来源信息」。该开关默认关闭，直连 A2A 0.3 也不会发送扩展。未支持扩展的 A2A 服务仍可正常互通，只是运行记录会退化为较少层级，最少仍显示 `A2A`。
 
 > [!IMPORTANT]
-> 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 或 OAuth（企业 OIDC JWT）完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
+> 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
 
 ### 调用远程标准 A2A 服务
 

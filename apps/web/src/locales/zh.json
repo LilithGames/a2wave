@@ -1032,7 +1032,7 @@
         "scopes": "Scopes",
         "scopesHint": "留空默认 openid profile email。",
         "channelAudiences": "OAuth 渠道受众（aud）",
-        "channelAudiencesHint": "仅用于 OAuth 发布渠道：允许的调用方 token aud，逗号分隔。Client ID 不会自动加入；留空 = 关闭该渠道。不影响登录。",
+        "channelAudiencesHint": "仅用于 OAuth 发布渠道：填 IdP 为 a2wave 签发的受众（aud 标识目标资源服务器，即本服务），逗号分隔；调用方通过 IdP 的 resource/audience 参数申请。不要填其它应用的受众。Client ID 不会自动加入；留空 = 关闭该渠道。不影响登录。",
         "clientSecret": "Client Secret",
         "clientSecretHint": "机密客户端填写，公共客户端（PKCE）留空。加密存储，保存后不再显示原文。",
         "clientSecretSet": "已设置（留空保持不变）",

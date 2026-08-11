@@ -1032,7 +1032,7 @@
         "scopes": "Scopes",
         "scopesHint": "Defaults to openid profile email when blank.",
         "channelAudiences": "OAuth channel audiences (aud)",
-        "channelAudiencesHint": "OAuth publish channel only: allowed caller token `aud` values, comma-separated. Client ID is not added automatically; empty disables the channel. Does not affect login.",
+        "channelAudiencesHint": "OAuth publish channel only: the audience your IdP mints for a2wave (`aud` names the target resource server — this service), comma-separated; callers request it via the IdP resource/audience parameter. Do not list other applications' audiences. Client ID is not added automatically; empty disables the channel. Does not affect login.",
         "clientSecret": "Client Secret",
         "clientSecretHint": "Set for confidential clients, blank for public (PKCE) clients. Stored encrypted, never returned.",
         "clientSecretSet": "Set (leave blank to keep unchanged)",

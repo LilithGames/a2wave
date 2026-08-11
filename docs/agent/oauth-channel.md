@@ -173,8 +173,8 @@ integration at the same time.
 
 ### Behavior when config is missing (lazy loading)
 
-- OIDC not configured, or configured but disabled → returns `503 OAuth not configured` on the first oauth request (no ERROR log; being unconfigured is a legitimate state)
-- IdP discovery / JWKS unreachable → verification fails and the request is rejected `401`; the cause is in the request log
+- OIDC not configured, or its audience allowlist empty → returns `503 OAuth not configured` on the first oauth request (no ERROR log; being unconfigured is a legitimate state). Note the channel deliberately **ignores** the OIDC *login* toggle: disabling the sign-in button does not stop already-published oauth Agents
+- IdP discovery / JWKS unreachable → infrastructure failure, so the request is rejected `503` `AUTHORIZATION_CHECK_UNAVAILABLE` (retryable), **not** `401`; the cause is in the request log
 - `none` / `api_key` channels are entirely unaffected
 
 Design intent: don't block other already-enabled channels, and facilitate production canary rollout.
@@ -277,11 +277,16 @@ curl -X POST https://a2wave.example.com/api/oauth/agt_xxx/invoke \
 
 ### 5.3 A2A JSON-RPC
 
+> ⚠️ **A2A does not accept the OAuth token prepared above.** `a2aAuthType` is constrained to
+> `none | api_key` (`publishAuthTypeEnum`), so `validateGatewayAuth`'s oauth branch is unreachable
+> from this route — sending an OIDC JWT here returns `401`. Authenticate A2A with the Agent's A2A
+> API key instead; the snippet below uses that key, not `$TOKEN` from §5.1.
+
 ```js
 const res = await fetch(`${A2WAVE_BASE}/api/a2a/agt_xxx`, {
   method: 'POST',
   headers: {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${a2aApiKey}`, // the Agent's A2A API key, NOT an OIDC JWT
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({
@@ -398,13 +403,20 @@ The JWT is valid, but the caller's email is not on the Agent's allowlist (`speci
 
 Fix: `Agent details → Publish → OAuth Authorization`, add the email, re-publish. It takes effect on the next request; there is no cache to wait out.
 
-### 7.4 Call returns `403 CALLER_TOKEN_CLAIMS_INVALID`
+### 7.4 Call returns `403` on the email claim
 
-Only reachable under `specified_users`: the token carries no **verified** `email` claim, so there is nothing to match against the allowlist.
+Two distinct gates, in this order — the first runs **before** the access-mode branch, so switching
+the Agent's mode does not bypass it:
+
+1. **No email claim at all** (`MISSING_EMAIL_CLAIM`) — rejected in **both** access modes. The
+   address is what makes a disabled account revocable, so an address-less token is refused even
+   under `all_idaas_users`. An `email_verified: false` address still satisfies *this* gate.
+2. **No verified email** (`MISSING_VERIFIED_EMAIL` / `CALLER_TOKEN_CLAIMS_INVALID`) — reachable
+   only under `specified_users`, which matches the verified address against the allowlist.
 
 - The IdP client is not requesting the `email` scope → add it to the caller's client config
-- The claim is present but `email_verified` is false → the IdP treats that address as unconfirmed; a2wave will not authorize on it. Have the user verify the address at the IdP
-- If the Agent does not actually need per-person restriction, switch it to `all_idaas_users`, which never inspects the email claim
+- The claim is present but `email_verified` is false → the IdP treats that address as unconfirmed; a2wave will not authorize on it under `specified_users`. Have the user verify the address at the IdP
+- Switching to `all_idaas_users` relaxes only gate 2. A token carrying **no** email claim keeps failing in either mode
 
 ### 7.5 Call returns `424 PROVIDER_REAUTH_REQUIRED`
 
@@ -419,7 +431,7 @@ Only reachable under `specified_users`: the token carries no **verified** `email
 
 ### 7.7 Discovery / JWKS unreachable
 
-- Verification fetches `{issuer}/.well-known/openid-configuration` and then the JWKS. If the API process cannot reach the IdP (egress firewall, split-horizon DNS, proxy), every call fails `401`
+- Verification fetches `{issuer}/.well-known/openid-configuration` and then the JWKS. If the API process cannot reach the IdP (egress firewall, split-horizon DNS, proxy), every call fails `503` (`AUTHORIZATION_CHECK_UNAVAILABLE`) — deliberately not `401`, since the caller's credentials are not at fault
 - Settings → Enterprise login → OIDC → "Test" runs the same discovery from the server, so it reproduces the failure with a clearer message
 
 ### 7.8 Browser SSO doesn't redirect back

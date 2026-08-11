@@ -791,10 +791,13 @@ describe('oauthEnvErrorKey', () => {
   // The OIDC config resolves DB-first. Telling an admin to set environment variables when the
   // config came from Settings sends them to edit a file the server never reads — they restart
   // and nothing changes.
+  // The literal must match what the API actually returns (`SsoConfigSource = 'settings' | 'env'`).
+  // An earlier version of this test asserted `'db'` — the same wrong value the implementation
+  // used — so both agreed with each other while the feature was dead in production.
   it('sends a Settings-sourced incomplete config back to Settings, not to env vars', () => {
-    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_CHANNEL_AUDIENCES'], source: 'db' })).toBe(
-      'agentPublish.oauthEnvIncompleteSettings',
-    )
+    expect(
+      oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_CHANNEL_AUDIENCES'], source: 'settings' }),
+    ).toBe('agentPublish.oauthEnvIncompleteSettings')
   })
 
   it('names the environment variables when the config is env-sourced or absent', () => {
@@ -808,7 +811,7 @@ describe('oauthEnvErrorKey', () => {
 
   // Nothing missing but still unusable means the issuer itself does not verify.
   it('reports an unusable issuer when nothing is missing', () => {
-    expect(oauthEnvErrorKey({ missing: [], source: 'db' })).toBe(
+    expect(oauthEnvErrorKey({ missing: [], source: 'settings' })).toBe(
       'agentPublish.oauthEnvInvalidPublicKey',
     )
   })

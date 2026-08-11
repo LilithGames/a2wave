@@ -289,7 +289,7 @@ curl -X POST ".../api/a2a/<agentId>" -H "Authorization: Bearer <key>" \
 
 The Agent Card is version-negotiated as well: include `A2A-Version: 1.0` when requesting the v1 shape. Omitting the header intentionally returns an A2A 0.3-compatible Card.
 
-For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication supports API Key and OAuth (enterprise OIDC JWT).
+For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication uses the Agent's A2A API Key (`a2aAuthType` is `none` or `api_key`). The OAuth channel's OIDC JWT is **not** accepted here and returns `401`.
 
 Locally, `pnpm a2a-demo -- <agentId> "..."` provides a quick test. A2A messages can carry images/files as well as text; A2A 1.0 and 0.3 use different part fields, shown under **Attachments** below.
 
@@ -300,7 +300,7 @@ When both the caller and receiver support the A2A provenance extension, a remote
 The extension is negotiated through the Agent Card. Routes using **Agent Card discovery** enable it automatically when the peer advertises support. A **Direct endpoint** has no card for capability discovery: select A2A 1.0 and then explicitly enable **Send caller provenance** only when the receiver supports the a2wave extension. The switch is off by default, and direct A2A 0.3 routes never send the extension. A2A peers without the extension remain fully interoperable; their run history simply falls back to fewer layers, down to `A2A` when only the source is known.
 
 > [!IMPORTANT]
-> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key or OAuth (enterprise OIDC JWT) authentication, and a receiver must not grant access from a display name in the provenance extension.
+> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key authentication, and a receiver must not grant access from a display name in the provenance extension.
 
 ### Invoke a remote standard A2A service
 

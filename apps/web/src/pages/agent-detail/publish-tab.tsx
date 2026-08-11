@@ -42,6 +42,7 @@ import {
   type GitTriggerCliStatus,
   type GitTriggerEvent,
   type GitTriggerProvider,
+  type SsoConfigSource,
   isSupportedScheduleCron,
 } from '@a2wave/shared'
 import { useQuery } from '@tanstack/react-query'
@@ -283,24 +284,28 @@ type OauthEnvStatus = {
   configured: boolean
   missing: string[]
   /**
-   * Where the OIDC config was actually read from. Settings/DB wins over the environment, so a
+   * Where the OIDC config was actually read from. Settings wins over the environment, so a
    * message naming env vars sends an admin to edit a file that will not be consulted.
+   *
+   * Typed from the shared `SsoConfigSource` rather than a hand-written literal: the value is
+   * `'settings'`, and spelling it `'db'` here silently disabled the branch below while a test
+   * asserting the same wrong literal still passed.
    */
-  source?: 'db' | 'env' | null
+  source?: SsoConfigSource | null
 }
 
 /**
  * Which "OAuth channel unavailable" message to show.
  *
- * The OIDC config resolves **DB-first**: when it came from Settings, telling the admin to add
- * environment variables points them at a file the server will not consult — they would edit it,
- * restart, and see no change. Only an env-sourced (or entirely absent) config gets the env-var
- * wording; a DB-sourced one that is merely incomplete (empty audience allowlist) is sent back
- * to Settings.
+ * The OIDC config resolves **Settings-first**: when it came from Settings, telling the admin to
+ * add environment variables points them at a file the server will not consult — they would edit
+ * it, restart, and see no change. Only an env-sourced (or entirely absent) config gets the
+ * env-var wording; a Settings-sourced one that is merely incomplete (empty audience allowlist)
+ * is sent back to Settings.
  */
 export function oauthEnvErrorKey(status: Pick<OauthEnvStatus, 'missing' | 'source'>): string {
   if (status.missing.length === 0) return 'agentPublish.oauthEnvInvalidPublicKey'
-  return status.source === 'db'
+  return status.source === 'settings'
     ? 'agentPublish.oauthEnvIncompleteSettings'
     : 'agentPublish.oauthEnvMissing'
 }

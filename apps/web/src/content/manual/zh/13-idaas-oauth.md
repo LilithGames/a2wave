@@ -13,7 +13,7 @@
 > [!IMPORTANT]
 > **OAuth 发布渠道复用 OIDC 配置。** Agent 以 `oauth` 方式发布时，调用方 token 的验签走的就是这里的企业 OIDC——签名公钥由 IdP 的 JWKS 自动提供并轮换，无需单独维护密钥。两点与登录不同：
 >
-> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`；而外部服务调 Agent 时拿的是它自己那条客户端链路签发的 token，`aud` 指向调用方。因此渠道按 `A2WAVE_OIDC_CHANNEL_AUDIENCES` 放行。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。留空即关闭该渠道（fail closed），绝不代表放行全部。
+> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`，而接入自有服务的调用方并不持有它，因此渠道改按 `A2WAVE_OIDC_CHANNEL_AUDIENCES` 放行。**这里要填 IdP 为 a2wave 签发的受众**——JWT access token 的 `aud` 标识的是*目标资源服务器*（即本服务），且资源服务器必须确认自己在该受众内（[RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)）；各调用方通过 IdP 的 resource/audience 参数申请。**不要把其它应用的受众加进来**：那种 token 根本不是为 a2wave 签发的，放行它会让本渠道沦为那个服务 token 的 confused deputy——按调用方区分权限靠访问范围与邮箱名单，不是靠 `aud`。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。留空即关闭该渠道（fail closed），绝不代表放行全部。
 > - **关闭 OIDC 登录不会停掉渠道。** 登录方式的开关只管登录页出不出按钮；已发布的 oauth Agent 继续正常验签，避免「为了强制密码登录而顺手关掉 OIDC」把所有对外集成一起打断。
 >
 > OIDC 完全未配置时，渠道返回 `503 OAuth not configured`。
