@@ -89,13 +89,21 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
 
     // Any rebinding of a helper to another name renames the call and would slip
     // past a scan keyed on the original names, so treat it as a finding rather
-    // than letting the call go unexamined. Two forms: an aliased import
-    // (`jsonExtractText as extract`) and a local rebind (`const extract =
-    // jsonExtractText`), including destructuring off a namespace import.
+    // than letting the call go unexamined. Three forms, all seen in real code:
+    //   import { jsonExtractText as extract } from ...   (aliased import)
+    //   const extract = jsonExtractText                   (local rebind)
+    //   const { jsonExtractText: extract } = jsonSql      (namespace destructure)
     for (const helper of HELPERS) {
       const renamedImport = new RegExp(`\\b${helper}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
       for (const match of body.matchAll(renamedImport)) {
         aliasedImports.push(`${relative}: ${helper} imported as ${match[1]}`)
+      }
+
+      // `jsonExtractText: extract` — destructuring renames with a colon, not
+      // `as`, so the import pattern above does not see it.
+      const destructured = new RegExp(`\\b${helper}\\s*:\\s*([A-Za-z_$][\\w$]*)`, 'g')
+      for (const match of body.matchAll(destructured)) {
+        aliasedImports.push(`${relative}: ${helper} destructured as ${match[1]}`)
       }
 
       // `= jsonExtractText` with no call parenthesis: the function itself is
@@ -107,6 +115,15 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
       for (const match of body.matchAll(rebind)) {
         aliasedImports.push(`${relative}: ${helper} rebound as ${match[1]}`)
       }
+    }
+
+    // A namespace import re-exposes every helper under a name this scan cannot
+    // follow (`jsonSql.jsonExtractText(...)`, or any local rebind of it), so
+    // the module is only safely scannable through named imports.
+    const namespaceImport =
+      /import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"][^'"]*json-sql\.js['"]/g
+    for (const match of body.matchAll(namespaceImport)) {
+      aliasedImports.push(`${relative}: json-sql imported as namespace ${match[1]}`)
     }
 
     const { resolved, unresolved } = collectColumnArguments(body)

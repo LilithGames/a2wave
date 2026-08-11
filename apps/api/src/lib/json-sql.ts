@@ -35,6 +35,37 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
 type JsonPath = readonly [string, ...string[]]
 
 /**
+ * Segments must be plain keys, because the two dialects disagree on what a
+ * special character inside one *means*.
+ *
+ * PostgreSQL takes each segment as a bound parameter, so it is always a literal
+ * key. SQLite takes the whole path as one `$.a.b` string, where `.` and `[]`
+ * are path syntax. The same single segment therefore addresses two different
+ * things — verified against both engines:
+ *
+ *   ['a.b']   PG writes/reads the key "a.b";  SQLite descends into a -> b
+ *   ['a[0]']  PG writes/reads the key "a[0]"; SQLite indexes into the array a
+ *   ['']      PG accepts the empty key;       SQLite raises "bad JSON path"
+ *
+ * Escaping SQLite's path form would close the write side but still leave the
+ * two engines' quoting rules to keep in sync forever. Every real segment here
+ * is an object key from a TypeScript interface (`usage`, `scope`, `contextId`),
+ * so rejecting the ambiguous shapes outright costs nothing today and removes
+ * the divergence class rather than tracking it.
+ */
+const SAFE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function assertSafePath(path: readonly string[], helper: string): void {
+  for (const segment of path) {
+    if (!SAFE_SEGMENT.test(segment)) {
+      throw new Error(
+        `json-sql: ${helper} received the path segment ${JSON.stringify(segment)}, which is not a plain key. SQLite reads '.' and '[]' as path syntax while PostgreSQL binds the segment literally, so the two backends would address different data. Use a segment matching ${SAFE_SEGMENT}.`,
+      )
+    }
+  }
+}
+
+/**
  * `jsonSet` accepts a **single** segment only — the two dialects disagree on
  * anything deeper. Verified on PostgreSQL 14 against SQLite:
  *
@@ -144,6 +175,7 @@ function sqlitePath(path: JsonPath): string {
  * absent figure as "not recorded" instead of zero.
  */
 export function jsonExtractNumber(column: SQLiteColumn, path: JsonPath): SQL<number | null> {
+  assertSafePath(path, 'jsonExtractNumber')
   if (isPostgresRuntime()) {
     return sql<number | null>`(${pgAccessor(column, path)})::numeric`
   }
@@ -152,6 +184,7 @@ export function jsonExtractNumber(column: SQLiteColumn, path: JsonPath): SQL<num
 
 /** Extract a JSON value as **text**, for equality comparisons against an id. */
 export function jsonExtractText(column: SQLiteColumn, path: JsonPath): SQL<string | null> {
+  assertSafePath(path, 'jsonExtractText')
   if (isPostgresRuntime()) {
     return sql<string | null>`${pgAccessor(column, path)}`
   }
@@ -174,6 +207,10 @@ export function jsonArrayContainsKeyValue(
   elementKey: string,
   value: string,
 ): SQL {
+  assertSafePath(arrayPath, 'jsonArrayContainsKeyValue')
+  // `elementKey` is interpolated into SQLite's `$.${elementKey}` path exactly
+  // like a segment, so it carries the same ambiguity and gets the same check.
+  assertSafePath([elementKey], 'jsonArrayContainsKeyValue')
   if (isPostgresRuntime()) {
     let target = pgJsonSource(column)
     for (const segment of arrayPath) {
@@ -206,6 +243,7 @@ export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown)
       `json-sql: jsonSet takes a single-segment path, got [${path.join(', ')}]. PostgreSQL's jsonb_set will not create a missing intermediate parent, so a nested write silently no-ops there while succeeding on SQLite.`,
     )
   }
+  assertSafePath(path, 'jsonSet')
   const serialized = JSON.stringify(value)
   if (isPostgresRuntime()) {
     // `ARRAY[$n]`, not a `'{seg}'` literal. Building the path as text makes the
@@ -226,6 +264,7 @@ export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown)
  * check on the key. Both distinguish "key missing" from "key present but null".
  */
 export function jsonPathIsAbsent(column: SQLiteColumn, path: JsonPath): SQL {
+  assertSafePath(path, 'jsonPathIsAbsent')
   if (isPostgresRuntime()) {
     const leaf = path[path.length - 1]
     let parent = pgJsonSource(column)

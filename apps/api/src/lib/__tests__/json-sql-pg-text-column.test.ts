@@ -52,6 +52,18 @@ function renderPg(fragment: Parameters<PgDialect['sqlToQuery']>[0]): string {
   return dialect.sqlToQuery(fragment).sql
 }
 
+/**
+ * The bound parameters alongside the SQL.
+ *
+ * Asserting the SQL alone cannot distinguish two paths that differ only in
+ * their values: `['scope','tenant']` and `['scope','scope']` both render as
+ * `... -> $1 ->> $2`. Anything claiming a *particular* segment reached the
+ * query has to check here, or it is only testing the shape.
+ */
+function renderPgParams(fragment: Parameters<PgDialect['sqlToQuery']>[0]): unknown[] {
+  return dialect.sqlToQuery(fragment).params
+}
+
 describe('JSON helpers over a plain text column on PostgreSQL', () => {
   it('pins the schema premise the rest of this file depends on', () => {
     // Stated explicitly so that changing either declaration fails HERE, with a
@@ -162,15 +174,24 @@ describe('JSON helpers over a plain text column on PostgreSQL', () => {
   })
 
   it('binds the jsonSet segment instead of building a path literal', () => {
-    // A key containing a comma is the case a `'{a,b}'` string literal gets
-    // wrong: PostgreSQL parses it as the nested path a->b and (verified on 14)
-    // returns `{}` unchanged, while SQLite writes the single key "a,b". Binding
-    // a one-element ARRAY makes the segment a parameter, so the value can no
-    // longer be reinterpreted as path structure.
-    const rendered = renderPg(jsonSet(runSteps.output, ['a,b'], 1))
+    // A `'{seg}'` text literal makes the segment's content structural. Binding
+    // a one-element ARRAY keeps it a value.
+    const fragment = jsonSet(runSteps.output, ['usage'], 1)
 
-    expect(rendered).toContain('ARRAY[')
-    expect(rendered).not.toContain("'{a,b}'")
+    expect(renderPg(fragment)).toContain('ARRAY[$1]')
+    expect(renderPg(fragment)).not.toContain("'{usage}'")
+    // The SQL text alone cannot show *which* segment was bound — `ARRAY[$1]`
+    // renders identically for every key — so assert the parameter itself.
+    expect(renderPgParams(fragment)[0]).toBe('usage')
+  })
+
+  it('binds each extraction segment as a parameter, not into the SQL text', () => {
+    // Guards the same blind spot on the read path: two different paths render
+    // to identical SQL, so only the params distinguish them.
+    const fragment = jsonExtractText(a2aTasks.data, ['scope', 'tenant'])
+
+    expect(renderPgParams(fragment)).toEqual(['scope', 'tenant'])
+    expect(renderPg(fragment)).not.toContain('tenant')
   })
 
   it('still refuses an aliased non-JSON column', () => {
