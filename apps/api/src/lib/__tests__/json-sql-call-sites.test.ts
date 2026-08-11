@@ -87,13 +87,25 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
     const body = code(readFileSync(file, 'utf-8'))
     const relative = file.slice(SRC.length + 1)
 
-    // An aliased import (`jsonExtractText as extract`) renames the call and
-    // would slip past a scan keyed on the original names, so treat it as a
-    // finding in its own right rather than letting the call go unexamined.
+    // Any rebinding of a helper to another name renames the call and would slip
+    // past a scan keyed on the original names, so treat it as a finding rather
+    // than letting the call go unexamined. Two forms: an aliased import
+    // (`jsonExtractText as extract`) and a local rebind (`const extract =
+    // jsonExtractText`), including destructuring off a namespace import.
     for (const helper of HELPERS) {
-      const renamed = new RegExp(`\\b${helper}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
-      for (const match of body.matchAll(renamed)) {
+      const renamedImport = new RegExp(`\\b${helper}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
+      for (const match of body.matchAll(renamedImport)) {
         aliasedImports.push(`${relative}: ${helper} imported as ${match[1]}`)
+      }
+
+      // `= jsonExtractText` with no call parenthesis: the function itself is
+      // being passed around rather than invoked here.
+      const rebind = new RegExp(
+        `(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[\\w$.]*\\b${helper}\\b\\s*(?!\\()`,
+        'g',
+      )
+      for (const match of body.matchAll(rebind)) {
+        aliasedImports.push(`${relative}: ${helper} rebound as ${match[1]}`)
       }
     }
 
@@ -104,7 +116,11 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
 
   it('finds the known call sites, so a broken scan cannot pass vacuously', () => {
     const all = [...callSites.values()].flat()
-    expect(all.length).toBeGreaterThanOrEqual(10)
+    // Pinned to the exact current count, not a floor. A floor of 10 stayed green
+    // while calls silently dropped out of view — which is the failure this file
+    // guards against. Adding or removing a call site is expected to update this
+    // number deliberately.
+    expect(all).toHaveLength(14)
     // The column this whole suite exists for must be among them.
     expect(all).toContain('a2aTasks.data')
   })

@@ -208,7 +208,12 @@ export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown)
   }
   const serialized = JSON.stringify(value)
   if (isPostgresRuntime()) {
-    return sql`jsonb_set(COALESCE(${pgJsonSource(column)}, '{}'::jsonb), ${`{${path.join(',')}}`}, ${serialized}::jsonb, true)`
+    // `ARRAY[$n]`, not a `'{seg}'` literal. Building the path as text makes the
+    // segment's *content* structural: a key containing a comma — `['a,b']` —
+    // parses as the nested path a->b, which jsonb_set then no-ops on because
+    // `a` is absent (verified on PostgreSQL 14), while SQLite writes the single
+    // key "a,b". Binding a one-element array keeps the segment a value.
+    return sql`jsonb_set(COALESCE(${pgJsonSource(column)}, '{}'::jsonb), ARRAY[${path[0]}], ${serialized}::jsonb, true)`
   }
   return sql`json_set(COALESCE(${column}, '{}'), ${sqlitePath(path)}, json(${serialized}))`
 }

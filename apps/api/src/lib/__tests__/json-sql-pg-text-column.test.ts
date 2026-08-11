@@ -161,6 +161,18 @@ describe('JSON helpers over a plain text column on PostgreSQL', () => {
     expect(() => jsonSet(runSteps.output, ['a', 'b'], 1)).toThrow(/single-segment/)
   })
 
+  it('binds the jsonSet segment instead of building a path literal', () => {
+    // A key containing a comma is the case a `'{a,b}'` string literal gets
+    // wrong: PostgreSQL parses it as the nested path a->b and (verified on 14)
+    // returns `{}` unchanged, while SQLite writes the single key "a,b". Binding
+    // a one-element ARRAY makes the segment a parameter, so the value can no
+    // longer be reinterpreted as path structure.
+    const rendered = renderPg(jsonSet(runSteps.output, ['a,b'], 1))
+
+    expect(rendered).toContain('ARRAY[')
+    expect(rendered).not.toContain("'{a,b}'")
+  })
+
   it('still refuses an aliased non-JSON column', () => {
     // The alias must not become a way to smuggle a bad column past the guard.
     expect(() => jsonExtractText(alias(runs, 'r').status, ['x'])).toThrow(/status/)
