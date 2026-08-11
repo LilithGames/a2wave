@@ -224,6 +224,26 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         }
       }
 
+      // `await import('.../json-sql.js')` hands back the module as a runtime
+      // value. Whatever is destructured off it is a fresh local binding, not an
+      // alias of the export, so symbol resolution has nothing to follow and the
+      // helper becomes invisible — the one hole the checker cannot close by
+      // resolution alone. Reject the dynamic import itself: this module is only
+      // ever imported statically, so there is nothing legitimate to lose.
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments[0] &&
+        ts.isStringLiteralLike(node.arguments[0]) &&
+        /json-sql(\.js)?$/.test(node.arguments[0].text)
+      ) {
+        findings.push({
+          file,
+          message:
+            'json-sql imported dynamically; import it statically so call sites stay resolvable',
+        })
+      }
+
       // A helper referenced anywhere other than as the callee of a call is a
       // value escaping into code this analyzer stops tracking.
       if (ts.isIdentifier(node) && !ts.isImportSpecifier(node.parent)) {
@@ -378,6 +398,19 @@ describe('the analyzer itself, against every known evasion shape', () => {
        void fns`,
     ],
     [
+      'dynamic-import destructure',
+      `const { jsonExtractText: extract6 } = await import('../lib/json-sql.js')
+       extract6(users.email, ['x'])`,
+    ],
+    [
+      'dynamic import inside a function, awaited',
+      `async function unsafe() {
+         const { jsonExtractText } = await import('../lib/json-sql.js')
+         return jsonExtractText(users.email, ['x'])
+       }
+       void unsafe`,
+    ],
+    [
       'local shadowing of a schema table',
       `import { jsonExtractText } from '../lib/json-sql.js'
        const shadowed = { result: users.email }
@@ -397,8 +430,8 @@ describe('the analyzer itself, against every known evasion shape', () => {
       // Either the analyzer refuses to vouch for the usage, or it resolved the
       // call through the rename and surfaced the real (non-JSON) column for the
       // schema assertion to reject. Both are detections; silence is not.
-      const surfacedBadColumn = result.resolved.some(
-        (r) => `${r.table}.${r.column}` === 'runs.status',
+      const surfacedBadColumn = result.resolved.some((r) =>
+        ['runs.status', 'users.email'].includes(`${r.table}.${r.column}`),
       )
       expect(result.findings.length > 0 || surfacedBadColumn).toBe(true)
     })
