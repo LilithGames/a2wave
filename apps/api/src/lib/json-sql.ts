@@ -49,14 +49,20 @@ type JsonPath = readonly [string, ...string[]]
  *   contains '['   `$.a[0]` indexes an array    (PG: the literal key "a[0]")
  *   leading '"'    `$."ab`  "bad JSON path"     (PG: the literal key '"ab')
  *   empty          `$.`     "bad JSON path"     (PG: the empty key)
- *   contains NUL   `$.a\0b` reads the key "a"   (PG: the literal key "a\0b")
+ *   contains NUL   `$.a\0b` reads the key "a"   (PG: cannot represent the key)
  *
  * The NUL case is the quietest of the five and the only one that returns a
  * *wrong row* rather than an error. SQLite's path is a C string, so it truncates
  * at the first NUL: verified against the bundled better-sqlite3, `$.a\0b` on
- * `{"a":1,"a\0b":3}` returns `1` — the value of a different key — while
- * PostgreSQL binds the whole segment and reads `3`. A trailing NUL degrades the
- * same way (`ab\0` reads `ab`), and a leading one throws "bad JSON path".
+ * `{"a":1,"a\0b":3}` returns `1` — the value of a different key. A trailing NUL
+ * degrades the same way (`ab\0` reads `ab`), and a leading one throws.
+ *
+ * PostgreSQL does not read that key either: jsonb stores unescaped text, and
+ * a NUL has no text representation, so a key containing one fails to cast with
+ * `22P05 unsupported Unicode escape sequence` (verified on PostgreSQL 14).
+ * Rejecting the segment is therefore right on both backends — an earlier
+ * revision of this comment claimed PostgreSQL bound it as a literal key, which
+ * is wrong.
  *
  * Everything else — commas, spaces, unicode, leading digits, hyphens, colons,
  * `$`, `#`, `]`, backslashes, interior or trailing quotes — round-trips as the

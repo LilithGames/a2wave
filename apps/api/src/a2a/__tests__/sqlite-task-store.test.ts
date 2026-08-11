@@ -148,6 +148,28 @@ describe('SqliteTaskStore', () => {
     })
   })
 
+  it('strips NUL from the persisted envelope, which PostgreSQL jsonb cannot hold', async () => {
+    // A2A message text is caller-supplied. `JSON.stringify` renders U+0000 as a
+    // valid \\u0000 escape that SQLite stores happily, but jsonb holds unescaped
+    // text and has no NUL, so `(data)::jsonb` fails with 22P05 — verified on
+    // PostgreSQL 14. Because `list()` casts the WHOLE envelope to filter on
+    // scope.tenant, one NUL in one task's text breaks tasks/list for every task
+    // in that scope, including tasks that contain none.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const nul = String.fromCharCode(0)
+    // contextId round-trips through the SDK codec verbatim, so the NUL is
+    // still present in the serialised envelope unless it is stripped.
+    const withNul = task('task_nul', undefined, `before${nul}after`)
+
+    await store.save(withNul, callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(persisted).not.toContain(nul)
+    expect(persisted).not.toContain('\\u0000')
+    // Still valid JSON, and the surrounding text survives intact.
+    expect(JSON.stringify(JSON.parse(persisted))).toContain('beforeafter')
+  })
+
   it('rejects an update when the task ID belongs to another scope', async () => {
     mockSelectGet.mockReturnValue({
       id: 'task_shared',

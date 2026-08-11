@@ -50,13 +50,40 @@ function sameScope(left: TaskScope, right: TaskScope): boolean {
   return left.tenant === right.tenant && left.owner === right.owner
 }
 
+/**
+ * Strip NUL from the serialised envelope.
+ *
+ * `JSON.stringify` renders a U+0000 in any task text as a \\u0000 escape,
+ * which is valid JSON and which SQLite stores and reads back happily. On
+ * PostgreSQL it is unrepresentable: jsonb holds *unescaped* text and there is no
+ * text form of NUL, so `(data)::jsonb` fails the whole statement with
+ * `22P05 unsupported Unicode escape sequence` — verified on PostgreSQL 14.
+ *
+ * The blast radius is what makes this worth handling at the write path. `list()`
+ * casts the entire envelope to filter on `scope.tenant`, so a single NUL
+ * anywhere in one task's text — a field the query never reads — makes
+ * `tasks/list` fail for **every** task in that scope, not just the offending
+ * one. A2A message content is caller-supplied, so this is reachable input
+ * rather than a hypothetical.
+ *
+ * Stripping rather than rejecting: NUL carries no meaning in the message text
+ * these envelopes hold, and failing a `tasks/send` for a stray control byte
+ * would be a worse outcome than dropping it. The substitution runs on the
+ * serialised form, so it can only touch the escape sequence — never a literal
+ * backslash-u in the source text, which stringify would have escaped as
+ * `\\u0000`.
+ */
+function stripNulEscapes(serialized: string): string {
+  return serialized.replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1')
+}
+
 function encodeTask(task: Task, scope: TaskScope): string {
   const envelope: PersistedTaskEnvelope = {
     persistenceVersion: 1,
     scope,
     task: TaskCodec.toJSON(task),
   }
-  return JSON.stringify(envelope)
+  return stripNulEscapes(JSON.stringify(envelope))
 }
 
 function decodeEnvelope(data: string): PersistedTaskEnvelope | undefined {
@@ -366,7 +393,7 @@ export class SqliteTaskStore implements TaskStore {
     }
     await db
       .update(a2aTasks)
-      .set({ data: JSON.stringify(updated), updatedAt: now })
+      .set({ data: stripNulEscapes(JSON.stringify(updated)), updatedAt: now })
       .where(eq(a2aTasks.id, taskId))
     return true
   }
