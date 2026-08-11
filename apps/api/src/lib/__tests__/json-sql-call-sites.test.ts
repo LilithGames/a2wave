@@ -63,16 +63,31 @@
  */
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import * as schema from '../../db/schema.sqlite.js'
+import { jsonExtractText } from '../json-sql.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const API_ROOT = resolve(__dirname, '../../..')
 const SRC = resolve(API_ROOT, 'src')
 const JSON_SQL = resolve(SRC, 'lib/json-sql.ts')
 
-/** Plain-text columns that legitimately hold hand-serialised JSON. */
+/**
+ * Plain-text columns that legitimately hold hand-serialised JSON, as
+ * `tsTableName.tsColumnName`.
+ *
+ * This mirrors `PLAIN_TEXT_JSON_COLUMNS` in json-sql.ts, which is keyed by
+ * PHYSICAL name (`a2a_tasks.data`) because that is what a drizzle column
+ * reports at runtime, while the analyzer only ever sees the TypeScript
+ * identifiers. The two lists therefore cannot be one constant.
+ *
+ * They are pinned to each other instead: the assertion below resolves every
+ * entry here through the real schema and fails if the physical name it maps to
+ * is missing from the runtime list, so adding a column to one and not the other
+ * is caught rather than silently diverging.
+ */
 const ALLOWED_PLAIN_TEXT = new Set(['a2aTasks.data'])
 
 /**
@@ -84,13 +99,19 @@ const ALLOWED_PLAIN_TEXT = new Set(['a2aTasks.data'])
  * interpolated part stayed free to name json-sql. A fragment cannot prove the
  * whole, so shape-based exemption is abandoned entirely.
  *
- * A named file is a reviewed decision that shows up in the diff when it changes.
- * Adding one means confirming by hand that the import cannot reach json-sql.
+ * Each entry is `<file>::<specifier source text>`, so it pins the ONE import
+ * that was reviewed rather than the file it lives in. Keying by file alone
+ * would exempt any dynamic import added to that file later — the allowlist
+ * would widen with no diff to the allowlist itself, which is precisely the
+ * silent-broadening this list exists to prevent.
+ *
+ * Adding an entry means confirming by hand that the import cannot reach
+ * json-sql, and it shows up in review when it changes.
  *
  * `lib/cli-installer.ts` loads `install.mjs` by absolute resolved path — a
  * script that ships beside the CLI lock, not a module in this source tree.
  */
-const DYNAMIC_IMPORT_ALLOWLIST = new Set(['lib/cli-installer.ts'])
+const DYNAMIC_IMPORT_ALLOWLIST = new Set(['lib/cli-installer.ts::`file://${path}`'])
 
 /**
  * Helpers whose first parameter is a column and whose second is a JSON path.
@@ -265,17 +286,31 @@ function helperNameOf(
   const byProvenance = helperNameByProvenance(checker, symbol, helperSymbols, helperTypes)
   if (byProvenance) return byProvenance
 
-  // Type identity is the last resort, and only for a node with no declaration
-  // of its own — a bare reference the checker types as the helper.
+  // Type identity is the last resort, and it is skipped only where the
+  // declaration itself already ASSIGNS a value — that assignment is the real
+  // provenance, and it did not come from json-sql.
   //
   // `const fake: typeof jsonExtractText = (c, p) => ...` shares the helper's
   // exact type object while holding an unrelated local function, so deciding by
   // type alone reported it as the helper escaping. Type identity proves what a
-  // value LOOKS like, never where it CAME FROM; it can corroborate provenance
-  // but cannot stand in for it.
-  if (symbol?.valueDeclaration && !ts.isBindingElement(symbol.valueDeclaration)) {
-    return undefined
-  }
+  // value LOOKS like, never where it CAME FROM.
+  //
+  // The exclusion is deliberately narrow. An earlier revision skipped every
+  // declaration that was not a BindingElement, which also silenced parameters,
+  // loop variables and object-literal shorthand — a `f: typeof jsonExtractText`
+  // parameter became completely invisible, and passing a non-JSON column
+  // through it produced no finding at all. Those bind a value supplied
+  // elsewhere rather than asserting one here, so the checker's type is the best
+  // evidence available and is worth acting on.
+  const declaration = symbol?.valueDeclaration
+  const declaresItsOwnValue =
+    declaration &&
+    (ts.isVariableDeclaration(declaration) ||
+      ts.isPropertyDeclaration(declaration) ||
+      ts.isPropertyAssignment(declaration)) &&
+    Boolean(declaration.initializer)
+  if (declaresItsOwnValue) return undefined
+
   return helperTypes.get(checker.getTypeAtLocation(node))
 }
 
@@ -424,24 +459,33 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         const elementNamespaceType = elementAccess
           ? checker.getTypeAtLocation(elementAccess.expression)
           : undefined
+        // "Does this object carry a helper?" is asked by SYMBOL, then by TYPE.
+        // Symbol alone missed a structural copy of the namespace — `const bag:
+        // { [K in keyof typeof jsonSql]: (typeof jsonSql)[K] } = jsonSql` has
+        // the same callable members, but a mapped type's properties are fresh
+        // symbols rather than export aliases, so `bag[k](...)` looked like an
+        // ordinary object and the dynamic-key finding never fired.
+        const namespacePropertyHelper = (property: ts.Symbol): string | undefined => {
+          const target =
+            property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
+          const bySymbol = helperSymbols.get(target)
+          if (bySymbol) return bySymbol
+          // `getTypeOfSymbol`, not `getTypeOfSymbolAtLocation`: a mapped type's
+          // property is synthesised and has NO valueDeclaration, so asking for a
+          // type "at" a declaration finds nothing and the copy stays invisible.
+          return helperTypes.get(checker.getTypeOfSymbol(target))
+        }
         const isJsonSqlNamespace = Boolean(
-          elementNamespaceType?.getProperties().some((property) => {
-            const target =
-              property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
-            return helperSymbols.has(target)
-          }),
+          elementNamespaceType
+            ?.getProperties()
+            .some((property) => namespacePropertyHelper(property)),
         )
         const helper = ts.isIdentifier(callee)
           ? helperNameOf(checker, callee, helperSymbols, helperTypes)
           : elementAccess && elementKey && elementNamespaceType
             ? (() => {
                 const property = checker.getPropertyOfType(elementNamespaceType, elementKey)
-                if (!property) return undefined
-                const target =
-                  property.flags & ts.SymbolFlags.Alias
-                    ? checker.getAliasedSymbol(property)
-                    : property
-                return helperSymbols.get(target)
+                return property ? namespacePropertyHelper(property) : undefined
               })()
             : undefined
 
@@ -511,7 +555,8 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         node.arguments[0]
       ) {
         const specifier = staticStringValue(checker, node.arguments[0])
-        if (specifier === undefined && !DYNAMIC_IMPORT_ALLOWLIST.has(file)) {
+        const importSite = `${file}::${node.arguments[0].getText()}`
+        if (specifier === undefined && !DYNAMIC_IMPORT_ALLOWLIST.has(importSite)) {
           // Fail closed, with NO exemptions. Treating "unresolvable" as "not
           // json-sql" is what let `'../lib/' + 'json-sql.js'` through: the check
           // passed because the *analyzer* failed, not because the code was safe.
@@ -604,9 +649,37 @@ describe('the helper inventory is derived, not hand-maintained', () => {
 
 describe('JSON helper call sites pass JSON-bearing columns', () => {
   it('finds the known call sites, so a broken scan cannot pass vacuously', () => {
-    expect(analysis.resolved).toHaveLength(14)
+    // A floor, not an exact count. The point is that the walk actually reached
+    // the codebase; pinning the precise number made every unrelated commit that
+    // added a legitimate JSON query fail here with "expected 15 to be 14",
+    // which names neither the new call site nor what to do about it.
+    expect(analysis.resolved.length).toBeGreaterThanOrEqual(14)
     // The column this whole suite exists for must be among them.
     expect(analysis.resolved.map((r) => `${r.table}.${r.column}`)).toContain('a2aTasks.data')
+  })
+
+  it('keeps the plain-text allowlist in step with the one json-sql.ts enforces', () => {
+    // This list is keyed by TS name and json-sql.ts's by physical name, so they
+    // cannot be one constant. Pin them: every entry here must resolve to a real
+    // column that the RUNTIME guard also accepts, which is what stops the two
+    // from drifting apart unnoticed.
+    for (const entry of ALLOWED_PLAIN_TEXT) {
+      const [table, column] = entry.split('.')
+      const tableObject = (schema as Record<string, unknown>)[table as string] as
+        | Record<string, { name?: string; dataType?: string }>
+        | undefined
+      const columnObject = tableObject?.[column as string]
+      expect(columnObject, `${entry} should resolve in the schema module`).toBeDefined()
+
+      // A mode:'json' column would not need the allowlist at all.
+      expect(columnObject?.dataType).not.toBe('json')
+
+      // The runtime guard must accept it, or the analyzer permits a column the
+      // helpers themselves would throw on.
+      expect(() =>
+        jsonExtractText(columnObject as unknown as SQLiteColumn, ['probe']),
+      ).not.toThrow()
+    }
   })
 
   it('leaves no helper usage the analyzer cannot vouch for', () => {
@@ -759,6 +832,44 @@ describe('the analyzer itself, against every known evasion shape', () => {
        type Extractor = (c: SQLiteColumn, p: readonly [string, ...string[]]) => SQL<string | null>
        const { jsonExtractText: extract15 } = jsonSql as { jsonExtractText: Extractor }
        extract15(users.email, ['x'])`,
+    ],
+    [
+      'helper reached through a typed parameter',
+      `import type { jsonExtractText } from '../lib/json-sql.js'
+       export function go(f: typeof jsonExtractText) {
+         return f(users.email, ['x'])
+       }`,
+    ],
+    [
+      'helper reached through a typed class-method parameter',
+      `import type { jsonExtractText } from '../lib/json-sql.js'
+       export class Q {
+         run(f: typeof jsonExtractText) {
+           return f(users.email, ['x'])
+         }
+       }`,
+    ],
+    [
+      'helper reached through a loop variable',
+      `import type { jsonExtractText } from '../lib/json-sql.js'
+       declare const list: Array<typeof jsonExtractText>
+       for (const f of list) {
+         f(users.email, ['x'])
+       }`,
+    ],
+    [
+      'mapped-type copy of the namespace, indexed by a key',
+      `import * as jsonSql from '../lib/json-sql.js'
+       declare const k: 'jsonExtractText'
+       const bag: { [K in keyof typeof jsonSql]: (typeof jsonSql)[K] } = jsonSql
+       bag[k](users.email, ['x'])`,
+    ],
+    [
+      'assignment-pattern destructure',
+      `import * as jsonSql from '../lib/json-sql.js'
+       let e: typeof jsonSql.jsonExtractText
+       ;({ jsonExtractText: e } = jsonSql)
+       e(users.email, ['x'])`,
     ],
     [
       'dynamic import through a concatenated specifier',

@@ -51,30 +51,32 @@ function sameScope(left: TaskScope, right: TaskScope): boolean {
 }
 
 /**
- * Strip NUL from the serialised envelope.
+ * Code points that are valid JSON but that PostgreSQL's jsonb cannot hold.
  *
- * `JSON.stringify` renders a U+0000 in any task text as a \\u0000 escape,
- * which is valid JSON and which SQLite stores and reads back happily. On
- * PostgreSQL it is unrepresentable: jsonb holds *unescaped* text and there is no
- * text form of NUL, so `(data)::jsonb` fails the whole statement with
- * `22P05 unsupported Unicode escape sequence` — verified on PostgreSQL 14.
+ * jsonb stores *unescaped* text, so a code point with no text representation
+ * fails the `(data)::jsonb` cast outright. Two shapes qualify, both verified
+ * against a live PostgreSQL 14:
  *
- * The blast radius is what makes this worth handling at the write path. `list()`
- * casts the entire envelope to filter on `scope.tenant`, so a single NUL
- * anywhere in one task's text — a field the query never reads — makes
- * `tasks/list` fail for **every** task in that scope, not just the offending
- * one. A2A message content is caller-supplied, so this is reachable input
- * rather than a hypothetical.
+ *   U+0000          22P05 unsupported Unicode escape sequence
+ *   lone surrogate  22P02 Unicode low surrogate must follow a high surrogate
  *
- * Stripping rather than rejecting: NUL carries no meaning in the message text
- * these envelopes hold, and failing a `tasks/send` for a stray control byte
- * would be a worse outcome than dropping it. The substitution runs on the
- * serialised form, so it can only touch the escape sequence — never a literal
- * backslash-u in the source text, which stringify would have escaped as
- * `\\u0000` and which the negative lookbehind therefore preserves.
+ * A *paired* surrogate is fine — it is just an astral character, and an emoji
+ * round-trips — so only unpaired halves are removed.
+ *
+ * The blast radius is what makes this worth handling at the write path.
+ * `list()` casts the entire envelope to filter on `scope.tenant`, so one bad
+ * code point anywhere in one task's text — a field the query never reads —
+ * makes `tasks/list` fail for **every** task in that scope, not just the
+ * offending one. A2A message content is caller-supplied, and a lone surrogate
+ * is what an ordinary client produces by truncating a UTF-16 string mid-emoji,
+ * so this is reachable input rather than a hypothetical.
+ *
+ * Stripping rather than rejecting: neither shape carries meaning in the message
+ * text these envelopes hold, and failing a `tasks/send` over a stray code unit
+ * would be the worse outcome.
  *
  * This fixes the write path only; a row persisted **before** this change can
- * still carry the escape and would still fail `list()` on PostgreSQL. No
+ * still carry such a code point and would still fail `list()` on PostgreSQL. No
  * backfill ships with it, for two reasons: PostgreSQL is experimental with no
  * SQLite -> PostgreSQL data migration path, so no deployment can have inherited
  * such a row from SQLite; and `cleanup()` retires envelopes past its retention
@@ -83,8 +85,30 @@ function sameScope(left: TaskScope, right: TaskScope): boolean {
  * `load()` and `save()` still work on it, since they read the column directly
  * and only the whole-envelope cast in `list()` raises.
  */
-function stripNulEscapes(serialized: string): string {
-  return serialized.replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1')
+const PG_UNREPRESENTABLE = new RegExp(
+  [
+    '\\u0000',
+    '[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])',
+    '(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]',
+  ].join('|'),
+  'g',
+)
+
+/**
+ * Serialise an envelope, dropping those code points from every string in it.
+ *
+ * Applied to the VALUES during serialisation rather than to the JSON text
+ * afterwards. An earlier revision rewrote the serialised string with a regex
+ * over escape sequences; that worked, but it had to reason about backslash
+ * parity to avoid corrupting a user who typed the escape literally, and it did
+ * not generalise — the surrogate case would have needed a second, subtler
+ * escape-level pattern. Sanitising the data is the level the problem lives at,
+ * so one rule covers both shapes and cannot mangle neighbouring text.
+ */
+function encodeEnvelope(envelope: unknown): string {
+  return JSON.stringify(envelope, (_key, value) =>
+    typeof value === 'string' ? value.replace(PG_UNREPRESENTABLE, '') : value,
+  )
 }
 
 function encodeTask(task: Task, scope: TaskScope): string {
@@ -93,7 +117,7 @@ function encodeTask(task: Task, scope: TaskScope): string {
     scope,
     task: TaskCodec.toJSON(task),
   }
-  return stripNulEscapes(JSON.stringify(envelope))
+  return encodeEnvelope(envelope)
 }
 
 function decodeEnvelope(data: string): PersistedTaskEnvelope | undefined {
@@ -403,7 +427,7 @@ export class SqliteTaskStore implements TaskStore {
     }
     await db
       .update(a2aTasks)
-      .set({ data: stripNulEscapes(JSON.stringify(updated)), updatedAt: now })
+      .set({ data: encodeEnvelope(updated), updatedAt: now })
       .where(eq(a2aTasks.id, taskId))
     return true
   }

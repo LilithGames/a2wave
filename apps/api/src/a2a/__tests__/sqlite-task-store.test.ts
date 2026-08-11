@@ -184,6 +184,34 @@ describe('SqliteTaskStore', () => {
     expect(JSON.parse(persisted).task.contextId).toBe(literal)
   })
 
+  it('strips a lone surrogate, which PostgreSQL jsonb also rejects', async () => {
+    // Same failure class as NUL and the same whole-scope blast radius, but it
+    // arrives by accident far more easily: truncating a UTF-16 string mid-emoji
+    // leaves an unpaired half. Verified on PostgreSQL 14 —
+    // `'{"t":"<lone high surrogate>"}'::jsonb` raises 22P02 "Unicode low
+    // surrogate must follow a high surrogate".
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const loneHigh = String.fromCharCode(0xd800)
+
+    await store.save(task('task_sur', undefined, `before${loneHigh}after`), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(persisted).not.toMatch(/[\uD800-\uDFFF]/)
+    expect(JSON.parse(persisted).task.contextId).toBe('beforeafter')
+  })
+
+  it('keeps a valid surrogate pair, which is an ordinary astral character', async () => {
+    // The strip must remove only UNPAIRED halves. An emoji is a legitimate pair
+    // and round-trips through jsonb, so removing it would corrupt caller text.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const emoji = String.fromCodePoint(0x1f600)
+
+    await store.save(task('task_emoji', undefined, `a${emoji}b`), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(JSON.parse(persisted).task.contextId).toBe(`a${emoji}b`)
+  })
+
   it('rejects an update when the task ID belongs to another scope', async () => {
     mockSelectGet.mockReturnValue({
       id: 'task_shared',
