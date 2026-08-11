@@ -50,22 +50,56 @@ function code(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
-/** Collect `table.column` first arguments passed to any JSON helper. */
-function collectColumnArguments(source: string): string[] {
-  const found: string[] = []
+/**
+ * Collect the first argument of every JSON-helper call, split into the
+ * `table.column` references this scan can resolve and everything it cannot.
+ *
+ * The unresolved bucket is the point. A scan that only matched `table.column`
+ * and ignored the rest would silently pass a call whose column arrives as a
+ * local variable or through an aliased import — reporting green for code it
+ * never actually checked. Surfacing those instead forces them to be made
+ * resolvable (or explicitly acknowledged), so "no offenders" means "nothing
+ * unchecked" rather than "nothing recognised".
+ */
+function collectColumnArguments(source: string): { resolved: string[]; unresolved: string[] } {
+  const resolved: string[] = []
+  const unresolved: string[] = []
   for (const helper of HELPERS) {
-    const call = new RegExp(`\\b${helper}\\s*\\(\\s*([A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*)`, 'g')
-    for (const match of source.matchAll(call)) found.push(match[1])
+    // `[^,)]+` captures whatever the first argument actually is, so a call the
+    // narrow `table.column` form would miss still lands in one bucket or other.
+    const call = new RegExp(`\\b${helper}\\s*\\(\\s*([^,)]+?)\\s*[,)]`, 'g')
+    for (const match of source.matchAll(call)) {
+      const argument = match[1].replace(/\s+/g, ' ').trim()
+      if (/^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(argument)) resolved.push(argument)
+      else unresolved.push(`${helper}(${argument})`)
+    }
   }
-  return found
+  return { resolved, unresolved }
 }
 
 describe('JSON helper call sites pass JSON-bearing columns', () => {
   const callSites = new Map<string, string[]>()
+  const unresolvedSites = new Map<string, string[]>()
+  const aliasedImports: string[] = []
+
   for (const file of walk(SRC)) {
     if (file === resolve(SRC, 'lib/json-sql.ts')) continue
-    const columns = collectColumnArguments(code(readFileSync(file, 'utf-8')))
-    if (columns.length) callSites.set(file.slice(SRC.length + 1), columns)
+    const body = code(readFileSync(file, 'utf-8'))
+    const relative = file.slice(SRC.length + 1)
+
+    // An aliased import (`jsonExtractText as extract`) renames the call and
+    // would slip past a scan keyed on the original names, so treat it as a
+    // finding in its own right rather than letting the call go unexamined.
+    for (const helper of HELPERS) {
+      const renamed = new RegExp(`\\b${helper}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
+      for (const match of body.matchAll(renamed)) {
+        aliasedImports.push(`${relative}: ${helper} imported as ${match[1]}`)
+      }
+    }
+
+    const { resolved, unresolved } = collectColumnArguments(body)
+    if (resolved.length) callSites.set(relative, resolved)
+    if (unresolved.length) unresolvedSites.set(relative, unresolved)
   }
 
   it('finds the known call sites, so a broken scan cannot pass vacuously', () => {
@@ -73,6 +107,19 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
     expect(all.length).toBeGreaterThanOrEqual(10)
     // The column this whole suite exists for must be among them.
     expect(all).toContain('a2aTasks.data')
+  })
+
+  it('leaves no helper call whose column argument it could not resolve', () => {
+    // A silent skip here is the failure mode: it reads as "checked and clean"
+    // for a call site the scan never inspected. If this trips, either write the
+    // argument as a direct `table.column` or extend the resolver deliberately.
+    expect(
+      [...unresolvedSites].flatMap(([file, calls]) => calls.map((c) => `${file}: ${c}`)),
+    ).toEqual([])
+  })
+
+  it('leaves no aliased helper import that would rename a call out of view', () => {
+    expect(aliasedImports).toEqual([])
   })
 
   it('resolves every column argument to a json column or an allowed text one', () => {
@@ -84,11 +131,17 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
         const table = (schema as Record<string, unknown>)[tableName] as
           | Record<string, { dataType?: string }>
           | undefined
-        // An unresolvable name means a local alias, not a schema table; the
-        // real schema tables are what this guard is about.
-        if (!table) continue
+        // Not a schema table (e.g. a locally-built drizzle fragment). Recorded
+        // rather than skipped, so the scan cannot quietly ignore a call site.
+        if (!table) {
+          offenders.push(`${file}: ${reference} does not resolve to a schema table`)
+          continue
+        }
         const column = table[columnName]
-        if (!column?.dataType) continue
+        if (!column?.dataType) {
+          offenders.push(`${file}: ${reference} is not a column of that table`)
+          continue
+        }
 
         if (column.dataType === 'json') continue
         if (ALLOWED_PLAIN_TEXT.has(reference)) continue

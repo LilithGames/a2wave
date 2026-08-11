@@ -35,6 +35,21 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
 type JsonPath = readonly [string, ...string[]]
 
 /**
+ * `jsonSet` accepts a **single** segment only — the two dialects disagree on
+ * anything deeper. Verified on PostgreSQL 14 against SQLite:
+ *
+ *   PG      jsonb_set('{}', '{a,b}', '1', true)  ->  {}
+ *   SQLite  json_set('{}', '$.a.b', json('1'))   ->  {"a":{"b":1}}
+ *
+ * `jsonb_set` refuses to create a missing intermediate parent and returns the
+ * document untouched, so a nested write would silently no-op on PostgreSQL
+ * while succeeding on SQLite — the same "works on the backend you run locally"
+ * trap this module exists to close. Narrowing the type makes the divergence
+ * unreachable rather than merely documented.
+ */
+type JsonSetPath = readonly [string]
+
+/**
  * Plain-text columns that legitimately hold JSON, as `table.column`.
  *
  * Deliberately an allowlist rather than "cast anything that is not json". A
@@ -59,6 +74,25 @@ const PLAIN_TEXT_JSON_COLUMNS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * The physical table a column belongs to, seeing through `alias()`.
+ *
+ * `getTableName` reports the *alias* — `alias(a2aTasks, 'task_alias')` yields
+ * `task_alias` — which would miss the allowlist above and reject the very
+ * column it exists to permit. `alias()` is already used in this codebase
+ * (lib/agent-access.ts), so a self-join or subquery over a2a_tasks is a live
+ * shape rather than a hypothetical one. drizzle keeps the underlying name on
+ * the table under a globally-registered symbol; fall back to the alias if a
+ * future version stops populating it, since a wrong-but-present name only
+ * costs a clearer error while a crash here would break query building.
+ */
+function physicalTableName(column: SQLiteColumn): string {
+  const original = (column.table as unknown as Record<symbol, unknown>)[
+    Symbol.for('drizzle:OriginalName')
+  ]
+  return typeof original === 'string' ? original : getTableName(column.table)
+}
+
+/**
  * The PostgreSQL operators used below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are
  * defined for json/jsonb only. A `mode: 'json'` column is already `jsonb` via
  * db/schema-transform.ts and needs nothing; a plain-text JSON column must be
@@ -73,7 +107,7 @@ const PLAIN_TEXT_JSON_COLUMNS: ReadonlySet<string> = new Set([
 function pgJsonSource(column: SQLiteColumn): SQL {
   if (column.dataType === 'json') return sql`${column}`
 
-  const qualifiedName = `${getTableName(column.table)}.${column.name}`
+  const qualifiedName = `${physicalTableName(column)}.${column.name}`
   if (PLAIN_TEXT_JSON_COLUMNS.has(qualifiedName)) return sql`(${column})::jsonb`
 
   throw new Error(
@@ -156,13 +190,22 @@ export function jsonArrayContainsKeyValue(
 }
 
 /**
- * Set a JSON path to `value`, treating a NULL column as an empty object.
+ * Set a top-level JSON key to `value`, treating a NULL column as an empty
+ * object. Single-segment only — see `JsonSetPath` for why anything deeper is a
+ * dialect divergence rather than a feature.
  *
  * `jsonb_set` predates the 9.6 floor (it arrived in 9.5). Both branches take the
  * value as a bound parameter rather than interpolating it, so a string inside
  * the payload cannot terminate the literal.
  */
-export function jsonSet(column: SQLiteColumn, path: JsonPath, value: unknown): SQL {
+export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown): SQL {
+  // The type already forbids this; the runtime check covers a path built
+  // dynamically (`string[]` widened at a call site), where the compiler cannot.
+  if (path.length !== 1) {
+    throw new Error(
+      `json-sql: jsonSet takes a single-segment path, got [${path.join(', ')}]. PostgreSQL's jsonb_set will not create a missing intermediate parent, so a nested write silently no-ops there while succeeding on SQLite.`,
+    )
+  }
   const serialized = JSON.stringify(value)
   if (isPostgresRuntime()) {
     return sql`jsonb_set(COALESCE(${pgJsonSource(column)}, '{}'::jsonb), ${`{${path.join(',')}}`}, ${serialized}::jsonb, true)`

@@ -23,6 +23,7 @@
  * exactly why it went unnoticed.
  */
 import { PgDialect } from 'drizzle-orm/pg-core'
+import { alias } from 'drizzle-orm/sqlite-core'
 import { describe, expect, it, vi } from 'vitest'
 
 // Force the PostgreSQL branch: isPostgresRuntime() reads `isPostgres` off the
@@ -135,6 +136,34 @@ describe('JSON helpers over a plain text column on PostgreSQL', () => {
     expect(() => jsonPathIsAbsent(runs.status, ['k'])).toThrow(/runs\.status/)
     expect(() => jsonSet(runs.status, ['k'], 1)).toThrow(/runs\.status/)
     expect(() => jsonArrayContainsKeyValue(runs.status, ['a'], 'k', 'v')).toThrow(/runs\.status/)
+  })
+
+  it('still recognises the allowlisted column when its table is aliased', () => {
+    // `alias()` is used in this codebase (lib/agent-access.ts) and makes drizzle
+    // report the alias, not the physical table. Keying the allowlist off the
+    // alias would reject the very column it exists to permit — a self-join or
+    // subquery over a2a_tasks would throw at query-build time.
+    const aliased = alias(a2aTasks, 'task_alias')
+
+    expect(renderPg(jsonExtractText(aliased.data, ['scope', 'tenant']))).toBe(
+      '("task_alias"."data")::jsonb -> $1 ->> $2',
+    )
+  })
+
+  it('refuses a multi-segment jsonSet path, which the dialects disagree on', () => {
+    // Verified on PostgreSQL 14 vs SQLite:
+    //   PG     jsonb_set('{}', '{a,b}', '1', true) -> {}            (silent no-op)
+    //   SQLite json_set('{}', '$.a.b', json('1'))  -> {"a":{"b":1}} (creates it)
+    // `jsonb_set` will not create a missing intermediate parent, so a nested
+    // write would silently do nothing on PostgreSQL only. Rejecting the shape
+    // outright beats shipping a helper that quietly means two different things.
+    // @ts-expect-error - a multi-segment path is not assignable to JsonSetPath
+    expect(() => jsonSet(runSteps.output, ['a', 'b'], 1)).toThrow(/single-segment/)
+  })
+
+  it('still refuses an aliased non-JSON column', () => {
+    // The alias must not become a way to smuggle a bad column past the guard.
+    expect(() => jsonExtractText(alias(runs, 'r').status, ['x'])).toThrow(/status/)
   })
 
   it('leaves a jsonb column uncast for every other helper', () => {
