@@ -529,7 +529,13 @@ describe('resolveCleanupWorkDirs', () => {
     vi.clearAllMocks()
   })
 
-  const gitAgent = { id: 'agt_abc123', name: 'Test Agent', config: {}, workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+  const gitAgent = {
+    id: 'agt_abc123',
+    name: 'Test Agent',
+    config: {},
+    workspaceType: 'scm',
+    scmSourceId: 'scm_1',
+  } as any
   const gitSource = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
 
   it('returns worktree + shared checkout when the worktree exists on disk', async () => {
@@ -583,7 +589,13 @@ describe('removePerAgentWorkspace', () => {
     vi.clearAllMocks()
   })
 
-  const gitAgent = { id: 'agt_abc123', name: 'Test Agent', config: {}, workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+  const gitAgent = {
+    id: 'agt_abc123',
+    name: 'Test Agent',
+    config: {},
+    workspaceType: 'scm',
+    scmSourceId: 'scm_1',
+  } as any
 
   it('removes the per-agent worktree when it exists and is idle', async () => {
     mockDbFrom

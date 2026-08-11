@@ -1031,7 +1031,7 @@ describe('executeChatRun', () => {
         cleanup: 'ephemeral',
       }),
       'run_1',
-    undefined,
+      undefined,
     )
   })
 
@@ -1059,7 +1059,7 @@ describe('executeChatRun', () => {
       baseAgent,
       expect.objectContaining({ name: 'feature-x', cleanup: 'ephemeral' }),
       'run_1',
-    undefined,
+      undefined,
     )
   })
 

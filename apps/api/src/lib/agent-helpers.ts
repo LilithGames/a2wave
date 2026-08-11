@@ -1360,9 +1360,7 @@ export async function resolveWorkDir(
       // Reserved namespace: an explicit worktree addressing a per-agent
       // workspace would downgrade its persistent state to the caller's
       // cleanup mode and hand its long-lived branch to run-end removal.
-      throw new Error(
-        `Worktree name '${worktreeParams.name}' uses the reserved 'agent-' prefix`,
-      )
+      throw new Error(`Worktree name '${worktreeParams.name}' uses the reserved 'agent-' prefix`)
     }
 
     const source = (
