@@ -69,6 +69,8 @@ import { buildExportZip } from '../lib/agent-export.js'
 import {
   WorktreeOccupiedError,
   buildAgentConfig,
+  removePerAgentWorkspace,
+  resolveCleanupWorkDirs,
   resolveEngineType,
   resolveWorkDir,
   validateAgentProviderConfiguration,
@@ -1469,9 +1471,11 @@ app.patch('/:id', async (c) => {
   // Resolve before persistence so workspace lookup failures still reject the
   // update, but defer file mutations until the database update succeeds. This
   // keeps both provider-preflight and database-failure paths side-effect free.
-  let disableWorkDir: string | undefined
+  let disableWorkDirs: string[] | undefined
   if (shouldRemoveMemoryOverrides) {
-    disableWorkDir = await resolveWorkDir(existing)
+    // Side-effect-free resolution: a config PATCH must never create a worktree
+    // or move a HEAD under a possibly-running run's feet.
+    disableWorkDirs = await resolveCleanupWorkDirs(existing)
   }
 
   const updated = (
@@ -1480,18 +1484,20 @@ app.patch('/:id', async (c) => {
 
   resyncGitTriggerAfterUpdate(id, parsed.data, updated)
 
-  if (disableWorkDir !== undefined) {
-    for (const file of ['CLAUDE.md', 'AGENTS.md', '.cursorrules']) {
-      try {
-        removeMemoryOverride(join(disableWorkDir, file))
-      } catch (err) {
-        // The committed DB row is authoritative. Do not roll it back after earlier
-        // files may already be clean; execution engines retry the relevant legacy
-        // override cleanup before spawning their CLI, so a later Run can self-heal.
-        logger.warn(
-          { agentId: existing.id, file, err },
-          `Failed to remove memory override from ${file}`,
-        )
+  if (disableWorkDirs !== undefined) {
+    for (const dir of disableWorkDirs) {
+      for (const file of ['CLAUDE.md', 'AGENTS.md', '.cursorrules']) {
+        try {
+          removeMemoryOverride(join(dir, file))
+        } catch (err) {
+          // The committed DB row is authoritative. Do not roll it back after earlier
+          // files may already be clean; execution engines retry the relevant legacy
+          // override cleanup before spawning their CLI, so a later Run can self-heal.
+          logger.warn(
+            { agentId: existing.id, file, err },
+            `Failed to remove memory override from ${file}`,
+          )
+        }
       }
     }
   }
@@ -2910,6 +2916,9 @@ app.delete('/:id', async (c) => {
 
   removeAgentMemory(id)
   clearAgentIndex(id)
+
+  // Reclaim the per-agent worktree (best-effort — never blocks the deletion).
+  await removePerAgentWorkspace(agent)
 
   const deleted = (await db.delete(agents).where(eq(agents.id, id)).returning())[0]
 

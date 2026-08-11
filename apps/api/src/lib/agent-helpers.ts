@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { PROVIDER_CHAIN_MAX, providerKindSchema } from '@a2wave/shared'
 import type {
@@ -30,7 +31,7 @@ import { providerCatalog } from '../engine/provider-catalog.js'
 import { env } from '../env.js'
 import { RUNTIME_MEMORY_READ_ACTIONS, registerAgentToken } from './agent-memory-token.js'
 import { logBackgroundAudit } from './audit.js'
-import { isCodegraphEnabled } from './codegraph-index.js'
+import { ensureCodegraphLink, isCodegraphEnabled } from './codegraph-index.js'
 import {
   ProviderBindingInvalidError,
   ProviderChainTooLongError,
@@ -1158,6 +1159,12 @@ async function resolvePerAgentWorkspace(
     logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
   }
 
+  if (isCodegraphEnabled(source.config)) {
+    // The index lives in the shared checkout and the query CLI is cwd-relative;
+    // without this link a worktree run silently degrades to grep.
+    await ensureCodegraphLink(result.path, source.localPath)
+  }
+
   if (runId) {
     await db.update(runs).set({ workDir: result.path }).where(eq(runs.id, runId))
   }
@@ -1167,6 +1174,76 @@ async function resolvePerAgentWorkspace(
   )
 
   return result.path
+}
+
+/**
+ * Directories where an Agent's workspace files (e.g. memory-override files) may
+ * live, resolved WITHOUT side effects — a config PATCH must never create a
+ * worktree or move a HEAD. For git SCM Agents this covers the per-agent
+ * worktree (only if it already exists on disk) plus the shared checkout, where
+ * pre-worktree deployments left the same files.
+ */
+export async function resolveCleanupWorkDirs(agent: typeof agents.$inferSelect): Promise<string[]> {
+  if (agent.workspaceType === 'scm' && agent.scmSourceId) {
+    const source = (
+      await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
+    )[0]
+    if (!source) return []
+
+    const dirs: string[] = []
+    if (source.type === 'git') {
+      let scm: Awaited<ReturnType<typeof createScmSource>> = null
+      try {
+        scm = await createScmSource(source)
+      } catch {
+        scm = null
+      }
+      if (scm) {
+        const wsPath = join(scm.wsRoot, perAgentWorkspaceName(agent.id))
+        if (existsSync(wsPath)) dirs.push(wsPath)
+      }
+    }
+    dirs.push(source.localPath)
+    return dirs
+  }
+
+  // Non-SCM resolution never touches git — safe to reuse as-is.
+  return [await resolveWorkDir(agent)]
+}
+
+/**
+ * Best-effort reclaim of an Agent's per-agent worktree on Agent deletion.
+ * Removal goes through scm.removeWorkspace (registry-checked, never a raw
+ * recursive delete); its branch is deleted with it — the Agent, and therefore
+ * any unpublished work on that branch, is being destroyed deliberately.
+ * Failures only log: a stuck worktree must not block the deletion.
+ */
+export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect): Promise<void> {
+  if (agent.workspaceType !== 'scm' || !agent.scmSourceId) return
+  const source = (
+    await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
+  )[0]
+  if (!source || source.type !== 'git') return
+
+  let scm: Awaited<ReturnType<typeof createScmSource>> = null
+  try {
+    scm = await createScmSource(source)
+  } catch {
+    scm = null
+  }
+  if (!scm) return
+
+  const name = perAgentWorkspaceName(agent.id)
+  if (!existsSync(join(scm.wsRoot, name))) return
+
+  try {
+    await scm.removeWorkspace(name)
+  } catch (err) {
+    logger.warn(
+      { err, agentId: agent.id, workspace: name },
+      'Failed to remove per-agent worktree during agent deletion',
+    )
+  }
 }
 
 export class WorktreeOccupiedError extends Error {
@@ -1329,6 +1406,10 @@ export async function injectScmEnv(
   } else if (source.type === 'git') {
     const config = source.config as unknown as GitConfig
     agentEnv.GIT_BRANCH = config.branch || 'main'
+    // The branch the agent's per-agent worktree is expected to sit on. GIT_BRANCH
+    // keeps meaning "the source's tracked branch" (merge/MR target); this names
+    // where the agent's own commits land.
+    agentEnv.A2WAVE_WORKSPACE_BRANCH = perAgentWorkspaceName(agent.id)
   }
   if (isCodegraphEnabled(source.config)) {
     agentEnv.A2WAVE_CODEGRAPH_ENABLED = 'true'

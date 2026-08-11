@@ -292,7 +292,23 @@ describe('git-workspace', () => {
       await execFileAsync('git', ['commit', '-m', `add ${name}`], { cwd: REPO_DIR })
     }
 
-    it('advances a clean detached workspace to the source HEAD on reuse', async () => {
+    async function currentBranch(cwd: string): Promise<string> {
+      const { stdout } = await execFileAsync('git', ['symbolic-ref', '--short', '-q', 'HEAD'], {
+        cwd,
+      }).catch(() => ({ stdout: '' }))
+      return stdout.trim()
+    }
+
+    it('creates the workspace on a branch named after it, at the source HEAD', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(first.created).toBe(true)
+      expect(await currentBranch(first.path)).toBe('agent-1')
+      expect(await currentCommit(first.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('advances a clean workspace to the source HEAD on reuse', async () => {
       const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
         followSource: true,
       })
@@ -308,8 +324,72 @@ describe('git-workspace', () => {
       })
       expect(second.created).toBe(false)
       expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+      expect(await currentBranch(second.path)).toBe('agent-1')
       expect(existsSync(join(second.path, 'new-file.txt'))).toBe(true)
       expect(await readFile(join(second.path, 'untracked.txt'), 'utf8')).toBe('keep me')
+    })
+
+    it('pins a workspace whose branch carries unmerged commits, and unpins once they merge', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      // The agent commits work on its branch — the normal way an agent finishes a task.
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      await commitNewFile('upstream-moves.txt')
+
+      const pinned = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(pinned.path)).toBe(agentCommit)
+      expect(await readFile(join(pinned.path, 'agent-work.txt'), 'utf8')).toBe('committed by agent')
+
+      // Once the agent's commit is merged into the source branch, the ancestor
+      // guard passes again and the workspace follows the source once more.
+      await execFileAsync('git', ['merge', 'agent-1'], { cwd: REPO_DIR })
+      const unpinned = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(unpinned.path)).toBe(await currentCommit(REPO_DIR))
+      expect(await currentBranch(unpinned.path)).toBe('agent-1')
+    })
+
+    it('migrates a legacy detached workspace onto the branch when clean', async () => {
+      // v1 of this feature created followSource workspaces with --detach.
+      await mkdir(WS_ROOT, { recursive: true })
+      const wsPath = join(WS_ROOT, 'agent-1')
+      await execFileAsync('git', ['worktree', 'add', wsPath, '--detach'], { cwd: REPO_DIR })
+      await commitNewFile('new-file.txt')
+
+      const reused = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(reused.created).toBe(false)
+      expect(await currentBranch(reused.path)).toBe('agent-1')
+      expect(await currentCommit(reused.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('re-attaches an orphaned branch instead of resetting it', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      // Ops removed the worktree directory; the branch (and its commit) survive.
+      await execFileAsync('git', ['worktree', 'remove', first.path], { cwd: REPO_DIR })
+
+      const resurrected = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(resurrected.created).toBe(true)
+      expect(await currentBranch(resurrected.path)).toBe('agent-1')
+      expect(await currentCommit(resurrected.path)).toBe(agentCommit)
     })
 
     it('keeps the previous commit when the workspace has tracked modifications', async () => {

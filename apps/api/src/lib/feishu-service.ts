@@ -1892,7 +1892,6 @@ class FeishuConnectionManager {
       'Feishu message received, intent resolved',
     )
 
-    const resolvedWorkDir = await resolveWorkDir(agent)
     // 卡片续跑用快照覆盖会话标识与上一次引擎 chatId，保证续接到发卡时的同一会话；
     // 普通消息按 message 推导 triggerSessionId，再查上一次 chatId 实现多轮续接。
     const triggerSessionId = options.cardResume
@@ -2410,6 +2409,14 @@ class FeishuConnectionManager {
             .update(runs)
             .set({ triggerUserName: feishuDisplayName })
             .where(eq(runs.id, runId))
+        }
+
+        let resolvedWorkDir: string
+        try {
+          resolvedWorkDir = await resolveWorkDir(agent, undefined, runId)
+        } catch (err) {
+          await failRunAndReleaseSlot(err instanceof Error ? err.message : String(err))
+          return
         }
 
         const stepId = createId('rst')

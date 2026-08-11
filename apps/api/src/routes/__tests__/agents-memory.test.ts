@@ -124,6 +124,8 @@ vi.mock('../../engine/index.js', () => ({
 }))
 
 vi.mock('../../lib/agent-helpers.js', () => ({
+  resolveCleanupWorkDirs: vi.fn().mockResolvedValue(['/tmp/work']),
+  removePerAgentWorkspace: vi.fn().mockResolvedValue(undefined),
   resolveWorkDir: vi.fn().mockReturnValue('/tmp/work'),
   injectScmEnv: vi.fn(),
   buildAgentConfig: vi.fn().mockReturnValue({ engineType: 'cursor' }),

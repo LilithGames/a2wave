@@ -62,6 +62,8 @@ vi.mock('../../worker/index.js', () => ({
 }))
 
 vi.mock('../../lib/agent-helpers.js', () => ({
+  resolveCleanupWorkDirs: vi.fn().mockResolvedValue(['/tmp/work']),
+  removePerAgentWorkspace: vi.fn().mockResolvedValue(undefined),
   resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
   WorktreeOccupiedError: class extends Error {
     constructor(p: string) {
@@ -289,7 +291,11 @@ function makeDeleteChain() {
 
 import { db } from '../../db/client.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
-import { WorktreeOccupiedError, resolveWorkDir } from '../../lib/agent-helpers.js'
+import {
+  WorktreeOccupiedError,
+  resolveCleanupWorkDirs,
+  resolveWorkDir,
+} from '../../lib/agent-helpers.js'
 import { AppError, ProviderMcpUnsupportedError } from '../../lib/errors.js'
 import { WorktreeBranchLockedError } from '../../lib/git-workspace.js'
 import { MEMORY_OVERRIDE_MARKER } from '../../lib/memory-storage.js'
@@ -333,6 +339,7 @@ const mockDb = db as unknown as {
 const mockTryAcquireSlot = tryAcquireSlot as unknown as Mock
 const mockExecuteInWorker = executeInWorker as unknown as Mock
 const mockResolveWorkDir = resolveWorkDir as unknown as Mock
+const mockResolveCleanupWorkDirs = resolveCleanupWorkDirs as unknown as Mock
 const mockScheduleNext = scheduleNext as unknown as Mock
 
 beforeEach(() => {
@@ -1636,6 +1643,7 @@ describe('PATCH /agents/:id - published execution-config preflight', () => {
       mockDb.select.mockReturnValue(makeSelectChain(publishedAgent))
       mockDb.update.mockReturnValue(makeUpdateReturningChain(updatedAgent))
       mockResolveWorkDir.mockResolvedValue(workDir)
+      mockResolveCleanupWorkDirs.mockResolvedValue([workDir])
 
       const res = await app.request('/agents/agt_original', {
         method: 'PATCH',

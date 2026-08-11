@@ -170,7 +170,7 @@ export async function createGitWorkspace(
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
       if (options?.followSource && !options?.branch) {
-        await followSourceHeadOnReuse(wsPath, localPath, config)
+        await followSourceHeadOnReuse(wsPath, localPath, config, name)
       } else {
         await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
       }
@@ -192,12 +192,15 @@ export async function createGitWorkspace(
       const repoWsPath = join(wsPath, repo.directory)
 
       try {
-        const args = await buildWorktreeAddArgs(
-          repoWsPath,
-          repoLocalPath,
-          options?.branch,
-          repo.branch || 'main',
-        )
+        const args =
+          options?.followSource && !options?.branch
+            ? await buildFollowSourceAddArgs(repoWsPath, repoLocalPath, name, repo.branch || 'main')
+            : await buildWorktreeAddArgs(
+                repoWsPath,
+                repoLocalPath,
+                options?.branch,
+                repo.branch || 'main',
+              )
         await execFileAsync('git', args, { cwd: repoLocalPath, timeout: GIT_TIMEOUT_MS })
         logger.info({ repoWsPath, directory: repo.directory }, 'Created workspace for sub-repo')
       } catch (err) {
@@ -239,12 +242,10 @@ export async function createGitWorkspace(
     }
   } else {
     try {
-      const args = await buildWorktreeAddArgs(
-        wsPath,
-        localPath,
-        options?.branch,
-        config.branch || 'main',
-      )
+      const args =
+        options?.followSource && !options?.branch
+          ? await buildFollowSourceAddArgs(wsPath, localPath, name, config.branch || 'main')
+          : await buildWorktreeAddArgs(wsPath, localPath, options?.branch, config.branch || 'main')
       await execFileAsync('git', args, { cwd: localPath, timeout: GIT_TIMEOUT_MS })
       logger.info({ wsPath }, 'Created workspace')
     } catch (err) {
@@ -396,19 +397,45 @@ async function findBranchLockHolder(
  * 任何 sub-repo 不满足条件时不触碰任何 sub-repo。
  */
 /**
+ * True when `ref` is an ancestor of `target` — advancing from ref to target is
+ * then a fast-forward that cannot orphan any commit. Any git failure reads as
+ * "not an ancestor": the caller pins the workspace, which is the safe side.
+ */
+async function isAncestor(cwd: string, ref: string, target: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['merge-base', '--is-ancestor', ref, target], {
+      cwd,
+      timeout: 5_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Advance a followSource workspace to the source checkout's current commit.
  *
- * Freshness is best-effort — a stale checkout is strictly better than a failed
- * run, so every skip path degrades silently:
- * - sub-repo sits on a named branch (someone switched it deliberately) → keep it
+ * The workspace lives on its own branch (named after the workspace), so agent
+ * commits land on a real branch and `git branch --show-current` answers — the
+ * contract git-sync keeps for the shared checkout. Freshness is best-effort; a
+ * stale checkout is strictly better than a failed run or a lost commit, so
+ * every skip path degrades to "keep the previous commit":
+ * - sub-repo sits on a different named branch (someone switched it
+ *   deliberately) → keep it
  * - sub-repo has tracked modifications → keep it (untracked files never block:
  *   the platform itself mounts skills/config as untracked content)
- * - checkout fails → keep the previous commit and log
+ * - HEAD is not an ancestor of the source HEAD (the agent committed work that
+ *   is not merged yet) → keep it; once those commits reach the source branch
+ *   the guard passes again and the workspace follows the source once more
+ * - a legacy detached workspace (created before the branch strategy) is
+ *   adopted onto the branch when the same guards pass
  */
 async function followSourceHeadOnReuse(
   wsPath: string,
   localPath: string,
   config: GitConfig,
+  name: string,
 ): Promise<void> {
   const repoDirs = config.repos?.length ? config.repos.map((r) => r.directory) : ['']
 
@@ -417,33 +444,60 @@ async function followSourceHeadOnReuse(
     const localRepoPath = dir ? join(localPath, dir) : localPath
 
     try {
-      const { stdout: onBranch } = await execFileAsync(
+      const { stdout: onBranchRaw } = await execFileAsync(
         'git',
         ['symbolic-ref', '--short', '-q', 'HEAD'],
         { cwd: wsRepoPath, timeout: 5_000 },
       ).catch(() => ({ stdout: '' }))
-      if (onBranch.trim()) continue
+      const onBranch = onBranchRaw.trim()
+      if (onBranch && onBranch !== name) continue
 
       const { stdout: dirty } = await execFileAsync('git', ['status', '--porcelain', '-uno'], {
         cwd: wsRepoPath,
         timeout: 5_000,
       })
-      if (dirty.trim()) continue
+      if (dirty.trim()) {
+        logger.warn(
+          { wsRepoPath },
+          'followSource: workspace pinned behind source HEAD (tracked modifications)',
+        )
+        continue
+      }
 
       const { stdout: sourceHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
         cwd: localRepoPath,
         timeout: 5_000,
       })
+      const target = sourceHead.trim()
       const { stdout: wsHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
         cwd: wsRepoPath,
         timeout: 5_000,
       })
-      if (wsHead.trim() === sourceHead.trim()) continue
+      const upToDate = wsHead.trim() === target
 
-      await execFileAsync('git', ['checkout', '--detach', sourceHead.trim()], {
-        cwd: wsRepoPath,
-        timeout: GIT_TIMEOUT_MS,
-      })
+      if (!upToDate && !(await isAncestor(wsRepoPath, 'HEAD', target))) {
+        logger.warn(
+          { wsRepoPath, wsHead: wsHead.trim(), sourceHead: target },
+          'followSource: workspace pinned behind source HEAD (unmerged local commits)',
+        )
+        continue
+      }
+
+      if (onBranch) {
+        if (!upToDate) {
+          await execFileAsync('git', ['reset', '--hard', target], {
+            cwd: wsRepoPath,
+            timeout: GIT_TIMEOUT_MS,
+          })
+        }
+      } else {
+        // Legacy detached workspace: adopt it onto the branch (creating or
+        // resetting it here is safe — the ancestor guard already passed).
+        await execFileAsync('git', ['checkout', '-B', name, target], {
+          cwd: wsRepoPath,
+          timeout: GIT_TIMEOUT_MS,
+        })
+      }
     } catch (err) {
       logger.warn(
         { err, wsRepoPath },
@@ -595,6 +649,35 @@ async function buildWorktreeAddArgs(
   // new：必须显式指定 base，否则会从当前 HEAD（可能是任意分支）分叉。
   const baseRef = await resolveBaseRef(cwd, baseBranch)
   return ['worktree', 'add', '-b', branch, wsPath, baseRef]
+}
+
+/**
+ * Build `git worktree add` args for a followSource workspace: the worktree
+ * lives on its own branch, named after the workspace.
+ * - branch already exists (workspace was removed but its branch survived, e.g.
+ *   carrying unmerged agent commits) → re-attach it as-is; resetting it here
+ *   could orphan those commits, and the reuse path will advance it later once
+ *   the ancestor guard passes
+ * - otherwise → create the branch at the source's configured base branch
+ */
+async function buildFollowSourceAddArgs(
+  wsPath: string,
+  cwd: string,
+  name: string,
+  baseBranch: string,
+): Promise<string[]> {
+  const branchExists = await execFileAsync(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`],
+    { cwd, timeout: 5_000 },
+  )
+    .then(() => true)
+    .catch(() => false)
+  if (branchExists) {
+    return ['worktree', 'add', wsPath, name]
+  }
+  const baseRef = await resolveBaseRef(cwd, baseBranch)
+  return ['worktree', 'add', '-b', name, wsPath, baseRef]
 }
 
 /**

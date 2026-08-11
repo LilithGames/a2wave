@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { lstat, symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ScmSourceConfig } from '@a2wave/shared'
@@ -25,6 +26,38 @@ export interface CodegraphIndexResult {
 
 export function isCodegraphEnabled(config: unknown): boolean {
   return Boolean((config as Partial<ScmSourceConfig> | null | undefined)?.codegraphEnabled)
+}
+
+/**
+ * Make the source's CodeGraph index reachable from a workspace (worktree).
+ *
+ * The index is generated once per SCM source at `<localPath>/.codegraph`, and
+ * the query CLI resolves it relative to cwd — so a run whose cwd is a per-agent
+ * worktree would silently degrade to grep without this link. A symlink keeps
+ * the cwd-relative contract true with zero assumptions about CLI flags.
+ *
+ * Idempotent and non-destructive: an existing correct link is kept, a dangling
+ * link (source relocated) is repaired, and a real file/directory is never
+ * overwritten. Failures only log — index reachability is never worth failing
+ * a run over.
+ */
+export async function ensureCodegraphLink(workspacePath: string, localPath: string): Promise<void> {
+  const target = join(localPath, '.codegraph')
+  const linkPath = join(workspacePath, '.codegraph')
+  if (!existsSync(target)) return
+
+  try {
+    const existing = await lstat(linkPath).catch(() => null)
+    if (existing) {
+      if (!existing.isSymbolicLink()) return
+      // Repair only when the link no longer resolves (existsSync follows links).
+      if (existsSync(linkPath)) return
+      await unlink(linkPath)
+    }
+    await symlink(target, linkPath, 'dir')
+  } catch (err) {
+    logger.warn({ err, linkPath, target }, 'Failed to link CodeGraph index into workspace')
+  }
 }
 
 function trimMessage(message: string): string {

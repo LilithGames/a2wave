@@ -89,8 +89,8 @@ A Git Source encapsulates Git repository parameters (`repoUrl`, `branch`, option
 - **Sync status** — tracks `idle`, `syncing`, or `error` state with last sync timestamp and error message.
 
 When an Agent uses `workspaceType: 'scm'` and references a Git Source via `scmSourceId` (and that source has completed initial sync), the system automatically:
-1. Sets the Agent's working directory to a **per-Agent worktree** (`<workspacesPath>/agent-<agentId suffix>`, persistent, advanced to the synced HEAD on every run while its tracked files are clean). Agents sharing one Source therefore never share a working directory — a run of one Agent re-mounting skills/config cannot delete the files another Agent's in-flight run is executing. If the worktree cannot be created, the run degrades to the Source's shared `localPath`.
-2. Injects Git environment variables (`GIT_BRANCH`) into the execution environment.
+1. Sets the Agent's working directory to a **per-Agent worktree** (`<workspacesPath>/agent-<agentId suffix>`, persistent). Agents sharing one Source therefore never share a working directory — a run of one Agent re-mounting skills/config cannot delete the files another Agent's in-flight run is executing. The worktree sits on its own branch (same name as the worktree), so the Agent's commits land on a real branch; on each run it advances to the Source's synced HEAD only when that is a fast-forward (tracked modifications or unmerged commits pin it in place, and it follows the Source again once those commits are merged). If the worktree cannot be created, the run degrades to the Source's shared `localPath`.
+2. Injects Git environment variables (`GIT_BRANCH` — the Source's tracked branch — and `A2WAVE_WORKSPACE_BRANCH` — the worktree's own branch) into the execution environment.
 
 P4 Sources have no isolation mechanism (a client spec is server-side state bound to a single `Root`), so P4 Agents keep using the Source's `localPath` directly.
 

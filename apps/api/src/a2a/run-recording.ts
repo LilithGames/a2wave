@@ -224,6 +224,10 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         triggerSessionId: taskId,
         triggerUserName: channelResult.displayName,
         triggerAgentName,
+        // The workspace was resolved before this run existed (handleA2ARequest
+        // pre-flight), so record it at insert time — the workspace-delete
+        // occupancy check reads runs.workDir to spot in-flight runs.
+        ...(payload.workDir ? { workDir: payload.workDir } : {}),
         ...(agent.userId ? { userId: agent.userId } : {}),
       })
     } catch (err) {

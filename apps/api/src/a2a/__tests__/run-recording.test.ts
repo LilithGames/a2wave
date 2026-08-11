@@ -262,6 +262,11 @@ describe('createRecordedA2AExecuteFn', () => {
     expect(result.success).toBe(true)
     expect(mockTryAcquireSlot).toHaveBeenCalledWith({}, 'agt_test', 'run_test_1', 2)
     expect(mockDb.insert).toHaveBeenCalledTimes(3)
+    // The run row records the pre-resolved workspace at insert time — the
+    // workspace-delete occupancy check reads runs.workDir to spot in-flight
+    // runs, and A2A has no later point where a runId could be threaded in.
+    const runInsertValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
+    expect(runInsertValues.workDir).toBe('/tmp')
     expect(mockFinishRunSuccess).toHaveBeenCalledOnce()
   })
 

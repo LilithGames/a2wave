@@ -54,6 +54,9 @@ Once CodeGraph is enabled, a2wave maintains the index automatically after the SC
 
 ## Workspace (worktree) Management
 
+> [!NOTE]
+> Every Agent bound to a Git source automatically gets its **own workspace** (named `agent-<Agent ID suffix>`, visible in the workspace list). All of an Agent's executions happen inside its own workspace, so Agents never interfere with each other; the source directory itself is only used for syncing code. The workspace follows the source's latest code before each execution; if the Agent has uncommitted changes or commits that have not been merged yet, following pauses to protect that work and resumes automatically once those commits reach the source branch. The Agent's commits land on a branch named after the workspace (exposed to the execution environment as `A2WAVE_WORKSPACE_BRANCH`); deleting the Agent reclaims its workspace.
+
 - **List workspaces**: view all worktrees under the source and whether each is in use (`occupied`).
 - **Delete a workspace**: delete a specified worktree; if it is in use, it returns **409** and must be released first.
 - **Custom root directory workspacesPath**: an optional absolute path that overrides the default `~/.a2wave/workspaces/<sourceIdSuffix>`. It must be globally unique. Non-admin users must choose a path under a root approved by the deployment operator through `SCM_WORKSPACES_ALLOWED_ROOTS`; admins may select another dedicated absolute root. The Docker Compose deployment approves its dedicated `/data/workspace` mount by default. Database, Skill, knowledge base, memory, log, attachment, and artifact storage cannot be used as workspace roots for any role. A legacy row saved before these checks remains visible for migration, but source updates/status and workspace resolution/list/create/delete are rejected until its path is moved to an approved dedicated root. The owner's current admin and active status is rechecked on every workspace use.

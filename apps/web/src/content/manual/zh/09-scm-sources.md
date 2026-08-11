@@ -54,6 +54,9 @@ Git 代码源可以为执行创建独立的 **worktree（工作区）**，从而
 
 ## 工作区（worktree）管理
 
+> [!NOTE]
+> 每个绑定 Git 代码源的 Agent 会自动获得一个**专属工作区**（名为 `agent-<Agent ID 后缀>`，在工作区列表中可见）。Agent 的所有执行都发生在自己的工作区里，不同 Agent 互不干扰；源目录本身只用于同步代码。专属工作区在每次执行前自动跟进源的最新代码；如果 Agent 在里面留有未提交的改动或尚未合并的提交，会暂停跟进以保护现场，等这些提交合入源分支后自动恢复。Agent 的提交落在与工作区同名的分支上（执行环境中通过 `A2WAVE_WORKSPACE_BRANCH` 可读到分支名）；删除 Agent 时其专属工作区一并回收。
+
 - **列出工作区**：查看该源下所有 worktree，并标识是否被占用（`occupied`）。
 - **删除工作区**：删除指定 worktree；被占用时返回 **409**，需先释放。
 - **自定义根目录 workspacesPath**：可选绝对路径，覆盖默认 `~/.a2wave/workspaces/<sourceIdSuffix>`，且必须全局唯一。普通用户必须选择部署管理员通过 `SCM_WORKSPACES_ALLOWED_ROOTS` 批准的根目录；管理员可选择其他专用绝对路径。Docker Compose 默认批准专用挂载 `/data/workspace`。任何角色都不能把数据库、Skill、知识库、记忆、日志、附件或产物目录作为 workspace 根目录。在这些检查上线前保存的旧记录仍可查看和迁移，但更新/状态查询以及 workspace 的解析、列出、创建、删除都会被拒绝，直到改为批准的专用根目录；每次使用 workspace 时都会重新检查属主当前是否仍是启用状态的管理员。
