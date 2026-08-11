@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { lstat, symlink, unlink } from 'node:fs/promises'
+import { lstat, readlink, symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ScmSourceConfig } from '@a2wave/shared'
@@ -50,8 +50,12 @@ export async function ensureCodegraphLink(workspacePath: string, localPath: stri
     const existing = await lstat(linkPath).catch(() => null)
     if (existing) {
       if (!existing.isSymbolicLink()) return
-      // Repair only when the link no longer resolves (existsSync follows links).
-      if (existsSync(linkPath)) return
+      // Repair when the link no longer resolves OR points somewhere other than
+      // the current source checkout — after a localPath edit the old directory
+      // may still exist, and a resolving-but-stale link would silently serve an
+      // index of code the workspace no longer contains.
+      const currentTarget = await readlink(linkPath).catch(() => null)
+      if (currentTarget === target && existsSync(linkPath)) return
       await unlink(linkPath)
     }
     await symlink(target, linkPath, 'dir')

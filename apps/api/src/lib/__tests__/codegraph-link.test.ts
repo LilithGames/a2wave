@@ -60,6 +60,19 @@ describe('ensureCodegraphLink', () => {
     expect(existsSync(join(WS_PATH, '.codegraph', 'local.txt'))).toBe(true)
   })
 
+  it('repairs a resolving link that points at a stale source location', async () => {
+    // localPath edited while the old checkout still exists on disk: the link
+    // resolves, but to an index of code the workspace no longer contains.
+    const oldLocal = join(TEST_DIR, 'old-source')
+    await mkdir(join(oldLocal, '.codegraph'), { recursive: true })
+    await mkdir(join(LOCAL_PATH, '.codegraph'), { recursive: true })
+    await symlink(join(oldLocal, '.codegraph'), join(WS_PATH, '.codegraph'), 'dir')
+
+    await ensureCodegraphLink(WS_PATH, LOCAL_PATH)
+
+    expect(await readlink(join(WS_PATH, '.codegraph'))).toBe(join(LOCAL_PATH, '.codegraph'))
+  })
+
   it('repairs a dangling link left by a relocated source', async () => {
     await mkdir(join(LOCAL_PATH, '.codegraph'))
     await symlink(join(TEST_DIR, 'gone', '.codegraph'), join(WS_PATH, '.codegraph'), 'dir')

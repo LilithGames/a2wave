@@ -975,20 +975,22 @@ describe('executeChatRun', () => {
       baseAgent,
       expect.objectContaining({ name: 'feature-x', cleanup: 'ttl' }),
       'run_1',
+      undefined,
     )
     expect(mockExecuteWithRetry).toHaveBeenCalled()
   })
 
-  it('strips A2WAVE_WORKSPACE_BRANCH from the env on explicit-worktree runs', async () => {
-    // The var names the per-agent default branch; an explicit worktree sits on
-    // its own ref, so advertising the default branch would misdirect pushes.
+  it('threads agentEnv into resolveWorkDir so the workspace-branch env stays truthful', async () => {
+    // resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH — it sets/clears the variable
+    // for whichever path the run actually lands on, so every channel must hand
+    // it the env object.
     const runWithWorktree = {
       ...baseRun,
       worktreeConfig: { name: 'feature-x', cleanup: 'ttl' },
     }
     const agentConfig = {
       model: 'claude-3',
-      agentEnv: { GIT_BRANCH: 'main', A2WAVE_WORKSPACE_BRANCH: 'agent-1' },
+      agentEnv: { GIT_BRANCH: 'main' },
     }
     mockBuildAgentConfig.mockReturnValueOnce(agentConfig)
     mockResolveWorkDir.mockResolvedValue('/ws/feature-x')
@@ -998,8 +1000,12 @@ describe('executeChatRun', () => {
     const { executeChatRun } = await import('../execute-chat-run.js')
     await executeChatRun('agt_1', 'run_1')
 
-    expect(agentConfig.agentEnv).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
-    expect(agentConfig.agentEnv.GIT_BRANCH).toBe('main')
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(
+      baseAgent,
+      expect.objectContaining({ name: 'feature-x' }),
+      'run_1',
+      agentConfig.agentEnv,
+    )
   })
 
   it('passes worktreeConfig.branch through to resolveWorkDir (queued path preserves branch)', async () => {
@@ -1025,6 +1031,7 @@ describe('executeChatRun', () => {
         cleanup: 'ephemeral',
       }),
       'run_1',
+    undefined,
     )
   })
 
@@ -1052,6 +1059,7 @@ describe('executeChatRun', () => {
       baseAgent,
       expect.objectContaining({ name: 'feature-x', cleanup: 'ephemeral' }),
       'run_1',
+    undefined,
     )
   })
 
@@ -1150,7 +1158,7 @@ describe('executeChatRun', () => {
     const { executeChatRun } = await import('../execute-chat-run.js')
     await executeChatRun('agt_1', 'run_1')
 
-    expect(mockResolveWorkDir).toHaveBeenCalledWith(baseAgent, undefined, 'run_1')
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(baseAgent, undefined, 'run_1', undefined)
     expect(mockExecuteWithRetry).toHaveBeenCalled()
   })
 

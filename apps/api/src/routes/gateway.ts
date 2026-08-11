@@ -309,14 +309,9 @@ app.post('/:agentId/invoke', async (c) => {
   // resolveWorkDir BEFORE inserting runSteps/chatMessages，避免 409 场景留下孤儿记录。
   // 传入 runId 让 resolveWorkDir 在同步事务内完成占用检查 + workDir 写回，
   // 防止并发请求在 createWorkspace 的 await 窗口里都通过占用检查。
-  if (parsed.data.worktree && agentConfig.agentEnv) {
-    // An explicit worktree is not on the per-agent default branch — the env
-    // var would name a ref this run is not using.
-    delete agentConfig.agentEnv.A2WAVE_WORKSPACE_BRANCH
-  }
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId)
+    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId, agentConfig.agentEnv)
   } catch (err) {
     if (
       err instanceof WorktreeOccupiedError ||

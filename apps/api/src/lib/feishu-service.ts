@@ -2413,7 +2413,7 @@ class FeishuConnectionManager {
 
         let resolvedWorkDir: string
         try {
-          resolvedWorkDir = await resolveWorkDir(agent, undefined, runId)
+          resolvedWorkDir = await resolveWorkDir(agent, undefined, runId, agentConfig.agentEnv)
         } catch (err) {
           await failRunAndReleaseSlot(err instanceof Error ? err.message : String(err))
           return

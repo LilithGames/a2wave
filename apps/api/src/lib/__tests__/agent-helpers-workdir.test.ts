@@ -238,6 +238,38 @@ describe('resolveWorkDir', () => {
 
       expect(await resolveWorkDir(gitAgent())).toBe('/git')
     })
+
+    it('publishes A2WAVE_WORKSPACE_BRANCH only when the run lands in its worktree', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      const env: Record<string, string> = {}
+      await resolveWorkDir(gitAgent(), undefined, undefined, env)
+      expect(env.A2WAVE_WORKSPACE_BRANCH).toBe('agent-abc123')
+    })
+
+    it('clears the branch env when degrading to the shared checkout', async () => {
+      // A stale value would send the agent off to move the shared checkout
+      // onto the per-agent branch — the cross-agent interference this feature
+      // exists to prevent.
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi.fn().mockRejectedValue(new Error('worktree add failed')),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+      })
+
+      const env: Record<string, string> = { A2WAVE_WORKSPACE_BRANCH: 'agent-abc123' }
+      expect(await resolveWorkDir(gitAgent(), undefined, undefined, env)).toBe('/git')
+      expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
+    })
   })
 
   it('returns config.workDir when set within allowed workspace', async () => {
@@ -294,6 +326,17 @@ describe('resolveWorkDir', () => {
       await expect(
         resolveWorkDir(agent, { name: 'invalid name!', cleanup: 'ttl' }),
       ).rejects.toThrow(/Invalid worktree name/)
+    })
+
+    it('rejects the reserved agent- prefix for explicit worktrees', async () => {
+      // An explicit worktree addressing a per-agent workspace would downgrade
+      // its persistent state and hand its branch to run-end removal.
+      const agent = worktreeAgent()
+      const env: Record<string, string> = { A2WAVE_WORKSPACE_BRANCH: 'stale' }
+      await expect(
+        resolveWorkDir(agent, { name: 'agent-abc123', cleanup: 'ephemeral' }, undefined, env),
+      ).rejects.toThrow(/reserved 'agent-' prefix/)
+      expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
     })
 
     it('throws when SCM source not found', async () => {
@@ -486,7 +529,7 @@ describe('resolveCleanupWorkDirs', () => {
     vi.clearAllMocks()
   })
 
-  const gitAgent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+  const gitAgent = { id: 'agt_abc123', name: 'Test Agent', config: {}, workspaceType: 'scm', scmSourceId: 'scm_1' } as any
   const gitSource = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
 
   it('returns worktree + shared checkout when the worktree exists on disk', async () => {
@@ -523,6 +566,16 @@ describe('resolveCleanupWorkDirs', () => {
 
     expect(await resolveCleanupWorkDirs(gitAgent)).toEqual(['/git'])
   })
+
+  it('falls back to the default workspace dir when the source row is dangling', async () => {
+    // Runs of such an agent execute in resolveWorkDir's non-SCM fallback dir —
+    // that is where memory-override files live and must be cleaned from.
+    mockDbFrom.mockReturnValueOnce(chainResult(undefined)) // cleanup's source lookup
+    mockDbFrom.mockReturnValueOnce(chainResult(undefined)) // resolveWorkDir's source lookup
+    const dirs = await resolveCleanupWorkDirs(gitAgent)
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0]).toContain('/workspace/')
+  })
 })
 
 describe('removePerAgentWorkspace', () => {
@@ -530,7 +583,7 @@ describe('removePerAgentWorkspace', () => {
     vi.clearAllMocks()
   })
 
-  const gitAgent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+  const gitAgent = { id: 'agt_abc123', name: 'Test Agent', config: {}, workspaceType: 'scm', scmSourceId: 'scm_1' } as any
 
   it('removes the per-agent worktree when it exists and is idle', async () => {
     mockDbFrom
@@ -628,7 +681,7 @@ describe('injectScmEnv', () => {
     expect(env.GIT_BRANCH).toBe('develop')
   })
 
-  it('injects A2WAVE_WORKSPACE_BRANCH naming the per-agent worktree branch', async () => {
+  it('does not set A2WAVE_WORKSPACE_BRANCH (resolveWorkDir owns that variable)', async () => {
     const source = {
       type: 'git',
       config: { branch: 'develop' },
@@ -640,7 +693,7 @@ describe('injectScmEnv', () => {
     const agent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
 
     await injectScmEnv(env, agent)
-    expect(env.A2WAVE_WORKSPACE_BRANCH).toBe('agent-abc123')
+    expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
   })
 
   it('defaults GIT_BRANCH to main when not specified', async () => {

@@ -205,7 +205,7 @@ export async function handleA2ARequest(
     let resolvedWorkDir: string
     try {
       agentConfig = await buildAgentConfig(agent)
-      resolvedWorkDir = await resolveWorkDir(agent)
+      resolvedWorkDir = await resolveWorkDir(agent, undefined, undefined, agentConfig.agentEnv)
     } catch (err) {
       if (err instanceof ProviderConfigurationError) {
         return c.json({

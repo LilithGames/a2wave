@@ -2416,11 +2416,6 @@ app.post('/:id/chat', async (c) => {
         ...(parsed.data.worktree.branch ? { branch: parsed.data.worktree.branch } : {}),
       }
     : null
-  if (worktreeCfg) {
-    // An explicit worktree is not on the per-agent default branch — the env
-    // var would name a ref this run is not using.
-    delete (await agentConfig).agentEnv?.A2WAVE_WORKSPACE_BRANCH
-  }
 
   // --- Resolve or create Run ---
   let runId: string
@@ -2642,7 +2637,12 @@ app.post('/:id/chat', async (c) => {
   // 在同步事务内完成占用检查 + workDir 原子写回，防止并发竞态。
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId)
+    resolvedWorkDir = await resolveWorkDir(
+      agent,
+      parsed.data.worktree,
+      runId,
+      (await agentConfig).agentEnv,
+    )
   } catch (err) {
     if (
       err instanceof WorktreeOccupiedError ||
@@ -2922,8 +2922,12 @@ app.delete('/:id', async (c) => {
   removeAgentMemory(id)
   clearAgentIndex(id)
 
-  // Reclaim the per-agent worktree (best-effort — never blocks the deletion).
-  await removePerAgentWorkspace(agent)
+  // Reclaim the per-agent worktree in the background: serial `git worktree
+  // remove --force` on a large or multi-repo checkout is seconds of latency,
+  // and nothing downstream reads its outcome (failures only log).
+  void removePerAgentWorkspace(agent).catch((err) =>
+    logger.warn({ err, agentId: id }, 'Per-agent worktree reclaim failed'),
+  )
 
   const deleted = (await db.delete(agents).where(eq(agents.id, id)).returning())[0]
 

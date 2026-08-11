@@ -633,6 +633,7 @@ describe('Agents POST /:id/chat — worktree lifecycle', () => {
       expect.objectContaining({ id: 'agt_test1' }),
       { name: 'chat-feat', cleanup: 'ephemeral' },
       expect.any(String),
+      undefined,
     )
 
     const runInsert = insertCalls.find(

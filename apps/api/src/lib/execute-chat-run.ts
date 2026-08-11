@@ -129,11 +129,6 @@ export async function executeChatRun(
     agentConfig = await buildAgentConfig(agent, {
       runtimeAdminRequesterUserId: run.executionMetadata?.runtimeAdminRequesterUserId,
     })
-    if (worktreeParams && agentConfig.agentEnv) {
-      // An explicit worktree is not on the per-agent default branch — the env
-      // var would name a ref this run is not using.
-      delete agentConfig.agentEnv.A2WAVE_WORKSPACE_BRANCH
-    }
     queuedChatId = await resolveQueuedChatId(run)
 
     if (agent.workspaceType === 'scm' && agent.scmSourceId) {
@@ -149,7 +144,7 @@ export async function executeChatRun(
 
     // runId 传入让 resolveWorkDir 在同步事务内完成占用检查 + workDir 原子写回，
     // cleanupWorktreeIfEphemeral 和并发占用检查都依赖 runs.workDir 非空。
-    resolvedWorkDir = await resolveWorkDir(agent, worktreeParams, runId)
+    resolvedWorkDir = await resolveWorkDir(agent, worktreeParams, runId, agentConfig.agentEnv)
 
     const lastStep = (
       await db

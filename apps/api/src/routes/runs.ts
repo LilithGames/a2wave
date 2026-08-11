@@ -747,7 +747,7 @@ app.post('/:id/execute', async (c) => {
     // runId in: the run row predates this request (two-phase create/execute),
     // and recording runs.workDir keeps the workspace-delete occupancy check
     // aware of this run.
-    resolvedWorkDir = await resolveWorkDir(agent, undefined, id)
+    resolvedWorkDir = await resolveWorkDir(agent, undefined, id, agentConfig.agentEnv)
   } catch (error) {
     const publicError = await finishRunError(
       { taskId, runId: id, stepId, agentId, startTime, userId: run.userId ?? undefined },

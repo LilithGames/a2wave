@@ -477,6 +477,28 @@ describe('git-workspace', () => {
       expect(await currentCommit(resurrected.path)).toBe(agentCommit)
     })
 
+    it('keeps the branch when an incomplete followSource workspace is rebuilt', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      // Multi-repo shape: simulate a half-destroyed workspace so the rebuild
+      // path (remove + fresh create) runs. Single-repo dirs cannot go
+      // incomplete, so drive the rebuild via a multi-repo config over the
+      // same name — the point is that removeGitWorkspace is invoked with
+      // keepBranches for followSource and the branch survives to re-attach.
+      await execFileAsync('git', ['worktree', 'remove', '--force', first.path], { cwd: REPO_DIR })
+      const again = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentBranch(again.path)).toBe('agent-1')
+      expect(await currentCommit(again.path)).toBe(agentCommit)
+    })
+
     it('keeps the previous commit when the workspace has tracked modifications', async () => {
       const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
         followSource: true,
@@ -926,6 +948,31 @@ describe('git-workspace', () => {
       expect(existsSync(created.path)).toBe(false)
       // Removing the link must never follow it into the shared index.
       expect(existsSync(indexDir)).toBe(true)
+    })
+
+    it('removes a multi-repo workspace where .codegraph is a real directory', async () => {
+      // A cwd-relative CodeGraph CLI can materialize a real index directory in
+      // the workspace when the link was absent — a disposable cache that must
+      // not wedge removal (plain rm throws EISDIR on directories).
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-cg-dir', multiRepoConfig)
+      await mkdir(join(created.path, '.codegraph'), { recursive: true })
+      await writeFile(join(created.path, '.codegraph', 'index.db'), 'cache')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-cg-dir', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
     })
 
     it('removes platform-created artifacts and interrupted state writes in multi-repo mode', async () => {

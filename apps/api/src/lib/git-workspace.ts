@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import {
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -123,10 +124,14 @@ export class WorktreeDirtyError extends Error {
  * 用 slice 而不是 split('_').pop()，因为 createId 的 base64url 字母表含 '_'，
  * pop 会丢失前缀之外的前几段熵、造成跨 source 的 wsRoot 冲突。
  */
+export function idSuffix(id: string): string {
+  const underscoreIdx = id.indexOf('_')
+  const suffix = underscoreIdx >= 0 ? id.slice(underscoreIdx + 1) : id
+  return suffix || id
+}
+
 export function defaultWorkspacesPath(sourceId: string): string {
-  const underscoreIdx = sourceId.indexOf('_')
-  const suffix = underscoreIdx >= 0 ? sourceId.slice(underscoreIdx + 1) : sourceId
-  return join(homedir(), '.a2wave', 'workspaces', suffix || sourceId)
+  return join(homedir(), '.a2wave', 'workspaces', idSuffix(sourceId))
 }
 
 // ============================================================
@@ -165,7 +170,12 @@ export async function createGitWorkspace(
         { wsPath, incompleteRepos },
         'Workspace is incomplete (missing sub-repo dirs), rebuilding',
       )
-      await removeGitWorkspace(localPath, wsRoot, name, config)
+      // followSource branches are long-lived and may carry unmerged agent
+      // commits — a rebuild must never destroy them; the fresh create below
+      // re-attaches them via buildFollowSourceAddArgs.
+      await removeGitWorkspace(localPath, wsRoot, name, config, {
+        keepBranches: Boolean(options?.followSource),
+      })
       // fall through to fresh create below
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
@@ -229,7 +239,9 @@ export async function createGitWorkspace(
     if (lockedError || errors.length > 0) {
       // 回滚已创建的 worktree
       try {
-        await removeGitWorkspace(localPath, wsRoot, name, config)
+        await removeGitWorkspace(localPath, wsRoot, name, config, {
+          keepBranches: Boolean(options?.followSource),
+        })
       } catch (rollbackErr) {
         // If the first `git worktree add` failed, there is no Git registration
         // to prove. The parent directory was created by this invocation and is
@@ -403,6 +415,16 @@ async function findBranchLockHolder(
  * 多 repo 先 pre-validate（收集脏/锁状态）再统一切换，以保证原子性：
  * 任何 sub-repo 不满足条件时不触碰任何 sub-repo。
  */
+/** True when refs/heads/<name> exists. Any git failure reads as "missing". */
+async function localBranchExists(cwd: string, name: string): Promise<boolean> {
+  return execFileAsync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], {
+    cwd,
+    timeout: 5_000,
+  })
+    .then(() => true)
+    .catch(() => false)
+}
+
 /**
  * True when `ref` is an ancestor of `target` — advancing from ref to target is
  * then a fast-forward that cannot orphan any commit. Any git failure reads as
@@ -519,13 +541,22 @@ async function followSourceHeadOnReuse(
         // existing branch as-is — it may carry unmerged commits, and forcing
         // it to the source HEAD would orphan them; the next reuse advances it
         // through the ancestor guard. Only a missing branch is created here.
-        const branchExists = await execFileAsync(
-          'git',
-          ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`],
-          { cwd: wsRepoPath, timeout: 5_000 },
-        )
-          .then(() => true)
-          .catch(() => false)
+        const branchExists = await localBranchExists(wsRepoPath, name)
+        if (branchExists) {
+          const { stdout: branchTip } = await execFileAsync(
+            'git',
+            ['rev-parse', `refs/heads/${name}`],
+            { cwd: wsRepoPath, timeout: 5_000 },
+          )
+          if (branchTip.trim() !== wsHead.trim()) {
+            // Attaching moves the working tree to the branch tip — surface it
+            // like the other non-advancing paths instead of moving silently.
+            logger.warn(
+              { wsRepoPath, from: wsHead.trim(), to: branchTip.trim() },
+              'followSource: adopting existing branch moves the workspace off its detached commit',
+            )
+          }
+        }
         await execFileAsync(
           'git',
           branchExists ? ['checkout', name] : ['checkout', '-b', name, target],
@@ -700,14 +731,7 @@ async function buildFollowSourceAddArgs(
   name: string,
   baseBranch: string,
 ): Promise<string[]> {
-  const branchExists = await execFileAsync(
-    'git',
-    ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`],
-    { cwd, timeout: 5_000 },
-  )
-    .then(() => true)
-    .catch(() => false)
-  if (branchExists) {
+  if (await localBranchExists(cwd, name)) {
     return ['worktree', 'add', wsPath, name]
   }
   const baseRef = await resolveBaseRef(cwd, baseBranch)
@@ -836,6 +860,7 @@ export async function removeGitWorkspace(
   wsRoot: string,
   name: string,
   config: GitConfig,
+  options?: { keepBranches?: boolean },
 ): Promise<void> {
   if (!WORKTREE_NAME_REGEX.test(name)) {
     throw new Error(`Invalid workspace name: ${name}`)
@@ -903,7 +928,7 @@ export async function removeGitWorkspace(
         })
       }
 
-      if (branch) {
+      if (branch && !options?.keepBranches) {
         await deleteLocalBranch(repoLocalPath, branch)
       }
     }
@@ -919,7 +944,7 @@ export async function removeGitWorkspace(
       throw new Error(`Failed to remove registered Git worktree '${wsPath}'`, { cause: err })
     }
 
-    if (branch) {
+    if (branch && !options?.keepBranches) {
       await deleteLocalBranch(localPath, branch)
     }
   }
@@ -932,9 +957,15 @@ export async function removeGitWorkspace(
   if (existsSync(wsPath)) {
     await rm(join(wsPath, WORKSPACE_ARTIFACTS_DIRECTORY), { recursive: true, force: true })
     await rm(join(wsPath, WORKSPACE_STATE_FILE), { force: true })
-    // Non-recursive on purpose: this unlinks the CodeGraph symlink itself and
-    // must never follow it into the shared index.
-    await rm(join(wsPath, '.codegraph'), { force: true })
+    // The platform writes .codegraph as a symlink (unlink it without ever
+    // following it into the shared index), but a cwd-relative CodeGraph CLI can
+    // also materialize a real directory here — that is a disposable cache and
+    // must not wedge removal (fs.rm without recursive throws EISDIR on it).
+    const codegraphPath = join(wsPath, '.codegraph')
+    const codegraphEntry = await lstat(codegraphPath).catch(() => null)
+    if (codegraphEntry) {
+      await rm(codegraphPath, { force: true, recursive: codegraphEntry.isDirectory() })
+    }
     for (const entry of await readdir(wsPath)) {
       if (WORKSPACE_STATE_TEMP_FILE_PATTERN.test(entry)) {
         await rm(join(wsPath, entry), { recursive: true, force: true })
