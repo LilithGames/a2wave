@@ -49,6 +49,14 @@ type JsonPath = readonly [string, ...string[]]
  *   contains '['   `$.a[0]` indexes an array    (PG: the literal key "a[0]")
  *   leading '"'    `$."ab`  "bad JSON path"     (PG: the literal key '"ab')
  *   empty          `$.`     "bad JSON path"     (PG: the empty key)
+ *   contains NUL   `$.a\0b` reads the key "a"   (PG: the literal key "a\0b")
+ *
+ * The NUL case is the quietest of the five and the only one that returns a
+ * *wrong row* rather than an error. SQLite's path is a C string, so it truncates
+ * at the first NUL: verified against the bundled better-sqlite3, `$.a\0b` on
+ * `{"a":1,"a\0b":3}` returns `1` — the value of a different key — while
+ * PostgreSQL binds the whole segment and reads `3`. A trailing NUL degrades the
+ * same way (`ab\0` reads `ab`), and a leading one throws "bad JSON path".
  *
  * Everything else — commas, spaces, unicode, leading digits, hyphens, colons,
  * `$`, `#`, `]`, backslashes, interior or trailing quotes — round-trips as the
@@ -61,6 +69,7 @@ function isDialectDivergentSegment(segment: string): boolean {
     segment.length === 0 ||
     segment.includes('.') ||
     segment.includes('[') ||
+    segment.includes('\0') ||
     segment.startsWith('"')
   )
 }
@@ -69,7 +78,7 @@ function assertSafePath(path: readonly string[], helper: string): void {
   for (const segment of path) {
     if (isDialectDivergentSegment(segment)) {
       throw new Error(
-        `json-sql: ${helper} received the path segment ${JSON.stringify(segment)}, which SQLite reads as path syntax ('.'/'[' descend, a leading '"' opens a quoted label, an empty label is invalid) while PostgreSQL binds it as a literal key — the two backends would address different data.`,
+        `json-sql: ${helper} received the path segment ${JSON.stringify(segment)}, which SQLite reads as path syntax ('.'/'[' descend, a leading '"' opens a quoted label, a NUL truncates the key, an empty label is invalid) while PostgreSQL binds it as a literal key — the two backends would address different data.`,
       )
     }
   }
@@ -134,26 +143,57 @@ function physicalTableName(column: SQLiteColumn): string {
 }
 
 /**
- * The PostgreSQL operators used below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are
- * defined for json/jsonb only. A `mode: 'json'` column is already `jsonb` via
+ * Reject a column that does not hold JSON — on **both** dialects.
+ *
+ * This check is dialect-independent on purpose. It used to live only inside
+ * `pgJsonSource`, i.e. behind `isPostgresRuntime()`, which made the invariant
+ * true on PostgreSQL and merely *hoped for* on SQLite: `json_extract` on a
+ * non-JSON column returns NULL instead of raising, so a developer running the
+ * default backend saw a silently empty result and shipped it.
+ *
+ * Closing that gap in the compiler was what the call-site analyzer existed for,
+ * and why it needed six rounds of review — a static checker has to recognise
+ * every syntactic route to a call, while the function itself sees every call by
+ * construction. Enforcing it here makes the analyzer a second line of defence
+ * (it reports the mistake at `pnpm test` rather than at query-build time)
+ * instead of the only one.
+ *
+ * A value that is not a drizzle column carries no `dataType` to judge, so there
+ * is nothing to validate and it passes. That is what unit tests substituting a
+ * table of plain strings for the schema (routes/__tests__/internal-admin.test.ts)
+ * pass in; rejecting those would fail the suite over the *mock's* shape rather
+ * than over a real defect. Those call sites are not left unchecked — the
+ * call-site analyzer resolves them against the true schema, which is precisely
+ * the split of duties: the runtime guard catches what reaches it, the analyzer
+ * catches what the types say.
+ */
+function assertJsonBearingColumn(column: SQLiteColumn, helper: string): void {
+  if (typeof column?.dataType !== 'string') return
+  if (column.dataType === 'json') return
+  if (PLAIN_TEXT_JSON_COLUMNS.has(`${physicalTableName(column)}.${column.name}`)) return
+
+  throw new Error(
+    `json-sql: ${helper} received ${physicalTableName(column)}.${column.name}, which is neither a mode:'json' column nor a known plain-text JSON column. Declare it as text(..., { mode: 'json' }), or add it to PLAIN_TEXT_JSON_COLUMNS if it holds hand-serialised JSON.`,
+  )
+}
+
+/**
+ * The jsonb left-hand side for the PostgreSQL branch.
+ *
+ * The operators used below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are defined for
+ * json/jsonb only. A `mode: 'json'` column is already `jsonb` via
  * db/schema-transform.ts and needs nothing; a plain-text JSON column must be
  * cast, or the statement dies with `42883 operator does not exist: text ->
  * unknown` — which is exactly how every A2A `tasks/list` call failed on
  * PostgreSQL.
  *
- * Throws for a column that is neither, since that is a call-site error no cast
- * can rescue: it fails at query-build time, in-process and with the column
- * named, rather than reaching the server as a confusing per-row data error.
+ * The cast here is unconditional because `assertJsonBearingColumn` has already
+ * run: anything reaching this point is either jsonb or an allowlisted plain-text
+ * JSON column, so there is no third case left to reject.
  */
 function pgJsonSource(column: SQLiteColumn): SQL {
   if (column.dataType === 'json') return sql`${column}`
-
-  const qualifiedName = `${physicalTableName(column)}.${column.name}`
-  if (PLAIN_TEXT_JSON_COLUMNS.has(qualifiedName)) return sql`(${column})::jsonb`
-
-  throw new Error(
-    `json-sql: ${qualifiedName} is neither a mode:'json' column nor a known plain-text JSON column. Declare it as text(..., { mode: 'json' }), or add it to PLAIN_TEXT_JSON_COLUMNS if it holds hand-serialised JSON.`,
-  )
+  return sql`(${column})::jsonb`
 }
 
 /**
@@ -185,6 +225,7 @@ function sqlitePath(path: JsonPath): string {
  * absent figure as "not recorded" instead of zero.
  */
 export function jsonExtractNumber(column: SQLiteColumn, path: JsonPath): SQL<number | null> {
+  assertJsonBearingColumn(column, 'jsonExtractNumber')
   assertSafePath(path, 'jsonExtractNumber')
   if (isPostgresRuntime()) {
     return sql<number | null>`(${pgAccessor(column, path)})::numeric`
@@ -194,6 +235,7 @@ export function jsonExtractNumber(column: SQLiteColumn, path: JsonPath): SQL<num
 
 /** Extract a JSON value as **text**, for equality comparisons against an id. */
 export function jsonExtractText(column: SQLiteColumn, path: JsonPath): SQL<string | null> {
+  assertJsonBearingColumn(column, 'jsonExtractText')
   assertSafePath(path, 'jsonExtractText')
   if (isPostgresRuntime()) {
     return sql<string | null>`${pgAccessor(column, path)}`
@@ -217,6 +259,7 @@ export function jsonArrayContainsKeyValue(
   elementKey: string,
   value: string,
 ): SQL {
+  assertJsonBearingColumn(column, 'jsonArrayContainsKeyValue')
   assertSafePath(arrayPath, 'jsonArrayContainsKeyValue')
   // `elementKey` is interpolated into SQLite's `$.${elementKey}` path exactly
   // like a segment, so it carries the same ambiguity and gets the same check.
@@ -253,6 +296,7 @@ export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown)
       `json-sql: jsonSet takes a single-segment path, got [${path.join(', ')}]. PostgreSQL's jsonb_set will not create a missing intermediate parent, so a nested write silently no-ops there while succeeding on SQLite.`,
     )
   }
+  assertJsonBearingColumn(column, 'jsonSet')
   assertSafePath(path, 'jsonSet')
   const serialized = JSON.stringify(value)
   if (isPostgresRuntime()) {
@@ -274,6 +318,7 @@ export function jsonSet(column: SQLiteColumn, path: JsonSetPath, value: unknown)
  * check on the key. Both distinguish "key missing" from "key present but null".
  */
 export function jsonPathIsAbsent(column: SQLiteColumn, path: JsonPath): SQL {
+  assertJsonBearingColumn(column, 'jsonPathIsAbsent')
   assertSafePath(path, 'jsonPathIsAbsent')
   if (isPostgresRuntime()) {
     const leaf = path[path.length - 1]

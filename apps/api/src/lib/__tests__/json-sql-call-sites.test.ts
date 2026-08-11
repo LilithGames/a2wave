@@ -2,12 +2,22 @@
  * Every column passed to a JSON helper must actually hold JSON — checked on
  * both dialects, from the real call sites.
  *
- * `pgJsonSource`'s guard throws for a column that is neither `mode: 'json'` nor
- * a known plain-text JSON column, but it sits behind `isPostgresRuntime()`.
- * SQLite is the supported default, so a developer who never runs PostgreSQL
- * locally would pass a mistyped column, see `json_extract` quietly return NULL,
- * and ship it — the failure surfacing only on the backend fewer people run.
- * That is the same shape as the bug this suite exists for.
+ * ## This is the second line of defence, not the only one
+ *
+ * The column-type invariant is enforced at runtime by `assertJsonBearingColumn`
+ * inside json-sql.ts, on **both** dialects. That guard sees every call however
+ * it was spelled, so no aliasing or destructuring evades it — which is why the
+ * check belongs there and why this file no longer carries the whole burden.
+ *
+ * It still earns its place for the reason a runtime guard cannot cover: a guard
+ * only fires on a path that actually executes, and api coverage is ~82%, not
+ * 100%. A mistyped column on an untested branch would reach production with the
+ * runtime check never having run. This analyzer reads the code instead of
+ * running it, so it covers the branches tests do not — and it reports at
+ * `pnpm test` rather than at query-build time in production.
+ *
+ * The two layers answer different questions, so keep both: the guard catches
+ * what reaches it, this catches what the types say.
  *
  * ## Why this uses the TypeScript compiler rather than a regex
  *
@@ -31,6 +41,25 @@
  * and renaming stop being special cases — a renamed binding resolves to the
  * same symbol, and a shadowed one resolves to the local declaration, which is
  * not a schema column and is reported.
+ *
+ * ## Ask what a thing *is*, never how it was written
+ *
+ * Moving to the checker was not by itself enough, because the first version
+ * still asked the *forward* question — "which syntactic route produced this
+ * binding?" — and answered it with one branch per route: named destructure,
+ * then quoted, then shorthand, then computed. That direction is unbounded, so
+ * each review round legitimately found a shape the last had not enumerated.
+ *
+ * Two inversions ended it. `helperNameOf` asks `getTypeAtLocation` what a
+ * binding *is*, so every destructuring form collapses into one check; and
+ * `staticStringValue` reads a string-literal *type*, so `as const`, `satisfies`
+ * and constant-folded concatenation need no cases of their own.
+ *
+ * The rule this file is now built on: **resolve by identity, and fail closed
+ * when identity cannot be established.** An unresolvable specifier that could
+ * name json-sql is reported rather than ignored — silence used to mean "the
+ * analyzer failed", which read identically to "the code is safe". If a future
+ * round finds another evasion, the fix is another inversion, not another branch.
  */
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -141,67 +170,121 @@ function resolveSymbol(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | unde
   return symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
 }
 
-/** Is this symbol one of the json-sql helpers, however it was named locally? */
+/**
+ * Can this unresolvable specifier be ruled out as naming json-sql?
+ *
+ * Conservative by construction: it returns true only for a template literal
+ * whose trailing static text makes a `json-sql` ending impossible — the shape
+ * `` `file://${path}` `` cannot be ruled out by its tail, but one ending in a
+ * fixed `install.mjs`-style suffix can. Anything it cannot prove stays reported,
+ * so the fail-closed default is preserved; this only spares call sites where the
+ * evidence is in the syntax itself.
+ */
+function isProvablyNotJsonSql(node: ts.Expression): boolean {
+  if (!ts.isTemplateExpression(node)) return false
+
+  // A specifier that starts with an absolute-URL or absolute-path scheme names a
+  // resolved file on disk, not a module specifier. json-sql is imported only as
+  // a relative `../lib/json-sql.js`, and TypeScript would not resolve this form
+  // to it in the first place, so such an import cannot be the escape hatch this
+  // check exists to close.
+  const head = node.head.text
+  if (/^(file:\/\/|https?:\/\/|\/)/.test(head)) return true
+
+  // Otherwise, a non-empty tail that is a concrete non-json-sql file suffix pins
+  // the module loaded; a substitution before it cannot change the ending.
+  const tail = node.templateSpans[node.templateSpans.length - 1]?.literal.text ?? ''
+  return tail.length > 0 && !/json-sql/.test(tail) && /\.[a-z]+$/.test(tail)
+}
+
+/**
+ * Is this identifier inside a type annotation, rather than a runtime value?
+ *
+ * `type Extractor = typeof jsonExtractText` and `const f: typeof jsonExtractText`
+ * both mention a helper in a position that is erased at compile time, so neither
+ * is a value escaping the analyzer's view.
+ */
+function isInTypePosition(node: ts.Node): boolean {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isTypeNode(current) || ts.isTypeAliasDeclaration(current)) return true
+    // A `typeof x` type query is a type node, but its argument is an
+    // EntityName rather than a TypeNode, so check the query itself.
+    if (ts.isTypeQueryNode(current)) return true
+    if (ts.isSourceFile(current) || ts.isBlock(current)) return false
+  }
+  return false
+}
+
+/**
+ * The `key` half of `const { key: local } = ns` — the property being read, not
+ * the binding being created. The binding is reported on its own, so counting
+ * this too would double-report one escape.
+ */
+function isPropertyNameOfBinding(node: ts.Node): boolean {
+  return ts.isBindingElement(node.parent) && node.parent.propertyName === node
+}
+
+/**
+ * Is this identifier one of the json-sql helpers, however it was named locally?
+ *
+ * Resolution is by **symbol first, then type identity** — deliberately not by
+ * walking the syntax that produced the binding.
+ *
+ * Every earlier revision asked the forward question: "which syntactic route led
+ * from the export to this name?" — and answered it with one branch per route
+ * (named destructure, then quoted destructure, then shorthand, then computed…).
+ * That direction is unbounded, because TypeScript keeps offering new spellings
+ * for "take a value out of a module", so each review round legitimately found a
+ * shape the previous round had not enumerated. `getTypeAtLocation` asks the
+ * inverse, shape-free question instead: *what is this thing?* A binding produced
+ * by any destructuring form still has the helper's own function type, so all of
+ * those routes collapse into one check that no new syntax can sidestep.
+ *
+ * Type identity is sound here because each helper's type is its unique
+ * declaration — `jsonExtractText` and `jsonExtractNumber` differ in return type,
+ * and nothing else in the program declares a function assignable to either by
+ * identity. It is compared by the type object's own identity, not structurally,
+ * so an unrelated `(c, p) => SQL` does not collide.
+ */
 function helperNameOf(
   checker: ts.TypeChecker,
   node: ts.Node,
   helperSymbols: Map<ts.Symbol, string>,
+  helperTypes: Map<ts.Type, string>,
 ): string | undefined {
   const symbol = resolveSymbol(checker, node)
-  if (!symbol) return undefined
-
-  const direct = helperSymbols.get(symbol)
-  if (direct) return direct
-
-  const declaration = symbol.valueDeclaration
-  if (
-    !declaration ||
-    !ts.isBindingElement(declaration) ||
-    !declaration.propertyName ||
-    !ts.isStringLiteralLike(declaration.propertyName) ||
-    !ts.isObjectBindingPattern(declaration.parent) ||
-    !ts.isVariableDeclaration(declaration.parent.parent) ||
-    !declaration.parent.parent.initializer
-  ) {
-    return undefined
+  if (symbol) {
+    const direct = helperSymbols.get(symbol)
+    if (direct) return direct
   }
 
-  const property = checker.getPropertyOfType(
-    checker.getTypeAtLocation(declaration.parent.parent.initializer),
-    declaration.propertyName.text,
-  )
-  if (!property) return undefined
-  const target =
-    property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
-  return helperSymbols.get(target)
+  return helperTypes.get(checker.getTypeAtLocation(node))
 }
 
-/** Resolve a module specifier that is a string literal or a chain of const aliases. */
-function staticStringValue(
-  checker: ts.TypeChecker,
-  node: ts.Expression,
-  seen = new Set<ts.Symbol>(),
-): string | undefined {
-  if (ts.isStringLiteralLike(node)) return node.text
-  if (ts.isParenthesizedExpression(node)) return staticStringValue(checker, node.expression, seen)
-  if (!ts.isIdentifier(node)) return undefined
-
-  const symbol = resolveSymbol(checker, node)
-  const declaration = symbol?.valueDeclaration
-  if (
-    !symbol ||
-    seen.has(symbol) ||
-    !declaration ||
-    !ts.isVariableDeclaration(declaration) ||
-    !declaration.initializer ||
-    !ts.isVariableDeclarationList(declaration.parent) ||
-    !(declaration.parent.flags & ts.NodeFlags.Const)
-  ) {
-    return undefined
-  }
-
-  seen.add(symbol)
-  return staticStringValue(checker, declaration.initializer, seen)
+/**
+ * The compile-time value of a string expression, or `undefined` when it cannot
+ * be proven.
+ *
+ * This asks the checker for the type and reads a string-literal type off it,
+ * rather than pattern-matching the expression. `as const`, `satisfies`,
+ * parentheses, a `const` alias chain and constant-folded concatenation all
+ * produce a string-literal *type*, so one question covers every form — the same
+ * inversion `helperNameOf` makes, for the same reason: enumerating expression
+ * shapes is unbounded, asking what the value is is not.
+ *
+ * The literal-type route also fixes a false positive the syntactic version
+ * caused: `const key = 'jsonExtractText' as const` used in `jsonSql[key](...)`
+ * was unresolvable, so a legitimate call was reported as a dynamic key.
+ */
+function staticStringValue(checker: ts.TypeChecker, node: ts.Expression): string | undefined {
+  const type = checker.getTypeAtLocation(node)
+  const literal = type.isStringLiteral()
+    ? type
+    : // A `satisfies`/widened position can yield a union of one literal.
+      type.isUnion() && type.types.length === 1 && type.types[0]?.isStringLiteral()
+      ? (type.types[0] as ts.StringLiteralType)
+      : undefined
+  return literal?.value
 }
 
 /**
@@ -214,6 +297,10 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
   const jsonSqlSource = program.getSourceFile(JSON_SQL)
   const moduleSymbol = jsonSqlSource ? checker.getSymbolAtLocation(jsonSqlSource) : undefined
   const helperSymbols = new Map<ts.Symbol, string>()
+  // Keyed by the checker's own type object, so lookup is identity-based: a
+  // structurally similar but unrelated function is a different type object and
+  // does not match.
+  const helperTypes = new Map<ts.Type, string>()
   if (moduleSymbol) {
     for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
       const name = symbol.getName()
@@ -221,6 +308,10 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         const target =
           symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
         helperSymbols.set(target, name)
+        const declaration = target.valueDeclaration
+        if (declaration) {
+          helperTypes.set(checker.getTypeOfSymbolAtLocation(target, declaration), name)
+        }
       }
     }
   }
@@ -253,7 +344,7 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
           }),
         )
         const helper = ts.isIdentifier(callee)
-          ? helperNameOf(checker, callee, helperSymbols)
+          ? helperNameOf(checker, callee, helperSymbols, helperTypes)
           : elementAccess && elementKey && elementNamespaceType
             ? (() => {
                 const property = checker.getPropertyOfType(elementNamespaceType, elementKey)
@@ -320,20 +411,48 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
       if (
         ts.isCallExpression(node) &&
         node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments[0] &&
-        /json-sql(\.js)?$/.test(staticStringValue(checker, node.arguments[0]) ?? '')
+        node.arguments[0]
       ) {
-        findings.push({
-          file,
-          message:
-            'json-sql imported dynamically; import it statically so call sites stay resolvable',
-        })
+        const specifier = staticStringValue(checker, node.arguments[0])
+        if (specifier === undefined && !isProvablyNotJsonSql(node.arguments[0])) {
+          // Fail closed, but only for a specifier that could actually name this
+          // module. Treating "unresolvable" as "not json-sql" is what let
+          // `'../lib/' + 'json-sql.js'` through: the check passed because the
+          // *analyzer* failed, not because the code was safe.
+          //
+          // A genuinely runtime path that cannot contain 'json-sql' (loading a
+          // resolved .mjs by absolute path, say) is left alone — the goal is to
+          // stop this module escaping, not to ban dynamic import.
+          findings.push({
+            file,
+            message:
+              'dynamic import whose specifier is not statically resolvable and could name json-sql; use a literal specifier so the target can be checked',
+          })
+        } else if (specifier !== undefined && /json-sql(\.js)?$/.test(specifier)) {
+          findings.push({
+            file,
+            message:
+              'json-sql imported dynamically; import it statically so call sites stay resolvable',
+          })
+        }
       }
 
       // A helper referenced anywhere other than as the callee of a call is a
-      // value escaping into code this analyzer stops tracking.
-      if (ts.isIdentifier(node) && !ts.isImportSpecifier(node.parent)) {
-        const helper = helperNameOf(checker, node, helperSymbols)
+      // value escaping into code this analyzer stops tracking. With type-based
+      // resolution this is also what catches every destructuring form: the new
+      // binding is an identifier carrying the helper's type, so it is reported
+      // here at the point it is created, whatever syntax created it.
+      //
+      // Type positions are excluded. `type Extractor = typeof jsonExtractText`
+      // names the helper's type without ever holding the function at runtime, so
+      // it cannot smuggle a column past anything and is not an escape.
+      if (
+        ts.isIdentifier(node) &&
+        !ts.isImportSpecifier(node.parent) &&
+        !isInTypePosition(node) &&
+        !isPropertyNameOfBinding(node)
+      ) {
+        const helper = helperNameOf(checker, node, helperSymbols, helperTypes)
         const isCallee = ts.isCallExpression(node.parent) && node.parent.expression === node
         const isPropertyCallee =
           ts.isPropertyAccessExpression(node.parent) &&
@@ -489,6 +608,37 @@ describe('the analyzer itself, against every known evasion shape', () => {
        extract4(users.email, ['x'])`,
     ],
     [
+      'shorthand namespace destructure',
+      `import * as jsonSql from '../lib/json-sql.js'
+       const { jsonExtractText } = jsonSql
+       jsonExtractText(users.email, ['x'])`,
+    ],
+    [
+      'computed namespace destructure',
+      `import * as jsonSql from '../lib/json-sql.js'
+       const key = 'jsonExtractText'
+       const { [key]: extract8 } = jsonSql
+       extract8(users.email, ['x'])`,
+    ],
+    [
+      'dynamic import through an as-const specifier',
+      `const specifier = '../lib/json-sql.js' as const
+       const { jsonExtractText: extract9 } = await import(specifier)
+       extract9(users.email, ['x'])`,
+    ],
+    [
+      'dynamic import through a satisfies specifier',
+      `const specifier = '../lib/json-sql.js' satisfies string
+       const { jsonExtractText: extract10 } = await import(specifier)
+       extract10(users.email, ['x'])`,
+    ],
+    [
+      'dynamic import through a concatenated specifier',
+      `const specifier = '../lib/' + 'json-sql.js'
+       const { jsonExtractText: extract11 } = await import(specifier)
+       extract11(users.email, ['x'])`,
+    ],
+    [
       'local rebind',
       `import { jsonExtractText } from '../lib/json-sql.js'
        const extract4 = jsonExtractText
@@ -551,6 +701,27 @@ describe('the analyzer itself, against every known evasion shape', () => {
       expect(result.findings.length > 0 || surfacedBadColumn).toBe(true)
     })
   }
+
+  it('leaves a genuinely unrelated dynamic import alone', () => {
+    // `loadInstaller()` in lib/cli-installer.ts imports a resolved .mjs by
+    // absolute file:// path. Fail-closed must not tax code that provably cannot
+    // be reaching json-sql, or the rule gets reverted rather than obeyed.
+    const result = analyzeFixture(
+      `const path = '/tmp/install.mjs'
+       const mod = await import(\`file://\${path}\`)
+       void mod`,
+    )
+    expect(result.findings).toEqual([])
+  })
+
+  it('still flags an interpolated specifier that could name json-sql', () => {
+    const result = analyzeFixture(
+      `declare const dir: string
+       const mod = await import(\`../\${dir}/json-sql.js\`)
+       void mod`,
+    )
+    expect(result.findings.length).toBeGreaterThan(0)
+  })
 
   it('passes the vanilla shape and resolves its column to the real table', () => {
     const result = analyzeFixture(

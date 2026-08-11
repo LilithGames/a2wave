@@ -34,8 +34,14 @@ import {
   jsonSet,
 } from '../json-sql.js'
 
-/** The four shapes SQLite reads as path syntax rather than a literal key. */
-const DIVERGENT = ['a.b', 'task.status', 'a[0]', 'items[3]', '"ab', '']
+/**
+ * The five shapes SQLite reads as something other than the literal key.
+ *
+ * The NUL entries cover all three positions. SQLite's path is a C string, so an
+ * interior or trailing NUL silently truncates the key — `a\0b` reads `a`, which
+ * is a wrong-row read rather than an error — while a leading one throws.
+ */
+const DIVERGENT = ['a.b', 'task.status', 'a[0]', 'items[3]', '"ab', '', 'a\0b', 'ab\0', '\0ab']
 
 /**
  * Keys that LOOK special but are literal on both engines. Kept in sync with
@@ -126,6 +132,18 @@ describe('the classification itself, against the real SQLite engine', () => {
       expect(isLiteralOnSqlite(segment)).toBe(false)
     })
   }
+
+  it('shows the NUL divergence: SQLite truncates the key and reads a different value', () => {
+    // The quietest of the five shapes — the only one that returns a wrong row
+    // instead of raising. SQLite's path is a C string, so `$.a\0b` stops at the
+    // NUL and reads key "a" (1); PostgreSQL binds the whole segment and reads
+    // key "a\0b" (3). Neither errors, so nothing would have surfaced this.
+    const document = JSON.stringify({ a: 1, 'a\0b': 3 })
+    expect(db.prepare('SELECT json_extract(?, ?)').pluck().get(document, '$.a\0b')).toBe(1)
+    // A trailing NUL degrades the same way, reading the untruncated key.
+    const trailing = JSON.stringify({ ab: 2, 'ab\0': 4 })
+    expect(db.prepare('SELECT json_extract(?, ?)').pluck().get(trailing, '$.ab\0')).toBe(2)
+  })
 
   it("shows the flagship divergence: '.' descends on SQLite, is literal on PostgreSQL", () => {
     // The document has BOTH a nested a->b and a top-level "a.b". SQLite's path

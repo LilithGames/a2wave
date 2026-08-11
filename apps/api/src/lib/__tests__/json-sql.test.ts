@@ -32,6 +32,40 @@ function makeDb() {
   return { db: drizzle(sqlite, { schema: { rows } }), sqlite }
 }
 
+/**
+ * The column-type invariant holds on SQLite too — the point of enforcing it in
+ * the helper rather than only in the static call-site analyzer.
+ *
+ * It used to live inside `pgJsonSource`, behind `isPostgresRuntime()`. On the
+ * default backend `json_extract` on a non-JSON column returns NULL instead of
+ * raising, so the mistake was invisible exactly where most development happens,
+ * and only a static analyzer stood between it and production. Static analysis of
+ * a JS call site is leaky by nature (aliasing, destructuring, dynamic import),
+ * which is why that analyzer needed six review rounds; the function itself sees
+ * every call however it was spelled.
+ */
+describe('a non-JSON column is rejected on SQLite, not just on PostgreSQL', () => {
+  it('throws for a column that holds no JSON, naming the column', () => {
+    expect(() => jsonExtractText(rows.n, ['anything'])).toThrow(/rows\.n/)
+    expect(() => jsonExtractNumber(rows.n, ['anything'])).toThrow(
+      /neither a mode:'json' column nor a known plain-text JSON column/,
+    )
+  })
+
+  it('still accepts a mode:json column', () => {
+    expect(() => jsonExtractText(rows.output, ['usage'])).not.toThrow()
+  })
+
+  it('ignores a value that is not a drizzle column, so schema mocks still work', () => {
+    // routes/__tests__/internal-admin.test.ts substitutes a table of plain
+    // strings for the schema. Such a stub carries no dataType to judge, so there
+    // is no defect to report — failing here would break that suite over the
+    // mock's shape. The static call-site analyzer covers those sites instead.
+    const notAColumn = 'runs.result' as unknown as typeof rows.output
+    expect(() => jsonExtractNumber(notAColumn, ['durationMs'])).not.toThrow()
+  })
+})
+
 describe('jsonExtractNumber on SQLite', () => {
   it('reads a nested numeric path', async () => {
     const { db, sqlite } = makeDb()
