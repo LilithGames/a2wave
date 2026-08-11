@@ -2416,6 +2416,11 @@ app.post('/:id/chat', async (c) => {
         ...(parsed.data.worktree.branch ? { branch: parsed.data.worktree.branch } : {}),
       }
     : null
+  if (worktreeCfg) {
+    // An explicit worktree is not on the per-agent default branch — the env
+    // var would name a ref this run is not using.
+    delete (await agentConfig).agentEnv?.A2WAVE_WORKSPACE_BRANCH
+  }
 
   // --- Resolve or create Run ---
   let runId: string

@@ -1149,7 +1149,24 @@ async function resolvePerAgentWorkspace(
   }
 
   const name = perAgentWorkspaceName(agent.id)
-  const result = await scm.createWorkspace(name, { followSource: true })
+  // Advancing runs `reset --hard`, which is not a read-only share — while a
+  // sibling run of this agent is executing here, skip the advance (freshness
+  // resumes on the next solo run). A TOCTOU window remains, but this turns a
+  // routine collision into a negligible one without serializing runs.
+  const sibling = (
+    await db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.initiatorAgentId, agent.id),
+          inArray(runs.status, ['running', 'pending', 'queued']),
+          ...(runId ? [ne(runs.id, runId)] : []),
+        ),
+      )
+      .limit(1)
+  )[0]
+  const result = await scm.createWorkspace(name, { followSource: true, advance: !sibling })
 
   try {
     // persistent: never TTL-swept, never removed after a run — the worktree is
@@ -1234,7 +1251,26 @@ export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect)
   if (!scm) return
 
   const name = perAgentWorkspaceName(agent.id)
-  if (!existsSync(join(scm.wsRoot, name))) return
+  const wsPath = join(scm.wsRoot, name)
+  if (!existsSync(wsPath)) return
+
+  // A chat-debug run can be in flight even though only stopped agents are
+  // deletable — yanking its cwd would lose unpushed work. Leave the worktree
+  // behind instead; the workspace-delete route can reclaim it once idle.
+  const occupant = (
+    await db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])))
+      .limit(1)
+  )[0]
+  if (occupant) {
+    logger.warn(
+      { agentId: agent.id, workspace: name, runId: occupant.id },
+      'Per-agent worktree occupied by an in-flight run; leaving it for later cleanup',
+    )
+    return
+  }
 
   try {
     await scm.removeWorkspace(name)

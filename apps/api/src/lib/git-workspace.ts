@@ -148,7 +148,7 @@ export async function createGitWorkspace(
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { branch?: string; followSource?: boolean },
+  options?: { branch?: string; followSource?: boolean; advance?: boolean },
 ): Promise<{ path: string; created: boolean }> {
   const wsPath = join(wsRoot, name)
 
@@ -170,7 +170,12 @@ export async function createGitWorkspace(
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
       if (options?.followSource && !options?.branch) {
-        await followSourceHeadOnReuse(wsPath, localPath, config, name)
+        // advance === false: a sibling run of the same agent is executing in
+        // this workspace right now — reset --hard is not a read-only share, so
+        // freshness waits for the next solo run.
+        if (options.advance !== false) {
+          await followSourceHeadOnReuse(wsPath, localPath, config, name)
+        }
       } else {
         await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
       }
@@ -205,7 +210,9 @@ export async function createGitWorkspace(
         logger.info({ repoWsPath, directory: repo.directory }, 'Created workspace for sub-repo')
       } catch (err) {
         try {
-          rethrowIfBranchLocked(err, options?.branch)
+          // followSource attaches the workspace's own branch, so a lock on it
+          // must surface as a typed error, not a generic create failure.
+          rethrowIfBranchLocked(err, options?.branch ?? (options?.followSource ? name : undefined))
         } catch (lockErr) {
           if (lockErr instanceof WorktreeBranchLockedError) {
             lockedError = lockErr
@@ -249,7 +256,7 @@ export async function createGitWorkspace(
       await execFileAsync('git', args, { cwd: localPath, timeout: GIT_TIMEOUT_MS })
       logger.info({ wsPath }, 'Created workspace')
     } catch (err) {
-      rethrowIfBranchLocked(err, options?.branch)
+      rethrowIfBranchLocked(err, options?.branch ?? (options?.followSource ? name : undefined))
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Failed to create workspace: ${msg}`)
     }
@@ -452,18 +459,6 @@ async function followSourceHeadOnReuse(
       const onBranch = onBranchRaw.trim()
       if (onBranch && onBranch !== name) continue
 
-      const { stdout: dirty } = await execFileAsync('git', ['status', '--porcelain', '-uno'], {
-        cwd: wsRepoPath,
-        timeout: 5_000,
-      })
-      if (dirty.trim()) {
-        logger.warn(
-          { wsRepoPath },
-          'followSource: workspace pinned behind source HEAD (tracked modifications)',
-        )
-        continue
-      }
-
       const { stdout: sourceHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
         cwd: localRepoPath,
         timeout: 5_000,
@@ -474,6 +469,37 @@ async function followSourceHeadOnReuse(
         timeout: 5_000,
       })
       const upToDate = wsHead.trim() === target
+      if (upToDate && onBranch) continue
+
+      // The platform rewrites these on every run (skill/MCP mounts, artifacts),
+      // so changes there are not agent work and must not pin the workspace —
+      // repos that track e.g. .claude/skills would otherwise never advance.
+      // reset --hard reverts them to repo state; the engine re-mounts before
+      // spawning the CLI.
+      const { stdout: dirty } = await execFileAsync(
+        'git',
+        [
+          'status',
+          '--porcelain',
+          '-uno',
+          '--',
+          '.',
+          ':(exclude).claude',
+          ':(exclude).cursor',
+          ':(exclude).codex',
+          ':(exclude).mcp.json',
+          ':(exclude).mcp.json.a2wave-managed',
+          ':(exclude)artifacts',
+        ],
+        { cwd: wsRepoPath, timeout: 5_000 },
+      )
+      if (dirty.trim()) {
+        logger.warn(
+          { wsRepoPath },
+          'followSource: workspace pinned behind source HEAD (tracked modifications)',
+        )
+        continue
+      }
 
       if (!upToDate && !(await isAncestor(wsRepoPath, 'HEAD', target))) {
         logger.warn(
@@ -484,19 +510,27 @@ async function followSourceHeadOnReuse(
       }
 
       if (onBranch) {
-        if (!upToDate) {
-          await execFileAsync('git', ['reset', '--hard', target], {
-            cwd: wsRepoPath,
-            timeout: GIT_TIMEOUT_MS,
-          })
-        }
-      } else {
-        // Legacy detached workspace: adopt it onto the branch (creating or
-        // resetting it here is safe — the ancestor guard already passed).
-        await execFileAsync('git', ['checkout', '-B', name, target], {
+        await execFileAsync('git', ['reset', '--hard', target], {
           cwd: wsRepoPath,
           timeout: GIT_TIMEOUT_MS,
         })
+      } else {
+        // Legacy detached workspace: adopt it onto the branch. Attach to an
+        // existing branch as-is — it may carry unmerged commits, and forcing
+        // it to the source HEAD would orphan them; the next reuse advances it
+        // through the ancestor guard. Only a missing branch is created here.
+        const branchExists = await execFileAsync(
+          'git',
+          ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`],
+          { cwd: wsRepoPath, timeout: 5_000 },
+        )
+          .then(() => true)
+          .catch(() => false)
+        await execFileAsync(
+          'git',
+          branchExists ? ['checkout', name] : ['checkout', '-b', name, target],
+          { cwd: wsRepoPath, timeout: GIT_TIMEOUT_MS },
+        )
       }
     } catch (err) {
       logger.warn(
@@ -827,6 +861,8 @@ export async function removeGitWorkspace(
     const allowedEntries = new Set([
       WORKSPACE_STATE_FILE,
       WORKSPACE_ARTIFACTS_DIRECTORY,
+      // Platform-written CodeGraph index link (ensureCodegraphLink).
+      '.codegraph',
       ...multiRepos.map((repo) => repo.directory),
     ])
     const unexpectedEntries = (await readdir(wsPath)).filter(
@@ -896,6 +932,9 @@ export async function removeGitWorkspace(
   if (existsSync(wsPath)) {
     await rm(join(wsPath, WORKSPACE_ARTIFACTS_DIRECTORY), { recursive: true, force: true })
     await rm(join(wsPath, WORKSPACE_STATE_FILE), { force: true })
+    // Non-recursive on purpose: this unlinks the CodeGraph symlink itself and
+    // must never follow it into the shared index.
+    await rm(join(wsPath, '.codegraph'), { force: true })
     for (const entry of await readdir(wsPath)) {
       if (WORKSPACE_STATE_TEMP_FILE_PATTERN.test(entry)) {
         await rm(join(wsPath, entry), { recursive: true, force: true })

@@ -979,6 +979,29 @@ describe('executeChatRun', () => {
     expect(mockExecuteWithRetry).toHaveBeenCalled()
   })
 
+  it('strips A2WAVE_WORKSPACE_BRANCH from the env on explicit-worktree runs', async () => {
+    // The var names the per-agent default branch; an explicit worktree sits on
+    // its own ref, so advertising the default branch would misdirect pushes.
+    const runWithWorktree = {
+      ...baseRun,
+      worktreeConfig: { name: 'feature-x', cleanup: 'ttl' },
+    }
+    const agentConfig = {
+      model: 'claude-3',
+      agentEnv: { GIT_BRANCH: 'main', A2WAVE_WORKSPACE_BRANCH: 'agent-1' },
+    }
+    mockBuildAgentConfig.mockReturnValueOnce(agentConfig)
+    mockResolveWorkDir.mockResolvedValue('/ws/feature-x')
+
+    setupSelectSequence(baseAgent, runWithWorktree, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(agentConfig.agentEnv).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
+    expect(agentConfig.agentEnv.GIT_BRANCH).toBe('main')
+  })
+
   it('passes worktreeConfig.branch through to resolveWorkDir (queued path preserves branch)', async () => {
     // 回归 MR!89 review: 排队入队时 branch 会落库到 runs.worktreeConfig；
     // 出队 executeChatRun 还原 worktreeParams 时必须把 branch 一并带上，

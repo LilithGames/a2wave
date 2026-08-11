@@ -129,6 +129,11 @@ export async function executeChatRun(
     agentConfig = await buildAgentConfig(agent, {
       runtimeAdminRequesterUserId: run.executionMetadata?.runtimeAdminRequesterUserId,
     })
+    if (worktreeParams && agentConfig.agentEnv) {
+      // An explicit worktree is not on the per-agent default branch — the env
+      // var would name a ref this run is not using.
+      delete agentConfig.agentEnv.A2WAVE_WORKSPACE_BRANCH
+    }
     queuedChatId = await resolveQueuedChatId(run)
 
     if (agent.workspaceType === 'scm' && agent.scmSourceId) {
