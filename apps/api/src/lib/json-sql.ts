@@ -1,4 +1,4 @@
-import { type SQL, sql } from 'drizzle-orm'
+import { type SQL, getTableName, sql } from 'drizzle-orm'
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { isPostgresRuntime } from '../db/dialect-runtime.js'
 
@@ -10,9 +10,22 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
  * Every JSON-reading query therefore has to be built through these helpers
  * rather than written inline, or it silently works on one backend only.
  *
- * A note on storage: these columns are `text` under SQLite but `jsonb` under
- * PostgreSQL (see db/schema-transform.ts). The PostgreSQL operators below are
- * the jsonb ones, which is exactly why that mapping was chosen.
+ * A note on storage: a column declared `text(..., { mode: 'json' })` is `text`
+ * under SQLite and `jsonb` under PostgreSQL (see db/schema-transform.ts). The
+ * PostgreSQL operators below are the jsonb ones, which is exactly why that
+ * mapping was chosen.
+ *
+ * That mapping keys off `mode: 'json'` and nothing else, so it is **not** true
+ * that every JSON-holding column is jsonb on PostgreSQL. A column whose JSON is
+ * serialised by hand is declared plain `text` and stays `text` on both dialects
+ * — `a2a_tasks.data` is exactly that (a2a/sqlite-task-store.ts does its own
+ * JSON.stringify/JSON.parse). Assuming otherwise is what made `tasks/list` fail
+ * with `42883 operator does not exist: text -> unknown` on every PostgreSQL
+ * deployment. The helpers below handle it via `pgJsonSource`; an inline
+ * `->`/`->>` written at a call site would not, and no gate catches that
+ * (no-raw-sqlite-json-sql.test.ts scans for the SQLite-only functions only).
+ * So: route JSON access through these helpers, and do not assume the column
+ * arrived as jsonb.
  *
  * All operators used here predate PostgreSQL 9.6 (`->`/`->>` arrived in 9.3),
  * so nothing here breaks the supported floor.
@@ -22,20 +35,50 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
 type JsonPath = readonly [string, ...string[]]
 
 /**
- * The PostgreSQL operators below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are
- * defined for json/jsonb only. Columns declared `text(..., { mode: 'json' })`
- * become `jsonb` via db/schema-transform.ts and need nothing extra — but a
- * column holding JSON while declared as plain `text` does, or PostgreSQL fails
- * the statement outright with `42883 operator does not exist: text -> unknown`.
+ * Plain-text columns that legitimately hold JSON, as `table.column`.
  *
- * `a2a_tasks.data` is that column: a2a/sqlite-task-store.ts serialises and
- * parses the envelope by hand instead of through drizzle, so it is plain text
- * on both dialects while `list()` still filters on `scope`/`task` paths inside
- * it. Keying the cast off the column's declared `dataType` fixes that without
- * adding a redundant cast to the jsonb columns every other call site passes.
+ * Deliberately an allowlist rather than "cast anything that is not json". A
+ * blanket cast also swallows the case these helpers should never see — a
+ * genuinely non-JSON column passed by mistake, say `runs.status`. Pre-cast that
+ * failed at PostgreSQL's parse stage with `42883 operator does not exist`,
+ * naming the operator before a single row was read. Cast blindly it instead
+ * plans fine and fails per-row with `22P02 invalid input syntax for type json`,
+ * pointing at the value rather than the mistake — and on an empty table it does
+ * not fail at all, silently returning no rows so a mis-wired predicate reads as
+ * "nothing matched" instead of a bug.
+ *
+ * Naming the columns keeps the loud, early failure for a real mistake while
+ * still fixing the columns that need it.
+ */
+const PLAIN_TEXT_JSON_COLUMNS: ReadonlySet<string> = new Set([
+  // a2a/sqlite-task-store.ts serialises and parses this envelope by hand
+  // (`encodeTask` returns a string, `JSON.parse(row.data)` reads one back)
+  // instead of letting drizzle do it, so it carries no `mode: 'json'` and stays
+  // `text` on both dialects while `list()` filters on paths inside it.
+  'a2a_tasks.data',
+])
+
+/**
+ * The PostgreSQL operators used below (`->`, `->>`, `?`, `@>`, `jsonb_set`) are
+ * defined for json/jsonb only. A `mode: 'json'` column is already `jsonb` via
+ * db/schema-transform.ts and needs nothing; a plain-text JSON column must be
+ * cast, or the statement dies with `42883 operator does not exist: text ->
+ * unknown` — which is exactly how every A2A `tasks/list` call failed on
+ * PostgreSQL.
+ *
+ * Throws for a column that is neither, since that is a call-site error no cast
+ * can rescue: it fails at query-build time, in-process and with the column
+ * named, rather than reaching the server as a confusing per-row data error.
  */
 function pgJsonSource(column: SQLiteColumn): SQL {
-  return column.dataType === 'json' ? sql`${column}` : sql`(${column})::jsonb`
+  if (column.dataType === 'json') return sql`${column}`
+
+  const qualifiedName = `${getTableName(column.table)}.${column.name}`
+  if (PLAIN_TEXT_JSON_COLUMNS.has(qualifiedName)) return sql`(${column})::jsonb`
+
+  throw new Error(
+    `json-sql: ${qualifiedName} is neither a mode:'json' column nor a known plain-text JSON column. Declare it as text(..., { mode: 'json' }), or add it to PLAIN_TEXT_JSON_COLUMNS if it holds hand-serialised JSON.`,
+  )
 }
 
 /**
