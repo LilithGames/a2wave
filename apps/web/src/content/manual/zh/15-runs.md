@@ -120,7 +120,7 @@ Run 中产生的文件作为 **产物** 保存，可在产物列表查看与下�
 2. 怀疑环境问题 → 回 Agent 跑 **综合诊断**（Provider / 引擎 / 飞书连接）。
 3. 一直 `queued` → 可能并发已满，调大 `maxConcurrency` 或等待。
 
-OAuth 异步调用查询到 `failed` 时，`data.result.error` 是结构化错误。按 `source` 判断责任方，按 `action` 执行下一步，并在联系 Agent 所有者或平台管理员时附上 `details.runId`。`PROVIDER_*` 不代表调用方 SSO token 有问题。
+OAuth 异步调用查询到 `failed` 时，`data.result.error` 是结构化错误。按 `source` 判断责任方，按 `action` 执行下一步，并在联系 Agent 所有者或平台管理员时附上 `details.runId`。`PROVIDER_*` 不代表调用方的 OIDC JWT 有问题。
 
 ## 相关
 

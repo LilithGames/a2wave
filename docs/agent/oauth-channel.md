@@ -237,7 +237,9 @@ Agent **clone** preserves the source's access tier and starts the copy with a NU
 
 ### 5.1 Prepare the Token
 
-The caller needs a JWT issued by the configured IdP. Any OIDC flow works — for example the `a2wave login` browser SSO flow (which caches the JWT locally; see [cli-oauth.md](./cli-oauth.md)), or your own IdP client integration.
+The caller needs a JWT issued by the configured OIDC provider **whose `aud` is on the channel allowlist** (`A2WAVE_OIDC_CHANNEL_AUDIENCES`). Any OIDC flow that mints such a token works — for example your own IdP client integration, or the `a2wave login` browser SSO flow (which caches the JWT locally; see [cli-oauth.md](./cli-oauth.md)).
+
+The cached login token is **not** automatically accepted: the allowlist deliberately excludes `clientId` (see §4), so reusing it requires the administrator to have added that audience explicitly. Without a matching `aud` the call fails with `401`, not `403`.
 
 ```bash
 # Example: reuse the JWT cached by `a2wave login` (default cache path)
@@ -427,6 +429,29 @@ A `NULL` in `oauth_allowed_emails` under `specified_users` is the fail-closed st
 ---
 
 ## 8. Known limitations
+
+### 8.0 SAML cannot drive this channel — OIDC only
+
+`validateGatewayAuth` verifies the caller's bearer token through `verifyOauthChannelToken` →
+`verifyWithIdpJwks`, i.e. a **JWT checked against the IdP's JWKS**, and
+`isOauthChannelConfigured()` reads the OIDC config alone. SAML is structurally unable to feed
+it: an assertion is a one-shot XML credential form-POSTed to the ACS endpoint, not a bearer
+token a caller can replay in an `Authorization` header.
+
+Consequence for a **SAML-only deployment**: console and CLI login work, but every OAuth-published
+Agent answers `503 OAUTH_NOT_CONFIGURED`. Such deployments must configure OIDC in addition to
+SAML.
+
+Two wording traps when writing user-facing copy:
+
+- "enterprise SSO" covers both protocols while this channel covers only one, so name OIDC
+  explicitly rather than saying "SSO token".
+- Do **not** narrow it to "ID token" either. `verifyWithIdpJwks` requires only `exp` and `sub`
+  (plus issuer / audience / algorithm) and checks no ID-token discriminator such as `typ`,
+  `token_use`, or `nonce`, so a JWT **access** token with an allowlisted `aud` verifies here —
+  and §5.1's own example feeds it `.access_token`. Since the channel's `aud` allowlist
+  deliberately excludes `clientId`, an ID token (whose `aud` *is* the client id) is usually the
+  wrong thing to reach for. Say "a JWT issued by the configured OIDC provider".
 
 ### 8.1 Restart loses the OAuth identity of queued requests
 

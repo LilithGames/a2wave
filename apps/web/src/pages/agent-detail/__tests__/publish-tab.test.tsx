@@ -118,6 +118,30 @@ describe('PublishTab — OAuth 渠道卡片', () => {
     expect(screen.getByTestId('oauth-allowed-emails-empty')).toBeInTheDocument()
   })
 
+  // The copied cURL is the first thing an integrator runs, so its placeholder is documentation.
+  // `<SSO_JWT>` was wrong twice over: "SSO" spans OIDC *and* SAML while this channel verifies
+  // OIDC-issued JWTs only, and SAML mints nothing that can sit in an Authorization header.
+  it('uses an OIDC JWT placeholder in the OAuth cURL snippet, not the ambiguous SSO_JWT', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    // `navigator.clipboard` is getter-only in jsdom, so it has to be redefined rather than assigned.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
+    renderWithProviders(<PublishTab {...baseProps()} />)
+    await openChannelConfig(user, 'oauth')
+
+    await user.click(screen.getByRole('button', { name: '复制 cURL' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    const copied = writeText.mock.calls[0][0] as string
+    expect(copied).toContain('/api/oauth/agt_test1/invoke')
+    expect(copied).toContain('Authorization: Bearer <OIDC_JWT>')
+    expect(copied).not.toContain('SSO_JWT')
+  })
+
   it('从已发布 Agent 初始化全体企业用户访问范围', async () => {
     const user = userEvent.setup()
     const onPublishConfirm = vi.fn().mockResolvedValue(undefined)

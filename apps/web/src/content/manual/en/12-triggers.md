@@ -102,10 +102,10 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 
 - **Rate limit**: **60 requests/minute** per Agent.
 - Full queue returns `429`; unpublished returns `403`; auth failure `401/403`; occupied worktree `409`.
-- Authentication: `/api/gateway` uses `api_key` (Bearer) / IP allowlist; enterprise SSO JWTs use the separate `/api/oauth` channel.
+- Authentication: `/api/gateway` uses `api_key` (Bearer) / IP allowlist; JWTs issued by your enterprise OIDC provider use the separate `/api/oauth` channel.
 
 > [!NOTE]
-> An API key identifies the integration calling the endpoint, not the end user behind that integration, so run history normally shows only `API`. If a direct invocation must be attributed to a specific enterprise user, use the OAuth endpoint with that user's own SSO JWT. Supplying a user name inside `context` is not a substitute for identity verification.
+> An API key identifies the integration calling the endpoint, not the end user behind that integration, so run history normally shows only `API`. If a direct invocation must be attributed to a specific enterprise user, use the OAuth endpoint with that user's own OIDC JWT. Supplying a user name inside `context` is not a substitute for identity verification.
 
 > [!IMPORTANT]
 > Behind a reverse proxy, set `TRUSTED_PROXY=true` and list only the proxy's direct TCP addresses or CIDRs in `TRUSTED_PROXY_ADDRESSES`. Gateway, OAuth, and A2A then use the first untrusted hop found by walking `X-Forwarded-For` from right to left for IP allowlists, audit/channel context, and rate limits. The proxy must overwrite XFF or append every hop; never preserve an unvalidated, non-standard chain.
@@ -116,15 +116,18 @@ metadata, and other reserved ranges remain active. Set `ALLOW_PRIVATE_ROUTE_TARG
 require public targets. In that strict mode, `TRUSTED_A2A_ROUTE_HOSTS` can admit exact controlled
 private DNS hostnames without disabling the remaining protections.
 
-### OAuth (enterprise SSO JWT) invocation
+### OAuth (enterprise OIDC JWT) invocation
 
-The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <SSO_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
+The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <OIDC_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
+
+> [!IMPORTANT]
+> This channel accepts **only JWTs issued by your enterprise OIDC provider** (typically an access token), verified against the IdP JWKS with an `aud` on the administrator-configured allowlist (`A2WAVE_OIDC_CHANNEL_AUDIENCES`). SAML login uses a browser-based assertion flow and produces no token that can be placed in an `Authorization` header, so **a SAML-only deployment cannot use the OAuth invocation channel**.
 
 When an error is returned, prefer reading `error.code`, `error.message`, and `error.action`:
 
 | code | Who needs to act | Next step |
 |------|------------|--------|
-| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Log in again and obtain a new SSO token |
+| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Log in again and obtain a new OIDC JWT |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | Caller + Agent owner | Request permission or switch to an allowed network |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent owner | Re-log in or update the Agent's Provider credentials; the caller does not need to re-log in |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent owner | Fix the engine, model, MCP, or workspace configuration; non-occupancy errors return `424` |
@@ -132,7 +135,7 @@ When an error is returned, prefer reading `error.code`, `error.message`, and `er
 | `OAUTH_NOT_CONFIGURED` / `AUTHORIZATION_CHECK_UNAVAILABLE` | Platform admin | Check the platform configuration or retry later |
 
 > [!IMPORTANT]
-> An HTTP `401` on the OAuth interface only means the caller's SSO token is invalid. If the message points to the Agent Provider, the caller should not clear their own login state.
+> An HTTP `401` on the OAuth interface only means the caller's OIDC JWT is invalid. If the message points to the Agent Provider, the caller should not clear their own login state.
 
 ### Public metadata
 
@@ -286,7 +289,7 @@ curl -X POST ".../api/a2a/<agentId>" -H "Authorization: Bearer <key>" \
 
 The Agent Card is version-negotiated as well: include `A2A-Version: 1.0` when requesting the v1 shape. Omitting the header intentionally returns an A2A 0.3-compatible Card.
 
-For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication supports API Key and OAuth/enterprise SSO JWT.
+For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication supports API Key and OAuth (enterprise OIDC JWT).
 
 Locally, `pnpm a2a-demo -- <agentId> "..."` provides a quick test. A2A messages can carry images/files as well as text; A2A 1.0 and 0.3 use different part fields, shown under **Attachments** below.
 
@@ -297,7 +300,7 @@ When both the caller and receiver support the A2A provenance extension, a remote
 The extension is negotiated through the Agent Card. Routes using **Agent Card discovery** enable it automatically when the peer advertises support. A **Direct endpoint** has no card for capability discovery: select A2A 1.0 and then explicitly enable **Send caller provenance** only when the receiver supports the a2wave extension. The switch is off by default, and direct A2A 0.3 routes never send the extension. A2A peers without the extension remain fully interoperable; their run history simply falls back to fewer layers, down to `A2A` when only the source is known.
 
 > [!IMPORTANT]
-> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key or OAuth / enterprise SSO JWT authentication, and a receiver must not grant access from a display name in the provenance extension.
+> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key or OAuth (enterprise OIDC JWT) authentication, and a receiver must not grant access from a display name in the provenance extension.
 
 ### Invoke a remote standard A2A service
 
@@ -353,7 +356,7 @@ When messaging an Agent you can include images and documents. Feishu, Slack, and
 1. First upload the file to the corresponding upload endpoint (`multipart/form-data`, field name `file`) to get a `token`. The upload endpoint differs by the caller's authentication method:
    - Platform user (Web test UI): `POST /api/attachments`
    - Gateway (Agent API Key): `POST /api/gateway/<agentId>/attachments`
-   - OAuth (enterprise SSO JWT): `POST /api/oauth/<agentId>/attachments`
+   - OAuth (enterprise OIDC JWT): `POST /api/oauth/<agentId>/attachments`
 
 ```bash
 curl -X POST ".../api/gateway/<agentId>/attachments" -H "Authorization: Bearer <key>" \

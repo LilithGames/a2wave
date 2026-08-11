@@ -120,7 +120,7 @@ Beyond downloading, artifacts can also generate an **online share link** in one 
 2. Suspect an environment issue → go back to the Agent and run **Full Diagnosis** (Provider / engine / Feishu connection).
 3. Stuck at `queued` → concurrency may be full; raise `maxConcurrency` or wait.
 
-When an OAuth async call is queried and found `failed`, `data.result.error` is a structured error. Determine the responsible party by `source`, take the next step per `action`, and include `details.runId` when contacting the Agent owner or platform admin. `PROVIDER_*` does not mean the caller's SSO token is faulty.
+When an OAuth async call is queried and found `failed`, `data.result.error` is a structured error. Determine the responsible party by `source`, take the next step per `action`, and include `details.runId` when contacting the Agent owner or platform admin. `PROVIDER_*` does not mean the caller's OIDC JWT is faulty.
 
 ## Related
 

@@ -74,6 +74,19 @@ describe('OauthAllowedEmails', () => {
     expect(screen.getByTestId('oauth-allowed-emails-empty')).toBeInTheDocument()
   })
 
+  // `warning-foreground` is the color for text placed ON a solid warning fill (white in the
+  // light themes), so using it as body copy over a tint rendered the notice white-on-near-white.
+  // The warning surface must come from the shared design tokens instead.
+  it('styles the empty-list warning with the shared warning tokens, not warning-foreground', () => {
+    setup()
+    const notice = screen.getByTestId('oauth-allowed-emails-empty')
+
+    expect(notice.className).not.toContain('text-warning-foreground')
+    expect(notice.className).toContain('text-warning')
+    expect(notice.className).toContain('bg-warning-subtle')
+    expect(notice.className).toContain('border-warning/30')
+  })
+
   it('removes a listed address', async () => {
     const { onChange, user } = setup(['alice@example.com', 'bob@example.com'])
 

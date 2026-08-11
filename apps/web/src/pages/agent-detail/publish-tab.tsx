@@ -1592,7 +1592,7 @@ export function PublishTab({
                   <span className="border-l border-border pl-2 flex items-center gap-1 text-muted-foreground">
                     <span className="text-xs">cURL</span>
                     <CopyButton
-                      text={`curl -X POST ${oauthInvokeUrl} -H "Content-Type: application/json" -H "Authorization: Bearer <SSO_JWT>" -d '{"message": "Hello", "stream": false}'`}
+                      text={`curl -X POST ${oauthInvokeUrl} -H "Content-Type: application/json" -H "Authorization: Bearer <OIDC_JWT>" -d '{"message": "Hello", "stream": false}'`}
                       label={t('agentPublish.copyCurl')}
                     />
                   </span>
