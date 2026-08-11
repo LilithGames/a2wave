@@ -71,7 +71,17 @@ function sameScope(left: TaskScope, right: TaskScope): boolean {
  * would be a worse outcome than dropping it. The substitution runs on the
  * serialised form, so it can only touch the escape sequence — never a literal
  * backslash-u in the source text, which stringify would have escaped as
- * `\\u0000`.
+ * `\\u0000` and which the negative lookbehind therefore preserves.
+ *
+ * This fixes the write path only; a row persisted **before** this change can
+ * still carry the escape and would still fail `list()` on PostgreSQL. No
+ * backfill ships with it, for two reasons: PostgreSQL is experimental with no
+ * SQLite -> PostgreSQL data migration path, so no deployment can have inherited
+ * such a row from SQLite; and `cleanup()` retires envelopes past its retention
+ * cutoff, so an affected row ages out rather than persisting indefinitely. A
+ * deployment that hits it before then can delete the offending task by id —
+ * `load()` and `save()` still work on it, since they read the column directly
+ * and only the whole-envelope cast in `list()` raises.
  */
 function stripNulEscapes(serialized: string): string {
   return serialized.replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1')

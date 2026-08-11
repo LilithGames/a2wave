@@ -170,6 +170,20 @@ describe('SqliteTaskStore', () => {
     expect(JSON.stringify(JSON.parse(persisted))).toContain('beforeafter')
   })
 
+  it('preserves text that literally spells out a unicode escape', async () => {
+    // The strip runs on the SERIALISED form, so it must not corrupt a user who
+    // typed the six characters backslash-u-0-0-0-0 into a message: stringify escapes that as
+    // \\u0000, and the negative lookbehind keeps it. Getting this wrong would
+    // silently rewrite caller content — worse than the bug being fixed.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const literal = 'a\\u0000b'
+
+    await store.save(task('task_literal', undefined, literal), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(JSON.parse(persisted).task.contextId).toBe(literal)
+  })
+
   it('rejects an update when the task ID belongs to another scope', async () => {
     mockSelectGet.mockReturnValue({
       id: 'task_shared',
