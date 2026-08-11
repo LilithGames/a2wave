@@ -148,7 +148,7 @@ export async function createGitWorkspace(
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { branch?: string },
+  options?: { branch?: string; followSource?: boolean },
 ): Promise<{ path: string; created: boolean }> {
   const wsPath = join(wsRoot, name)
 
@@ -169,7 +169,11 @@ export async function createGitWorkspace(
       // fall through to fresh create below
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
-      await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
+      if (options?.followSource && !options?.branch) {
+        await followSourceHeadOnReuse(wsPath, localPath, config)
+      } else {
+        await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
+      }
       return { path: wsPath, created: false }
     }
   }
@@ -391,6 +395,64 @@ async function findBranchLockHolder(
  * 多 repo 先 pre-validate（收集脏/锁状态）再统一切换，以保证原子性：
  * 任何 sub-repo 不满足条件时不触碰任何 sub-repo。
  */
+/**
+ * Advance a followSource workspace to the source checkout's current commit.
+ *
+ * Freshness is best-effort — a stale checkout is strictly better than a failed
+ * run, so every skip path degrades silently:
+ * - sub-repo sits on a named branch (someone switched it deliberately) → keep it
+ * - sub-repo has tracked modifications → keep it (untracked files never block:
+ *   the platform itself mounts skills/config as untracked content)
+ * - checkout fails → keep the previous commit and log
+ */
+async function followSourceHeadOnReuse(
+  wsPath: string,
+  localPath: string,
+  config: GitConfig,
+): Promise<void> {
+  const repoDirs = config.repos?.length ? config.repos.map((r) => r.directory) : ['']
+
+  for (const dir of repoDirs) {
+    const wsRepoPath = dir ? join(wsPath, dir) : wsPath
+    const localRepoPath = dir ? join(localPath, dir) : localPath
+
+    try {
+      const { stdout: onBranch } = await execFileAsync(
+        'git',
+        ['symbolic-ref', '--short', '-q', 'HEAD'],
+        { cwd: wsRepoPath, timeout: 5_000 },
+      ).catch(() => ({ stdout: '' }))
+      if (onBranch.trim()) continue
+
+      const { stdout: dirty } = await execFileAsync('git', ['status', '--porcelain', '-uno'], {
+        cwd: wsRepoPath,
+        timeout: 5_000,
+      })
+      if (dirty.trim()) continue
+
+      const { stdout: sourceHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: localRepoPath,
+        timeout: 5_000,
+      })
+      const { stdout: wsHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: wsRepoPath,
+        timeout: 5_000,
+      })
+      if (wsHead.trim() === sourceHead.trim()) continue
+
+      await execFileAsync('git', ['checkout', '--detach', sourceHead.trim()], {
+        cwd: wsRepoPath,
+        timeout: GIT_TIMEOUT_MS,
+      })
+    } catch (err) {
+      logger.warn(
+        { err, wsRepoPath },
+        'followSource: failed to advance workspace to source HEAD, keeping previous commit',
+      )
+    }
+  }
+}
+
 async function switchBranchOnReuse(
   wsPath: string,
   localPath: string,

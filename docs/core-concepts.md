@@ -4,7 +4,7 @@ Detailed description of the a2wave domain model. For an overview, see the root [
 
 ## Agent
 
-Digital worker with type (`llm`/`cursor`/`script`), system prompt, skills, API key, and publish status. CLI-backed execution is selected through its `providerId`, not through the legacy Agent type. Can mount MCP Servers (via `mcpServerIds`) and Skills (via `skills` ID array). Has a `workspaceType` (`scm` or `temp`) to determine its working directory: `scm` associates the agent with an SCM Source (via `scmSourceId`) whose `localPath` becomes the work directory; `temp` uses an auto-generated subdirectory under the global `workspacePath`. Can inject environment variables (via `env` — `Record<string, { value, sensitive }>`). System prompt supports Mustache template variables: `{{message}}`, `{{context}}`, `{{model}}` (current model), `{{agent_provider}}` (engine label, e.g. Cursor Agent / Claude Code / Codex). Executes locally on the API server via engine registry.
+Digital worker with type (`llm`/`cursor`/`script`), system prompt, skills, API key, and publish status. CLI-backed execution is selected through its `providerId`, not through the legacy Agent type. Can mount MCP Servers (via `mcpServerIds`) and Skills (via `skills` ID array). Has a `workspaceType` (`scm` or `temp`) to determine its working directory: `scm` associates the agent with an SCM Source (via `scmSourceId`) — git Sources give each Agent its own persistent worktree under the Source's `workspacesPath` (P4 Sources use `localPath` directly, having no isolation mechanism); `temp` uses an auto-generated subdirectory under the global `workspacePath`. Can inject environment variables (via `env` — `Record<string, { value, sensitive }>`). System prompt supports Mustache template variables: `{{message}}`, `{{context}}`, `{{model}}` (current model), `{{agent_provider}}` (engine label, e.g. Cursor Agent / Claude Code / Codex). Executes locally on the API server via engine registry.
 
 ## Provider
 
@@ -89,8 +89,10 @@ A Git Source encapsulates Git repository parameters (`repoUrl`, `branch`, option
 - **Sync status** — tracks `idle`, `syncing`, or `error` state with last sync timestamp and error message.
 
 When an Agent uses `workspaceType: 'scm'` and references a Git Source via `scmSourceId` (and that source has completed initial sync), the system automatically:
-1. Sets the Agent's working directory to the Source's `localPath`.
+1. Sets the Agent's working directory to a **per-Agent worktree** (`<workspacesPath>/agent-<agentId suffix>`, persistent, advanced to the synced HEAD on every run while its tracked files are clean). Agents sharing one Source therefore never share a working directory — a run of one Agent re-mounting skills/config cannot delete the files another Agent's in-flight run is executing. If the worktree cannot be created, the run degrades to the Source's shared `localPath`.
 2. Injects Git environment variables (`GIT_BRANCH`) into the execution environment.
+
+P4 Sources have no isolation mechanism (a client spec is server-side state bound to a single `Root`), so P4 Agents keep using the Source's `localPath` directly.
 
 > **Path uniqueness**: `localPath` must be an absolute path and unique across all SCM Sources, to avoid conflicts from multiple Sources sharing the same working directory.
 

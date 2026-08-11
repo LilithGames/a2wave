@@ -115,8 +115,8 @@ describe('resolveWorkDir', () => {
     vi.clearAllMocks()
   })
 
-  it('returns SCM source localPath when workspaceType is scm', async () => {
-    const source = { localPath: '/data/repos/my-project' }
+  it('returns SCM source localPath for non-git sources', async () => {
+    const source = { id: 'scm_1', type: 'p4', localPath: '/data/repos/my-project' }
     // resolveWorkDir calls db.select().from(scmSources).where(...).get()
     mockDbFrom.mockReturnValueOnce(asyncQuery({ where: () => asyncQuery({ get: () => source }) }))
 
@@ -129,6 +129,80 @@ describe('resolveWorkDir', () => {
     } as any
 
     expect(await resolveWorkDir(agent)).toBe('/data/repos/my-project')
+    expect(mockCreateScmSource).not.toHaveBeenCalled()
+  })
+
+  describe('per-agent default worktree (git SCM, no explicit worktree)', () => {
+    beforeEach(() => {
+      _resetTtlCleanupDebounce()
+    })
+
+    function gitAgent(): any {
+      return {
+        id: 'agt_abc123',
+        name: 'Test Agent',
+        config: {},
+        workspaceType: 'scm',
+        scmSourceId: 'scm_1',
+      }
+    }
+
+    const gitSource = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
+
+    it('resolves to a followSource worktree with persistent state', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+      const createWorkspace = vi
+        .fn()
+        .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: true })
+      const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+        writeWorkspaceState,
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/workspaces/scm_1/agent-abc123')
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123', { followSource: true })
+      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'persistent' })
+    })
+
+    it('records workDir for the run without an occupancy check', async () => {
+      // Same-agent runs share the worktree by design: only the source row is
+      // queried — an occupancy probe would serialize concurrent chat messages.
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      expect(await resolveWorkDir(gitAgent(), undefined, 'run_1')).toBe(
+        '/workspaces/scm_1/agent-abc123',
+      )
+      expect(mockDbUpdateSet).toHaveBeenCalledWith({ workDir: '/workspaces/scm_1/agent-abc123' })
+    })
+
+    it('falls back to the shared checkout when worktree creation fails', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi.fn().mockRejectedValue(new Error('worktree add failed')),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+      })
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/git')
+    })
+
+    it('falls back to the shared checkout when the source does not support workspaces', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+      mockCreateScmSource.mockReturnValueOnce(null)
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/git')
+    })
   })
 
   it('returns config.workDir when set within allowed workspace', async () => {

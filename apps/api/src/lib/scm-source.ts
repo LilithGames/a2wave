@@ -33,7 +33,10 @@ export interface ScmSource {
   readonly localPath: string
   readonly wsRoot: string
 
-  createWorkspace(name: string, options?: { branch?: string }): Promise<CreateWorkspaceResult>
+  createWorkspace(
+    name: string,
+    options?: { branch?: string; followSource?: boolean },
+  ): Promise<CreateWorkspaceResult>
   removeWorkspace(name: string): Promise<void>
   listWorkspaces(): Promise<WorkspaceInfo[]>
   writeWorkspaceState(name: string, state: WorkspaceState): Promise<void>
@@ -69,7 +72,10 @@ class GitScmSource implements ScmSource {
     this.wsRoot = source.workspacesPath || defaultWorkspacesPath(source.id)
   }
 
-  createWorkspace(name: string, options?: { branch?: string }): Promise<CreateWorkspaceResult> {
+  createWorkspace(
+    name: string,
+    options?: { branch?: string; followSource?: boolean },
+  ): Promise<CreateWorkspaceResult> {
     return createGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 

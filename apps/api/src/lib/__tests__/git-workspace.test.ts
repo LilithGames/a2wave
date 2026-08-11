@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { stat, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -273,6 +273,76 @@ describe('git-workspace', () => {
         cwd: first.path,
       })
       expect(stdout.trim()).toBe('feature-a')
+    })
+  })
+
+  describe('createGitWorkspace — followSource reuse (single repo)', () => {
+    beforeEach(async () => {
+      await initGitRepo(REPO_DIR)
+    })
+
+    async function currentCommit(cwd: string): Promise<string> {
+      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })
+      return stdout.trim()
+    }
+
+    async function commitNewFile(name: string): Promise<void> {
+      await writeFile(join(REPO_DIR, name), name)
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', `add ${name}`], { cwd: REPO_DIR })
+    }
+
+    it('advances a clean detached workspace to the source HEAD on reuse', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(first.created).toBe(true)
+
+      // Untracked content (the platform mounts skills/config as untracked files)
+      // must survive the advance.
+      await writeFile(join(first.path, 'untracked.txt'), 'keep me')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(second.created).toBe(false)
+      expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+      expect(existsSync(join(second.path, 'new-file.txt'))).toBe(true)
+      expect(await readFile(join(second.path, 'untracked.txt'), 'utf8')).toBe('keep me')
+    })
+
+    it('keeps the previous commit when the workspace has tracked modifications', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const pinned = await currentCommit(first.path)
+      await writeFile(join(first.path, 'README.md'), 'locally modified')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(pinned)
+      expect(await readFile(join(second.path, 'README.md'), 'utf8')).toBe('locally modified')
+    })
+
+    it('leaves a workspace that was switched onto a branch untouched', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await execFileAsync('git', ['checkout', '-b', 'my-work'], { cwd: first.path })
+      const pinned = await currentCommit(first.path)
+      await commitNewFile('new-file.txt')
+
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const { stdout } = await execFileAsync('git', ['symbolic-ref', '--short', 'HEAD'], {
+        cwd: first.path,
+      })
+      expect(stdout.trim()).toBe('my-work')
+      expect(await currentCommit(first.path)).toBe(pinned)
     })
   })
 

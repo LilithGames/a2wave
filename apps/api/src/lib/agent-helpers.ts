@@ -1118,6 +1118,57 @@ export function _resetTtlCleanupDebounce(): void {
   lastCleanupAt.clear()
 }
 
+/**
+ * Worktree name for an Agent's default workspace. Mirrors defaultWorkspacesPath:
+ * slice after the first '_' (createId's base64url alphabet contains '_', so a
+ * split('_').pop() would drop entropy and could collide across Agents).
+ */
+function perAgentWorkspaceName(agentId: string): string {
+  const underscoreIdx = agentId.indexOf('_')
+  const suffix = underscoreIdx >= 0 ? agentId.slice(underscoreIdx + 1) : agentId
+  return `agent-${suffix || agentId}`
+}
+
+/**
+ * Resolve the per-Agent default worktree for a git SCM Agent.
+ *
+ * Deliberately no occupancy check: runs of the same Agent share this worktree
+ * by design (their mounted skill set is identical), and probing occupancy here
+ * would serialize every concurrent chat message. `runs.workDir` is still
+ * recorded as bookkeeping for recovery and cleanup display — it is not a lock.
+ */
+async function resolvePerAgentWorkspace(
+  source: typeof scmSources.$inferSelect,
+  agent: typeof agents.$inferSelect,
+  runId?: string,
+): Promise<string> {
+  const scm = await createScmSource(source)
+  if (!scm) {
+    return source.localPath
+  }
+
+  const name = perAgentWorkspaceName(agent.id)
+  const result = await scm.createWorkspace(name, { followSource: true })
+
+  try {
+    // persistent: never TTL-swept, never removed after a run — the worktree is
+    // the Agent's long-lived workspace, carrying cross-run state.
+    await scm.writeWorkspaceState(name, { cleanup: 'persistent' })
+  } catch (err) {
+    logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
+  }
+
+  if (runId) {
+    await db.update(runs).set({ workDir: result.path }).where(eq(runs.id, runId))
+  }
+
+  triggerTtlCleanup(source.id, scm).catch((err) =>
+    logger.warn({ err, sourceId: source.id }, 'TTL cleanup trigger failed'),
+  )
+
+  return result.path
+}
+
 export class WorktreeOccupiedError extends Error {
   constructor(public readonly worktreePath: string) {
     super(`Worktree '${worktreePath}' is occupied by a running or pending run`)
@@ -1207,12 +1258,32 @@ export async function resolveWorkDir(
     return result.path
   }
 
-  // 原有逻辑：SCM 直接使用 localPath
+  // Default (no explicit worktree): git SCM Agents run in a per-Agent worktree.
+  // Agents sharing one SCM source used to share its checkout directly, so a run
+  // starting on Agent B re-mounted skills/config mid-run of Agent A and deleted
+  // the files A was executing. A stable per-Agent worktree makes that physically
+  // impossible while keeping cross-run state (the worktree is persistent) and
+  // freshness (followSource advances it to the synced HEAD on every reuse).
   if (agent.workspaceType === 'scm' && agent.scmSourceId) {
     const source = (
       await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
     )[0]
     if (source) {
+      if (source.type === 'git') {
+        try {
+          return await resolvePerAgentWorkspace(source, agent, runId)
+        } catch (err) {
+          // A broken worktree must not take the Agent down — degrade to the
+          // shared checkout, which is exactly the pre-worktree behavior.
+          logger.warn(
+            { err, agentId: agent.id, sourceId: source.id },
+            'Per-agent worktree unavailable, falling back to the shared checkout',
+          )
+          return source.localPath
+        }
+      }
+      // P4 has no isolation mechanism (client spec is server-side state bound to
+      // a single Root) — the shared checkout remains the only option.
       return source.localPath
     }
   }
