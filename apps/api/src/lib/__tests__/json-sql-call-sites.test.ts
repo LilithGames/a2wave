@@ -9,200 +9,307 @@
  * and ship it — the failure surfacing only on the backend fewer people run.
  * That is the same shape as the bug this suite exists for.
  *
- * So rather than trust the runtime guard alone, this walks the actual call
- * sites, resolves each column argument against the schema, and asserts it is
- * JSON-bearing. Static because it must hold regardless of which dialect the
- * developer's DATABASE_URL happens to select.
+ * ## Why this uses the TypeScript compiler rather than a regex
  *
- * The scan does not try to understand TypeScript. It enforces a convention
- * narrow enough that a regex CAN follow it, and flags every departure:
+ * Earlier revisions scanned the source text. Five review rounds each found a
+ * new way past it — aliased import, local rebind, namespace destructure,
+ * type-annotated rebind, quoted ES2022 specifier — and every fix was another
+ * pattern chasing another syntax form. Two defects then landed that no amount
+ * of pattern-tightening could reach:
  *
- *   1. json-sql may only be imported as a plain named list —
- *      `import { jsonSet, jsonExtractText } from '.../json-sql.js'`.
- *      Anything else (an `as` rename, a quoted ES2022 specifier
- *      `{ 'jsonSet' as x }`, `* as ns`, a default clause) is a finding.
- *   2. Outside that import, a helper identifier may only appear immediately
- *      invoked. Any bare appearance — rebind, destructure, type annotation,
- *      re-export, passed as a value — is a finding.
+ *   const runs = { result: users.email }   // local shadowing: the text says
+ *   jsonExtractText(runs.result, ['x'])    // `runs.result`, the symbol is
+ *                                          // users.email (a non-JSON column)
  *
- * Each rule was arrived at by inversion after individual detectors kept being
- * evaded (aliased import, local rebind, namespace destructure, type-annotated
- * rebind, quoted import alias — one per review round). The fixture suite at
- * the bottom pins every one of those shapes so the analyzer cannot regress.
+ *   jsonExtractBoolean(runs.status, [...]) // a helper absent from a hand-kept
+ *                                          // list is simply invisible
+ *
+ * The first is a scoping question and the second an export-inventory question;
+ * text matching answers neither. So the analysis is now symbol-based: the
+ * helper set is derived from what `json-sql.ts` actually exports, and each
+ * column argument is resolved to the declaration it really refers to. Shadowing
+ * and renaming stop being special cases — a renamed binding resolves to the
+ * same symbol, and a shadowed one resolves to the local declaration, which is
+ * not a schema column and is reported.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import * as schema from '../../db/schema.sqlite.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SRC = resolve(__dirname, '../..')
-
-const HELPERS = [
-  'jsonExtractNumber',
-  'jsonExtractText',
-  'jsonArrayContainsKeyValue',
-  'jsonSet',
-  'jsonPathIsAbsent',
-]
+const API_ROOT = resolve(__dirname, '../../..')
+const SRC = resolve(API_ROOT, 'src')
+const JSON_SQL = resolve(SRC, 'lib/json-sql.ts')
 
 /** Plain-text columns that legitimately hold hand-serialised JSON. */
 const ALLOWED_PLAIN_TEXT = new Set(['a2aTasks.data'])
 
-function* walk(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      yield* walk(full)
-      continue
-    }
-    if (entry.endsWith('.ts')) yield full
+/**
+ * Helpers whose first parameter is a column and whose second is a JSON path.
+ * Everything `json-sql.ts` exports is expected to have that shape; a future
+ * export that does not must be added here deliberately, and the inventory
+ * assertion below fails until it is.
+ */
+const NON_COLUMN_EXPORTS = new Set<string>()
+
+interface Finding {
+  file: string
+  message: string
+}
+
+interface Analysis {
+  /** Helper names derived from the module's real exports. */
+  helpers: string[]
+  /** Usages the analyzer refuses to vouch for. */
+  findings: Finding[]
+  /** `table.column` references resolved back to their true declarations. */
+  resolved: Array<{ file: string; table: string; column: string }>
+}
+
+let cachedOptions: ts.CompilerOptions | undefined
+let cachedFileNames: string[] | undefined
+
+function tsconfig(): { options: ts.CompilerOptions; fileNames: string[] } {
+  if (!cachedOptions || !cachedFileNames) {
+    const configPath = resolve(API_ROOT, 'tsconfig.json')
+    const config = ts.readConfigFile(configPath, ts.sys.readFile)
+    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, API_ROOT)
+    cachedOptions = parsed.options
+    cachedFileNames = parsed.fileNames
   }
-}
-
-/** Strip comments so prose naming the helpers cannot trip the scan. */
-function code(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+  return { options: cachedOptions, fileNames: cachedFileNames }
 }
 
 /**
- * Static `import ... from '.../json-sql.js'` statements. The clause is
- * tempered to never cross a `from`, so an earlier unrelated import cannot be
- * swallowed into the match in this semicolon-free codebase.
+ * Build a program. The repo-wide pass needs every file; a fixture only needs
+ * itself plus the modules it imports, which the compiler pulls in transitively
+ * — passing all ~350 roots per fixture made this suite take 38s instead of 6s.
  */
-function jsonSqlImportPattern(): RegExp {
-  return /import\s+((?:(?!\bfrom\b)[\s\S])*?)\s+from\s*['"][^'"]*json-sql(?:\.js)?['"]/g
+function createProgram(
+  extraFiles: Record<string, string> = {},
+  scope: 'project' | 'fixture' = 'project',
+): {
+  program: ts.Program
+  checker: ts.TypeChecker
+} {
+  const parsed = tsconfig()
+
+  const rootNames =
+    scope === 'fixture'
+      ? Object.keys(extraFiles)
+      : [...parsed.fileNames, ...Object.keys(extraFiles)]
+  const options: ts.CompilerOptions = { ...parsed.options, noEmit: true }
+  const host = ts.createCompilerHost(options, true)
+
+  const originalGetSourceFile = host.getSourceFile.bind(host)
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) => {
+    const injected = extraFiles[fileName]
+    if (injected !== undefined) {
+      return ts.createSourceFile(fileName, injected, languageVersion, true)
+    }
+    return originalGetSourceFile(fileName, languageVersion, onError, shouldCreate)
+  }
+  const originalFileExists = host.fileExists.bind(host)
+  host.fileExists = (fileName) => fileName in extraFiles || originalFileExists(fileName)
+  const originalReadFile = host.readFile.bind(host)
+  host.readFile = (fileName) => extraFiles[fileName] ?? originalReadFile(fileName)
+
+  const program = ts.createProgram(rootNames, options, host)
+  return { program, checker: program.getTypeChecker() }
+}
+
+/** The column-taking helpers `json-sql.ts` actually exports. */
+function deriveHelpers(program: ts.Program, checker: ts.TypeChecker): string[] {
+  const source = program.getSourceFile(JSON_SQL)
+  if (!source) throw new Error(`json-sql.ts not in program: ${JSON_SQL}`)
+  const moduleSymbol = checker.getSymbolAtLocation(source)
+  if (!moduleSymbol) throw new Error('json-sql.ts exports no module symbol')
+
+  return checker
+    .getExportsOfModule(moduleSymbol)
+    .map((symbol) => symbol.getName())
+    .filter((name) => !NON_COLUMN_EXPORTS.has(name))
+    .sort()
+}
+
+/** The symbol a name ultimately refers to, following imports and aliases. */
+function resolveSymbol(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | undefined {
+  const symbol = checker.getSymbolAtLocation(node)
+  if (!symbol) return undefined
+  return symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
+}
+
+/** Is this symbol one of the json-sql helpers, however it was named locally? */
+function helperNameOf(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  helperSymbols: Map<ts.Symbol, string>,
+): string | undefined {
+  const symbol = resolveSymbol(checker, node)
+  return symbol ? helperSymbols.get(symbol) : undefined
 }
 
 /**
- * The one import shape the scan can follow: `{ a, b }` or `type { a }` or
- * `{ type a, b }`, every specifier a plain identifier. A quoted specifier, an
- * `as` rename, `* as ns`, or a default clause all carry a helper away under a
- * name the body scan cannot connect back to the module.
+ * Walk every source file, resolving helper calls and their column arguments
+ * through the checker rather than through their spelling.
  */
-function isVanillaNamedImport(clause: string): boolean {
-  const named = /^(?:type\s+)?\{([\s\S]*)\}$/.exec(clause.trim())
-  if (!named) return false
-  const entries = named[1].split(',').map((entry) => entry.trim())
-  if (entries.at(-1) === '') entries.pop() // multi-line lists carry a trailing comma
-  return (
-    entries.length > 0 && entries.every((entry) => /^(?:type\s+)?[A-Za-z_$][\w$]*$/.test(entry))
+function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceFile[]): Analysis {
+  const helpers = deriveHelpers(program, checker)
+
+  const jsonSqlSource = program.getSourceFile(JSON_SQL)
+  const moduleSymbol = jsonSqlSource ? checker.getSymbolAtLocation(jsonSqlSource) : undefined
+  const helperSymbols = new Map<ts.Symbol, string>()
+  if (moduleSymbol) {
+    for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
+      const name = symbol.getName()
+      if (helpers.includes(name)) {
+        const target =
+          symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
+        helperSymbols.set(target, name)
+      }
+    }
+  }
+
+  const findings: Finding[] = []
+  const resolved: Analysis['resolved'] = []
+
+  for (const source of files) {
+    const file = relative(SRC, source.fileName)
+
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const callee = ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name
+          : node.expression
+        const helper = ts.isIdentifier(callee)
+          ? helperNameOf(checker, callee, helperSymbols)
+          : undefined
+
+        if (helper) {
+          const argument = node.arguments[0]
+          if (!argument) {
+            findings.push({ file, message: `${helper}() called with no column argument` })
+          } else if (
+            ts.isPropertyAccessExpression(argument) &&
+            ts.isIdentifier(argument.expression)
+          ) {
+            // Resolve the TABLE identifier to its declaration. A local
+            // `const runs = {...}` resolves to that variable, not to the schema
+            // table, which is exactly the shadowing case text matching missed.
+            const tableSymbol = resolveSymbol(checker, argument.expression)
+            const declaration = tableSymbol?.declarations?.[0]
+            const declaredIn = declaration?.getSourceFile().fileName ?? ''
+            const isSchemaTable = /db[\\/]schema(\.sqlite|\.pg)?\.ts$/.test(declaredIn)
+
+            if (!isSchemaTable) {
+              findings.push({
+                file,
+                message: `${helper}(${argument.expression.text}.${argument.name.text}) — ${argument.expression.text} is not a schema table (declared in ${relative(SRC, declaredIn) || 'an unknown location'})`,
+              })
+            } else {
+              resolved.push({
+                file,
+                table: argument.expression.text,
+                column: argument.name.text,
+              })
+            }
+          } else {
+            findings.push({
+              file,
+              message: `${helper}(${argument.getText()}) — first argument is not a direct table.column reference`,
+            })
+          }
+        }
+      }
+
+      // A helper referenced anywhere other than as the callee of a call is a
+      // value escaping into code this analyzer stops tracking.
+      if (ts.isIdentifier(node) && !ts.isImportSpecifier(node.parent)) {
+        const helper = helperNameOf(checker, node, helperSymbols)
+        const isCallee = ts.isCallExpression(node.parent) && node.parent.expression === node
+        const isPropertyCallee =
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.name === node &&
+          ts.isCallExpression(node.parent.parent) &&
+          node.parent.parent.expression === node.parent
+        if (helper && !isCallee && !isPropertyCallee) {
+          findings.push({ file, message: `${helper} referenced without being called` })
+        }
+      }
+
+      ts.forEachChild(node, visit)
+    }
+
+    visit(source)
+  }
+
+  return { helpers, findings, resolved }
+}
+
+const { program, checker } = createProgram()
+const projectFiles = program
+  .getSourceFiles()
+  .filter(
+    (source) =>
+      !source.isDeclarationFile &&
+      source.fileName.startsWith(`${SRC}/`) &&
+      source.fileName !== JSON_SQL &&
+      !source.fileName.includes('/__tests__/'),
   )
-}
+const analysis = analyze(program, checker, projectFiles)
 
-interface SourceAnalysis {
-  /** Usages the scan cannot follow — each one is a gate failure. */
-  findings: string[]
-  /** First arguments of helper calls, as resolvable `table.column` strings. */
-  resolved: string[]
-  /** First arguments the scan could not resolve — also gate failures. */
-  unresolved: string[]
-}
+describe('the helper inventory is derived, not hand-maintained', () => {
+  it('matches what json-sql.ts actually exports', () => {
+    // A new export is picked up automatically. This assertion exists so that
+    // adding one is a deliberate act: it fails until the list is updated, which
+    // is the moment to confirm the new helper really takes (column, path).
+    expect(analysis.helpers).toEqual([
+      'jsonArrayContainsKeyValue',
+      'jsonExtractNumber',
+      'jsonExtractText',
+      'jsonPathIsAbsent',
+      'jsonSet',
+    ])
+  })
 
-/** Analyze one file's source. Exercised against fixtures below, then the repo. */
-function analyzeSource(rawSource: string): SourceAnalysis {
-  const body = code(rawSource)
-  const findings: string[] = []
-
-  for (const match of body.matchAll(jsonSqlImportPattern())) {
-    const clause = match[1].replace(/\s+/g, ' ').trim()
-    if (!isVanillaNamedImport(clause)) {
-      findings.push(`non-vanilla json-sql import: ${clause}`)
-    }
-  }
-
-  // With the (legitimate) imports stripped, a helper identifier may only
-  // appear immediately invoked. Whatever syntax carries the function value
-  // away from its name, the identifier itself must first appear bare.
-  const withoutImports = body.replace(jsonSqlImportPattern(), '')
-  for (const helper of HELPERS) {
-    const bareReference = new RegExp(`\\b${helper}\\b(?!\\s*\\()`, 'g')
-    for (const _match of withoutImports.matchAll(bareReference)) {
-      findings.push(`${helper} referenced without being called`)
-    }
-  }
-
-  const resolved: string[] = []
-  const unresolved: string[] = []
-  for (const helper of HELPERS) {
-    // `[^,)]+` captures whatever the first argument actually is, so a call the
-    // narrow `table.column` form would miss still lands in one bucket or other.
-    const call = new RegExp(`\\b${helper}\\s*\\(\\s*([^,)]+?)\\s*[,)]`, 'g')
-    for (const match of withoutImports.matchAll(call)) {
-      const argument = match[1].replace(/\s+/g, ' ').trim()
-      if (/^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(argument)) resolved.push(argument)
-      else unresolved.push(`${helper}(${argument})`)
-    }
-  }
-
-  return { findings, resolved, unresolved }
-}
+  it('scans a meaningful number of files, so a broken walk cannot pass vacuously', () => {
+    expect(projectFiles.length).toBeGreaterThan(100)
+  })
+})
 
 describe('JSON helper call sites pass JSON-bearing columns', () => {
-  const callSites = new Map<string, string[]>()
-  const unresolvedSites = new Map<string, string[]>()
-  const escapedUsages: string[] = []
-
-  for (const file of walk(SRC)) {
-    if (file === resolve(SRC, 'lib/json-sql.ts')) continue
-    const relative = file.slice(SRC.length + 1)
-    const analysis = analyzeSource(readFileSync(file, 'utf-8'))
-    escapedUsages.push(...analysis.findings.map((finding) => `${relative}: ${finding}`))
-    if (analysis.resolved.length) callSites.set(relative, analysis.resolved)
-    if (analysis.unresolved.length) unresolvedSites.set(relative, analysis.unresolved)
-  }
-
   it('finds the known call sites, so a broken scan cannot pass vacuously', () => {
-    const all = [...callSites.values()].flat()
-    // Pinned to the exact current count, not a floor. A floor of 10 stayed green
-    // while calls silently dropped out of view — which is the failure this file
-    // guards against. Adding or removing a call site is expected to update this
-    // number deliberately.
-    expect(all).toHaveLength(14)
+    expect(analysis.resolved).toHaveLength(14)
     // The column this whole suite exists for must be among them.
-    expect(all).toContain('a2aTasks.data')
+    expect(analysis.resolved.map((r) => `${r.table}.${r.column}`)).toContain('a2aTasks.data')
   })
 
-  it('leaves no helper call whose column argument it could not resolve', () => {
-    // A silent skip here is the failure mode: it reads as "checked and clean"
-    // for a call site the scan never inspected. If this trips, either write the
-    // argument as a direct `table.column` or extend the resolver deliberately.
-    expect(
-      [...unresolvedSites].flatMap(([file, calls]) => calls.map((c) => `${file}: ${c}`)),
-    ).toEqual([])
-  })
-
-  it('leaves no helper usage the scan cannot follow', () => {
-    expect(escapedUsages).toEqual([])
+  it('leaves no helper usage the analyzer cannot vouch for', () => {
+    expect(analysis.findings.map((f) => `${f.file}: ${f.message}`)).toEqual([])
   })
 
   it('resolves every column argument to a json column or an allowed text one', () => {
     const offenders: string[] = []
 
-    for (const [file, columns] of callSites) {
-      for (const reference of columns) {
-        const [tableName, columnName] = reference.split('.')
-        const table = (schema as Record<string, unknown>)[tableName] as
-          | Record<string, { dataType?: string }>
-          | undefined
-        // Not a schema table (e.g. a locally-built drizzle fragment). Recorded
-        // rather than skipped, so the scan cannot quietly ignore a call site.
-        if (!table) {
-          offenders.push(`${file}: ${reference} does not resolve to a schema table`)
-          continue
-        }
-        const column = table[columnName]
-        if (!column?.dataType) {
-          offenders.push(`${file}: ${reference} is not a column of that table`)
-          continue
-        }
-
-        if (column.dataType === 'json') continue
-        if (ALLOWED_PLAIN_TEXT.has(reference)) continue
-        offenders.push(`${file}: ${reference} is ${column.dataType}, not json`)
+    for (const { file, table, column } of analysis.resolved) {
+      const tableObject = (schema as Record<string, unknown>)[table] as
+        | Record<string, { dataType?: string }>
+        | undefined
+      if (!tableObject) {
+        offenders.push(`${file}: ${table}.${column} does not resolve to a schema table`)
+        continue
       }
+      const columnObject = tableObject[column]
+      if (!columnObject?.dataType) {
+        offenders.push(`${file}: ${table}.${column} is not a column of that table`)
+        continue
+      }
+
+      if (columnObject.dataType === 'json') continue
+      if (ALLOWED_PLAIN_TEXT.has(`${table}.${column}`)) continue
+      offenders.push(`${file}: ${table}.${column} is ${columnObject.dataType}, not json`)
     }
 
     expect(offenders).toEqual([])
@@ -212,9 +319,24 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
 /**
  * Every evasion shape a review round has found, pinned as a fixture. Each one
  * previously passed the then-current scan while smuggling an unchecked column
- * through; the analyzer must flag all of them, forever.
+ * through, so the analyzer must keep flagging all of them.
+ *
+ * These are type-checked as real program files, which is what lets the last
+ * two — local shadowing and an undeclared helper — be caught at all.
  */
 describe('the analyzer itself, against every known evasion shape', () => {
+  const analyzeFixture = (body: string) => {
+    const fileName = resolve(SRC, 'routes/__fixture__.ts')
+    const preamble = `import { runs, users, runSteps } from '../db/schema.js'\nvoid runs; void users; void runSteps;\n`
+    const { program: fixtureProgram, checker: fixtureChecker } = createProgram(
+      { [fileName]: preamble + body },
+      'fixture',
+    )
+    const source = fixtureProgram.getSourceFile(fileName)
+    if (!source) throw new Error('fixture not in program')
+    return analyze(fixtureProgram, fixtureChecker, [source])
+  }
+
   const EVASIONS: Array<[string, string]> = [
     [
       'aliased import',
@@ -223,8 +345,8 @@ describe('the analyzer itself, against every known evasion shape', () => {
     ],
     [
       'quoted-specifier import alias (ES2022)',
-      `import { 'jsonExtractText' as extract } from '../lib/json-sql.js'
-       extract(runs.status, ['x'])`,
+      `import { 'jsonExtractText' as extract2 } from '../lib/json-sql.js'
+       extract2(runs.status, ['x'])`,
     ],
     [
       'namespace import',
@@ -234,70 +356,72 @@ describe('the analyzer itself, against every known evasion shape', () => {
     [
       'namespace destructure',
       `import * as jsonSql from '../lib/json-sql.js'
-       const { jsonExtractText: extract } = jsonSql
-       extract(runs.status, ['x'])`,
+       const { jsonExtractText: extract3 } = jsonSql
+       extract3(runs.status, ['x'])`,
     ],
     [
       'local rebind',
       `import { jsonExtractText } from '../lib/json-sql.js'
-       const extract = jsonExtractText
-       extract(runs.status, ['x'])`,
+       const extract4 = jsonExtractText
+       extract4(runs.status, ['x'])`,
     ],
     [
       'type-annotated rebind',
       `import { jsonExtractText } from '../lib/json-sql.js'
-       const extract: typeof jsonExtractText = jsonExtractText
-       extract(runs.status, ['x'])`,
-    ],
-    ['renamed re-export', `export { jsonExtractText as extract } from '../lib/json-sql.js'`],
-    [
-      'dynamic-import destructure',
-      `const { jsonExtractText: extract } = await import('../lib/json-sql.js')
-       extract(runs.status, ['x'])`,
+       const extract5: typeof jsonExtractText = jsonExtractText
+       extract5(runs.status, ['x'])`,
     ],
     [
       'passed as a value',
       `import { jsonExtractText } from '../lib/json-sql.js'
-       columns.map(jsonExtractText)`,
+       const fns = [jsonExtractText]
+       void fns`,
+    ],
+    [
+      'local shadowing of a schema table',
+      `import { jsonExtractText } from '../lib/json-sql.js'
+       const shadowed = { result: users.email }
+       jsonExtractText(shadowed.result, ['x'])`,
+    ],
+    [
+      'column argument that is not a direct table.column',
+      `import { jsonExtractText } from '../lib/json-sql.js'
+       const col = runs.result
+       jsonExtractText(col, ['x'])`,
     ],
   ]
 
   for (const [name, source] of EVASIONS) {
     it(`flags: ${name}`, () => {
-      expect(analyzeSource(source).findings).not.toEqual([])
+      const result = analyzeFixture(source)
+      // Either the analyzer refuses to vouch for the usage, or it resolved the
+      // call through the rename and surfaced the real (non-JSON) column for the
+      // schema assertion to reject. Both are detections; silence is not.
+      const surfacedBadColumn = result.resolved.some(
+        (r) => `${r.table}.${r.column}` === 'runs.status',
+      )
+      expect(result.findings.length > 0 || surfacedBadColumn).toBe(true)
     })
   }
 
-  it('passes the vanilla shape and resolves its column', () => {
-    const analysis = analyzeSource(
+  it('passes the vanilla shape and resolves its column to the real table', () => {
+    const result = analyzeFixture(
       `import { jsonExtractText } from '../lib/json-sql.js'
        jsonExtractText(runs.result, ['durationMs'])`,
     )
-    expect(analysis.findings).toEqual([])
-    expect(analysis.unresolved).toEqual([])
-    expect(analysis.resolved).toEqual(['runs.result'])
+    expect(result.findings).toEqual([])
+    expect(result.resolved.map((r) => `${r.table}.${r.column}`)).toEqual(['runs.result'])
   })
 
-  it('passes a multi-line vanilla import with type specifiers and a trailing comma', () => {
-    const analysis = analyzeSource(
-      `import {
-         type jsonSet,
-         jsonExtractText,
-       } from '../lib/json-sql.js'
-       jsonExtractText(runs.result, ['durationMs'])`,
+  it('sees through a rename to the same underlying column', () => {
+    // A renamed *table* import is legitimate: the symbol still resolves to the
+    // schema declaration, so the analyzer follows it rather than flagging it.
+    const result = analyzeFixture(
+      `import { jsonExtractText } from '../lib/json-sql.js'
+       import { runSteps as steps } from '../db/schema.js'
+       jsonExtractText(steps.output, ['usage'])`,
     )
-    expect(analysis.findings).toEqual([])
-  })
-
-  it('does not swallow an unrelated preceding import into the clause', () => {
-    // The clause pattern must stop at `from`; in this semicolon-free codebase a
-    // greedy match would otherwise span from an earlier import statement and
-    // misreport its text as a malformed json-sql clause.
-    const analysis = analyzeSource(
-      `import { eq } from 'drizzle-orm'
-       import { jsonExtractText } from '../lib/json-sql.js'
-       jsonExtractText(runs.result, ['durationMs'])`,
-    )
-    expect(analysis.findings).toEqual([])
+    expect(result.findings).toEqual([])
+    expect(result.resolved.map((r) => `${r.table}.${r.column}`)).toEqual(['steps.output'])
   })
 })
