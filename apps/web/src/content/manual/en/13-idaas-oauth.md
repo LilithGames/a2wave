@@ -44,7 +44,7 @@ When registering the app on the IdP side, set the callback address (Redirect URI
 For enterprise IdPs that only offer SAML (e.g. ADFS, some legacy IAM), a2wave can connect as a **SAML 2.0 SP**.
 
 > [!IMPORTANT]
-> **SAML covers login only — it cannot be used for the OAuth invocation channel.** A SAML assertion is a one-shot credential form-POSTed to the ACS endpoint; it issues no token that can be placed in an `Authorization: Bearer` header. The OAuth invocation channel verifies **OIDC-issued JWTs** exclusively. In a SAML-only deployment users can sign in to Web and the CLI normally, but an Agent's OAuth channel is unavailable (it returns `503 OAuth not configured`). Configure OIDC as well if you need that channel.
+> **SAML covers login only — it cannot be used for the OAuth invocation channel.** A SAML assertion is a one-shot credential form-POSTed to the ACS endpoint; it issues no token that can be placed in an `Authorization: Bearer` header. The OAuth invocation channel verifies **OIDC-issued JWTs** exclusively. In a SAML-only deployment users can sign in to the **Web** console normally, but an Agent's OAuth channel is unavailable (it returns `503 OAuth not configured`), and **CLI** enterprise login is unavailable too — `a2wave login` uses the OIDC flow, leaving `a2wave login --password` as the only CLI option. Configure OIDC as well if you need either.
 
 Configure it in the "Settings → Enterprise Login → SAML" panel; the environment variables below act as a fallback (an API restart is required after changing them):
 
@@ -94,7 +94,7 @@ Two access scopes are supported:
 
 | Access scope | Description |
 |--------------|-------------|
-| All enterprise users | Any employee holding a JWT issued by enterprise OIDC whose `aud` is on the allowlist can invoke it. |
+| All enterprise users | Any employee holding a JWT issued by enterprise OIDC whose `aud` is on the allowlist, **and that carries an email claim**, can invoke it. |
 | Specific enterprise users | Only the listed addresses can invoke it; everyone else is denied. Search for colleagues to add them, or type an address directly. |
 
 Under **Specific enterprise users** an empty list means **nobody** can invoke the Agent (it denies rather than allows), so add at least one member before publishing. Entries are matched case-insensitively against the `email` claim in the OIDC JWT.

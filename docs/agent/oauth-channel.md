@@ -114,8 +114,10 @@ A2WAVE_OIDC_ISSUER='https://login.example.com/realms/acme'
 A2WAVE_OIDC_CLIENT_ID='a2wave'
 A2WAVE_OIDC_CLIENT_SECRET=''        # optional; omit for a PKCE public client
 
-# Audiences accepted on this channel (comma-separated). Empty = channel disabled.
-A2WAVE_OIDC_CHANNEL_AUDIENCES='partner-service,data-platform'
+# The a2wave resource audience your IdP mints tokens for (comma-separated).
+# This names THIS service, not the callers -- see the audience note in section 4.
+# Empty = channel disabled.
+A2WAVE_OIDC_CHANNEL_AUDIENCES='https://a2wave.example.com'
 ```
 
 | Variable | Required | Description |
@@ -131,10 +133,21 @@ A2WAVE_OIDC_CHANNEL_AUDIENCES='partner-service,data-platform'
 ### Audience: why the channel has its own allowlist
 
 Login verification (`POST /auth/oauth/exchange`) requires `aud === client_id`, because an id_token
-minted for this platform must name it. The channel cannot reuse that rule: an external service
-calling an Agent presents a token from its own client, whose `aud` points at the caller rather than
-at a2wave, so enforcing `client_id` would restrict the channel to "callers already holding an
-a2wave login token" — the opposite of what it exists for.
+minted for this platform must name it. The channel cannot reuse that rule: a caller integrating
+its own service does not hold an a2wave login id_token, so enforcing `client_id` would restrict the
+channel to "callers already holding an a2wave login token" — the opposite of what it exists for.
+
+> ⚠️ **`aud` names the resource being called, not the caller.** For a JWT access token, `aud`
+> identifies the **target resource server** and the resource server must verify it is in that
+> audience ([RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)). So the value to
+> allowlist is the audience your IdP mints **for a2wave** (an API/resource identifier such as
+> `https://a2wave.example.com` or an IdP-side API scope) — configured once, then requested by
+> each caller via the IdP's resource/audience parameter.
+>
+> Do **not** list other applications' audiences to "let them in": a token whose `aud` names a
+> different resource server was never issued for a2wave, and accepting it makes this channel a
+> confused deputy for that service's tokens. One audience shared by every caller is normal and
+> correct here; per-caller separation is what `oauthAccessMode` and the email allowlist provide.
 
 The answer is a separate allowlist, **not** skipping the check. With no `aud` constraint at all,
 every token the IdP ever signed for any relying party would authenticate here — including tokens
@@ -237,19 +250,25 @@ Agent **clone** preserves the source's access tier and starts the copy with a NU
 
 ### 5.1 Prepare the Token
 
-The caller needs a JWT issued by the configured OIDC provider **whose `aud` is on the channel allowlist** (`A2WAVE_OIDC_CHANNEL_AUDIENCES`). Any OIDC flow that mints such a token works — for example your own IdP client integration, or the `a2wave login` browser SSO flow (which caches the JWT locally; see [cli-oauth.md](./cli-oauth.md)).
+The caller needs a JWT from the configured OIDC provider that was **issued for a2wave** — its `aud` must be the a2wave resource audience the administrator allowlisted in `A2WAVE_OIDC_CHANNEL_AUDIENCES` (see §4). Request it through your IdP's resource/audience parameter; any OIDC flow that mints such a token works.
 
-The cached login token is **not** automatically accepted: the allowlist deliberately excludes `clientId` (see §4), so reusing it requires the administrator to have added that audience explicitly. Without a matching `aud` the call fails with `401`, not `403`.
+The token must also carry an email claim: the gateway rejects an address-less token with `403` in **both** access modes, and `specified_users` additionally requires that address to be **verified** and on the Agent's allowlist.
+
+The token cached by `a2wave login` is **not** automatically accepted — it is minted for the login client (`aud === client_id`), which the allowlist deliberately excludes. Without a matching `aud` the call fails with `401`, not `403`.
 
 ```bash
 # Example: reuse the JWT cached by `a2wave login` (default cache path)
 TOKEN=$(jq -r .access_token ~/.a2wave/oauth.json)
 ```
 
-### 5.2 REST Gateway
+### 5.2 REST invocation
+
+The OAuth channel lives at `/api/oauth/...`. Do **not** send this token to
+`/api/gateway/...` — that route accepts only an Agent API key and answers a valid OIDC JWT
+with `401`.
 
 ```bash
-curl -X POST https://a2wave.example.com/api/gateway/agt_xxx/invoke \
+curl -X POST https://a2wave.example.com/api/oauth/agt_xxx/invoke \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello", "async": true}'
@@ -438,9 +457,11 @@ A `NULL` in `oauth_allowed_emails` under `specified_users` is the fail-closed st
 it: an assertion is a one-shot XML credential form-POSTed to the ACS endpoint, not a bearer
 token a caller can replay in an `Authorization` header.
 
-Consequence for a **SAML-only deployment**: console and CLI login work, but every OAuth-published
-Agent answers `503 OAUTH_NOT_CONFIGURED`. Such deployments must configure OIDC in addition to
-SAML.
+Consequence for a **SAML-only deployment**: the **Web** console signs in normally, but every
+OAuth-published Agent answers `503 OAUTH_NOT_CONFIGURED`. The **CLI** has no SAML path either —
+`a2wave login` drives the OIDC flow and exchanges the resulting JWT, so a SAML-only deployment
+leaves `a2wave login --password` as the only CLI credential. Such deployments must configure OIDC
+in addition to SAML.
 
 Two wording traps when writing user-facing copy:
 

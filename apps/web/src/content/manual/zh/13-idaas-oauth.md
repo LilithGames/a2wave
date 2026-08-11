@@ -44,7 +44,7 @@
 面向只提供 SAML 的企业 IdP（如 ADFS、部分老牌 IAM），a2wave 可以作为 **SAML 2.0 SP** 接入。
 
 > [!IMPORTANT]
-> **SAML 只用于登录，不能用于 OAuth 调用渠道。** SAML 断言是浏览器表单 POST 到 ACS 的一次性凭据，不会签发可以长期放进 `Authorization: Bearer` 头的 token；OAuth 调用渠道只验签 **OIDC 签发的 JWT**。因此只配置了 SAML 的部署，用户可以正常登录 Web / CLI，但 Agent 的「OAuth 授权」渠道不可用（返回 `503 OAuth not configured`）。需要该渠道时必须额外配置 OIDC。
+> **SAML 只用于登录，不能用于 OAuth 调用渠道。** SAML 断言是浏览器表单 POST 到 ACS 的一次性凭据，不会签发可以长期放进 `Authorization: Bearer` 头的 token；OAuth 调用渠道只验签 **OIDC 签发的 JWT**。因此只配置了 SAML 的部署，用户可以正常登录 **Web 控制台**，但 Agent 的「OAuth 授权」渠道不可用（返回 `503 OAuth not configured`）；**CLI 的企业登录同样不可用**——`a2wave login` 走的是 OIDC 流程，此时只能用 `a2wave login --password` 本地密码登录。需要这两者时必须额外配置 OIDC。
 
 推荐在「设置 → 企业登录 → SAML」面板填写；也可用以下环境变量配置（改后需重启 API）：
 
@@ -119,7 +119,7 @@
 
 | 访问范围 | 说明 |
 |----------|------|
-| 全体企业用户 | 任何持有企业 OIDC 签发、且 `aud` 在白名单内的 JWT 的员工都能调用。 |
+| 全体企业用户 | 任何持有企业 OIDC 签发、`aud` 在白名单内、**且带有邮箱声明**的 JWT 的员工都能调用。 |
 | 指定企业用户 | 只有名单内的邮箱能调用，其余一律拒绝。名单可以搜索同事添加，也可以直接输入邮箱。 |
 
 选择 **指定企业用户** 时，名单为空表示**没有人**能调用（拒绝而不是放行），所以发布前至少要添加一个成员。名单按邮箱比对 OIDC JWT 里的 `email`，大小写不敏感。

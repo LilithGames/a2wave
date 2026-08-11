@@ -145,7 +145,7 @@ export const openApiSpec: OpenAPIV3.Document = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description:
-          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the audience allowlist in A2WAVE_OIDC_CHANNEL_AUDIENCES. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. This is independent from the agent execution provider credentials.',
+          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the audience allowlist in A2WAVE_OIDC_CHANNEL_AUDIENCES. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. The token must carry an email claim. This is independent from the agent execution provider credentials.',
       },
     },
     parameters: {
@@ -488,7 +488,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             'Caller OIDC JWT is missing, invalid, or expired. Obtain a new caller token.',
           ),
           '403': oauthErrorResponse(
-            'Caller, network, publication, or OAuth-channel policy denied access.',
+            'Caller, network, publication, or OAuth-channel policy denied access. The token must carry an email claim in every access mode; specified_users additionally requires a verified address on the agent allowlist.',
           ),
           '404': oauthErrorResponse('The requested agent does not exist.'),
           '409': oauthErrorResponse('The session or agent workspace is currently busy.'),

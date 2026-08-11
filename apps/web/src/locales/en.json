@@ -1661,7 +1661,7 @@
     "oauthChannelDesc": "Callers authenticate with a JWT issued by your enterprise OIDC provider; open it to everyone or to named members",
     "oauthAccessScope": "Access Scope",
     "oauthAccessAllIdaas": "All enterprise users",
-    "oauthAccessAllIdaasDesc": "Any employee who authenticates through enterprise OIDC can invoke this Agent.",
+    "oauthAccessAllIdaasDesc": "Any employee who authenticates through enterprise OIDC can invoke this Agent; the token must carry an email claim or it is denied.",
     "oauthChannelHelpAllIdaas": "Callers authenticate with your enterprise OIDC provider, then send the resulting JWT (typically an access token) in the Authorization header.\nCurrent scope: all enterprise users — anyone who passes OIDC can invoke it.\nNote: this channel verifies OIDC-issued JWTs whose aud is on the administrator allowlist; SAML login produces no token usable on this channel.",
     "oauthEnvMissing": "Missing enterprise OIDC environment variables; the OAuth channel is unavailable",
     "oauthEnvInvalidPublicKey": "The enterprise OIDC config is unusable, so the OAuth channel cannot verify caller tokens.",
@@ -1709,7 +1709,7 @@
     "channelConfigSaved": "Channel config saved",
     "publishOnlySettingHint": "Some settings here only take effect after you publish.",
     "oauthAccessSpecifiedUsers": "Specific enterprise users",
-    "oauthAccessSpecifiedUsersDesc": "Only the listed addresses can invoke it; everyone else is denied.",
+    "oauthAccessSpecifiedUsersDesc": "Only the listed addresses can invoke it; everyone else is denied. The token must carry a verified email claim.",
     "oauthAllowedEmails": "Allowed members",
     "oauthAllowedEmailsPlaceholder": "Search by name or email, or type an address and press Enter",
     "oauthAllowedEmailsEmpty": "The list is empty, so nobody can invoke this Agent. Add at least one member.",
@@ -1780,7 +1780,8 @@
     "gitTriggerRepoRequired": "Add at least one repository",
     "gitTriggerEventRequired": "Select at least one trigger event",
     "gitTriggerIntentRequired": "Enter a trigger prompt",
-    "gitTriggerIntervalInvalid": "Poll interval must be between 30 and 600 seconds"
+    "gitTriggerIntervalInvalid": "Poll interval must be between 30 and 600 seconds",
+    "oauthEnvIncompleteSettings": "The current OIDC channel configuration is incomplete (empty audience allowlist). Complete it in Settings → Enterprise Login; editing environment variables will have no effect."
   },
   "agentRoute": {
     "tabTitle": "Route",

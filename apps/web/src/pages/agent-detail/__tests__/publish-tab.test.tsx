@@ -25,6 +25,7 @@ vi.mock('@/lib/antd-static', () => ({
 import {
   PublishTab,
   normalizeSchedulePublishConfigs,
+  oauthEnvErrorKey,
   parseSuggestedQuestions,
   shouldSubmitFeishuConfigForPublish,
 } from '../publish-tab'
@@ -783,5 +784,32 @@ describe('PublishTab — 飞书话题提醒对象', () => {
     )
 
     await waitFor(() => expect(dialog.queryByText('回复时提醒')).not.toBeInTheDocument())
+  })
+})
+
+describe('oauthEnvErrorKey', () => {
+  // The OIDC config resolves DB-first. Telling an admin to set environment variables when the
+  // config came from Settings sends them to edit a file the server never reads — they restart
+  // and nothing changes.
+  it('sends a Settings-sourced incomplete config back to Settings, not to env vars', () => {
+    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_CHANNEL_AUDIENCES'], source: 'db' })).toBe(
+      'agentPublish.oauthEnvIncompleteSettings',
+    )
+  })
+
+  it('names the environment variables when the config is env-sourced or absent', () => {
+    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_ISSUER'], source: 'env' })).toBe(
+      'agentPublish.oauthEnvMissing',
+    )
+    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_ISSUER'], source: null })).toBe(
+      'agentPublish.oauthEnvMissing',
+    )
+  })
+
+  // Nothing missing but still unusable means the issuer itself does not verify.
+  it('reports an unusable issuer when nothing is missing', () => {
+    expect(oauthEnvErrorKey({ missing: [], source: 'db' })).toBe(
+      'agentPublish.oauthEnvInvalidPublicKey',
+    )
   })
 })
