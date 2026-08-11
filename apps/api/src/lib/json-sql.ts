@@ -35,31 +35,41 @@ import { isPostgresRuntime } from '../db/dialect-runtime.js'
 type JsonPath = readonly [string, ...string[]]
 
 /**
- * Segments must be plain keys, because the two dialects disagree on what a
- * special character inside one *means*.
+ * A segment is rejected only when SQLite would read it as something other than
+ * a literal key — the set is defined by SQLite's path grammar, not by a
+ * conservative allowlist.
  *
- * PostgreSQL takes each segment as a bound parameter, so it is always a literal
- * key. SQLite takes the whole path as one `$.a.b` string, where `.` and `[]`
- * are path syntax. The same single segment therefore addresses two different
- * things — verified against both engines:
+ * PostgreSQL binds every segment as a parameter, so it is always literal. On
+ * SQLite the path arrives as one `$.a.b` string, where an unquoted label runs
+ * until the next `.` or `[`, a *leading* `"` opens a quoted label, and an empty
+ * label is invalid. Exactly four shapes therefore diverge — each verified
+ * against the bundled better-sqlite3:
  *
- *   ['a.b']   PG writes/reads the key "a.b";  SQLite descends into a -> b
- *   ['a[0]']  PG writes/reads the key "a[0]"; SQLite indexes into the array a
- *   ['']      PG accepts the empty key;       SQLite raises "bad JSON path"
+ *   contains '.'   `$.a.b`  descends a -> b     (PG: the literal key "a.b")
+ *   contains '['   `$.a[0]` indexes an array    (PG: the literal key "a[0]")
+ *   leading '"'    `$."ab`  "bad JSON path"     (PG: the literal key '"ab')
+ *   empty          `$.`     "bad JSON path"     (PG: the empty key)
  *
- * Escaping SQLite's path form would close the write side but still leave the
- * two engines' quoting rules to keep in sync forever. Every real segment here
- * is an object key from a TypeScript interface (`usage`, `scope`, `contextId`),
- * so rejecting the ambiguous shapes outright costs nothing today and removes
- * the divergence class rather than tracking it.
+ * Everything else — commas, spaces, unicode, leading digits, hyphens, colons,
+ * `$`, `#`, `]`, backslashes, interior or trailing quotes — round-trips as the
+ * same literal key on both engines, so it is allowed. An earlier revision
+ * rejected all of those too; that mislabelled dialect-consistent keys as
+ * divergent and made the helpers refuse paths both backends agree on.
  */
-const SAFE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/
+function isDialectDivergentSegment(segment: string): boolean {
+  return (
+    segment.length === 0 ||
+    segment.includes('.') ||
+    segment.includes('[') ||
+    segment.startsWith('"')
+  )
+}
 
 function assertSafePath(path: readonly string[], helper: string): void {
   for (const segment of path) {
-    if (!SAFE_SEGMENT.test(segment)) {
+    if (isDialectDivergentSegment(segment)) {
       throw new Error(
-        `json-sql: ${helper} received the path segment ${JSON.stringify(segment)}, which is not a plain key. SQLite reads '.' and '[]' as path syntax while PostgreSQL binds the segment literally, so the two backends would address different data. Use a segment matching ${SAFE_SEGMENT}.`,
+        `json-sql: ${helper} received the path segment ${JSON.stringify(segment)}, which SQLite reads as path syntax ('.'/'[' descend, a leading '"' opens a quoted label, an empty label is invalid) while PostgreSQL binds it as a literal key — the two backends would address different data.`,
       )
     }
   }

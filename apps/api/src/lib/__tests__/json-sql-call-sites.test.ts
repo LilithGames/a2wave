@@ -87,34 +87,16 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
     const body = code(readFileSync(file, 'utf-8'))
     const relative = file.slice(SRC.length + 1)
 
-    // Any rebinding of a helper to another name renames the call and would slip
-    // past a scan keyed on the original names, so treat it as a finding rather
-    // than letting the call go unexamined. Three forms, all seen in real code:
-    //   import { jsonExtractText as extract } from ...   (aliased import)
-    //   const extract = jsonExtractText                   (local rebind)
-    //   const { jsonExtractText: extract } = jsonSql      (namespace destructure)
-    for (const helper of HELPERS) {
-      const renamedImport = new RegExp(`\\b${helper}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
-      for (const match of body.matchAll(renamedImport)) {
-        aliasedImports.push(`${relative}: ${helper} imported as ${match[1]}`)
-      }
-
-      // `jsonExtractText: extract` — destructuring renames with a colon, not
-      // `as`, so the import pattern above does not see it.
-      const destructured = new RegExp(`\\b${helper}\\s*:\\s*([A-Za-z_$][\\w$]*)`, 'g')
-      for (const match of body.matchAll(destructured)) {
-        aliasedImports.push(`${relative}: ${helper} destructured as ${match[1]}`)
-      }
-
-      // `= jsonExtractText` with no call parenthesis: the function itself is
-      // being passed around rather than invoked here.
-      const rebind = new RegExp(
-        `(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[\\w$.]*\\b${helper}\\b\\s*(?!\\()`,
-        'g',
-      )
-      for (const match of body.matchAll(rebind)) {
-        aliasedImports.push(`${relative}: ${helper} rebound as ${match[1]}`)
-      }
+    // A helper is only scannable when every use is a direct call under its
+    // original name. Renaming detectors are a losing game — aliased imports,
+    // `const x = helper`, `const { helper: x } = ns`, and `const x: typeof
+    // helper = helper` were each discovered as separate evasions, and the next
+    // syntax form would evade again. So the rule is inverted: the two ways a
+    // name legitimately appears are its named import and a direct call, and
+    // ANY other appearance of the identifier is a finding.
+    const renamedImport = new RegExp(`\\b(${HELPERS.join('|')})\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g')
+    for (const match of body.matchAll(renamedImport)) {
+      aliasedImports.push(`${relative}: ${match[1]} imported as ${match[2]}`)
     }
 
     // A namespace import re-exposes every helper under a name this scan cannot
@@ -126,7 +108,20 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
       aliasedImports.push(`${relative}: json-sql imported as namespace ${match[1]}`)
     }
 
-    const { resolved, unresolved } = collectColumnArguments(body)
+    // Strip the (legitimate) import statements, then flag every remaining
+    // appearance of a helper name that is not immediately invoked. This is the
+    // catch-all: whatever syntax carries the function value away from its name
+    // — rebind, destructure, type annotation, passing it as an argument — the
+    // identifier itself must appear somewhere without a call parenthesis.
+    const withoutImports = body.replace(/import\s[^;]*?from\s*['"][^'"]*json-sql\.js['"]\s*;?/g, '')
+    for (const helper of HELPERS) {
+      const bareReference = new RegExp(`\\b${helper}\\b(?!\\s*\\()`, 'g')
+      for (const _match of withoutImports.matchAll(bareReference)) {
+        aliasedImports.push(`${relative}: ${helper} referenced without being called`)
+      }
+    }
+
+    const { resolved, unresolved } = collectColumnArguments(withoutImports)
     if (resolved.length) callSites.set(relative, resolved)
     if (unresolved.length) unresolvedSites.set(relative, unresolved)
   }

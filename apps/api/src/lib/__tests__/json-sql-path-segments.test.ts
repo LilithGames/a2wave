@@ -2,22 +2,21 @@
  * Path segments must mean the same thing on both backends.
  *
  * PostgreSQL binds each segment as a parameter, so it is always a literal key.
- * SQLite receives the whole path as one `$.a.b` string, in which `.` and `[]`
- * are path *syntax*. A single segment therefore addresses two different things
- * depending on the backend — confirmed against both engines:
+ * SQLite receives the whole path as one `$.a.b` string, where an unquoted
+ * label runs until the next `.` or `[`, a *leading* `"` opens a quoted label,
+ * and an empty label is invalid. Exactly those four shapes diverge; the
+ * helpers reject them at the boundary, before the dialect branch.
  *
- *   ['a.b']   PG the key "a.b";   SQLite descends a -> b
- *   ['a[0]']  PG the key "a[0]";  SQLite indexes into the array a
- *   ['']      PG the empty key;   SQLite raises "bad JSON path"
+ * Just as load-bearing: nothing else is rejected. Commas, spaces, unicode,
+ * leading digits, hyphens, colons, `$`, `#`, `]`, backslashes, interior and
+ * trailing quotes are all literal keys on BOTH engines — proven below with
+ * real SQLite round-trips, not asserted from documentation. An earlier
+ * revision used an identifier allowlist, which mislabelled every one of those
+ * dialect-consistent keys as divergent and made the helpers throw on paths
+ * the two backends agree on.
  *
- * That is the same class of defect as the comma-in-path bug: content inside a
- * segment silently reinterpreted as structure. The helpers reject these shapes
- * rather than escaping them, since every real segment is a TypeScript object
- * key and escaping would mean tracking two engines' quoting rules forever.
- *
- * This file runs on the SQLite branch (the default backend) so the rejection is
- * proven where most developers actually run, and pairs each case with the real
- * SQLite behaviour that makes the rejection necessary.
+ * This file runs on the SQLite branch (the default backend) so the rejection
+ * is proven where most developers actually run.
  */
 import Database from 'better-sqlite3'
 import { describe, expect, it, vi } from 'vitest'
@@ -35,64 +34,104 @@ import {
   jsonSet,
 } from '../json-sql.js'
 
-/** Segments whose meaning differs between the two engines. */
-const AMBIGUOUS = ['a.b', 'a[0]', '', 'a,b', 'a"b', '$', 'a b']
+/** The four shapes SQLite reads as path syntax rather than a literal key. */
+const DIVERGENT = ['a.b', 'task.status', 'a[0]', 'items[3]', '"ab', '']
 
-describe('ambiguous path segments are rejected on every helper', () => {
-  for (const segment of AMBIGUOUS) {
+/**
+ * Keys that LOOK special but are literal on both engines. Kept in sync with
+ * the real-engine round-trip suite at the bottom of this file — every entry
+ * here must also prove itself there.
+ */
+const LITERAL_SPECIAL = [
+  'a,b',
+  'a"b',
+  'ab"',
+  '$',
+  '#',
+  'a b',
+  '9key',
+  'hy-phen',
+  '中文',
+  'a:b',
+  'a]b',
+  'a\\b',
+]
+
+describe('dialect-divergent path segments are rejected on every helper', () => {
+  for (const segment of DIVERGENT) {
     it(`rejects ${JSON.stringify(segment)}`, () => {
-      expect(() => jsonExtractText(runSteps.output, [segment])).toThrow(/not a plain key/)
-      expect(() => jsonExtractNumber(runSteps.output, [segment])).toThrow(/not a plain key/)
-      expect(() => jsonPathIsAbsent(runSteps.output, [segment])).toThrow(/not a plain key/)
-      expect(() => jsonSet(runSteps.output, [segment], 1)).toThrow(/not a plain key/)
+      expect(() => jsonExtractText(runSteps.output, [segment])).toThrow(/path syntax/)
+      expect(() => jsonExtractNumber(runSteps.output, [segment])).toThrow(/path syntax/)
+      expect(() => jsonPathIsAbsent(runSteps.output, [segment])).toThrow(/path syntax/)
+      expect(() => jsonSet(runSteps.output, [segment], 1)).toThrow(/path syntax/)
       expect(() => jsonArrayContainsKeyValue(runSteps.output, [segment], 'k', 'v')).toThrow(
-        /not a plain key/,
+        /path syntax/,
       )
     })
   }
 
-  it('rejects an ambiguous segment anywhere in a multi-segment path', () => {
-    expect(() => jsonExtractText(runSteps.output, ['task', 'a.b', 'state'])).toThrow(
-      /not a plain key/,
-    )
+  it('rejects a divergent segment anywhere in a multi-segment path', () => {
+    expect(() => jsonExtractText(runSteps.output, ['task', 'a.b', 'state'])).toThrow(/path syntax/)
   })
 
-  it('rejects an ambiguous elementKey, which SQLite also splices into a path', () => {
+  it('rejects a divergent elementKey, which SQLite also splices into a path', () => {
     expect(() => jsonArrayContainsKeyValue(runSteps.output, ['chain'], 'a.b', 'v')).toThrow(
-      /not a plain key/,
+      /path syntax/,
     )
   })
+})
 
-  it('still accepts the ordinary keys the codebase actually uses', () => {
+describe('dialect-consistent keys are NOT rejected', () => {
+  it('accepts the ordinary keys the codebase actually uses', () => {
     for (const segment of ['usage', 'inputTokens', 'contextId', 'scope', '_private', 'a1']) {
       expect(() => jsonExtractText(runSteps.output, [segment])).not.toThrow()
     }
   })
+
+  for (const segment of LITERAL_SPECIAL) {
+    it(`accepts ${JSON.stringify(segment)}, a literal key on both engines`, () => {
+      expect(() => jsonExtractText(runSteps.output, [segment])).not.toThrow()
+      expect(() => jsonSet(runSteps.output, [segment], 1)).not.toThrow()
+      expect(() =>
+        jsonArrayContainsKeyValue(runSteps.output, ['chain'], segment, 'v'),
+      ).not.toThrow()
+    })
+  }
 })
 
-describe('why those segments are rejected: real SQLite behaviour', () => {
-  const query = (sql: string): unknown => {
-    const db = new Database(':memory:')
+describe('the classification itself, against the real SQLite engine', () => {
+  const db = new Database(':memory:')
+
+  /** True when `$.${segment}` writes and reads back exactly the literal key. */
+  const isLiteralOnSqlite = (segment: string): boolean => {
+    const path = `$.${segment}`
     try {
-      return db.prepare(sql).pluck().get()
-    } finally {
-      db.close()
+      const set = db.prepare("SELECT json_set('{}', ?, json('1'))").pluck().get(path)
+      if (set !== JSON.stringify({ [segment]: 1 })) return false
+      const doc = JSON.stringify({ [segment]: 7 })
+      return db.prepare('SELECT json_extract(?, ?)').pluck().get(doc, path) === 7
+    } catch {
+      return false
     }
   }
 
-  it("treats '.' inside a segment as a descent, unlike PostgreSQL's literal key", () => {
+  for (const segment of LITERAL_SPECIAL) {
+    it(`${JSON.stringify(segment)} round-trips literally, so allowing it is sound`, () => {
+      expect(isLiteralOnSqlite(segment)).toBe(true)
+    })
+  }
+
+  for (const segment of DIVERGENT) {
+    it(`${JSON.stringify(segment)} does NOT round-trip literally, so rejecting it is sound`, () => {
+      expect(isLiteralOnSqlite(segment)).toBe(false)
+    })
+  }
+
+  it("shows the flagship divergence: '.' descends on SQLite, is literal on PostgreSQL", () => {
     // The document has BOTH a nested a->b and a top-level "a.b". SQLite's path
-    // reaches the nested 9; PostgreSQL, binding 'a.b' as one key, reads 7.
-    const document = `'{"a":{"b":9},"a.b":7}'`
-    expect(query(`SELECT json_extract(${document}, '$.a.b')`)).toBe(9)
-    expect(query(`SELECT json_extract(${document}, '$."a.b"')`)).toBe(7)
-  })
-
-  it("treats '[]' inside a segment as an index", () => {
-    expect(query(`SELECT json_set('{}', '$.a[0]', json('1'))`)).toBe('{"a":[1]}')
-  })
-
-  it('rejects an empty segment outright, where PostgreSQL accepts the empty key', () => {
-    expect(() => query(`SELECT json_set('{}', '$.', json('1'))`)).toThrow(/bad JSON path|malformed/)
+    // reaches the nested 9; PostgreSQL, binding 'a.b' as one key, would read 7.
+    const document = `{"a":{"b":9},"a.b":7}`
+    expect(db.prepare('SELECT json_extract(?, ?)').pluck().get(document, '$.a.b')).toBe(9)
+    expect(db.prepare('SELECT json_extract(?, ?)').pluck().get(document, '$."a.b"')).toBe(7)
   })
 })
