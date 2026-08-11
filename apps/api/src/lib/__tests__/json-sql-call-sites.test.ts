@@ -98,7 +98,7 @@ function createProgram(
 
   const rootNames =
     scope === 'fixture'
-      ? Object.keys(extraFiles)
+      ? [...Object.keys(extraFiles), JSON_SQL]
       : [...parsed.fileNames, ...Object.keys(extraFiles)]
   const options: ts.CompilerOptions = { ...parsed.options, noEmit: true }
   const host = ts.createCompilerHost(options, true)
@@ -148,7 +148,60 @@ function helperNameOf(
   helperSymbols: Map<ts.Symbol, string>,
 ): string | undefined {
   const symbol = resolveSymbol(checker, node)
-  return symbol ? helperSymbols.get(symbol) : undefined
+  if (!symbol) return undefined
+
+  const direct = helperSymbols.get(symbol)
+  if (direct) return direct
+
+  const declaration = symbol.valueDeclaration
+  if (
+    !declaration ||
+    !ts.isBindingElement(declaration) ||
+    !declaration.propertyName ||
+    !ts.isStringLiteralLike(declaration.propertyName) ||
+    !ts.isObjectBindingPattern(declaration.parent) ||
+    !ts.isVariableDeclaration(declaration.parent.parent) ||
+    !declaration.parent.parent.initializer
+  ) {
+    return undefined
+  }
+
+  const property = checker.getPropertyOfType(
+    checker.getTypeAtLocation(declaration.parent.parent.initializer),
+    declaration.propertyName.text,
+  )
+  if (!property) return undefined
+  const target =
+    property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
+  return helperSymbols.get(target)
+}
+
+/** Resolve a module specifier that is a string literal or a chain of const aliases. */
+function staticStringValue(
+  checker: ts.TypeChecker,
+  node: ts.Expression,
+  seen = new Set<ts.Symbol>(),
+): string | undefined {
+  if (ts.isStringLiteralLike(node)) return node.text
+  if (ts.isParenthesizedExpression(node)) return staticStringValue(checker, node.expression, seen)
+  if (!ts.isIdentifier(node)) return undefined
+
+  const symbol = resolveSymbol(checker, node)
+  const declaration = symbol?.valueDeclaration
+  if (
+    !symbol ||
+    seen.has(symbol) ||
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    !declaration.initializer ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    !(declaration.parent.flags & ts.NodeFlags.Const)
+  ) {
+    return undefined
+  }
+
+  seen.add(symbol)
+  return staticStringValue(checker, declaration.initializer, seen)
 }
 
 /**
@@ -183,9 +236,43 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         const callee = ts.isPropertyAccessExpression(node.expression)
           ? node.expression.name
           : node.expression
+        const elementAccess = ts.isElementAccessExpression(node.expression)
+          ? node.expression
+          : undefined
+        const elementKey = elementAccess
+          ? staticStringValue(checker, elementAccess.argumentExpression)
+          : undefined
+        const elementNamespaceType = elementAccess
+          ? checker.getTypeAtLocation(elementAccess.expression)
+          : undefined
+        const isJsonSqlNamespace = Boolean(
+          elementNamespaceType?.getProperties().some((property) => {
+            const target =
+              property.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(property) : property
+            return helperSymbols.has(target)
+          }),
+        )
         const helper = ts.isIdentifier(callee)
           ? helperNameOf(checker, callee, helperSymbols)
-          : undefined
+          : elementAccess && elementKey && elementNamespaceType
+            ? (() => {
+                const property = checker.getPropertyOfType(elementNamespaceType, elementKey)
+                if (!property) return undefined
+                const target =
+                  property.flags & ts.SymbolFlags.Alias
+                    ? checker.getAliasedSymbol(property)
+                    : property
+                return helperSymbols.get(target)
+              })()
+            : undefined
+
+        if (elementAccess && isJsonSqlNamespace && !elementKey) {
+          findings.push({
+            file,
+            message:
+              'json-sql namespace called with a dynamically computed property; use a statically resolvable helper name',
+          })
+        }
 
         if (helper) {
           const argument = node.arguments[0]
@@ -234,8 +321,7 @@ function analyze(program: ts.Program, checker: ts.TypeChecker, files: ts.SourceF
         ts.isCallExpression(node) &&
         node.expression.kind === ts.SyntaxKind.ImportKeyword &&
         node.arguments[0] &&
-        ts.isStringLiteralLike(node.arguments[0]) &&
-        /json-sql(\.js)?$/.test(node.arguments[0].text)
+        /json-sql(\.js)?$/.test(staticStringValue(checker, node.arguments[0]) ?? '')
       ) {
         findings.push({
           file,
@@ -374,10 +460,33 @@ describe('the analyzer itself, against every known evasion shape', () => {
        jsonSql.jsonExtractText(runs.status, ['x'])`,
     ],
     [
+      'namespace bracket access',
+      `import * as jsonSql from '../lib/json-sql.js'
+       jsonSql['jsonExtractText'](users.email, ['x'])`,
+    ],
+    [
+      'namespace bracket access through a static key',
+      `import * as jsonSql from '../lib/json-sql.js'
+       const key = 'jsonExtractText'
+       jsonSql[key](users.email, ['x'])`,
+    ],
+    [
+      'namespace bracket access through a runtime key',
+      `import * as jsonSql from '../lib/json-sql.js'
+       declare const key: keyof typeof jsonSql
+       jsonSql[key](users.email, ['x'])`,
+    ],
+    [
       'namespace destructure',
       `import * as jsonSql from '../lib/json-sql.js'
        const { jsonExtractText: extract3 } = jsonSql
        extract3(runs.status, ['x'])`,
+    ],
+    [
+      'quoted namespace destructure',
+      `import * as jsonSql from '../lib/json-sql.js'
+       const { 'jsonExtractText': extract4 } = jsonSql
+       extract4(users.email, ['x'])`,
     ],
     [
       'local rebind',
@@ -401,6 +510,12 @@ describe('the analyzer itself, against every known evasion shape', () => {
       'dynamic-import destructure',
       `const { jsonExtractText: extract6 } = await import('../lib/json-sql.js')
        extract6(users.email, ['x'])`,
+    ],
+    [
+      'dynamic-import destructure through a static specifier',
+      `const specifier = '../lib/json-sql.js'
+       const { jsonExtractText: extract7 } = await import(specifier)
+       extract7(users.email, ['x'])`,
     ],
     [
       'dynamic import inside a function, awaited',
