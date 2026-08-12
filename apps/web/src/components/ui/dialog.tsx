@@ -115,12 +115,7 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return (
-    <h2
-      className={cn('text-[1.4rem] font-semibold tracking-tight text-foreground', className)}
-      {...props}
-    />
-  )
+  return <h2 className={cn('text-base font-semibold text-foreground', className)} {...props} />
 }
 
 function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {

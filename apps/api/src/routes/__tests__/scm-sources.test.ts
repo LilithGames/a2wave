@@ -39,6 +39,10 @@ vi.mock('../../lib/scm-source.js', () => ({
   createScmSource: mockCreateScmSource,
 }))
 
+vi.mock('../../lib/scm-storage-reclaim.js', () => ({
+  reclaimManagedScmStorage: vi.fn().mockResolvedValue([]),
+}))
+
 vi.mock('../../lib/owner-filter.js', () => ({
   getOwnerFilter: vi.fn(() => undefined),
   getCurrentUserId: vi.fn(() => 'usr_admin'),
@@ -173,6 +177,7 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../../lib/p4-sync.js'
+import { reclaimManagedScmStorage } from '../../lib/scm-storage-reclaim.js'
 
 import { asyncQuery } from '../../test/async-query.js'
 
@@ -458,6 +463,28 @@ describe('SCM Sources routes', () => {
       expect(cancelInitialScmSync).toHaveBeenCalledWith('scm_1')
     })
 
+    // A managed checkout is named after the source id, so leaving it behind on
+    // delete strands a clone nothing can identify or clean up afterwards.
+    it('reclaims managed storage for the deleted source', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      expect(reclaimManagedScmStorage).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'scm_1' }),
+      )
+    })
+
     it('returns 404 for non-existent source', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(undefined))
 
@@ -583,6 +610,54 @@ describe('SCM Sources routes', () => {
       expect(startInitialScmSync).not.toHaveBeenCalled()
     })
 
+    // DELETE refuses atomically while CodeGraph indexing holds the row; PATCH
+    // must too. isCheckoutBusy is per-process in-memory state, so on a second
+    // replica only the DB predicate stands between a localPath rewrite and an
+    // indexer still reading the old tree.
+    it('refuses a sync-state reset while CodeGraph indexing holds the row', async () => {
+      const existingSource = {
+        id: 'scm_1',
+        name: 'Source',
+        type: 'git',
+        localPath: '/old/path',
+        workspacesPath: null,
+        isEnabled: true,
+        config: { type: 'git', repoUrl: 'https://github.com/org/repo.git', branch: 'main' },
+        initialSyncCompletedAt: new Date(),
+        syncStatus: 'idle',
+        codegraphStatus: 'indexing',
+      }
+      // The owner lookup is skipped: the route is admin, so the stored-root
+      // backstop resolves without a users query. Queue only what is consumed —
+      // a leftover Once would leak into the next test.
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([existingSource])) // path peers
+      // The atomic predicate matches no row, exactly as it would in the DB when
+      // codegraphStatus is 'indexing'. An empty `all` models that; a `get`
+      // returning undefined would fall through to the run-count placeholder.
+      const updateChain = {
+        set: vi.fn().mockReturnValue(
+          asyncQuery({
+            where: vi
+              .fn()
+              .mockReturnValue(
+                asyncQuery({ returning: vi.fn().mockReturnValue(asyncQuery({ all: () => [] })) }),
+              ),
+          }),
+        ),
+      }
+      ;(db.update as Mock).mockReturnValue(updateChain)
+
+      const res = await app.request('/api/scm-sources/scm_1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localPath: '/new/path' }),
+      })
+
+      expect(res.status).toBe(409)
+    })
+
     it('resets sync state when localPath changes', async () => {
       const existingSource = {
         id: 'scm_1',
@@ -637,9 +712,13 @@ describe('SCM Sources routes', () => {
         lastSyncAt: new Date(),
         lastSyncError: null,
       }
+      // cancelInitialScmSync resolves false by default, so the post-cancel row
+      // re-read never runs: row, then path peers, then the owner lookup.
+      ;(cancelInitialScmSync as Mock).mockResolvedValueOnce(false)
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource))
-        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([existingSource])) // path peers
+        .mockReturnValueOnce(makeDbChain({ role: 'admin', isActive: true }))
       const updateChain = makeUpdateChain(existingSource)
       ;(db.update as Mock).mockReturnValue(updateChain)
 

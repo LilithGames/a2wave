@@ -40,6 +40,7 @@ import {
   scmConfigEquals,
 } from '../lib/scm-secret-mask.js'
 import { createScmSource } from '../lib/scm-source.js'
+import { reclaimManagedScmStorage } from '../lib/scm-storage-reclaim.js'
 import { validateStoredScmWorkspacesRoot } from '../lib/scm-workspace-safety.js'
 import { isAdmin } from '../middleware/auth-middleware.js'
 import { rateLimit } from '../middleware/rate-limit.js'
@@ -358,14 +359,25 @@ app.patch('/:id', async (c) => {
     payload.lastSyncError = null
   }
 
-  // When resetting sync state, refuse atomically if a sync grabbed the row in
-  // the meantime (returning().get() yields undefined on no match).
+  // When resetting sync state, refuse atomically if a sync or index grabbed the
+  // row in the meantime (returning().get() yields undefined on no match).
+  // `codegraphStatus` is checked alongside `syncStatus` for the same reason
+  // DELETE checks both: `isCheckoutBusy` is per-process in-memory state, so on a
+  // second replica this predicate is all that stops localPath being rewritten
+  // while an indexer is still reading the old tree.
   const updateWhere = resetsSyncState
-    ? and(eq(scmSources.id, id), ne(scmSources.syncStatus, 'syncing'))
+    ? and(
+        eq(scmSources.id, id),
+        ne(scmSources.syncStatus, 'syncing'),
+        ne(scmSources.codegraphStatus, 'indexing'),
+      )
     : eq(scmSources.id, id)
   const updated = (await db.update(scmSources).set(payload).where(updateWhere).returning())[0]
   if (!updated) {
-    return c.json({ error: 'Cannot change localPath or config while a sync is in progress' }, 409)
+    return c.json(
+      { error: 'Cannot change localPath or config while a sync or indexing job is running' },
+      409,
+    )
   }
 
   // 重新调度自动同步（P4 和 Git 通用）
@@ -447,13 +459,19 @@ app.delete('/:id', async (c) => {
 
   stopAutoSync(id)
 
+  // Reclaim only what a2wave allocated. A managed path is derived from the
+  // source id, so leaving it behind strands a checkout nothing can name again;
+  // an operator-chosen path is their data and is never touched. Runs after the
+  // row is gone, so a filesystem failure logs rather than failing the delete.
+  const reclaimedPaths = await reclaimManagedScmStorage(deleted)
+
   // Record the shape of what was removed: after a delete the row is gone, so the
   // audit entry is the only remaining answer to "what did that source point at".
   logAudit(c, {
     action: 'scm_source.delete',
     resource: 'scm_source',
     resourceId: id,
-    details: scmSourceAuditDetails(source),
+    details: { ...scmSourceAuditDetails(source), reclaimedPaths },
   })
 
   logger.info({ id, name: source.name }, 'Deleted SCM source')

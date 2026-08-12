@@ -331,10 +331,6 @@ export function buildComposeFile(input: ComposeFileInput): string {
     '      - A2WAVE_SKILLS_STORAGE=/app/data/skills',
     '      - SCM_STORAGE_ROOT=${SCM_STORAGE_ROOT:-/data/workspace}',
     '      - SCM_WORKSPACES_ALLOWED_ROOTS=${SCM_WORKSPACES_ALLOWED_ROOTS:-/data/workspace/workspaces}',
-    // Internal ownership policy: generated installs always use the named SCM
-    // volume below. The repository-root Compose deliberately omits this for its
-    // backward-compatible host bind mount.
-    '      - A2WAVE_MANAGED_SCM_VOLUME=true',
     '    volumes:',
     '      - a2wave-data:/app/data',
     '      - a2wave-workspace:/data/workspace',

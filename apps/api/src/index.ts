@@ -20,6 +20,7 @@ import { env } from './env.js'
 import { startArtifactCleanupScheduler } from './lib/artifact-cleanup.js'
 import { startAttachmentStagingCleanupScheduler } from './lib/attachment-cleanup.js'
 import { drainAuditWrites } from './lib/audit.js'
+import { backfillWorkspacesPaths } from './lib/backfill-workspaces-path.js'
 import { bootstrapFromEnv } from './lib/bootstrap.js'
 import { ensureInstallRootOnPath, recoverInterruptedInstalls } from './lib/cli-installer.js'
 import { startDataRetentionSweeper } from './lib/data-retention.js'
@@ -494,6 +495,10 @@ void ensureAdminExists()
     await seedPresetProviders()
     await seedBuiltinMcpServers()
     await seedBuiltinSkills()
+    // Also before markReady: until a migrated row's worktree root is pinned it
+    // resolves from whatever exists on disk, so a request served in that window
+    // could compute a different root than the one the row settles on.
+    await backfillWorkspacesPaths()
     // Seeding done — this instance may now take traffic. Run recovery below is
     // deliberately NOT gated on: it settles stale rows from a previous process
     // and can take a while, but it does not change how a fresh request is served.
