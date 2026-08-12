@@ -711,9 +711,7 @@ describe('SCM Sources routes', () => {
       expect(isolateManagedScmStorage).not.toHaveBeenCalled()
     })
 
-    // PROBE A: isolation now throws to preserve the reservation. What does the
-    // caller see, and is the row still there?
-    it('PROBE A: reports a retryable failure when isolation throws', async () => {
+    it('reports a retryable failure when storage isolation must be retried', async () => {
       const source = {
         id: 'scm_1',
         name: 'Source',
@@ -726,19 +724,21 @@ describe('SCM Sources routes', () => {
       ;(db.update as Mock).mockReturnValue(
         makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
       )
-      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
       ;(isolateManagedScmStorage as Mock).mockRejectedValueOnce(
-        new Error('Reclaim destination already exists: /data/workspace/.a2wave-scm-reclaim-v1/x'),
+        new Error('Reclaim destination already exists'),
       )
 
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
-      const body = await res.json().catch(() => ({}))
-      expect({ probeA: res.status, body }).toBe('SHOWME')
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'SCM source deletion is pending; retry deletion later',
+        retryable: true,
+      })
       expect(db.delete).not.toHaveBeenCalled()
     })
 
-    // PROBE B: same for the recursive removal failing (EBUSY / EACCES).
-    it('PROBE B: reports a retryable failure when commit throws', async () => {
+    it('reports a retryable failure when recursive storage removal must be retried', async () => {
       const source = {
         id: 'scm_1',
         name: 'Source',
@@ -751,21 +751,22 @@ describe('SCM Sources routes', () => {
       ;(db.update as Mock).mockReturnValue(
         makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
       )
-      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
       ;(isolateManagedScmStorage as Mock).mockResolvedValueOnce({
-        isolated: [{ originalPath: source.localPath, isolatedPath: '/x' }],
+        isolated: [{ originalPath: source.localPath, isolatedPath: '/parked/source' }],
         commit: vi.fn().mockRejectedValue(new Error('EBUSY')),
       })
 
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
-      const body = await res.json().catch(() => ({}))
-      expect({ probeB: res.status, body }).toBe('SHOWME')
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'SCM source deletion is pending; retry deletion later',
+        retryable: true,
+      })
       expect(db.delete).not.toHaveBeenCalled()
     })
 
-    // PROBE C: a row reserved for deletion still satisfies the plain listing
-    // filter. Does GET / still show a source the user was told is deleted?
-    it('PROBE C: hides sources reserved for deletion from the list', async () => {
+    it('hides sources reserved for deletion from the list', async () => {
       const pending = {
         id: 'scm_1',
         name: 'Source',
@@ -779,10 +780,8 @@ describe('SCM Sources routes', () => {
 
       const res = await app.request('/api/scm-sources')
       const body = await res.json()
-      console.log(
-        'PROBE C listed ids:',
-        JSON.stringify(body.data?.map((s: { id: string }) => s.id)),
-      )
+
+      expect(res.status).toBe(200)
       expect(body.data).toHaveLength(0)
     })
 

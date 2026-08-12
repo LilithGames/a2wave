@@ -84,13 +84,14 @@ app.get('/', async (c) => {
   const offset = (pageNum - 1) * limit
 
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
+  const visibleFilter = and(ownerFilter, isNull(scmSources.deletionRequestedAt))
   const totalResult = (
-    await db.select({ count: count() }).from(scmSources).where(ownerFilter).limit(1)
+    await db.select({ count: count() }).from(scmSources).where(visibleFilter).limit(1)
   )[0]
   const data = await db
     .select()
     .from(scmSources)
-    .where(ownerFilter)
+    .where(visibleFilter)
     .orderBy(desc(scmSources.createdAt))
     .limit(limit)
     .offset(offset)
@@ -99,7 +100,7 @@ app.get('/', async (c) => {
   return c.json({
     // Mask stored credentials (P4 p4passwd / Git pat / repoUrl userinfo) on every
     // read: an admin list would otherwise dump every user's SCM secrets in plaintext.
-    data: data.map(maskScmSourceRow),
+    data: data.filter((source) => !source.deletionRequestedAt).map(maskScmSourceRow),
     pagination: { total, page: pageNum, pageSize: limit, totalPages: Math.ceil(total / limit) },
   })
 })
@@ -515,9 +516,21 @@ app.delete('/:id', async (c) => {
 
   stopAutoSync(id)
 
-  const peers = reservation?.peers ?? (await selectScmPathPeers())
-  const isolatedStorage = await isolateManagedScmStorage(pendingSource, { peers })
-  const reclaimedPaths = await isolatedStorage.commit()
+  let reclaimedPaths: string[]
+  try {
+    const peers = reservation?.peers ?? (await selectScmPathPeers())
+    const isolatedStorage = await isolateManagedScmStorage(pendingSource, { peers })
+    reclaimedPaths = await isolatedStorage.commit()
+  } catch (error) {
+    logger.error({ sourceId: id, error }, 'SCM source deletion remains pending for retry')
+    return c.json(
+      {
+        error: 'SCM source deletion is pending; retry deletion later',
+        retryable: true,
+      },
+      503,
+    )
+  }
 
   const deleted = await withScmPathMutation(async (tx) => {
     return (
