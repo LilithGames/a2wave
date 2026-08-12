@@ -404,7 +404,7 @@ describe('OAuth Gateway routes', () => {
       expect(json.error).toMatchObject({
         code: 'AUTH_REQUIRED',
         message:
-          'An access token from your identity provider is required. Sign in to obtain a token, then send it in the Authorization: Bearer <token> header.',
+          "A JWT from the caller's OIDC client for the configured a2wave resource audience is required. Obtain one, then send it in the Authorization: Bearer <token> header.",
         source: 'caller',
         action: 'obtain_new_access_token',
         retryable: false,
@@ -424,7 +424,7 @@ describe('OAuth Gateway routes', () => {
       expect(json.error).toMatchObject({
         code: 'CALLER_TOKEN_INVALID',
         message:
-          "The caller's access token is invalid or expired. Sign in again to obtain a new token, then retry the request.",
+          "The caller's access token is invalid, expired, or issued for the wrong audience. Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience, then retry the request.",
         source: 'caller',
         action: 'obtain_new_access_token',
       })

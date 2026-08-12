@@ -22,6 +22,9 @@ export interface ClassifiedOAuthError {
   error: GatewayError
 }
 
+const OIDC_RESOURCE_TOKEN_INSTRUCTION =
+  "Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience"
+
 export function createOAuthGatewayError(
   code: GatewayErrorCodeValue,
   message: string,
@@ -62,7 +65,7 @@ export function classifyOAuthAuthError(
         httpStatus: 401,
         error: createOAuthGatewayError(
           GatewayErrorCode.AUTH_REQUIRED,
-          'An access token from your identity provider is required. Sign in to obtain a token, then send it in the Authorization: Bearer <token> header.',
+          `A JWT from the caller's OIDC client for the configured a2wave resource audience is required. Obtain one, then send it in the Authorization: Bearer <token> header.`,
           {
             source: 'caller',
             action: 'obtain_new_access_token',
@@ -89,7 +92,7 @@ export function classifyOAuthAuthError(
         httpStatus: 401,
         error: createOAuthGatewayError(
           GatewayErrorCode.CALLER_TOKEN_INVALID,
-          "The caller's access token is invalid or expired. Sign in again to obtain a new token, then retry the request.",
+          `The caller's access token is invalid, expired, or issued for the wrong audience. ${OIDC_RESOURCE_TOKEN_INSTRUCTION}, then retry the request.`,
           {
             source: 'caller',
             action: 'obtain_new_access_token',
@@ -168,7 +171,7 @@ export function classifyOAuthAuthError(
           httpStatus: 401,
           error: createOAuthGatewayError(
             GatewayErrorCode.AUTH_FAILED,
-            'The caller could not be authenticated. Sign in again to obtain a new access token, then retry the request.',
+            `The caller could not be authenticated. ${OIDC_RESOURCE_TOKEN_INSTRUCTION}, then retry the request.`,
             {
               source: 'caller',
               action: 'obtain_new_access_token',

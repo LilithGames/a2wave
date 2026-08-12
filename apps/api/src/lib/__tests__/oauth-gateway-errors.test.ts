@@ -85,6 +85,27 @@ describe('OAuth gateway caller-facing error classification', () => {
     })
   })
 
+  it.each([
+    [
+      GatewayAuthErrors.MISSING_AUTH_HEADER,
+      "A JWT from the caller's OIDC client for the configured a2wave resource audience is required. Obtain one, then send it in the Authorization: Bearer <token> header.",
+    ],
+    [
+      GatewayAuthErrors.INVALID_TOKEN,
+      "The caller's access token is invalid, expired, or issued for the wrong audience. Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience, then retry the request.",
+    ],
+    [
+      'Unknown authentication failure',
+      "The caller could not be authenticated. Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience, then retry the request.",
+    ],
+  ])('directs 401 callers to the a2wave resource audience for %s', (upstream, message) => {
+    const result = classifyOAuthAuthError(upstream, 401)
+
+    expect(result.error.message).toBe(message)
+    expect(result.error.message).not.toContain('Sign in')
+    expect(result.error.action).toBe('obtain_new_access_token')
+  })
+
   it('requests an OIDC JWT with an email claim when email is absent in either access mode', () => {
     const result = classifyOAuthAuthError(GatewayAuthErrors.MISSING_EMAIL_CLAIM, 403)
 
