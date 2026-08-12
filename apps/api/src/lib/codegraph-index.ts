@@ -24,6 +24,17 @@ export interface CodegraphIndexResult {
   conflict?: boolean
 }
 
+/** Workspace-root entry this module writes (the index symlink). */
+const CODEGRAPH_WORKSPACE_ENTRY = '.codegraph'
+
+/**
+ * Workspace-root entries this writer creates. Registered with
+ * `platformWorkspaceEntries()`.
+ */
+export function codegraphWorkspaceEntries(): string[] {
+  return [CODEGRAPH_WORKSPACE_ENTRY]
+}
+
 export function isCodegraphEnabled(config: unknown): boolean {
   return Boolean((config as Partial<ScmSourceConfig> | null | undefined)?.codegraphEnabled)
 }
@@ -42,8 +53,8 @@ export function isCodegraphEnabled(config: unknown): boolean {
  * a run over.
  */
 export async function ensureCodegraphLink(workspacePath: string, localPath: string): Promise<void> {
-  const target = join(localPath, '.codegraph')
-  const linkPath = join(workspacePath, '.codegraph')
+  const target = join(localPath, CODEGRAPH_WORKSPACE_ENTRY)
+  const linkPath = join(workspacePath, CODEGRAPH_WORKSPACE_ENTRY)
   if (!existsSync(target)) return
 
   try {

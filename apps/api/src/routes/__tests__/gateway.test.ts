@@ -316,6 +316,24 @@ describe('Gateway routes', () => {
     )
   }
 
+  describe('POST /:agentId/invoke — reserved worktree namespace', () => {
+    it("rejects an explicit worktree using the reserved 'agent-' prefix (400)", async () => {
+      // Without this gate a caller could address an Agent's long-lived
+      // workspace and hand its branch to run-end removal.
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+
+      const res = await invokeRequest({
+        message: 'hi',
+        worktree: { name: 'agent-abc123def456ghi', cleanup: 'ephemeral' },
+      })
+
+      expect(res.status).toBe(400)
+      const json = (await res.json()) as Json
+      expect(JSON.stringify(json.error)).toContain('agent-')
+      expect(executeInWorker as Mock).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /:agentId/invoke — sync mode', () => {
     it('returns durationMs in sync response', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))

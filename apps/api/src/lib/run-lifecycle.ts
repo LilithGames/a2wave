@@ -24,6 +24,7 @@ import { executeChatRun } from './execute-chat-run.js'
 import { buildFeishuFallbackText } from './feishu-fallback.js'
 import { createId } from './id.js'
 import { jsonPathIsAbsent, jsonSet } from './json-sql.js'
+import { perAgentWorkspaceName } from './git-workspace.js'
 import { logger } from './logger.js'
 import { appendNativeArtifactDownloadSection } from './native-chat-text.js'
 import { createScmSource } from './scm-source.js'
@@ -793,6 +794,17 @@ export async function cleanupWorktreeIfEphemeral(runId: string, agentId: string)
   const wtConfig = run.worktreeConfig as { name: string; cleanup: string }
   if (wtConfig.cleanup !== 'ephemeral') return
 
+  // A grandfathered sticky config may name this Agent's own long-lived
+  // worktree. Run-end cleanup must not touch it at all: keeping the branch is
+  // not enough, deleting the directory would discard uncommitted work.
+  if (wtConfig.name === perAgentWorkspaceName(agentId)) {
+    logger.info(
+      { runId, agentId, workspace: wtConfig.name },
+      'Skipping ephemeral cleanup for the per-agent worktree',
+    )
+    return
+  }
+
   // 检查是否有其他 run 还在使用同一 workDir
   const occupied = (
     await db
@@ -838,7 +850,5 @@ export async function cleanupWorktreeIfEphemeral(runId: string, agentId: string)
     { runId, workDir: run.workDir, worktreeName: wtConfig.name },
     'Cleaning up ephemeral worktree',
   )
-  // Legacy sticky configs may carry an agent-* name with ephemeral cleanup;
-  // never let run-end cleanup destroy a per-agent branch.
-  await scm.removeWorkspace(wtConfig.name, { keepBranches: wtConfig.name.startsWith('agent-') })
+  await scm.removeWorkspace(wtConfig.name)
 }

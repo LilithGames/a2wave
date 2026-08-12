@@ -135,6 +135,28 @@ export function defaultWorkspacesPath(sourceId: string): string {
   return join(homedir(), '.a2wave', 'workspaces', idSuffix(sourceId))
 }
 
+/**
+ * Workspace name of an Agent's own long-lived worktree. Callers compare against
+ * this exact value rather than an `agent-` prefix test: a workspace explicitly
+ * named e.g. `agent-refactor` predates the reservation and must keep the
+ * ordinary explicit-worktree semantics (its branch is disposable).
+ */
+export function perAgentWorkspaceName(agentId: string): string {
+  return `agent-${idSuffix(agentId)}`
+}
+
+/**
+ * Whether a workspace name looks like a per-Agent worktree. Used only where the
+ * Agent id is not available (the TTL sweeper walks the filesystem); call sites
+ * that know the Agent compare against `perAgentWorkspaceName` exactly, because
+ * a legacy explicit workspace such as `agent-refactor` is NOT one of these.
+ */
+export function isPerAgentWorkspaceName(name: string): boolean {
+  // createId suffixes are base64url and at least 16 chars — long enough to
+  // separate them from hand-typed names like `agent-refactor`.
+  return /^agent-[A-Za-z0-9_-]{16,}$/.test(name)
+}
+
 // ============================================================
 // Create workspace
 // ============================================================
@@ -1128,7 +1150,12 @@ export async function cleanupStaleWorkspaces(
     }
     if (ws.lastActivityAt != null && ws.lastActivityAt < idleThreshold) {
       try {
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config)
+        // Defense in depth: a per-agent workspace should never carry `ttl`, but if
+        // a legacy state file says so, its branch may still hold the only copy of
+        // unpushed work — reclaim the directory, keep the refs.
+        await removeGitWorkspace(localPath, wsRoot, ws.name, config, {
+          keepBranches: isPerAgentWorkspaceName(ws.name),
+        })
         removed.push(ws.name)
         logger.info(
           { wsPath: ws.path, lastActivityAt: ws.lastActivityAt },
@@ -1151,7 +1178,12 @@ export async function cleanupStaleWorkspaces(
       if (opts.activePaths.has(ws.path)) continue
       if (await isWorkspaceDirty(ws, config)) continue
       try {
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config)
+        // Defense in depth: a per-agent workspace should never carry `ttl`, but if
+        // a legacy state file says so, its branch may still hold the only copy of
+        // unpushed work — reclaim the directory, keep the refs.
+        await removeGitWorkspace(localPath, wsRoot, ws.name, config, {
+          keepBranches: isPerAgentWorkspaceName(ws.name),
+        })
         removed.push(ws.name)
         logger.info({ wsPath: ws.path }, 'TTL cleanup: removed LRU excess workspace')
       } catch (err) {

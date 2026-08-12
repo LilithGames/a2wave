@@ -998,6 +998,8 @@ describe('git-workspace', () => {
       await writeFile(join(created.path, '.mcp.json.a2wave-managed'), '{}')
       await mkdir(join(created.path, '.cursor'), { recursive: true })
       await writeFile(join(created.path, '.cursor', 'mcp.json'), '{}')
+      await mkdir(join(created.path, '.kb'), { recursive: true })
+      await writeFile(join(created.path, '.kb', 'doc.md'), '# kb')
 
       await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-mounts', multiRepoConfig)
       expect(existsSync(created.path)).toBe(false)

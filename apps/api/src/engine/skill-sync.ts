@@ -8,11 +8,23 @@
 
 import { access, cp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { PRESET_PROVIDERS } from '@a2wave/shared'
 import matter from 'gray-matter'
 import { getSkillStoragePath } from '../lib/skill-storage.js'
 import { slugify } from '../lib/slug.js'
 
 const SKILL_MANAGED_MARKER = '.a2wave-managed'
+
+/**
+ * Workspace-root entries this writer creates: the top segment of every
+ * Provider's skillsDir (".claude/skills" -> ".claude"). Registered with
+ * `platformWorkspaceEntries()`.
+ */
+export function skillSyncWorkspaceEntries(): string[] {
+  return PRESET_PROVIDERS.filter((preset) => preset.skillsDir).map(
+    (preset) => (preset.skillsDir as string).split('/')[0],
+  )
+}
 
 function resolveSkillsRoot(workDir: string, skillsDir: string): string {
   return join(workDir, skillsDir)

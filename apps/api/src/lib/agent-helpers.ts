@@ -43,7 +43,7 @@ import {
   WORKTREE_NAME_REGEX,
   WorktreeBranchLockedError,
   WorktreeDirtyError,
-  idSuffix,
+  perAgentWorkspaceName,
   readWorkspaceState,
 } from './git-workspace.js'
 import { INTERNAL_ADMIN_TOKEN_ENV, getInternalAdminToken } from './internal-admin-auth.js'
@@ -1122,11 +1122,6 @@ export function _resetTtlCleanupDebounce(): void {
   lastCleanupAt.clear()
 }
 
-/** Worktree name for an Agent's default workspace: agent-<full id suffix>. */
-function perAgentWorkspaceName(agentId: string): string {
-  return `agent-${idSuffix(agentId)}`
-}
-
 /** In-flight run statuses: rows whose workDir may still be in use. */
 export const IN_FLIGHT_RUN_STATUSES = ['running', 'pending', 'queued'] as const
 
@@ -1236,8 +1231,17 @@ async function resolvePerAgentWorkspace(
     isCodegraphEnabled(source.config)
       ? ensureCodegraphLink(result.path, source.localPath)
       : Promise.resolve(),
+    // Bookkeeping only: a failure here (e.g. SQLITE_BUSY) must not bubble into
+    // the caller's fallback, which would run the Agent in the shared checkout —
+    // the cross-Agent interference this whole feature removes.
     runId
-      ? db.update(runs).set({ workDir: result.path }).where(eq(runs.id, runId))
+      ? db
+          .update(runs)
+          .set({ workDir: result.path })
+          .where(eq(runs.id, runId))
+          .catch((err) =>
+            logger.warn({ err, runId, wsPath: result.path }, 'Failed to record runs.workDir'),
+          )
       : Promise.resolve(),
   ])
 
@@ -1405,10 +1409,18 @@ export async function resolveWorkDir(
     }
 
     // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）
-    try {
-      await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
-    } catch (err) {
-      logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
+    //
+    // Exception: a grandfathered sticky config may name this Agent's own
+    // long-lived worktree. Overwriting its `persistent` marker with the
+    // caller's ephemeral/ttl mode would hand the Agent's workspace to run-end
+    // cleanup or the TTL sweeper — the reservation exists to prevent exactly
+    // that, and legacy rows must not slip past it.
+    if (worktreeParams.name !== perAgentWorkspaceName(agent.id)) {
+      try {
+        await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
+      } catch (err) {
+        logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
+      }
     }
 
     // 懒触发 TTL 清理（fire-and-forget + 每 source 1h debounce）

@@ -572,7 +572,7 @@ describe('finishRunSuccess', () => {
     expect(mockScanAndRegisterArtifacts).not.toHaveBeenCalled()
     expect(vi.mocked(scheduleNext)).not.toHaveBeenCalled()
     expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)
-    expect(removeWorkspace).toHaveBeenCalledWith('fix', { keepBranches: false })
+    expect(removeWorkspace).toHaveBeenCalledWith('fix')
   })
 
   it.each(['completed', 'failed'])(
@@ -683,7 +683,7 @@ describe('finishRunSuccess', () => {
 
     expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)
     expect(vi.mocked(scheduleNext)).toHaveBeenCalledOnce()
-    expect(removeWorkspace).toHaveBeenCalledWith('fix', { keepBranches: false })
+    expect(removeWorkspace).toHaveBeenCalledWith('fix')
   })
 
   it('success=false: step output 包含 error 字段', async () => {
@@ -779,7 +779,7 @@ describe('finishRunSuccess', () => {
 
     // 扫描完成后，cleanup 才执行
     expect(scanResolved).toBe(true)
-    expect(removeWorkspace).toHaveBeenCalledWith('fix', { keepBranches: false })
+    expect(removeWorkspace).toHaveBeenCalledWith('fix')
   })
 
   it('artifact links in chat message use getArtifactDownloadUrl', async () => {
@@ -1249,7 +1249,23 @@ describe('cleanupWorktreeIfEphemeral', () => {
     mockCreateScmSource.mockReturnValueOnce({ removeWorkspace, wsRoot: '/ws' })
 
     await cleanupWorktreeIfEphemeral('run_1', 'agt_1')
-    expect(removeWorkspace).toHaveBeenCalledWith('fix', { keepBranches: false })
+    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+  })
+
+  it('never removes the per-agent worktree, even with a legacy ephemeral config', async () => {
+    // A worktreeConfig persisted before the reserved-prefix rule can name the
+    // Agent's own long-lived workspace with cleanup: 'ephemeral'. Run-end
+    // cleanup must skip it entirely — keeping the branch is not enough, the
+    // directory holds uncommitted work.
+    mockDbGet.mockReturnValueOnce({
+      workDir: '/ws/agent-abc123def456ghi',
+      worktreeConfig: { name: 'agent-abc123def456ghi', cleanup: 'ephemeral' },
+    })
+    const removeWorkspace = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValue({ removeWorkspace, wsRoot: '/ws' })
+
+    await cleanupWorktreeIfEphemeral('run_1', 'agt_abc123def456ghi')
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
   it('skips removeWorkspace when resolved path differs from run.workDir (scmSourceId rebind)', async () => {
@@ -1289,6 +1305,6 @@ describe('cleanupWorktreeIfEphemeral', () => {
     mockCreateScmSource.mockReturnValueOnce({ removeWorkspace, wsRoot: '/ws' })
 
     await cleanupWorktreeIfEphemeral('run_1', 'agt_1')
-    expect(removeWorkspace).toHaveBeenCalledWith('fix', { keepBranches: false })
+    expect(removeWorkspace).toHaveBeenCalledWith('fix')
   })
 })
