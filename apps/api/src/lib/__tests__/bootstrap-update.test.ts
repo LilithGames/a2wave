@@ -21,6 +21,14 @@ const envMock = {
   SCM_GIT_AUTO_SYNC: true,
   SCM_GIT_SYNC_INTERVAL: 30,
   SCM_GIT_LOCAL_PATH: '/var/git',
+  // Read by the shared path planner both bootstrap paths now go through.
+  SCM_STORAGE_ROOT: '/data/workspace',
+  SCM_WORKSPACES_ALLOWED_ROOTS: '/data/workspace/workspaces',
+  DATABASE_URL: '/app/data/a2wave.db',
+  A2WAVE_SKILLS_STORAGE: '/app/data/skills',
+  A2WAVE_KB_STORAGE: '/app/data/kb',
+  A2WAVE_MEMORY_STORAGE: '/app/data/memory',
+  LOG_FILE_PATH: '/app/data/logs/a2wave.log',
 }
 
 vi.mock('../../env.js', () => ({
@@ -61,6 +69,7 @@ vi.mock('../../db/schema.js', () => ({
     id: 'scmSources.id',
     name: 'scmSources.name',
     localPath: 'scmSources.localPath',
+    workspacesPath: 'scmSources.workspacesPath',
   },
   settings: { category: 'settings.category', key: 'settings.key' },
 }))
@@ -150,7 +159,8 @@ function queueSelects(...returns: Array<{ get?: unknown; all?: unknown }>) {
     const cfg = returns[i++] ?? {}
     const c = makeChain()
     if ('get' in cfg) c.get.mockReturnValue(cfg.get)
-    // 网关 token 回填读 jwtSigner 全部行；默认空数组 = 无既有签名器，跳过回填。
+    // The gateway token back-fill reads every jwtSigner row; an empty array
+    // means no existing signer, so the back-fill is skipped.
     c.all.mockReturnValue('all' in cfg ? cfg.all : [])
     return c
   })
@@ -171,6 +181,13 @@ beforeEach(() => {
   }
   envMock.SCM_P4_LOCAL_PATH = '/var/p4'
   envMock.SCM_GIT_LOCAL_PATH = '/var/git'
+  envMock.SCM_STORAGE_ROOT = '/data/workspace'
+  envMock.SCM_WORKSPACES_ALLOWED_ROOTS = '/data/workspace/workspaces'
+  envMock.DATABASE_URL = '/app/data/a2wave.db'
+  envMock.A2WAVE_SKILLS_STORAGE = '/app/data/skills'
+  envMock.A2WAVE_KB_STORAGE = '/app/data/kb'
+  envMock.A2WAVE_MEMORY_STORAGE = '/app/data/memory'
+  envMock.LOG_FILE_PATH = '/app/data/logs/a2wave.log'
   envMock.SCM_GIT_BRANCH = 'main'
   envMock.SCM_P4_AUTO_SYNC = true
   envMock.SCM_P4_SYNC_INTERVAL = 30
@@ -215,6 +232,50 @@ describe('bootstrapScmP4 — update path', () => {
     expect(dbInsertRun).not.toHaveBeenCalled()
   })
 
+  /**
+   * The update branch keeps the row's stored `workspacesPath`, so the planner
+   * has to be told about it — otherwise it allocates a *default* root, checks
+   * the new checkout path against that, and passes, while the write persists a
+   * different root entirely. A new SCM_P4_LOCAL_PATH sitting inside the root the
+   * row actually keeps therefore slipped straight through, and the next sync
+   * force-discards the worktrees underneath it.
+   */
+  it('rejects a new P4 path that overlaps the row own stored workspaces root', async () => {
+    envMock.SCM_P4_PORT = '1666'
+    envMock.SCM_P4_USER = 'admin'
+    envMock.SCM_P4_CLIENT = 'workspace'
+    envMock.SCM_P4_LOCAL_PATH = '/srv/worktrees/nested-checkout'
+    queueSelects({
+      get: {
+        id: 'scm_existing',
+        localPath: '/old/path',
+        workspacesPath: '/srv/worktrees',
+      },
+    })
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(updateChain.set).not.toHaveBeenCalled()
+  })
+
+  it('rejects a new Git path that overlaps the row own stored workspaces root', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
+    envMock.SCM_GIT_LOCAL_PATH = '/srv/git-worktrees/nested-checkout'
+    queueSelects({
+      get: {
+        id: 'scm_g',
+        localPath: '/old/path',
+        workspacesPath: '/srv/git-worktrees',
+      },
+    })
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(updateChain.set).not.toHaveBeenCalled()
+  })
+
   it('skips when local path conflict points to a different existing row', async () => {
     envMock.SCM_P4_PORT = '1666'
     envMock.SCM_P4_USER = 'admin'
@@ -223,7 +284,11 @@ describe('bootstrapScmP4 — update path', () => {
 
     queueSelects(
       { get: { id: 'scm_existing', localPath: '/old/path' } }, // find by name
-      { get: { id: 'scm_conflict', localPath: '/new/path' } }, // localPath conflict
+      // Path planner peer scan: every row, unfiltered. The conflicting peer owns
+      // the requested path, so the plan is rejected and no update is issued.
+      {
+        all: [{ id: 'scm_conflict', name: 'other', localPath: '/new/path', workspacesPath: null }],
+      },
     )
 
     bootstrapFromEnv()
@@ -238,7 +303,9 @@ describe('bootstrapScmP4 — update path', () => {
 
     queueSelects(
       { get: undefined }, // no existing env:p4
-      { get: { id: 'scm_conflict', localPath: '/var/p4' } }, // localPath taken
+      {
+        all: [{ id: 'scm_conflict', name: 'other', localPath: '/var/p4', workspacesPath: null }],
+      },
     )
 
     bootstrapFromEnv()
@@ -264,7 +331,9 @@ describe('bootstrapScmGit — update path', () => {
 
     queueSelects(
       { get: { id: 'scm_g', localPath: '/old/path' } },
-      { get: { id: 'scm_other', localPath: '/new/path' } },
+      {
+        all: [{ id: 'scm_other', name: 'other', localPath: '/new/path', workspacesPath: null }],
+      },
     )
 
     bootstrapFromEnv()
@@ -274,7 +343,12 @@ describe('bootstrapScmGit — update path', () => {
 
   it('skips on insert path when localPath is taken', async () => {
     envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
-    queueSelects({ get: undefined }, { get: { id: 'scm_other', localPath: '/var/git' } })
+    queueSelects(
+      { get: undefined },
+      {
+        all: [{ id: 'scm_other', name: 'other', localPath: '/var/git', workspacesPath: null }],
+      },
+    )
 
     bootstrapFromEnv()
     await flush()

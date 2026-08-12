@@ -60,6 +60,24 @@ else
   REASON="no mount + no override → keep default"
 fi
 
+# Resolved once, above the remap block that sweeps it and the provisioning block
+# that creates it — two copies of this default is how they would drift apart.
+SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
+# Sourced (not executed): supplies scm_chown_targets, which decides which SCM
+# subtrees the remap below may take ownership of.
+. /usr/local/bin/entrypoint-scm-paths.sh
+
+# Reject a symlinked root BEFORE anything walks or chowns it. This check used to
+# sit further down, after the UID remap: if the link pointed at a tree that
+# happened to contain sources/ or workspaces/, the remap chowned those real
+# directories — outside the mount — and only then exited 1, with the damage done.
+# Refusing here makes the ordering safe rather than relying on what the target
+# happens to contain.
+if [ -L "$SCM_STORAGE_ROOT" ]; then
+  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is a symlink" >&2
+  exit 1
+fi
+
 # === Remap only when needed, to avoid chowning large directories on every boot ===
 if [ "$TARGET_UID" != "$CURRENT_UID" ] || [ "$TARGET_GID" != "$CURRENT_GID" ]; then
   if [ "$TARGET_UID" = "0" ]; then
@@ -79,18 +97,23 @@ if [ "$TARGET_UID" != "$CURRENT_UID" ] || [ "$TARGET_GID" != "$CURRENT_GID" ]; t
   chown -R "$TARGET_UID:$TARGET_GID" /app
   chown "$TARGET_UID:$TARGET_GID" /home/appuser
 
-  # SCM workspace: the /data/workspace bind mount holds repositories cloned by a2wave SCM sync
-  # (written under the old UID). But that host path may also be used by the host OS user directly
-  # (dev working directories, cursor config, their own git repos) — a blanket chown -R would
-  # pollute the host development environment.
-  # So this is surgical: chown only files whose owner differs from TARGET_UID.
-  #   - The host user's own files (UID 1000 = TARGET_UID) are skipped by find → left alone
-  #   - Files left by an older a2wave under UID 10001 → taken over as TARGET_UID
-  #   - Files a2wave writes from now on are already TARGET_UID → skipped (idempotent)
-  # -h keeps chown from dereferencing a symlink and altering its target outside the tree.
-  if [ -d /data/workspace ]; then
-    find /data/workspace -not -uid "$TARGET_UID" -exec chown -h "$TARGET_UID:$TARGET_GID" {} + 2>/dev/null || true
-  fi
+  # SCM storage: these subtrees hold repositories cloned by a2wave SCM sync, written under the
+  # old UID and unreadable after the remap unless taken over here.
+  #
+  # Scoped to the subtrees a2wave itself allocates (sources/, workspaces/) rather than the whole
+  # mount. On the shipped Compose defaults SCM_STORAGE_ROOT *is* the /data/workspace bind mount,
+  # and that host path is routinely used by the operator directly — dev working directories,
+  # a colleague's checkout on a shared box, a root-owned tool cache, files restored from a backup
+  # under their original owner. Sweeping the mount handed every one of those to appuser, and
+  # chowned the mount root itself, which is exactly what the SCM_STORAGE_ROOT block below
+  # deliberately refuses to do.
+  #
+  # Within those subtrees the sweep stays surgical, skipping files already owned by TARGET_UID so
+  # repeat boots are cheap. -h keeps chown from dereferencing a symlink and altering its target
+  # outside the tree.
+  scm_chown_targets "$SCM_STORAGE_ROOT" | while IFS= read -r scm_target; do
+    find "$scm_target" -not -uid "$TARGET_UID" -exec chown -h "$TARGET_UID:$TARGET_GID" {} + 2>/dev/null || true
+  done
 else
   echo "[entrypoint] appuser UID/GID already ${CURRENT_UID}:${CURRENT_GID}, no remap needed"
 fi
@@ -99,17 +122,19 @@ fi
 # directly by the operator, so changing its owner would pollute the host. Root
 # can still create these children beneath a root-owned 0755 mount, after which
 # appuser can allocate per-source directories normally.
-SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
-if [ -L "$SCM_STORAGE_ROOT" ]; then
-  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is a symlink" >&2
-  exit 1
-fi
+#
+# The symlink check ran above, before the UID remap could traverse the root. It
+# is re-asserted after mkdir below, which is what catches a root that is a
+# non-directory or was swapped in between the two points.
 mkdir -p "$SCM_STORAGE_ROOT"
 if [ ! -d "$SCM_STORAGE_ROOT" ] || [ -L "$SCM_STORAGE_ROOT" ]; then
   echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not a regular directory" >&2
   exit 1
 fi
-for scm_subdir in sources workspaces; do
+# Same list the chown sweep above uses, from entrypoint-scm-paths.sh: a subtree
+# provisioned here but missing from that list would be created and then never
+# handed to appuser across a UID remap.
+for scm_subdir in $SCM_MANAGED_SUBDIRS; do
   scm_dir="$SCM_STORAGE_ROOT/$scm_subdir"
   if [ -L "$scm_dir" ]; then
     echo "[entrypoint] refusing to start: $scm_dir is a symlink" >&2

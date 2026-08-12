@@ -1,7 +1,26 @@
 import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * Unit tests never touch a real database. The stored-root validator reads the
+ * owner's live role and (for the cross-source overlap scan) every other source
+ * row; both resolve to empty here, so each test states its own peers explicitly.
+ */
+vi.mock('../../db/client.js', () => ({
+  db: {
+    select: () => ({
+      // The peer scan awaits `.from(...)` directly; the owner lookup chains
+      // `.where().limit()`. One thenable object satisfies both shapes.
+      from: () =>
+        Object.assign(Promise.resolve([]), {
+          where: () => ({ limit: () => Promise.resolve([]) }),
+        }),
+    }),
+  },
+}))
+
 import { env } from '../../env.js'
 import {
   getDefaultScmWorkspacesAllowedRoot,
@@ -171,6 +190,46 @@ describe('validateScmWorkspacesRoot', () => {
       await validateStoredScmWorkspacesRoot(
         { id: 'scm_admin', workspacesPath: '/srv/admin-selected/source-a', userId: 'usr_admin' },
         true,
+      ),
+    ).toBeNull()
+  })
+
+  /**
+   * The write-path planner rejects a worktree root that overlaps another
+   * source's checkout, but the runtime backstop only ever compared against
+   * allowed roots and platform storage — it had no notion of peers at all.
+   *
+   * That gap is reachable without any write: `SCM_STORAGE_ROOT` itself is a
+   * legacy allowed root (kept so upgraded deployments keep working), and the
+   * managed-checkout rule below it only excludes `SCM_STORAGE_ROOT/sources`. A
+   * P4 source's `localPath` is operator-chosen and lives nowhere near that
+   * subtree, so a row created before the planner existed can hold a worktree
+   * root sitting directly on top of another source's checkout. Worktree cleanup
+   * on the one then deletes the other's working tree.
+   */
+  it('rejects a stored root that overlaps another source checkout', async () => {
+    expect(
+      await validateStoredScmWorkspacesRoot(
+        { id: 'scm_a', workspacesPath: '/srv/p4-checkout/worktrees', userId: 'usr_admin' },
+        true,
+        [{ id: 'scm_b', name: 'P4 main', localPath: '/srv/p4-checkout', workspacesPath: null }],
+      ),
+    ).toMatch(/overlaps/i)
+  })
+
+  it('ignores the source own row when scanning peers', async () => {
+    expect(
+      await validateStoredScmWorkspacesRoot(
+        { id: 'scm_a', workspacesPath: '/srv/admin-selected/source-a', userId: 'usr_admin' },
+        true,
+        [
+          {
+            id: 'scm_a',
+            name: 'self',
+            localPath: '/srv/admin-selected/source-a/checkout',
+            workspacesPath: '/srv/admin-selected/source-a',
+          },
+        ],
       ),
     ).toBeNull()
   })

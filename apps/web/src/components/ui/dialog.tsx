@@ -9,7 +9,7 @@ interface DialogProps {
   onOpenChange: (open: boolean) => void
   children: ReactNode
   width?: number
-  /** 内容区内边距（px），默认 12；叠加在 antd Modal container 自身 padding（上下 20 / 左右 24）之上 */
+  /** Content padding in px (default 12), applied on top of the antd Modal container's own padding (20 vertical / 24 horizontal) */
   padding?: number
   /**
    * Set when the modal body scrolls. Zeroes antd's `.ant-modal-content` padding
@@ -115,7 +115,11 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h2 className={cn('text-base font-semibold text-foreground', className)} {...props} />
+  // `text-xl` (16px) is the scale's sub-heading rung — a step up from body
+  // (13px) that reads as a modal title. Deliberately a named rung rather than
+  // `text-[1.4rem]`: this component backs every modal in the app, so an
+  // arbitrary value would put ~36 dialogs outside the type scale.
+  return <h2 className={cn('text-xl font-semibold text-foreground', className)} {...props} />
 }
 
 function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {

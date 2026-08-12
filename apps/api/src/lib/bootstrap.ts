@@ -5,11 +5,11 @@ import { env } from '../env.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
 import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
-import { defaultScmLocalPath } from './scm-storage.js'
+import { resolveScmPathPlan, selectScmPathPeers } from './scm-path-plan.js'
 
 const ADMIN_USER_ID = 'usr_admin'
 
-/** 将 SETTINGS_GENERAL_WORKSPACE_PATH 解析为 { category: 'general', key: 'workspacePath' }（导出供测试） */
+/** Parse SETTINGS_GENERAL_WORKSPACE_PATH into { category: 'general', key: 'workspacePath' } (exported for tests) */
 export function parseSettingsEnvKey(envKey: string): { category: string; key: string } | null {
   if (!envKey.startsWith('SETTINGS_') || envKey.length <= 'SETTINGS_'.length) return null
   const rest = envKey.slice('SETTINGS_'.length)
@@ -23,7 +23,7 @@ export function parseSettingsEnvKey(envKey: string): { category: string; key: st
   return { category, key }
 }
 
-/** 从 process.env 扫描 SETTINGS_* 并 upsert 到 settings 表 */
+/** Scan process.env for SETTINGS_* and upsert each into the settings table */
 async function bootstrapSettings(): Promise<void> {
   const now = new Date()
   for (const [envKey, value] of Object.entries(process.env)) {
@@ -51,7 +51,55 @@ async function bootstrapSettings(): Promise<void> {
   }
 }
 
-/** 从环境变量 upsert P4 代码源（name='env:p4'） */
+/**
+ * Resolve an env-driven source's paths through the same planner the HTTP routes
+ * use, and log why a rejected one was skipped.
+ *
+ * Env bootstrap used to check `localPath` for exact string equality against
+ * other rows and nothing else, so it could persist what `POST /api/scm-sources`
+ * refuses: a relative path, the shared storage root itself, or a checkout nested
+ * inside another source's tree (a different string, same directory — which the
+ * next `git checkout -f` force-discards). Sharing the planner means a rule added
+ * for the routes covers env too, instead of the two drifting apart again.
+ *
+ * `isAdmin` is true because these rows are owned by the platform admin and an
+ * operator setting the env var is choosing the path deliberately; the peer,
+ * absolute-path and shared-root rules still apply.
+ */
+async function planEnvScmPaths(
+  id: string,
+  type: 'git' | 'p4',
+  localPath: string | undefined,
+  envVar: string,
+  /**
+   * The row's stored worktree root on the update path. It must be passed, not
+   * left to default: the update keeps this value, so planning against a freshly
+   * allocated default would validate the checkout path against a root the write
+   * never uses — letting a new `SCM_*_LOCAL_PATH` land inside the root the row
+   * actually keeps, where the next sync force-discards its worktrees.
+   */
+  workspacesPath?: string | null,
+): Promise<{ localPath: string; workspacesPath: string } | null> {
+  const plan = resolveScmPathPlan({
+    sourceId: id,
+    type,
+    localPath,
+    workspacesPath,
+    existingSources: await selectScmPathPeers(),
+    excludeId: id,
+    isAdmin: true,
+  })
+  if (!plan.ok) {
+    logger.warn(
+      { path: localPath, reason: plan.error },
+      `${envVar} is not a usable checkout path, skipping ${type} bootstrap`,
+    )
+    return null
+  }
+  return { localPath: plan.localPath, workspacesPath: plan.workspacesPath }
+}
+
+/** Upsert the env-driven P4 SCM source (name='env:p4') */
 async function bootstrapScmP4(): Promise<void> {
   if (!env.SCM_P4_PORT || !env.SCM_P4_USER || !env.SCM_P4_CLIENT) return
 
@@ -74,22 +122,25 @@ async function bootstrapScmP4(): Promise<void> {
 
   if (existing) {
     const localPath = env.SCM_P4_LOCAL_PATH || existing.localPath
-    const localPathConflict =
-      localPath !== existing.localPath
-        ? (
-            await db.select().from(scmSources).where(eq(scmSources.localPath, localPath)).limit(1)
-          )[0]
-        : null
-    if (localPathConflict && localPathConflict.id !== existing.id) {
-      logger.warn({ path: localPath }, 'SCM_P4_LOCAL_PATH conflict, skipping P4 bootstrap')
-      return
-    }
+    // Re-planned even when the path is unchanged: the row may predate a rule.
+    const planned = await planEnvScmPaths(
+      existing.id,
+      'p4',
+      localPath,
+      'SCM_P4_LOCAL_PATH',
+      existing.workspacesPath,
+    )
+    if (!planned) return
 
     await db
       .update(scmSources)
       .set({
         config: { ...config },
-        localPath,
+        localPath: planned.localPath,
+        // The planner's resolved root, which already accounts for the stored
+        // value. Pinned on update too: a migrated row with a NULL worktree root
+        // otherwise keeps resolving it from whatever exists on disk.
+        workspacesPath: planned.workspacesPath,
         syncStatus: 'idle',
         lastSyncAt: null,
         lastSyncError: null,
@@ -106,14 +157,8 @@ async function bootstrapScmP4(): Promise<void> {
       return
     }
     const id = createId('scm')
-    const localPath = env.SCM_P4_LOCAL_PATH
-    const conflict = (
-      await db.select().from(scmSources).where(eq(scmSources.localPath, localPath)).limit(1)
-    )[0]
-    if (conflict) {
-      logger.warn({ path: localPath }, 'SCM_P4_LOCAL_PATH already in use, skipping P4 bootstrap')
-      return
-    }
+    const planned = await planEnvScmPaths(id, 'p4', env.SCM_P4_LOCAL_PATH, 'SCM_P4_LOCAL_PATH')
+    if (!planned) return
 
     await db.insert(scmSources).values({
       id,
@@ -121,7 +166,8 @@ async function bootstrapScmP4(): Promise<void> {
       type: 'p4',
       description: 'P4 source from environment variables',
       config: { ...config },
-      localPath,
+      localPath: planned.localPath,
+      workspacesPath: planned.workspacesPath,
       isEnabled: true,
       userId: ADMIN_USER_ID,
       createdAt: now,
@@ -131,7 +177,7 @@ async function bootstrapScmP4(): Promise<void> {
   }
 }
 
-/** 从环境变量 upsert Git 代码源（name='env:git'） */
+/** Upsert the env-driven Git SCM source (name='env:git') */
 async function bootstrapScmGit(): Promise<void> {
   if (!env.SCM_GIT_REPO_URL) return
 
@@ -153,22 +199,25 @@ async function bootstrapScmGit(): Promise<void> {
 
   if (existing) {
     const localPath = env.SCM_GIT_LOCAL_PATH || existing.localPath
-    const localPathConflict =
-      localPath !== existing.localPath
-        ? (
-            await db.select().from(scmSources).where(eq(scmSources.localPath, localPath)).limit(1)
-          )[0]
-        : null
-    if (localPathConflict && localPathConflict.id !== existing.id) {
-      logger.warn({ path: localPath }, 'SCM_GIT_LOCAL_PATH conflict, skipping Git bootstrap')
-      return
-    }
+    // Re-planned even when the path is unchanged: the row may predate a rule.
+    const planned = await planEnvScmPaths(
+      existing.id,
+      'git',
+      localPath,
+      'SCM_GIT_LOCAL_PATH',
+      existing.workspacesPath,
+    )
+    if (!planned) return
 
     await db
       .update(scmSources)
       .set({
         config: { ...config },
-        localPath,
+        localPath: planned.localPath,
+        // The planner's resolved root, which already accounts for the stored
+        // value. Pinned on update too: a migrated row with a NULL worktree root
+        // otherwise keeps resolving it from whatever exists on disk.
+        workspacesPath: planned.workspacesPath,
         syncStatus: 'idle',
         lastSyncAt: null,
         lastSyncError: null,
@@ -179,14 +228,14 @@ async function bootstrapScmGit(): Promise<void> {
     logger.info({ id: existing.id }, 'Updated Git SCM source from env')
   } else {
     const id = createId('scm')
-    const localPath = env.SCM_GIT_LOCAL_PATH || defaultScmLocalPath(id)
-    const conflict = (
-      await db.select().from(scmSources).where(eq(scmSources.localPath, localPath)).limit(1)
-    )[0]
-    if (conflict) {
-      logger.warn({ path: localPath }, 'SCM_GIT_LOCAL_PATH already in use, skipping Git bootstrap')
-      return
-    }
+    // Undefined lets the planner allocate the managed default, matching create.
+    const planned = await planEnvScmPaths(
+      id,
+      'git',
+      env.SCM_GIT_LOCAL_PATH || undefined,
+      'SCM_GIT_LOCAL_PATH',
+    )
+    if (!planned) return
 
     await db.insert(scmSources).values({
       id,
@@ -194,7 +243,8 @@ async function bootstrapScmGit(): Promise<void> {
       type: 'git',
       description: 'Git source from environment variables',
       config: { ...config },
-      localPath,
+      localPath: planned.localPath,
+      workspacesPath: planned.workspacesPath,
       isEnabled: true,
       userId: ADMIN_USER_ID,
       createdAt: now,
@@ -205,13 +255,19 @@ async function bootstrapScmGit(): Promise<void> {
 }
 
 /**
- * 升级告警：存量部署曾用 `A2WAVE_OAUTH_IDAAS_*`（静态 JWK）驱动 OAuth 发布渠道，
- * 该方式已移除，渠道改由企业 OIDC 验签。只配了旧变量、没配 OIDC 的部署升级后，
- * 所有 oauth 渠道调用会静默变成 503——进程照常启动，第一处信号是线上调用方报错。
+ * Upgrade warning. Existing deployments once drove the OAuth publish channel
+ * with `A2WAVE_OAUTH_IDAAS_*` (a static JWK). That mechanism is gone — the
+ * channel now verifies caller tokens against enterprise OIDC — so a deployment
+ * carrying only the old variables silently answers 503 on every oauth call
+ * after an upgrade: the process starts normally and the first signal is a
+ * caller reporting the error in production.
  *
- * 这里在启动时点名，并把「配了 OIDC 但没配受众白名单」一并纳入：那同样让渠道不可用
- * （fail closed 是刻意的，见 isOauthChannelConfigured）。仅告警不阻断启动——登录、其它
- * 发布渠道都不受影响，把整个实例拒起会造成更大的故障面。
+ * Naming it at boot turns that into a log line. "OIDC configured but the
+ * audience allowlist is empty" is covered too, because it disables the channel
+ * just as completely (failing closed is deliberate — see
+ * isOauthChannelConfigured). This warns without blocking startup: login and
+ * every other publish channel still work, and refusing to start the whole
+ * instance would be the larger outage.
  */
 async function warnOauthChannelUnavailable(): Promise<void> {
   const legacyIdaasConfigured = ['A2WAVE_OAUTH_IDAAS_ISSUER', 'A2WAVE_OAUTH_IDAAS_PUBLIC_KEY'].some(
@@ -243,8 +299,8 @@ async function warnOauthChannelUnavailable(): Promise<void> {
 }
 
 /**
- * 从环境变量初始化 SCM 代码源和 Settings。
- * 在 ensureAdminExists() 和 seedPresetProviders() 之间调用。
+ * Initialise SCM sources and Settings from environment variables.
+ * Called between ensureAdminExists() and seedPresetProviders().
  */
 export async function bootstrapFromEnv(): Promise<void> {
   await bootstrapScmP4()

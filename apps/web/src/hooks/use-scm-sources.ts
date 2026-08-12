@@ -149,7 +149,7 @@ export function useProbeScmSource() {
 }
 
 export type ScmWorkspaceRepoInfo = {
-  directory: string // '' 表示单仓库模式的 workspace 根
+  directory: string // '' denotes the workspace root in single-repo mode
   branch: string | null
   commit: string | null
   error?: string

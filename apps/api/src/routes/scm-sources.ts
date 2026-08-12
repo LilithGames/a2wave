@@ -31,8 +31,7 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../lib/p4-sync.js'
-import type { ScmPathPeer } from '../lib/scm-path-plan.js'
-import { resolveScmPathPlan } from '../lib/scm-path-plan.js'
+import { resolveScmPathPlan, selectScmPathPeers } from '../lib/scm-path-plan.js'
 import {
   maskScmSourceRow,
   redactRepoUrlCredential,
@@ -69,28 +68,11 @@ function hasRetiredSetupScriptField(body: unknown): boolean {
   )
 }
 
-/**
- * Every row's path fields, for cross-source conflict checks.
- *
- * Pulled in full rather than filtered in SQL: overlap is an ancestor/descendant
- * relation that `eq` cannot express, and the table is small (tens of rows).
- */
-async function selectScmPathPeers(): Promise<ScmPathPeer[]> {
-  return db
-    .select({
-      id: scmSources.id,
-      name: scmSources.name,
-      localPath: scmSources.localPath,
-      workspacesPath: scmSources.workspacesPath,
-    })
-    .from(scmSources)
-}
-
 // ============================================================
 // CRUD Routes
 // ============================================================
 
-/** GET / - 列出所有代码源 */
+/** GET / - List all SCM sources */
 app.get('/', async (c) => {
   const { page = '1', pageSize = '50' } = c.req.query()
   const pageNum = Math.max(1, Number.parseInt(page) || 1)
@@ -118,7 +100,7 @@ app.get('/', async (c) => {
   })
 })
 
-/** GET /:id - 获取单个代码源 */
+/** GET /:id - Fetch a single SCM source */
 app.get('/:id', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -130,7 +112,7 @@ app.get('/:id', async (c) => {
   return c.json({ data: maskScmSourceRow(source) })
 })
 
-/** POST / - 创建代码源 */
+/** POST / - Create an SCM source */
 app.post('/', async (c) => {
   const body = await c.req.json()
   if (hasRetiredSetupScriptField(body)) {
@@ -178,7 +160,7 @@ app.post('/', async (c) => {
   if (!rehydratedCreate.ok) {
     return c.json({ error: rehydratedCreate.error }, 400)
   }
-  // 将 discriminated union config 序列化为 plain object
+  // Serialize the discriminated-union config into a plain object
   const configData = { ...rehydratedCreate.config }
 
   const newSource = (
@@ -225,7 +207,7 @@ app.post('/', async (c) => {
   return c.json({ data: maskScmSourceRow(newSource) }, 201)
 })
 
-/** PATCH /:id - 更新代码源 */
+/** PATCH /:id - Update an SCM source */
 app.patch('/:id', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -244,7 +226,8 @@ app.patch('/:id', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  // 取更新后的有效值（未更新则沿用现有），任一方变化都需要重新校验。
+  // The effective post-update values (falling back to the stored ones when a
+  // field is omitted). A change to either side requires re-validation.
   // Same planner as create — see resolveScmPathPlan for why both routes share it.
   const rawWsPath =
     parsed.data.workspacesPath !== undefined ? parsed.data.workspacesPath : existing.workspacesPath
@@ -279,7 +262,12 @@ app.patch('/:id', async (c) => {
   if (parsed.data.name !== undefined) payload.name = parsed.data.name
   if (parsed.data.description !== undefined) payload.description = parsed.data.description
   if (parsed.data.localPath !== undefined) payload.localPath = parsed.data.localPath
-  if (parsed.data.workspacesPath !== undefined) payload.workspacesPath = parsed.data.workspacesPath
+  // The planner's resolved value, never the raw submitted one. Clearing the
+  // field (`workspacesPath: null`) means "go back to the default" — but storing
+  // NULL makes the root re-resolve on every use, preferring the legacy
+  // directory only while it happens to exist on disk. Writing the resolved path
+  // pins it, which is the same invariant the boot back-fill establishes.
+  if (parsed.data.workspacesPath !== undefined) payload.workspacesPath = effectiveWsPath
   if (parsed.data.isEnabled !== undefined) payload.isEnabled = parsed.data.isEnabled
   if (parsed.data.config !== undefined) {
     // `updateScmSourceInput` carries no `type`, so nothing else stops a git
@@ -380,7 +368,7 @@ app.patch('/:id', async (c) => {
     )
   }
 
-  // 重新调度自动同步（P4 和 Git 通用）
+  // Reschedule auto-sync (shared by P4 and Git)
   stopAutoSync(id)
   if (updated.isEnabled) {
     const syncConfig = updated.config as unknown as { autoSync?: boolean; syncIntervalMin?: number }
@@ -408,7 +396,7 @@ app.patch('/:id', async (c) => {
   return c.json({ data: maskScmSourceRow(updated) })
 })
 
-/** DELETE /:id - 删除代码源（检查 Agent 引用） */
+/** DELETE /:id - Delete an SCM source (rejected while an Agent references it) */
 app.delete('/:id', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -418,7 +406,7 @@ app.delete('/:id', async (c) => {
     return c.json({ error: 'SCM source not found' }, 404)
   }
 
-  // 检查是否有 Agent 引用
+  // Reject the delete while any Agent still references this source
   const referencingAgents = await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
@@ -459,20 +447,39 @@ app.delete('/:id', async (c) => {
 
   stopAutoSync(id)
 
+  // Audited the moment the row is gone, BEFORE the reclaim below. Reclaim
+  // recursively removes an entire checkout — seconds to minutes on a large
+  // repository — and the row it would describe no longer exists. Deferring the
+  // entry until afterwards meant a crash or pod eviction inside that window left
+  // the source deleted with nothing recording it, making "who deleted this"
+  // permanently unanswerable (Iron Rule 5).
+  //
+  // The cost of ordering it this way is that `reclaimedPaths` cannot be part of
+  // this entry; it is recorded separately once the filesystem work settles.
+  logAudit(c, {
+    action: 'scm_source.delete',
+    resource: 'scm_source',
+    resourceId: id,
+    details: scmSourceAuditDetails(source),
+  })
+
   // Reclaim only what a2wave allocated. A managed path is derived from the
   // source id, so leaving it behind strands a checkout nothing can name again;
   // an operator-chosen path is their data and is never touched. Runs after the
   // row is gone, so a filesystem failure logs rather than failing the delete.
   const reclaimedPaths = await reclaimManagedScmStorage(deleted)
 
-  // Record the shape of what was removed: after a delete the row is gone, so the
-  // audit entry is the only remaining answer to "what did that source point at".
-  logAudit(c, {
-    action: 'scm_source.delete',
-    resource: 'scm_source',
-    resourceId: id,
-    details: { ...scmSourceAuditDetails(source), reclaimedPaths },
-  })
+  // Only worth an entry when a2wave actually removed something: an
+  // operator-chosen path is never reclaimed, and an empty list would add a row
+  // saying nothing happened.
+  if (reclaimedPaths.length > 0) {
+    logAudit(c, {
+      action: 'scm_source.reclaim_storage',
+      resource: 'scm_source',
+      resourceId: id,
+      details: { reclaimedPaths },
+    })
+  }
 
   logger.info({ id, name: source.name }, 'Deleted SCM source')
   return c.json({ data: maskScmSourceRow(deleted) })
@@ -574,7 +581,7 @@ function auditSafeRepoUrl(repoUrl: string): string {
 }
 
 /**
- * POST /probe - 探测连接（无状态，不落库）
+ * POST /probe - Probe connectivity (stateless; writes no row)
  *
  * Validates the config in the request body rather than a stored row, so a user
  * can test credentials *before* saving — and re-test after editing without
@@ -592,6 +599,16 @@ app.post('/probe', probeScmRateLimit, async (c) => {
   const { type, config, sourceId } = parsed.data
   if (config.type !== type) {
     return c.json({ error: 'Probe type does not match config type' }, 400)
+  }
+
+  // A P4 probe exists to answer "will a sync into this directory work", and the
+  // Root/AltRoots coverage check that answers it needs the path. An absent one
+  // reached the verifier as `''`, which it cannot compare against any Root — so
+  // the probe returned a confident green for a path it never looked at, and the
+  // failure surfaced later at `p4 sync`. Git has no such requirement: it probes
+  // the remote, not the checkout directory.
+  if (type === 'p4' && !parsed.data.localPath) {
+    return c.json({ error: 'localPath is required to probe a P4 source' }, 400)
   }
 
   // Resolve masked credentials against the stored row. The ownership filter is
@@ -654,7 +671,7 @@ app.post('/probe', probeScmRateLimit, async (c) => {
   return c.json({ data: result })
 })
 
-/** POST /:id/sync - 手动触发同步（fire-and-forget，后台异步执行） */
+/** POST /:id/sync - Trigger a sync manually (fire-and-forget, runs in the background) */
 app.post('/:id/sync', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -700,7 +717,7 @@ app.post('/:id/sync', async (c) => {
   return c.json({ data: { message: 'Sync started' } }, 202)
 })
 
-/** POST /:id/check - 检测连接状态 */
+/** POST /:id/check - Check the connection status of the stored config */
 app.post('/:id/check', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -725,7 +742,7 @@ app.post('/:id/check', async (c) => {
   return c.json({ error: `Unsupported SCM type: ${source.type}` }, 400)
 })
 
-/** GET /:id/status - 获取同步状态 */
+/** GET /:id/status - Fetch the current sync status */
 app.get('/:id/status', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -753,7 +770,7 @@ app.get('/:id/status', async (c) => {
   })
 })
 
-/** POST /:id/codegraph/reindex - 手动触发 CodeGraph 索引（fire-and-forget） */
+/** POST /:id/codegraph/reindex - Trigger CodeGraph indexing manually (fire-and-forget) */
 app.post('/:id/codegraph/reindex', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -833,7 +850,7 @@ app.post('/:id/codegraph/reindex', async (c) => {
 // Workspace Management
 // ============================================================
 
-/** GET /:id/workspaces - 列出代码源的所有 worktree */
+/** GET /:id/workspaces - List every worktree of an SCM source */
 app.get('/:id/workspaces', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
@@ -849,7 +866,7 @@ app.get('/:id/workspaces', async (c) => {
 
   const workspaces = await scm.listWorkspaces()
 
-  // 附加 occupied 状态
+  // Attach the occupied flag to each workspace
   const result = await Promise.all(
     workspaces.map(async (ws) => {
       const occupied = (
@@ -868,7 +885,7 @@ app.get('/:id/workspaces', async (c) => {
   return c.json({ data: result })
 })
 
-/** DELETE /:id/workspaces/:name - 删除 worktree */
+/** DELETE /:id/workspaces/:name - Remove a worktree */
 app.delete('/:id/workspaces/:name', async (c) => {
   const { id, name } = c.req.param()
   if (!WORKTREE_NAME_REGEX.test(name)) {
@@ -888,7 +905,7 @@ app.delete('/:id/workspaces/:name', async (c) => {
   const { join } = await import('node:path')
   const wsPath = join(scm.wsRoot, name)
 
-  // 检查占用
+  // Refuse while the workspace is occupied by a running job
   const occupied = (
     await db
       .select({ id: runs.id })

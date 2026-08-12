@@ -62,7 +62,7 @@ Represents a version control repository that provides a working directory for Ag
 
 ### Initial Sync and Agent Selectability
 
-- **Initial sync timeout** — the config option `initialSyncTimeoutMin` (minutes, default 30) represents the timeout for the initial sync; currently used only as configuration and for future extension.
+- **Initial sync timeout** — the config option `initialSyncTimeoutMin` (minutes, default 60) bounds the *first* sync of a source, which clones or seeds an entire checkout and so routinely outlasts the ordinary `EXEC_TIMEOUT_MS` applied to every later refresh. It is read when `initialSyncCompletedAt` is still NULL; once the first sync succeeds the standard timeout applies.
 - **Initial sync completed** — every enabled source starts its first sync immediately in the background; `autoSync` controls only later interval refreshes. Restart recovery queues incomplete sources with a bounded concurrency instead of launching every clone together. Once an SCM Source has completed at least one **successful** sync, the system writes `initialSyncCompletedAt`. Only when this field has a value can the SCM Source be selected by an Agent.
 - **Constraint** — an SCM that has not completed its initial sync cannot be selected when creating/editing an Agent; if an Agent is bound to such an SCM when executing a Run or Chat, the API returns 400. Subsequent scheduled sync (`syncIntervalMin`) logic is unaffected.
 

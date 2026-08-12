@@ -1,8 +1,10 @@
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 // Path planning is pure; the db import is transitive via scm-workspace-safety.
 vi.mock('../../db/client.js', () => ({ db: {} }))
 
+import { env } from '../../env.js'
 import { defaultWorkspacesPath } from '../../lib/git-workspace.js'
 import { pathsOverlap, resolveScmPathPlan } from '../../lib/scm-path-plan.js'
 
@@ -16,6 +18,24 @@ describe('pathsOverlap', () => {
   })
   it('does not false-match sibling with shared prefix', () => {
     expect(pathsOverlap('/a/bcd', '/a/b')).toBe(false)
+  })
+
+  /**
+   * Case folding is a filesystem property, not a universal one. On Linux
+   * `/srv/Repo` and `/srv/repo` are two independent directories, so folding
+   * case there rejects a legitimate second source with a bogus "overlaps"
+   * conflict. macOS and Windows really are case-insensitive, so the same two
+   * strings there name one directory and must still collide.
+   */
+  it('treats case-differing paths as distinct on Linux', () => {
+    expect(pathsOverlap('/srv/Repo', '/srv/repo', 'linux')).toBe(false)
+    expect(pathsOverlap('/srv/Repo/sub', '/srv/repo', 'linux')).toBe(false)
+  })
+
+  it('treats case-differing paths as overlapping on macOS and Windows', () => {
+    expect(pathsOverlap('/srv/Repo', '/srv/repo', 'darwin')).toBe(true)
+    expect(pathsOverlap('/srv/Repo/sub', '/srv/repo', 'darwin')).toBe(true)
+    expect(pathsOverlap('/srv/Repo', '/srv/repo', 'win32')).toBe(true)
   })
 })
 
@@ -89,6 +109,78 @@ describe('resolveScmPathPlan cross-source conflicts', () => {
     expect(plan.ok).toBe(false)
     if (plan.ok) return
     expect(plan.error).toContain('three')
+  })
+
+  /**
+   * The shared-root guard is a collision check, so it must fold case wherever
+   * the filesystem does. `samePath` was routed through `isSameOrDescendant`,
+   * which is the *containment* comparator and folds only on win32 — so on a
+   * default macOS volume an upper-cased `SOURCES` named the very same directory
+   * as the protected `sources` root and walked straight past the guard, making
+   * one source's working tree the parent of every other source's checkout.
+   */
+  it('rejects a case-differing shared storage root on macOS', () => {
+    const plan = resolveScmPathPlan({
+      sourceId: 'scm_new',
+      type: 'git',
+      localPath: join(env.SCM_STORAGE_ROOT, 'SOURCES'),
+      workspacesPath: '/ws/brand-new',
+      existingSources: [],
+      isAdmin: true,
+      platform: 'darwin',
+    })
+    expect(plan.ok).toBe(false)
+    if (plan.ok) return
+    expect(plan.status).toBe(400)
+    expect(plan.error).toMatch(/shared storage root/)
+  })
+
+  it('allows a case-differing shared storage root on Linux', () => {
+    // Case-sensitive filesystem: /data/workspace/SOURCES is a genuinely
+    // different directory from the managed sources/ root.
+    const plan = resolveScmPathPlan({
+      sourceId: 'scm_new',
+      type: 'git',
+      localPath: join(env.SCM_STORAGE_ROOT, 'SOURCES'),
+      workspacesPath: '/ws/brand-new',
+      existingSources: [],
+      isAdmin: true,
+      platform: 'linux',
+    })
+    expect(plan.ok).toBe(true)
+  })
+
+  /**
+   * The planner must inherit the platform rule rather than fold case
+   * unconditionally: on Linux a second source under `/REPOS/one` is a real,
+   * separate directory and rejecting it locks the operator out of a valid path.
+   */
+  it('does not flag a case-differing peer path on Linux', () => {
+    const plan = resolveScmPathPlan({
+      sourceId: 'scm_new',
+      type: 'git',
+      localPath: '/REPOS/one',
+      workspacesPath: '/ws/brand-new',
+      existingSources,
+      isAdmin: true,
+      platform: 'linux',
+    })
+    expect(plan.ok).toBe(true)
+  })
+
+  it('flags a case-differing peer path on macOS', () => {
+    const plan = resolveScmPathPlan({
+      sourceId: 'scm_new',
+      type: 'git',
+      localPath: '/REPOS/one',
+      workspacesPath: '/ws/brand-new',
+      existingSources,
+      isAdmin: true,
+      platform: 'darwin',
+    })
+    expect(plan.ok).toBe(false)
+    if (plan.ok) return
+    expect(plan.error).toContain('one')
   })
 
   // The round-4 P0: the same conflict scan must apply to localPath, which was

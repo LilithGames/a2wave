@@ -493,6 +493,11 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
     watch('p4user'),
     watch('p4passwd'),
     watch('p4client'),
+    // A probed parameter, not merely a saved one: a P4 probe verifies the client
+    // Root/AltRoots actually cover this path. Leaving it out let a green check
+    // for path A survive an edit to path B, which is the state that then gets
+    // saved untested.
+    watch('localPath'),
   ])
   const probeReset = probeSource.reset
   const probedShapeRef = useRef<string | null>(null)

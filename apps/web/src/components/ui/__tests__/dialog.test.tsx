@@ -14,15 +14,19 @@ describe('DialogTitle', () => {
     return screen.getByRole('heading', { name: 'Create source' })
   }
 
-  it('renders as a semibold heading on the shared type scale', () => {
-    expect(renderTitle()).toHaveClass('text-base', 'font-semibold')
+  /**
+   * Modal titles step up from the 13px body default to the `xl` sub-heading
+   * rung (16px), rather than sitting at `base` (14px) barely distinguishable
+   * from body text.
+   */
+  it('renders as a semibold heading on the sub-heading rung', () => {
+    expect(renderTitle()).toHaveClass('text-xl', 'font-semibold')
   })
 
   // DialogTitle is shared by every modal in the app, so its size must come from
-  // the Tailwind type scale the design-token conventions define. An
-  // arbitrary-value class here (text-[1.4rem]) resizes ~36 unrelated dialogs
-  // for whatever feature happened to touch it, and pinning that value in a test
-  // locks the drift in instead of catching it.
+  // the design-token scale. An arbitrary-value class here (text-[1.4rem])
+  // resizes ~36 unrelated dialogs for whatever feature happened to touch it,
+  // and pinning that value in a test locks the drift in instead of catching it.
   it('sizes from the type scale rather than an arbitrary value', () => {
     const className = renderTitle().className
     expect(className).not.toMatch(/text-\[/)

@@ -2209,6 +2209,7 @@
       "scm_source.codegraph.reindex": "Rebuild code graph index",
       "scm_source.create": "Create SCM source",
       "scm_source.delete": "Delete SCM source",
+      "scm_source.reclaim_storage": "Reclaim SCM source managed storage",
       "scm_source.probe": "Probe SCM source connectivity",
       "scm_source.setup-script.run": "Run SCM setup script",
       "scm_source.update": "Update SCM source",

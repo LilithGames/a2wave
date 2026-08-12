@@ -185,6 +185,9 @@ ENV LOGNAME=appuser
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY scripts/ensure-container-auth-secret.sh /usr/local/bin/ensure-container-auth-secret.sh
+# Sourced by docker-entrypoint.sh, not executed directly: it decides which SCM
+# storage subtrees the UID remap may take ownership of.
+COPY scripts/entrypoint-scm-paths.sh /usr/local/bin/entrypoint-scm-paths.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/ensure-container-auth-secret.sh
 
 EXPOSE 3502

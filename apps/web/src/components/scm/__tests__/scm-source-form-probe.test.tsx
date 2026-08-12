@@ -361,6 +361,33 @@ describe('ScmSourceForm — connection probe', () => {
     expect(reset).toHaveBeenCalled()
   })
 
+  /**
+   * `localPath` is a probed parameter for P4, not just a saved field: the probe
+   * verifies the client Root/AltRoots actually cover it. It was missing from the
+   * invalidation snapshot, which watched only the credential/URL fields — so
+   * probing path A, then editing the path to B, left the green check sitting
+   * next to an untested B.
+   */
+  it('clears a probe result once the P4 local path is edited', async () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    const reset = vi.fn()
+    probeMock.mockImplementation(() => ({
+      ...idleMutation(),
+      reset,
+      data: { data: { ok: true, message: 'P4 connection is healthy' } },
+    }))
+    renderForm('scm_1')
+
+    // Loading a P4 row flips `scmType`, which legitimately invalidates once.
+    // The delta across the edit is what this test is about.
+    const beforeEdit = reset.mock.calls.length
+
+    const pathInput = screen.getByLabelText(/local path/i)
+    await userEvent.type(pathInput, '-edited')
+
+    expect(reset.mock.calls.length).toBeGreaterThan(beforeEdit)
+  })
+
   it('shows a successful probe result', () => {
     probeMock.mockImplementation(() => ({
       ...idleMutation(),

@@ -357,10 +357,20 @@ test('entrypoint creates the install root without relying on the cached ownershi
 test('entrypoint owns only managed SCM subdirectories, never a host mount root', () => {
   const entrypoint = readFileSync(resolve(root, 'docker-entrypoint.sh'), 'utf8')
   const noRemap = entrypoint.indexOf('no remap needed')
-  const storageRoot = entrypoint.indexOf('SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-')
-  assert.ok(storageRoot > noRemap, 'SCM ownership repair must run after both UID branches')
+  const provisioning = entrypoint.indexOf('mkdir -p "$SCM_STORAGE_ROOT"')
+  assert.ok(provisioning > noRemap, 'SCM ownership repair must run after both UID branches')
+
+  // The default is resolved ONCE, above the remap block, because both that block
+  // and the provisioning below it read the variable. Two `${SCM_STORAGE_ROOT:-…}`
+  // fallbacks is how the sweep and the provisioning would drift onto different
+  // roots.
+  const defaults = entrypoint.match(/SCM_STORAGE_ROOT="\$\{SCM_STORAGE_ROOT:-/g) ?? []
+  assert.equal(defaults.length, 1, 'SCM_STORAGE_ROOT default must be defined exactly once')
+
   assert.match(entrypoint, /mkdir -p "\$SCM_STORAGE_ROOT"/)
-  assert.match(entrypoint, /for scm_subdir in sources workspaces; do/)
+  // Provisioning iterates the same list the chown sweep uses, so a subtree can
+  // never be created here yet missed by the remap.
+  assert.match(entrypoint, /for scm_subdir in \$SCM_MANAGED_SUBDIRS; do/)
   assert.match(entrypoint, /scm_dir="\$SCM_STORAGE_ROOT\/\$scm_subdir"/)
   assert.match(entrypoint, /chown -h "\$TARGET_UID:\$TARGET_GID" "\$scm_dir"/)
   assert.doesNotMatch(
@@ -368,6 +378,36 @@ test('entrypoint owns only managed SCM subdirectories, never a host mount root',
     /chown -h "\$TARGET_UID:\$TARGET_GID" "\$SCM_STORAGE_ROOT"(?:\s|$)/,
   )
   assert.match(entrypoint, /refusing to start: \$SCM_STORAGE_ROOT is a symlink/)
+})
+
+/**
+ * The UID remap must not sweep the whole storage root. On the shipped Compose
+ * defaults that root IS the /data/workspace bind mount, so a blanket
+ * `find /data/workspace ... -exec chown` handed every operator-owned file under
+ * it to appuser — and chowned the mount root itself, the one thing the
+ * provisioning block deliberately refuses to touch.
+ */
+test('entrypoint UID remap sweeps only the managed SCM subtrees', () => {
+  const entrypoint = readFileSync(resolve(root, 'docker-entrypoint.sh'), 'utf8')
+
+  assert.doesNotMatch(entrypoint, /find \/data\/workspace/)
+  assert.match(entrypoint, /scm_chown_targets "\$SCM_STORAGE_ROOT"/)
+  assert.match(entrypoint, /\. \/usr\/local\/bin\/entrypoint-scm-paths\.sh/)
+
+  // The symlinked-root refusal must precede the sweep. Behind a symlink whose
+  // target holds sources/ or workspaces/, sweeping first chowns real directories
+  // outside the mount and only then exits 1 — too late to matter.
+  const symlinkRefusal = entrypoint.indexOf('refusing to start: $SCM_STORAGE_ROOT is a symlink')
+  const sweep = entrypoint.indexOf('scm_chown_targets "$SCM_STORAGE_ROOT"')
+  assert.ok(symlinkRefusal !== -1 && sweep !== -1)
+  assert.ok(symlinkRefusal < sweep, 'symlinked-root check must run before the chown sweep')
+
+  // The helper is sourced, so it has to be in the image.
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
+  assert.match(
+    dockerfile,
+    /COPY scripts\/entrypoint-scm-paths\.sh \/usr\/local\/bin\/entrypoint-scm-paths\.sh/,
+  )
 })
 
 test('root Compose does not pass host ownership policy into the container', () => {

@@ -485,6 +485,40 @@ describe('SCM Sources routes', () => {
       )
     })
 
+    /**
+     * The audit entry must be queued the moment the row is gone, not after the
+     * reclaim. Reclaim recursively removes a whole checkout — seconds to minutes
+     * on a large repository — and the row it describes no longer exists. A crash,
+     * SIGKILL, or pod eviction inside that window left the source deleted with
+     * nothing in the audit log ever recording it, which is an Iron Rule 5 breach:
+     * "who deleted this" becomes permanently unanswerable.
+     */
+    it('writes the audit entry before reclaiming storage', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      const order: string[] = []
+      ;(logAudit as Mock).mockImplementationOnce(() => {
+        order.push('audit')
+      })
+      ;(reclaimManagedScmStorage as Mock).mockImplementationOnce(async () => {
+        order.push('reclaim')
+        return []
+      })
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      expect(order).toEqual(['audit', 'reclaim'])
+    })
+
     it('returns 404 for non-existent source', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(undefined))
 
@@ -552,6 +586,8 @@ describe('SCM Sources routes', () => {
       ;(cancelInitialScmSync as Mock).mockResolvedValueOnce(true)
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([])) // planner path peers
+        // The stored-root backstop scans peers too, so it consumes its own read.
         .mockReturnValueOnce(makeDbChain([]))
         .mockReturnValueOnce(makeDbChain({ ...existingSource, syncStatus: 'error' }))
       ;(db.update as Mock).mockReturnValue(
@@ -592,6 +628,8 @@ describe('SCM Sources routes', () => {
       ;(cancelInitialScmSync as Mock).mockResolvedValueOnce(true)
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([existingSource])) // planner path peers
+        // The stored-root backstop scans peers too, so it consumes its own read.
         .mockReturnValueOnce(makeDbChain([existingSource]))
         .mockReturnValueOnce(makeDbChain({ ...existingSource, syncStatus: 'idle' }))
       ;(db.update as Mock).mockReturnValue(
@@ -1130,16 +1168,17 @@ describe('SCM Sources routes', () => {
       expect(updateChain.set).toHaveBeenCalled()
     })
 
-    it('清空 workspacesPath 时也用默认路径校验 — 不能绕过跨源 overlap', async () => {
-      // PATCH { workspacesPath: null } 运行时会落到 defaultWorkspacesPath(id)。
-      // 如果另一 source 已经占住这个默认目录，清空操作必须被 409 挡住，
-      // 不能因为字段变成 null 就跳过 overlap 检查。
+    it('validates the default path when workspacesPath is cleared, so cross-source overlap still applies', async () => {
+      // At runtime PATCH { workspacesPath: null } resolves to
+      // defaultWorkspacesPath(id). If another source already occupies that
+      // directory the clear must be rejected with 409 — turning the field null
+      // is not a way to skip the overlap check.
       const { defaultWorkspacesPath } = await import('../../lib/git-workspace.js')
       const existingSource = {
         id: 'scm_1',
         name: 'Source',
         localPath: '/data/repos',
-        workspacesPath: '/ws/explicit', // 当前显式路径
+        workspacesPath: '/ws/explicit', // the current explicit path
         isEnabled: true,
         config: { type: 'git', repoUrl: 'https://github.com/org/repo.git', branch: 'main' },
       }
@@ -1147,7 +1186,7 @@ describe('SCM Sources routes', () => {
         id: 'scm_2',
         name: 'Squatter',
         localPath: '/data/repos-2',
-        workspacesPath: defaultWorkspacesPath('scm_1'), // 另一 source 占住了 scm_1 的默认目录
+        workspacesPath: defaultWorkspacesPath('scm_1'), // another source squats on scm_1's default root
       }
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource)) // by id
@@ -1162,6 +1201,46 @@ describe('SCM Sources routes', () => {
       expect(res.status).toBe(409)
       const body = (await res.json()) as { error: string }
       expect(body.error).toMatch(/Squatter/)
+    })
+
+    /**
+     * Clearing the field must persist the path the planner just resolved, not
+     * NULL. A stored NULL is re-resolved at every use by `defaultWorkspacesPath`,
+     * which prefers the legacy `~/.a2wave/workspaces` directory *while it still
+     * exists on disk* — so the effective root silently changes the moment that
+     * directory goes away. That is precisely the ambiguity the boot back-fill
+     * exists to remove; letting PATCH write NULL back re-introduces it, and the
+     * overlap checks above then compare against a path the runtime is no longer
+     * using.
+     */
+    it('pins the resolved default when workspacesPath is cleared', async () => {
+      const { defaultWorkspacesPath } = await import('../../lib/git-workspace.js')
+      const existingSource = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/repos',
+        workspacesPath: '/ws/explicit',
+        isEnabled: true,
+        config: { type: 'git', repoUrl: 'https://github.com/org/repo.git', branch: 'main' },
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([]))
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: () => [existingSource] }),
+      })
+      ;(db.update as Mock).mockReturnValue({ set: setSpy })
+
+      const res = await app.request('/api/scm-sources/scm_1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspacesPath: null }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ workspacesPath: defaultWorkspacesPath('scm_1') }),
+      )
     })
 
     it('does not reset sync state when localPath is same', async () => {
@@ -1627,6 +1706,8 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(source))
         .mockReturnValueOnce(makeDbChain({ role: 'admin', isActive: true }))
+        // The stored-root backstop scans peer sources for overlap.
+        .mockReturnValueOnce(makeDbChain([]))
         // One run holds /ws/fix-bug; /ws/review is free.
         .mockReturnValueOnce(makeDbChain({ id: 'run_1' }))
         .mockReturnValueOnce(makeDbChain(undefined))

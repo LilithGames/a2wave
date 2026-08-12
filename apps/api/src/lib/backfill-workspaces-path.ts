@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { logger } from './logger.js'
 import { defaultScmWorkspacesPath, scmSourceIdSuffix } from './scm-storage.js'
 
@@ -82,14 +83,22 @@ export async function backfillWorkspacesPaths(): Promise<number> {
   })
 
   for (const assignment of assignments) {
+    // `runExclusive` because this runs at boot with the HTTP port already open,
+    // so a request may be mid-transaction. On SQLite one shared connection means
+    // a bare update issued inside another request's `BEGIN` joins that
+    // transaction and is erased by its ROLLBACK — after this loop already
+    // counted the row as pinned. See apps/api/CLAUDE.md and db/transaction.ts.
+    //
     // Scoped to the row AND still-NULL, so an operator setting an explicit path
     // between the read and this write wins over the back-fill instead of being
     // overwritten by it.
-    await db
-      .update(scmSources)
-      .set({ workspacesPath: assignment.workspacesPath })
-      .where(and(eq(scmSources.id, assignment.id), isNull(scmSources.workspacesPath)))
-      .returning()
+    await runExclusive(async () =>
+      db
+        .update(scmSources)
+        .set({ workspacesPath: assignment.workspacesPath })
+        .where(and(eq(scmSources.id, assignment.id), isNull(scmSources.workspacesPath)))
+        .returning(),
+    )
   }
 
   if (assignments.length > 0) {
