@@ -47,8 +47,8 @@ import {
   readWorkspaceState,
 } from './git-workspace.js'
 import { INTERNAL_ADMIN_TOKEN_ENV, getInternalAdminToken } from './internal-admin-auth.js'
-import { logger } from './logger.js'
 import { withKeyedLock } from './keyed-mutex.js'
+import { logger } from './logger.js'
 import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
 import { cleanupLegacyRuntimeGroupConfig } from './runtime-group-config.js'
 import { type CreateWorkspaceResult, type ScmSource, createScmSource } from './scm-source.js'
