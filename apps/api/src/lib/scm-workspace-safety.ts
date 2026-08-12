@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { SETTINGS_DEFAULTS } from '@a2wave/shared'
@@ -92,7 +92,7 @@ export function pathsOverlap(
  * suffix. This catches a symlink in the approved path even before the final
  * per-source workspaces directory has been created.
  */
-function canonicalizeThroughExistingAncestor(value: string): string {
+export function canonicalizeThroughExistingAncestor(value: string): string {
   const suffix: string[] = []
   let cursor = resolve(value)
 
@@ -108,6 +108,91 @@ function canonicalizeThroughExistingAncestor(value: string): string {
   } catch {
     return resolve(value)
   }
+}
+
+interface FilesystemIdentityDeps {
+  existsSync: (path: string) => boolean
+  realpathSync: (path: string) => string
+  statSync: (path: string) => { dev: number | bigint; ino: number | bigint }
+}
+
+const filesystemIdentityDeps: FilesystemIdentityDeps = { existsSync, realpathSync, statSync }
+
+function nearestExistingAncestor(value: string, deps: FilesystemIdentityDeps): string {
+  let cursor = resolve(value)
+  while (!deps.existsSync(cursor)) {
+    const parent = dirname(cursor)
+    if (parent === cursor) break
+    cursor = parent
+  }
+  return cursor
+}
+
+function alternateCase(value: string): string | null {
+  const index = value.search(/[a-z]/i)
+  if (index < 0) return null
+  const character = value[index]
+  const toggled =
+    character === character.toLowerCase() ? character.toUpperCase() : character.toLowerCase()
+  return `${value.slice(0, index)}${toggled}${value.slice(index + 1)}`
+}
+
+/** Detect the lookup semantics of the actual mounted filesystem, not the container OS. */
+export function detectFilesystemCaseInsensitive(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+  deps: FilesystemIdentityDeps = filesystemIdentityDeps,
+): boolean {
+  let cursor = nearestExistingAncestor(value, deps)
+  while (true) {
+    const parent = dirname(cursor)
+    const alternateName = alternateCase(basename(cursor))
+    if (alternateName) {
+      const alternatePath = join(parent, alternateName)
+      if (!deps.existsSync(alternatePath)) return false
+      try {
+        const actual = deps.statSync(cursor)
+        const alternate = deps.statSync(alternatePath)
+        return actual.dev === alternate.dev && actual.ino === alternate.ino
+      } catch {
+        break
+      }
+    }
+    if (parent === cursor) break
+    cursor = parent
+  }
+  return platform === 'win32' || platform === 'darwin'
+}
+
+/** Canonical path identity used when two SCM-owned directories must not alias. */
+export function filesystemCollisionKey(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const canonical = canonicalizeThroughExistingAncestor(value)
+  return detectFilesystemCaseInsensitive(value, platform) ? canonical.toLowerCase() : canonical
+}
+
+export function filesystemPathsOverlap(
+  a: string,
+  b: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const keyA = filesystemCollisionKey(a, platform)
+  const keyB = filesystemCollisionKey(b, platform)
+  const overlaps = (parent: string, candidate: string) => {
+    const prefix = parent.endsWith(sep) ? parent : `${parent}${sep}`
+    return candidate === parent || candidate.startsWith(prefix)
+  }
+  return overlaps(keyA, keyB) || overlaps(keyB, keyA)
+}
+
+export function isSameFilesystemPath(
+  a: string,
+  b: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return filesystemCollisionKey(a, platform) === filesystemCollisionKey(b, platform)
 }
 
 export function getDefaultScmWorkspacesAllowedRoot(): string {
@@ -180,7 +265,9 @@ export function validateScmWorkspacesRoot(
     canonicalizeThroughExistingAncestor(value),
   )
   if (
-    protectedPaths.some((protectedPath) => pathsOverlap(protectedPath, candidatePath, platform))
+    protectedPaths.some((protectedPath) =>
+      filesystemPathsOverlap(protectedPath, candidatePath, platform),
+    )
   ) {
     return 'workspacesPath must not overlap protected platform storage'
   }
@@ -188,7 +275,7 @@ export function validateScmWorkspacesRoot(
   const managedCheckoutRoot = canonicalizeThroughExistingAncestor(
     join(env.SCM_STORAGE_ROOT, 'sources'),
   )
-  if (pathsOverlap(managedCheckoutRoot, candidatePath, platform)) {
+  if (filesystemPathsOverlap(managedCheckoutRoot, candidatePath, platform)) {
     return 'workspacesPath must not overlap managed SCM checkout storage'
   }
 
@@ -273,7 +360,9 @@ export async function validateStoredScmWorkspacesRoot(
   // write path (resolveScmPathPlan) is what authoritatively rejects overlap.
   const otherSources = Array.isArray(scanned) ? scanned.filter((peer) => peer.id !== source.id) : []
   for (const peer of otherSources) {
-    const collision = peerOccupiedPaths(peer).find((path) => pathsOverlap(path, effectiveRoot))
+    const collision = peerOccupiedPaths(peer).find((path) =>
+      filesystemPathsOverlap(path, effectiveRoot),
+    )
     if (collision) {
       return `Unsafe saved workspacesPath: it overlaps storage used by source "${peer.name}" (${collision}). Update this SCM source to an approved dedicated root before using workspaces`
     }

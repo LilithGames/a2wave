@@ -107,35 +107,40 @@ export function logBackgroundAudit(
   )
 }
 
-/** 记录审计日志 */
+/** Persist a request audit entry and surface any write failure to the caller. */
+export async function writeAudit(
+  c: Context,
+  entry: AuditEntry,
+  executor: Pick<typeof db, 'insert'> = db,
+): Promise<void> {
+  const userId = entry.userId ?? (c.get('userId' as never) as string | undefined)
+  const ipAddress = resolveClientIp(c) ?? null
+
+  await runExclusive(async () => {
+    await executor.insert(auditLogs).values({
+      id: createId('aud'),
+      userId: userId ?? null,
+      action: entry.action,
+      resource: entry.resource ?? null,
+      resourceId: entry.resourceId ?? null,
+      details: entry.details ?? null,
+      ipAddress,
+    })
+  })
+}
+
+/** Queue an audit entry for ordinary request mutations. */
 export function logAudit(
   c: Context,
   entry: AuditEntry,
   executor: Pick<typeof db, 'insert'> = db,
 ): void {
-  const userId = entry.userId ?? (c.get('userId' as never) as string | undefined)
-  const ipAddress = resolveClientIp(c) ?? null
-
-  // See logBackgroundAudit for why this is serialised rather than issued directly.
-  // Tracked so graceful shutdown can wait for it: the caller does not await, so
-  // this insert can still be queued when the process is asked to stop.
+  // Most mutations have already committed when they audit, so keep their
+  // historical fire-and-forget contract. Mutations that require the audit to be
+  // part of their transaction call and await writeAudit directly.
   trackAuditWrite(
-    runExclusive(async () =>
-      executor.insert(auditLogs).values({
-        id: createId('aud'),
-        userId: userId ?? null,
-        action: entry.action,
-        resource: entry.resource ?? null,
-        resourceId: entry.resourceId ?? null,
-        details: entry.details ?? null,
-        ipAddress,
-      }),
-    )
+    writeAudit(c, entry, executor)
       .catch((err: unknown) => {
-        // Deliberately not rethrown: an audit write must never fail the request that
-        // triggered it, and every caller invokes this without awaiting. Swallowing
-        // silently would hide a broken audit trail, so it goes through the structured
-        // logger rather than console.error, which bypasses pino entirely.
         logger.error({ err, action: entry.action }, 'audit: failed to persist entry')
       })
       .then(() => undefined),

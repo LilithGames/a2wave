@@ -1,7 +1,8 @@
 import { lstat, rm } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { logger } from './logger.js'
-import { defaultScmLocalPath, defaultScmWorkspacesPath } from './scm-storage.js'
+import { defaultScmLocalPath, defaultScmWorkspacesPath, scmSourceIdSuffix } from './scm-storage.js'
 
 /**
  * Reclaim the directories a2wave itself allocated for a deleted SCM source.
@@ -28,6 +29,11 @@ export interface ReclaimableScmSource {
 export interface ReclaimOptions {
   /** Seam for tests; defaults to a non-following recursive remove. */
   removeDir?: (path: string) => Promise<void>
+  legacyWorkspacesPath?: (sourceId: string) => string
+}
+
+function defaultLegacyWorkspacesPath(sourceId: string): string {
+  return join(homedir(), '.a2wave', 'workspaces', scmSourceIdSuffix(sourceId))
 }
 
 function isSamePath(a: string, b: string): boolean {
@@ -72,6 +78,7 @@ export async function reclaimManagedScmStorage(
 ): Promise<string[]> {
   const removeDir =
     options.removeDir ?? ((path: string) => rm(path, { recursive: true, force: true }))
+  const legacyWorkspacesPath = options.legacyWorkspacesPath ?? defaultLegacyWorkspacesPath
 
   // Only the exact allocation for THIS source id qualifies. Comparing against
   // the derived path rather than "is inside the storage root" is what keeps a
@@ -79,6 +86,7 @@ export async function reclaimManagedScmStorage(
   const candidates = [
     { path: source.localPath, allocated: defaultScmLocalPath(source.id) },
     { path: source.workspacesPath, allocated: defaultScmWorkspacesPath(source.id) },
+    { path: source.workspacesPath, allocated: legacyWorkspacesPath(source.id) },
   ]
 
   const reclaimed: string[] = []

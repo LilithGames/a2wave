@@ -12,8 +12,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, runs, scmSources } from '../db/schema.js'
+import { withTransaction } from '../db/transaction.js'
 import { scmSourceAuditDetails } from '../lib/audit-details.js'
-import { logAudit } from '../lib/audit.js'
+import { logAudit, writeAudit } from '../lib/audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from '../lib/codegraph-index.js'
 import { checkGitConnection } from '../lib/git-sync.js'
 import { WORKTREE_NAME_REGEX, defaultWorkspacesPath } from '../lib/git-workspace.js'
@@ -31,7 +32,11 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../lib/p4-sync.js'
-import { resolveScmPathPlan, selectScmPathPeers } from '../lib/scm-path-plan.js'
+import {
+  resolveScmPathPlan,
+  selectScmPathPeers,
+  withScmPathMutation,
+} from '../lib/scm-path-plan.js'
 import {
   maskScmSourceRow,
   redactRepoUrlCredential,
@@ -131,23 +136,6 @@ app.post('/', async (c) => {
   }
 
   const id = createId('scm')
-
-  // Create and PATCH resolve paths through the same planner: every rule
-  // (absolute, no overlap with any other source's checkout OR worktree root,
-  // approved workspaces root, P4 needs an explicit path) applies to both.
-  const plan = resolveScmPathPlan({
-    sourceId: id,
-    type: parsed.data.type,
-    localPath: parsed.data.localPath,
-    workspacesPath: parsed.data.workspacesPath,
-    existingSources: await selectScmPathPeers(),
-    isAdmin: isAdmin(c),
-  })
-  if (!plan.ok) {
-    return c.json({ error: plan.error }, plan.status)
-  }
-  const { localPath, workspacesPath: finalWorkspacesPath } = plan
-
   const now = new Date()
   const userId = getCurrentUserId(c)
 
@@ -163,24 +151,44 @@ app.post('/', async (c) => {
   // Serialize the discriminated-union config into a plain object
   const configData = { ...rehydratedCreate.config }
 
-  const newSource = (
-    await db
-      .insert(scmSources)
-      .values({
-        id,
-        name: parsed.data.name,
-        type: parsed.data.type,
-        description: parsed.data.description ?? null,
-        config: configData,
-        localPath,
-        workspacesPath: finalWorkspacesPath,
-        isEnabled: parsed.data.isEnabled ?? true,
-        userId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
-  )[0]
+  // The peer scan and insert share one mutation lock. Without it, two requests
+  // can both observe an empty slot and persist ancestor/descendant paths that a
+  // UNIQUE constraint cannot represent as conflicting.
+  const createResult = await withScmPathMutation(async (tx) => {
+    const plan = resolveScmPathPlan({
+      sourceId: id,
+      type: parsed.data.type,
+      localPath: parsed.data.localPath,
+      workspacesPath: parsed.data.workspacesPath,
+      existingSources: await selectScmPathPeers(tx),
+      isAdmin: isAdmin(c),
+    })
+    if (!plan.ok) return { ok: false, error: plan } as const
+
+    const source = (
+      await tx
+        .insert(scmSources)
+        .values({
+          id,
+          name: parsed.data.name,
+          type: parsed.data.type,
+          description: parsed.data.description ?? null,
+          config: configData,
+          localPath: plan.localPath,
+          workspacesPath: plan.workspacesPath,
+          isEnabled: parsed.data.isEnabled ?? true,
+          userId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+    )[0]
+    return { ok: true, source } as const
+  })
+  if (!createResult.ok) {
+    return c.json({ error: createResult.error.error }, createResult.error.status)
+  }
+  const newSource = createResult.source
 
   // Initial checkout and periodic refresh are separate lifecycle concerns. An
   // enabled source must become usable once even when recurring auto-sync is
@@ -360,7 +368,39 @@ app.patch('/:id', async (c) => {
         ne(scmSources.codegraphStatus, 'indexing'),
       )
     : eq(scmSources.id, id)
-  const updated = (await db.update(scmSources).set(payload).where(updateWhere).returning())[0]
+  const mutatesPath =
+    parsed.data.localPath !== undefined || parsed.data.workspacesPath !== undefined
+  const updateResult = mutatesPath
+    ? await withScmPathMutation(async (tx) => {
+        const peers = await selectScmPathPeers(tx)
+        const currentPeer = peers.find((peer) => peer.id === id)
+        const lockedPlan = resolveScmPathPlan({
+          sourceId: id,
+          type: existing.type,
+          localPath: parsed.data.localPath ?? currentPeer?.localPath ?? existing.localPath,
+          workspacesPath:
+            parsed.data.workspacesPath !== undefined
+              ? parsed.data.workspacesPath
+              : (currentPeer?.workspacesPath ?? existing.workspacesPath),
+          existingSources: peers,
+          excludeId: id,
+          isAdmin: isAdmin(c),
+        })
+        if (!lockedPlan.ok) return { ok: false, error: lockedPlan } as const
+        if (parsed.data.workspacesPath !== undefined) {
+          payload.workspacesPath = lockedPlan.workspacesPath
+        }
+        const source = (await tx.update(scmSources).set(payload).where(updateWhere).returning())[0]
+        return { ok: true, source } as const
+      })
+    : {
+        ok: true as const,
+        source: (await db.update(scmSources).set(payload).where(updateWhere).returning())[0],
+      }
+  if (!updateResult.ok) {
+    return c.json({ error: updateResult.error.error }, updateResult.error.status)
+  }
+  const updated = updateResult.source
   if (!updated) {
     return c.json(
       { error: 'Cannot change localPath or config while a sync or indexing job is running' },
@@ -440,28 +480,34 @@ app.delete('/:id', async (c) => {
         ne(scmSources.syncStatus, 'syncing'),
         ne(scmSources.codegraphStatus, 'indexing'),
       )
-  const deleted = (await db.delete(scmSources).where(deleteConditions).returning())[0]
+  // The row delete and its audit entry commit together. Merely ordering the
+  // audit first shrank the loss window but left two independent writes, so a
+  // crash or pod eviction between them still deleted the source with nothing
+  // recording it. One transaction makes that unrepresentable: either both land
+  // or neither does, so "who deleted this" stays answerable (Iron Rule 5).
+  //
+  // `reclaimedPaths` deliberately stays out of this entry — the filesystem work
+  // runs after the commit and is audited separately once it settles.
+  const deleted = await withTransaction(async (tx) => {
+    const row = (await tx.delete(scmSources).where(deleteConditions).returning())[0]
+    if (!row) return undefined
+    await writeAudit(
+      c,
+      {
+        action: 'scm_source.delete',
+        resource: 'scm_source',
+        resourceId: id,
+        details: scmSourceAuditDetails(source),
+      },
+      tx,
+    )
+    return row
+  })
   if (!deleted) {
     return c.json({ error: 'Cannot delete an SCM source while its checkout is in use' }, 409)
   }
 
   stopAutoSync(id)
-
-  // Audited the moment the row is gone, BEFORE the reclaim below. Reclaim
-  // recursively removes an entire checkout — seconds to minutes on a large
-  // repository — and the row it would describe no longer exists. Deferring the
-  // entry until afterwards meant a crash or pod eviction inside that window left
-  // the source deleted with nothing recording it, making "who deleted this"
-  // permanently unanswerable (Iron Rule 5).
-  //
-  // The cost of ordering it this way is that `reclaimedPaths` cannot be part of
-  // this entry; it is recorded separately once the filesystem work settles.
-  logAudit(c, {
-    action: 'scm_source.delete',
-    resource: 'scm_source',
-    resourceId: id,
-    details: scmSourceAuditDetails(source),
-  })
 
   // Reclaim only what a2wave allocated. A managed path is derived from the
   // source id, so leaving it behind strands a checkout nothing can name again;

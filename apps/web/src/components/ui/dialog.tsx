@@ -115,11 +115,13 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  // `text-xl` (16px) is the scale's sub-heading rung — a step up from body
-  // (13px) that reads as a modal title. Deliberately a named rung rather than
-  // `text-[1.4rem]`: this component backs every modal in the app, so an
-  // arbitrary value would put ~36 dialogs outside the type scale.
-  return <h2 className={cn('text-xl font-semibold text-foreground', className)} {...props} />
+  // `text-dialog-title` is 1.4rem (22.4px) — 1.4x the 1rem this rendered at
+  // under `text-base`. A named rung rather than `text-[1.4rem]`: this component
+  // backs every modal in the app, so an arbitrary value would put ~36 dialogs
+  // outside the type scale. See --text-dialog-title in globals.css.
+  return (
+    <h2 className={cn('text-dialog-title font-semibold text-foreground', className)} {...props} />
+  )
 }
 
 function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {

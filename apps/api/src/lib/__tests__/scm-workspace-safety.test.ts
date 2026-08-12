@@ -23,10 +23,26 @@ vi.mock('../../db/client.js', () => ({
 
 import { env } from '../../env.js'
 import {
+  detectFilesystemCaseInsensitive,
   getDefaultScmWorkspacesAllowedRoot,
   validateScmWorkspacesRoot,
   validateStoredScmWorkspacesRoot,
 } from '../scm-workspace-safety.js'
+
+describe('detectFilesystemCaseInsensitive', () => {
+  it('detects a case-insensitive bind mount even when the container platform is Linux', () => {
+    const sameDirectory = { dev: 7, ino: 42 }
+    const existing = new Set(['/data/workspace/sources', '/data/workspace/Sources'])
+
+    expect(
+      detectFilesystemCaseInsensitive('/data/workspace/sources/new-source', 'linux', {
+        existsSync: (path) => existing.has(path),
+        realpathSync: (path) => path,
+        statSync: () => sameDirectory,
+      }),
+    ).toBe(true)
+  })
+})
 
 describe('validateScmWorkspacesRoot', () => {
   const tempDirs: string[] = []

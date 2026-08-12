@@ -1,11 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources, settings } from '../db/schema.js'
+import type { TransactionHandle } from '../db/transaction.js'
 import { env } from '../env.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
 import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
-import { resolveScmPathPlan, selectScmPathPeers } from './scm-path-plan.js'
+import { resolveScmPathPlan, selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 
 const ADMIN_USER_ID = 'usr_admin'
 
@@ -79,13 +80,14 @@ async function planEnvScmPaths(
    * actually keeps, where the next sync force-discards its worktrees.
    */
   workspacesPath?: string | null,
+  executor: TransactionHandle = db,
 ): Promise<{ localPath: string; workspacesPath: string } | null> {
   const plan = resolveScmPathPlan({
     sourceId: id,
     type,
     localPath,
     workspacesPath,
-    existingSources: await selectScmPathPeers(),
+    existingSources: await selectScmPathPeers(executor),
     excludeId: id,
     isAdmin: true,
   })
@@ -114,42 +116,41 @@ async function bootstrapScmP4(): Promise<void> {
     initialSyncTimeoutMin: 60,
   }
 
-  const existing = (
-    await db.select().from(scmSources).where(eq(scmSources.name, 'env:p4')).limit(1)
-  )[0]
-
   const now = new Date()
+  await withScmPathMutation(async (tx) => {
+    const existing = (
+      await tx.select().from(scmSources).where(eq(scmSources.name, 'env:p4')).limit(1)
+    )[0]
 
-  if (existing) {
-    const localPath = env.SCM_P4_LOCAL_PATH || existing.localPath
-    // Re-planned even when the path is unchanged: the row may predate a rule.
-    const planned = await planEnvScmPaths(
-      existing.id,
-      'p4',
-      localPath,
-      'SCM_P4_LOCAL_PATH',
-      existing.workspacesPath,
-    )
-    if (!planned) return
+    if (existing) {
+      const localPath = env.SCM_P4_LOCAL_PATH || existing.localPath
+      const planned = await planEnvScmPaths(
+        existing.id,
+        'p4',
+        localPath,
+        'SCM_P4_LOCAL_PATH',
+        existing.workspacesPath,
+        tx,
+      )
+      if (!planned) return
 
-    await db
-      .update(scmSources)
-      .set({
-        config: { ...config },
-        localPath: planned.localPath,
-        // The planner's resolved root, which already accounts for the stored
-        // value. Pinned on update too: a migrated row with a NULL worktree root
-        // otherwise keeps resolving it from whatever exists on disk.
-        workspacesPath: planned.workspacesPath,
-        syncStatus: 'idle',
-        lastSyncAt: null,
-        lastSyncError: null,
-        initialSyncCompletedAt: null,
-        updatedAt: now,
-      })
-      .where(eq(scmSources.id, existing.id))
-    logger.info({ id: existing.id }, 'Updated P4 SCM source from env')
-  } else {
+      await tx
+        .update(scmSources)
+        .set({
+          config: { ...config },
+          localPath: planned.localPath,
+          workspacesPath: planned.workspacesPath,
+          syncStatus: 'idle',
+          lastSyncAt: null,
+          lastSyncError: null,
+          initialSyncCompletedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(scmSources.id, existing.id))
+      logger.info({ id: existing.id }, 'Updated P4 SCM source from env')
+      return
+    }
+
     if (!env.SCM_P4_LOCAL_PATH) {
       logger.warn(
         'SCM_P4_LOCAL_PATH is required to create env:p4 because it must be covered by the P4 client Root or AltRoots',
@@ -157,10 +158,17 @@ async function bootstrapScmP4(): Promise<void> {
       return
     }
     const id = createId('scm')
-    const planned = await planEnvScmPaths(id, 'p4', env.SCM_P4_LOCAL_PATH, 'SCM_P4_LOCAL_PATH')
+    const planned = await planEnvScmPaths(
+      id,
+      'p4',
+      env.SCM_P4_LOCAL_PATH,
+      'SCM_P4_LOCAL_PATH',
+      undefined,
+      tx,
+    )
     if (!planned) return
 
-    await db.insert(scmSources).values({
+    await tx.insert(scmSources).values({
       id,
       name: 'env:p4',
       type: 'p4',
@@ -174,7 +182,7 @@ async function bootstrapScmP4(): Promise<void> {
       updatedAt: now,
     })
     logger.info({ id }, 'Created P4 SCM source from env')
-  }
+  })
 }
 
 /** Upsert the env-driven Git SCM source (name='env:git') */
@@ -191,53 +199,53 @@ async function bootstrapScmGit(): Promise<void> {
     initialSyncTimeoutMin: 60,
   }
 
-  const existing = (
-    await db.select().from(scmSources).where(eq(scmSources.name, 'env:git')).limit(1)
-  )[0]
-
   const now = new Date()
+  await withScmPathMutation(async (tx) => {
+    const existing = (
+      await tx.select().from(scmSources).where(eq(scmSources.name, 'env:git')).limit(1)
+    )[0]
 
-  if (existing) {
-    const localPath = env.SCM_GIT_LOCAL_PATH || existing.localPath
-    // Re-planned even when the path is unchanged: the row may predate a rule.
-    const planned = await planEnvScmPaths(
-      existing.id,
-      'git',
-      localPath,
-      'SCM_GIT_LOCAL_PATH',
-      existing.workspacesPath,
-    )
-    if (!planned) return
+    if (existing) {
+      const localPath = env.SCM_GIT_LOCAL_PATH || existing.localPath
+      const planned = await planEnvScmPaths(
+        existing.id,
+        'git',
+        localPath,
+        'SCM_GIT_LOCAL_PATH',
+        existing.workspacesPath,
+        tx,
+      )
+      if (!planned) return
 
-    await db
-      .update(scmSources)
-      .set({
-        config: { ...config },
-        localPath: planned.localPath,
-        // The planner's resolved root, which already accounts for the stored
-        // value. Pinned on update too: a migrated row with a NULL worktree root
-        // otherwise keeps resolving it from whatever exists on disk.
-        workspacesPath: planned.workspacesPath,
-        syncStatus: 'idle',
-        lastSyncAt: null,
-        lastSyncError: null,
-        initialSyncCompletedAt: null,
-        updatedAt: now,
-      })
-      .where(eq(scmSources.id, existing.id))
-    logger.info({ id: existing.id }, 'Updated Git SCM source from env')
-  } else {
+      await tx
+        .update(scmSources)
+        .set({
+          config: { ...config },
+          localPath: planned.localPath,
+          workspacesPath: planned.workspacesPath,
+          syncStatus: 'idle',
+          lastSyncAt: null,
+          lastSyncError: null,
+          initialSyncCompletedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(scmSources.id, existing.id))
+      logger.info({ id: existing.id }, 'Updated Git SCM source from env')
+      return
+    }
+
     const id = createId('scm')
-    // Undefined lets the planner allocate the managed default, matching create.
     const planned = await planEnvScmPaths(
       id,
       'git',
       env.SCM_GIT_LOCAL_PATH || undefined,
       'SCM_GIT_LOCAL_PATH',
+      undefined,
+      tx,
     )
     if (!planned) return
 
-    await db.insert(scmSources).values({
+    await tx.insert(scmSources).values({
       id,
       name: 'env:git',
       type: 'git',
@@ -251,7 +259,7 @@ async function bootstrapScmGit(): Promise<void> {
       updatedAt: now,
     })
     logger.info({ id }, 'Created Git SCM source from env')
-  }
+  })
 }
 
 /**

@@ -32,7 +32,7 @@ vi.mock('../logger.js', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }))
 
-const { logAudit, logBackgroundAudit, drainAuditWrites } = await import('../audit.js')
+const { logAudit, logBackgroundAudit, drainAuditWrites, writeAudit } = await import('../audit.js')
 const { logger } = await import('../logger.js')
 
 /** A Hono-ish context stub: logAudit only reads `userId` off it. */
@@ -127,5 +127,17 @@ describe('drainAuditWrites', () => {
 
     // A second drain with no new writes resolves without waiting on the old ones.
     await expect(drainAuditWrites()).resolves.toBeUndefined()
+  })
+})
+
+describe('writeAudit', () => {
+  it('propagates persistence failures to a transaction that must roll back', async () => {
+    insertSpy.mockReturnValue({
+      values: () => Promise.reject(new Error('audit disk full')),
+    })
+
+    await expect(
+      writeAudit(ctx, { action: 'scm_source.delete', resource: 'scm_source' }),
+    ).rejects.toThrow('audit disk full')
   })
 })

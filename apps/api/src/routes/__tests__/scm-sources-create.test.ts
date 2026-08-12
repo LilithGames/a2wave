@@ -15,15 +15,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestApp } from '../../test/test-app.js'
 
-const { insertedValues, updatedValues, existingRows, storedRow } = vi.hoisted(() => ({
-  /** The row `POST /` handed to Drizzle, captured for assertion. */
-  insertedValues: { current: undefined as Record<string, unknown> | undefined },
-  /** The payload `PATCH /:id` handed to Drizzle, captured for assertion. */
-  updatedValues: { current: undefined as Record<string, unknown> | undefined },
-  existingRows: { current: [] as Record<string, unknown>[] },
-  /** The row a by-id lookup resolves to; undefined means "not found". */
-  storedRow: { current: undefined as Record<string, unknown> | undefined },
-}))
+const { insertedValues, updatedValues, existingRows, storedRow, transactionEvents } = vi.hoisted(
+  () => ({
+    /** The row `POST /` handed to Drizzle, captured for assertion. */
+    insertedValues: { current: undefined as Record<string, unknown> | undefined },
+    /** The payload `PATCH /:id` handed to Drizzle, captured for assertion. */
+    updatedValues: { current: undefined as Record<string, unknown> | undefined },
+    existingRows: { current: [] as Record<string, unknown>[] },
+    /** The row a by-id lookup resolves to; undefined means "not found". */
+    storedRow: { current: undefined as Record<string, unknown> | undefined },
+    transactionEvents: [] as string[],
+  }),
+)
 
 vi.mock('../../db/client.js', () => ({
   db: {
@@ -38,12 +41,14 @@ vi.mock('../../db/client.js', () => ({
     }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
+        transactionEvents.push('insert')
         insertedValues.current = values
         return { returning: () => asyncQuery({ get: () => ({ ...values }) }) }
       },
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
+        transactionEvents.push('update')
         updatedValues.current = values
         return {
           where: () =>
@@ -59,7 +64,7 @@ vi.mock('../../db/client.js', () => ({
   // handle every transactional route throws before its own mocks are consulted.
   dialect: 'sqlite',
   isPostgres: false,
-  sqliteDatabase: { inTransaction: false, exec: vi.fn() },
+  sqliteDatabase: { inTransaction: false, exec: (sql: string) => transactionEvents.push(sql) },
 }))
 
 vi.mock('../../lib/git-sync.js', () => ({ checkGitConnection: vi.fn() }))
@@ -113,6 +118,7 @@ beforeEach(() => {
   insertedValues.current = undefined
   updatedValues.current = undefined
   existingRows.current = []
+  transactionEvents.length = 0
   // Create's localPath-uniqueness lookup must miss; PATCH tests set this to the
   // row they are editing.
   storedRow.current = undefined
@@ -133,6 +139,19 @@ describe('POST /scm-sources — credential normalization', () => {
     expect(insertedValues.current?.localPath).toMatch(/sources\//)
     expect(insertedValues.current?.workspacesPath).toMatch(/workspaces\//)
     expect(insertedValues.current?.localPath).not.toBe(insertedValues.current?.workspacesPath)
+  })
+
+  it('holds the SCM path mutation transaction from peer planning through insert', async () => {
+    const app = await buildApp()
+
+    const res = await create(app, {
+      name: 'serialized repo',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo.git' },
+    })
+
+    expect(res.status).toBe(201)
+    expect(transactionEvents).toEqual(['BEGIN', 'insert', 'COMMIT'])
   })
 
   it('requires P4 sources to use a client-root-covered local path', async () => {
@@ -398,5 +417,30 @@ describe('PATCH /scm-sources/:id — config type must match the row', () => {
 
     expect(res.status).toBe(200)
     expect((updatedValues.current?.config as Record<string, unknown>).pat).toBe('ghp_new')
+  })
+
+  it('holds the SCM path mutation transaction from peer planning through update', async () => {
+    storedRow.current = {
+      id: 'scm_1',
+      name: 'repo',
+      type: 'git',
+      localPath: '/tmp/git',
+      workspacesPath: '/data/workspace/workspaces/scm_1',
+      isEnabled: true,
+      syncStatus: 'idle',
+      codegraphStatus: 'idle',
+      userId: 'usr_admin',
+      role: 'admin',
+      isActive: true,
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo.git' },
+    }
+    const app = await buildApp()
+
+    const res = await patch(app, {
+      workspacesPath: '/data/workspace/workspaces/scm_1-new',
+    })
+
+    expect(res.status).toBe(200)
+    expect(transactionEvents).toEqual(['BEGIN', 'update', 'COMMIT'])
   })
 })

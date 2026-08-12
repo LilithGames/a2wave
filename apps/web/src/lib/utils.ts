@@ -1,6 +1,17 @@
 import i18n from '@/i18n'
 import { type ClassValue, clsx } from 'clsx'
-import { twMerge } from 'tailwind-merge'
+import { extendTailwindMerge } from 'tailwind-merge'
+
+/**
+ * tailwind-merge only knows the stock scale, so a custom `--text-*` rung reads
+ * to it as an unknown `text-*` — which it classifies as a colour utility and
+ * drops against a real one like `text-foreground`. The size then silently
+ * vanishes at runtime while the source still reads as though it applied.
+ * Every custom font-size rung added in globals.css must be listed here.
+ */
+const twMerge = extendTailwindMerge({
+  extend: { classGroups: { 'font-size': ['text-dialog-title'] } },
+})
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))

@@ -66,6 +66,24 @@ describe('reclaimManagedScmStorage', () => {
     expect(existsSync(worktrees)).toBe(false)
   })
 
+  it('removes the legacy worktree root pinned during an upgrade', async () => {
+    const root = await makeStorageRoot()
+    const legacyWorktrees = join(root, 'legacy-home', '.a2wave', 'workspaces', 'aBcD')
+    await mkdir(legacyWorktrees, { recursive: true })
+
+    const reclaimed = await reclaimManagedScmStorage(
+      {
+        id: 'scm_aBcD',
+        localPath: join(root, 'sources', 'aBcD'),
+        workspacesPath: legacyWorktrees,
+      },
+      { legacyWorkspacesPath: () => legacyWorktrees },
+    )
+
+    expect(reclaimed).toContain(legacyWorktrees)
+    expect(existsSync(legacyWorktrees)).toBe(false)
+  })
+
   // The operator's own checkout is theirs. P4 sources always carry one, and a
   // git source may too — deleting the row must not delete their data.
   it('never removes an operator-chosen path outside the storage root', async () => {

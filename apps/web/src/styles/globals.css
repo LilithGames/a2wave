@@ -195,6 +195,18 @@
   --font-size-xl: 1rem; /* 16px — sub-headings */
   --font-size-2xl: 1.5rem; /* 24px — page headings */
 
+  /* ── Tailwind font-size rungs (`--text-*`) ──
+   *  Distinct from the `--font-size-*` block above: Tailwind v4 generates its
+   *  `text-<name>` utilities from THIS namespace, so `text-base` / `text-xl`
+   *  resolve to Tailwind's own defaults (1rem / 1.25rem), not to the values
+   *  above. Adding a rung here is what creates a utility class.
+   *
+   *  A new rung must ALSO be registered in tailwind-merge's font-size group
+   *  (lib/utils.ts), or `cn()` classifies it as an unknown `text-*` colour
+   *  utility and drops it against `text-foreground` — the size then silently
+   *  vanishes at runtime while the source still reads as though it applied. */
+  --text-dialog-title: 1.4rem; /* 22.4px — 1.4x the 1rem DialogTitle had at text-base */
+
   /* ── Font weight (Layer 1: Primitive) ── */
   --font-weight-normal: 400;
   --font-weight-medium: 500;

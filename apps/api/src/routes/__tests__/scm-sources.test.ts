@@ -1,6 +1,13 @@
 import { Hono } from 'hono'
 import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
 
+/**
+ * `withTransaction`'s SQLite branch drives BEGIN/COMMIT on the raw handle and
+ * hands the callback the shared `db` — it never calls `db.transaction`. The
+ * transaction boundary is therefore observed through this `exec` spy.
+ */
+const sqliteExec = vi.hoisted(() => vi.fn())
+
 vi.mock('../../db/client.js', () => ({
   db: {
     select: vi.fn(),
@@ -13,7 +20,7 @@ vi.mock('../../db/client.js', () => ({
   // handle every transactional route throws before its own mocks are consulted.
   dialect: 'sqlite',
   isPostgres: false,
-  sqliteDatabase: { inTransaction: false, exec: vi.fn() },
+  sqliteDatabase: { inTransaction: false, exec: sqliteExec },
 }))
 
 vi.mock('../../db/schema.js', () => ({
@@ -50,6 +57,7 @@ vi.mock('../../lib/owner-filter.js', () => ({
 
 vi.mock('../../lib/audit.js', () => ({
   logAudit: vi.fn(),
+  writeAudit: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../../lib/id.js', () => ({
@@ -168,7 +176,7 @@ function makeDeleteChain(result: unknown = { id: 'scm_test1' }) {
 }
 
 import { db } from '../../db/client.js'
-import { logAudit } from '../../lib/audit.js'
+import { logAudit, writeAudit } from '../../lib/audit.js'
 import {
   cancelInitialScmSync,
   isCheckoutBusy,
@@ -501,7 +509,7 @@ describe('SCM Sources routes', () => {
         workspacesPath: null,
       }
       const order: string[] = []
-      ;(logAudit as Mock).mockImplementationOnce(() => {
+      ;(writeAudit as Mock).mockImplementationOnce(async () => {
         order.push('audit')
       })
       ;(reclaimManagedScmStorage as Mock).mockImplementationOnce(async () => {
@@ -517,6 +525,70 @@ describe('SCM Sources routes', () => {
 
       expect(res.status).toBe(200)
       expect(order).toEqual(['audit', 'reclaim'])
+    })
+
+    /**
+     * Ordering the audit before the reclaim shrank the loss window but did not
+     * close it: the row delete and the audit insert were still two independent
+     * writes, so a crash between them left the source gone with nothing
+     * recording it. They must commit or roll back together — which is what
+     * `withTransaction` gives, and what makes "who deleted this" always
+     * answerable (Iron Rule 5).
+     */
+    it('commits the row delete and its audit entry in one transaction', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      const order: string[] = []
+      sqliteExec.mockImplementation((sql: string) => {
+        order.push(sql)
+      })
+      ;(db.delete as Mock).mockImplementation(() => {
+        order.push('delete')
+        return makeDeleteChain(source)
+      })
+      ;(writeAudit as Mock).mockImplementation(async () => {
+        order.push('audit:insert')
+      })
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      const begin = order.indexOf('BEGIN')
+      const commit = order.indexOf('COMMIT')
+      expect(begin).toBeGreaterThanOrEqual(0)
+      expect(commit).toBeGreaterThan(begin)
+      // The row delete and the audit INSERT both land strictly inside the
+      // BEGIN/COMMIT window, so a crash cannot leave one without the other.
+      for (const step of ['delete', 'audit:insert']) {
+        expect(order.indexOf(step)).toBeGreaterThan(begin)
+        expect(order.indexOf(step)).toBeLessThan(commit)
+      }
+    })
+
+    it('does not delete or reclaim storage when the durable audit insert fails', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+      ;(writeAudit as Mock).mockRejectedValueOnce(new Error('audit disk full'))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(500)
+      expect(reclaimManagedScmStorage).not.toHaveBeenCalled()
     })
 
     it('returns 404 for non-existent source', async () => {

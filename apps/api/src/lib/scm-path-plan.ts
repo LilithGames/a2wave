@@ -1,11 +1,15 @@
 import { isAbsolute, join } from 'node:path'
+import { type SQL, sql } from 'drizzle-orm'
 import { db } from '../db/client.js'
+import { isPostgresRuntime } from '../db/dialect-runtime.js'
 import { scmSources } from '../db/schema.js'
+import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { env } from '../env.js'
 import { defaultWorkspacesPath } from './git-workspace.js'
 import { defaultScmLocalPath } from './scm-storage.js'
 import {
-  isSameOrDescendantForCollision,
+  filesystemPathsOverlap,
+  isSameFilesystemPath,
   pathsOverlap,
   validateScmWorkspacesRoot,
 } from './scm-workspace-safety.js'
@@ -30,8 +34,10 @@ export { pathsOverlap }
  * in a route so that non-HTTP write paths — env bootstrap in particular — check
  * against the same peers the routes do.
  */
-export async function selectScmPathPeers(): Promise<ScmPathPeer[]> {
-  return db
+export async function selectScmPathPeers(
+  executor: Pick<typeof db, 'select'> = db,
+): Promise<ScmPathPeer[]> {
+  return executor
     .select({
       id: scmSources.id,
       name: scmSources.name,
@@ -39,6 +45,28 @@ export async function selectScmPathPeers(): Promise<ScmPathPeer[]> {
       workspacesPath: scmSources.workspacesPath,
     })
     .from(scmSources)
+}
+
+const SCM_PATH_MUTATION_LOCK = 0x41325750
+
+export async function acquireScmPathMutationLock(
+  tx: TransactionHandle,
+  postgres: boolean = isPostgresRuntime(),
+): Promise<void> {
+  if (postgres) {
+    const postgresTx = tx as unknown as { execute: (query: SQL) => Promise<unknown> }
+    await postgresTx.execute(sql`select pg_advisory_xact_lock(${SCM_PATH_MUTATION_LOCK})`)
+  }
+}
+
+/** Serialize the peer scan and path write across requests and PostgreSQL replicas. */
+export async function withScmPathMutation<T>(
+  mutation: (tx: TransactionHandle) => Promise<T>,
+): Promise<T> {
+  return withTransaction(async (tx) => {
+    await acquireScmPathMutationLock(tx)
+    return mutation(tx)
+  })
 }
 
 /** One existing row, reduced to the fields path planning actually needs. */
@@ -91,8 +119,8 @@ function findPeerConflict(
 ): ScmPathPeer | null {
   for (const peer of peers) {
     if (excludeId && peer.id === excludeId) continue
-    if (pathsOverlap(peer.localPath, candidate, platform)) return peer
-    if (pathsOverlap(effectiveWorkspacesPath(peer), candidate, platform)) return peer
+    if (filesystemPathsOverlap(peer.localPath, candidate, platform)) return peer
+    if (filesystemPathsOverlap(effectiveWorkspacesPath(peer), candidate, platform)) return peer
   }
   return null
 }
@@ -107,9 +135,7 @@ function findPeerConflict(
  * source's data a child of its own working tree.
  */
 function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
-  return (
-    isSameOrDescendantForCollision(a, b, platform) && isSameOrDescendantForCollision(b, a, platform)
-  )
+  return isSameFilesystemPath(a, b, platform)
 }
 
 /** Roots a2wave allocates from; a checkout may live under one but never BE one. */
@@ -155,7 +181,7 @@ export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
     return { ok: false, status: 400, error: 'workspacesPath must be an absolute path' }
   }
 
-  if (pathsOverlap(workspacesPath, localPath, platform)) {
+  if (filesystemPathsOverlap(workspacesPath, localPath, platform)) {
     return { ok: false, status: 400, error: 'workspacesPath must not overlap with localPath' }
   }
 
