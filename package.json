@@ -33,6 +33,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:recovery": "bash scripts/e2e/restart-recovery.sh",
+    "test:scm-storage": "bash scripts/e2e/scm-storage-integration.sh",
     "test:e2e:onboarding": "bash scripts/e2e/onboarding.sh",
     "prepare": "husky || true"
   },

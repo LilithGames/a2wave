@@ -24,6 +24,21 @@ See CONTRIBUTING.md for the full process and quality gates.
 - [ ] User-facing docs, i18n copy (`zh.json` **and** `en.json`), and the in-app
       manual updated where relevant (or "not applicable")
 
+## Cross-cutting change matrix
+
+<!-- Delete this section when it is not applicable. For SCM storage changes,
+read docs/agent/scm-storage-invariants.md and mark every affected path. -->
+
+- [ ] Create / import / bootstrap paths checked
+- [ ] PATCH / enable-disable / cancellation paths checked
+- [ ] DELETE / cleanup / audit paths checked
+- [ ] Startup recovery and upgrade compatibility checked
+- [ ] Git and P4 behavior checked where applicable
+- [ ] SQLite and PostgreSQL behavior checked where applicable
+- [ ] Named volume, default bind, explicit bind, and macOS bind behavior checked
+      where applicable
+- [ ] Failure recovery and operator remediation are documented
+
 ## AI assistance disclosure
 
 - [ ] This change was substantially AI-generated. If checked, I confirm I

@@ -190,6 +190,16 @@ Each new `action` / `resource` also needs zh + en copy in `apps/web/src/locales/
 
 Full conventions, examples, and a pre-merge checklist: [docs/agent/audit-logging.md](../../docs/agent/audit-logging.md).
 
+## SCM Storage Changes
+
+SCM paths are a cross-cutting persistence boundary, not a route-local detail.
+Before changing source creation, bootstrap, sync, deletion, workspace cleanup,
+or container ownership, read and preserve the complete invariant set in
+[SCM Storage Invariants](../../docs/agent/scm-storage-invariants.md). Every
+affected create/PATCH/DELETE/startup/bootstrap and Git/P4 path must be checked;
+the SQLite/PostgreSQL and volume/bind integration gate is
+`pnpm test:scm-storage`.
+
 ## Testing Conventions
 
 Framework: **Vitest**; test files live in a `__tests__/` directory next to the file under test.
