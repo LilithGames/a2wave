@@ -28,10 +28,9 @@ export interface CodegraphIndexResult {
 const CODEGRAPH_WORKSPACE_ENTRY = '.codegraph'
 
 /**
- * Workspace-root entries this writer creates. Registered with
- * `platformWorkspaceEntries()`.
+ * Workspace paths this writer owns. Registered with `platformWorkspacePaths()`.
  */
-export function codegraphWorkspaceEntries(): string[] {
+export function codegraphWorkspacePaths(): string[] {
   return [CODEGRAPH_WORKSPACE_ENTRY]
 }
 

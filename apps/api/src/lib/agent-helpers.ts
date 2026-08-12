@@ -43,6 +43,7 @@ import {
   WORKTREE_NAME_REGEX,
   WorktreeBranchLockedError,
   WorktreeDirtyError,
+  isPerAgentWorkspaceName,
   perAgentWorkspaceName,
   readWorkspaceState,
 } from './git-workspace.js'
@@ -1126,6 +1127,48 @@ export function _resetTtlCleanupDebounce(): void {
 export const IN_FLIGHT_RUN_STATUSES = ['running', 'pending', 'queued'] as const
 
 /**
+ * `runs.workDir` failed to persist, so nothing marks the worktree as occupied.
+ *
+ * Distinct from every other resolve failure because it must NOT degrade to the
+ * shared checkout: the worktree is fine, only its occupancy marker is missing.
+ */
+export class WorkspaceOccupancyRecordError extends Error {
+  constructor(runId: string, workDir: string, cause: unknown) {
+    super(`Failed to record workDir '${workDir}' for run '${runId}'`, { cause })
+    this.name = 'WorkspaceOccupancyRecordError'
+  }
+}
+
+const WORKDIR_RECORD_ATTEMPTS = 3
+const WORKDIR_RECORD_RETRY_MS = 25
+
+/**
+ * Persist `runs.workDir` — the only marker that says "this worktree is busy".
+ *
+ * The workspace-delete route's 409, `removePerAgentWorkspace`'s occupancy probe
+ * and the sibling-advance check all read it, so a swallowed write leaves an
+ * administrator free to delete the worktree of a running Agent. A transient
+ * SQLITE_BUSY is retried; a persistent failure fails the run instead of
+ * executing unprotected.
+ */
+async function recordRunWorkDir(runId: string, wsPath: string): Promise<void> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= WORKDIR_RECORD_ATTEMPTS; attempt++) {
+    try {
+      await db.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId))
+      return
+    } catch (err) {
+      lastErr = err
+      logger.warn({ err, runId, wsPath, attempt }, 'Failed to record runs.workDir, retrying')
+      if (attempt < WORKDIR_RECORD_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, WORKDIR_RECORD_RETRY_MS * attempt))
+      }
+    }
+  }
+  throw new WorkspaceOccupancyRecordError(runId, wsPath, lastErr)
+}
+
+/**
  * Locate an Agent's per-agent worktree without side effects. Returns null when
  * the source is not git or the SCM layer is unavailable — callers degrade.
  */
@@ -1231,18 +1274,7 @@ async function resolvePerAgentWorkspace(
     isCodegraphEnabled(source.config)
       ? ensureCodegraphLink(result.path, source.localPath)
       : Promise.resolve(),
-    // Bookkeeping only: a failure here (e.g. SQLITE_BUSY) must not bubble into
-    // the caller's fallback, which would run the Agent in the shared checkout —
-    // the cross-Agent interference this whole feature removes.
-    runId
-      ? db
-          .update(runs)
-          .set({ workDir: result.path })
-          .where(eq(runs.id, runId))
-          .catch((err) =>
-            logger.warn({ err, runId, wsPath: result.path }, 'Failed to record runs.workDir'),
-          )
-      : Promise.resolve(),
+    runId ? recordRunWorkDir(runId, result.path) : Promise.resolve(),
   ])
 
   triggerTtlCleanup(source.id, scm).catch((err) =>
@@ -1362,6 +1394,24 @@ export async function resolveWorkDir(
       throw new Error(`SCM source '${agent.scmSourceId}' not found`)
     }
 
+    // A grandfathered sticky config may name this Agent's own long-lived
+    // worktree. Run it through the per-agent path rather than the explicit one:
+    // the explicit path would honour the config's `branch` and switch the
+    // worktree off its own branch, after which followSource skips it forever
+    // (`onBranch !== name`) and the Agent silently freezes on stale code.
+    if (source.type === 'git' && worktreeParams.name === perAgentWorkspaceName(agent.id)) {
+      logger.info(
+        { agentId: agent.id, workspace: worktreeParams.name },
+        'Sticky worktree config names the per-agent worktree; resolving it as such',
+      )
+      const wsPath = await resolvePerAgentWorkspace(source, agent, runId)
+      recordWorkspaceBranchEnv(
+        agentEnv,
+        wsPath === source.localPath ? null : perAgentWorkspaceName(agent.id),
+      )
+      return wsPath
+    }
+
     const scm = await createScmSource(source)
     if (!scm) {
       throw new Error(`SCM type '${source.type}' does not support workspaces`)
@@ -1393,7 +1443,13 @@ export async function resolveWorkDir(
     // 拖住其它请求（这条 run 本身在上游 catch 里要么被删要么 revert 到 pending）。
     let result: CreateWorkspaceResult
     try {
-      result = await scm.createWorkspace(worktreeParams.name, { branch: worktreeParams.branch })
+      // A per-agent worktree reaching this path belongs to *another* Agent (our
+      // own was delegated above). Reuse it as-is: switching its branch would
+      // pin it off `agent-<id>` and stop its owner's runs advancing.
+      const branch = isPerAgentWorkspaceName(worktreeParams.name)
+        ? undefined
+        : worktreeParams.branch
+      result = await scm.createWorkspace(worktreeParams.name, { branch })
     } catch (err) {
       if (runId) {
         try {
@@ -1410,12 +1466,12 @@ export async function resolveWorkDir(
 
     // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）
     //
-    // Exception: a grandfathered sticky config may name this Agent's own
-    // long-lived worktree. Overwriting its `persistent` marker with the
-    // caller's ephemeral/ttl mode would hand the Agent's workspace to run-end
-    // cleanup or the TTL sweeper — the reservation exists to prevent exactly
-    // that, and legacy rows must not slip past it.
-    if (worktreeParams.name !== perAgentWorkspaceName(agent.id)) {
+    // Exception: a grandfathered sticky config may name a per-agent worktree.
+    // Overwriting its `persistent` marker with the caller's ephemeral/ttl mode
+    // would hand that workspace to run-end cleanup or the TTL sweeper — the
+    // reservation exists to prevent exactly that, and legacy rows must not slip
+    // past it. The shape test, so another Agent's worktree is covered too.
+    if (!isPerAgentWorkspaceName(worktreeParams.name)) {
       try {
         await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
       } catch (err) {
@@ -1451,6 +1507,10 @@ export async function resolveWorkDir(
           )
           return wsPath
         } catch (err) {
+          // Exception: the worktree resolved fine, only its occupancy marker
+          // did not persist. Falling back would run the Agent in the shared
+          // checkout *and* leave the worktree deletable mid-run — fail loudly.
+          if (err instanceof WorkspaceOccupancyRecordError) throw err
           // A broken worktree must not take the Agent down — degrade to the
           // shared checkout, which is exactly the pre-worktree behavior. The
           // env must not keep naming the per-agent branch here: an agent

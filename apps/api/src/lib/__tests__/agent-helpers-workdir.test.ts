@@ -90,6 +90,7 @@ vi.mock('../slug.js', () => ({
 }))
 
 import {
+  WorkspaceOccupancyRecordError,
   WorktreeOccupiedError,
   _resetTtlCleanupDebounce,
   buildAgentConfig,
@@ -253,6 +254,64 @@ describe('resolveWorkDir', () => {
       const env: Record<string, string> = {}
       await resolveWorkDir(gitAgent(), undefined, undefined, env)
       expect(env.A2WAVE_WORKSPACE_BRANCH).toBe('agent-abc123')
+    })
+
+    it('fails the run when the occupancy marker cannot be persisted', async () => {
+      // runs.workDir is the only thing that says "this worktree is busy" — the
+      // delete route's 409, removePerAgentWorkspace and the sibling probe all
+      // read it. Swallowing the write would let an admin delete a running
+      // Agent's worktree; falling back would run it in the shared checkout.
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      // Once per attempt — scoped with `Once` so the rejection does not leak
+      // into the next test (clearAllMocks keeps implementations).
+      for (let i = 0; i < 3; i++) {
+        mockDbUpdateWhere.mockImplementationOnce(() => Promise.reject(new Error('SQLITE_BUSY')))
+      }
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      await expect(resolveWorkDir(gitAgent(), undefined, 'run_1')).rejects.toBeInstanceOf(
+        WorkspaceOccupancyRecordError,
+      )
+      // Retried before giving up — SQLITE_BUSY is usually transient.
+      expect(mockDbUpdateWhere).toHaveBeenCalledTimes(3)
+    })
+
+    it('resolves a grandfathered sticky config as the per-agent worktree', async () => {
+      // A persisted sticky worktree config naming this Agent's own worktree must
+      // not go through the explicit path: its `branch` would switch the worktree
+      // off agent-<id>, after which followSource skips it forever and the Agent
+      // silently freezes on stale code. Its cleanup mode must not stick either.
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      const createWorkspace = vi
+        .fn()
+        .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false })
+      const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+        writeWorkspaceState,
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      const workDir = await resolveWorkDir(gitAgent(), {
+        name: 'agent-abc123',
+        cleanup: 'ephemeral',
+        branch: 'feature/x',
+      } as any)
+
+      expect(workDir).toBe('/workspaces/scm_1/agent-abc123')
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123', {
+        followSource: true,
+        advance: true,
+      })
+      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'persistent' })
     })
 
     it('clears the branch env when degrading to the shared checkout', async () => {

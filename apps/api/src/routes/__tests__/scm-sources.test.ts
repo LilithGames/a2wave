@@ -1500,7 +1500,7 @@ describe('SCM Sources routes', () => {
         ;(db.select as Mock)
           .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' })) // source
           .mockReturnValueOnce(makeDbChain(undefined)) // occupancy probe
-          .mockReturnValueOnce(makeDbChain([{ id: 'agt_abc123def456ghi' }])) // bound agents
+          .mockReturnValueOnce(makeDbChain([{ id: 'agt_abc123def456ghi7' }])) // bound agents
         mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
         const res = await app.request(`/api/scm-sources/scm_1/workspaces/${name}`, {
           method: 'DELETE',
@@ -1509,14 +1509,34 @@ describe('SCM Sources routes', () => {
         return removeWorkspace.mock.calls[0]
       }
 
-      expect(await runWithName('agent-abc123def456ghi')).toEqual([
-        'agent-abc123def456ghi',
+      expect(await runWithName('agent-abc123def456ghi7')).toEqual([
+        'agent-abc123def456ghi7',
         { keepBranches: true },
       ])
       expect(await runWithName('agent-refactor')).toEqual([
         'agent-refactor',
         { keepBranches: false },
       ])
+    })
+
+    it('keeps the branch of an orphaned per-agent worktree whose agent row is gone', async () => {
+      // Agent deletion leaves an occupied worktree behind on purpose, so the
+      // operator reclaims it here — after the row it would have matched against
+      // is already deleted. Falling back to the shape test is what stops that
+      // click from taking the unpushed commits with it.
+      const removeWorkspace = vi.fn()
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' })) // source
+        .mockReturnValueOnce(makeDbChain(undefined)) // occupancy probe
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents left
+      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/agent-abc123def456ghi7', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(200)
+      expect(removeWorkspace).toHaveBeenCalledWith('agent-abc123def456ghi7', { keepBranches: true })
     })
 
     it.each([

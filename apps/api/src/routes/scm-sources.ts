@@ -19,6 +19,7 @@ import { checkGitConnection } from '../lib/git-sync.js'
 import {
   WORKTREE_NAME_REGEX,
   defaultWorkspacesPath,
+  isPerAgentWorkspaceName,
   perAgentWorkspaceName,
 } from '../lib/git-workspace.js'
 import { createId } from '../lib/id.js'
@@ -911,15 +912,17 @@ app.delete('/:id/workspaces/:name', async (c) => {
 
   // Per-agent worktrees carry a long-lived branch that may hold unmerged agent
   // commits; deleting the directory reclaims disk, but the branch must survive
-  // (the next run re-attaches it). Match the exact name of an Agent actually
-  // bound to this source rather than the `agent-` prefix: a legacy explicit
-  // workspace named e.g. `agent-refactor` keeps the ordinary delete-branch
-  // semantics, so its branch is not leaked.
+  // (the next run re-attaches it). Two tests, because each covers a case the
+  // other misses: the exact match against a bound Agent keeps a legacy explicit
+  // workspace named e.g. `agent-refactor` on ordinary delete-branch semantics,
+  // and the shape test still recognizes an orphan whose Agent row is already
+  // gone (Agent deletion leaves an occupied worktree behind on purpose).
   const boundAgents = await db
     .select({ id: agents.id })
     .from(agents)
     .where(eq(agents.scmSourceId, id))
-  const isPerAgent = boundAgents.some((a) => perAgentWorkspaceName(a.id) === name)
+  const isPerAgent =
+    boundAgents.some((a) => perAgentWorkspaceName(a.id) === name) || isPerAgentWorkspaceName(name)
   await scm.removeWorkspace(name, { keepBranches: isPerAgent })
   return c.json({ data: { message: 'Workspace removed' } })
 })

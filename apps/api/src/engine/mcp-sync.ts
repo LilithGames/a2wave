@@ -38,21 +38,18 @@ export interface ResolvedMcpServer {
 const MCP_MANAGED_MARKER_SUFFIX = '.a2wave-managed'
 
 /**
- * Workspace-root entries this writer creates: every Provider's MCP config path
- * (top segment) plus, for root-level files, the sidecar marker written beside
- * it. Registered with `platformWorkspaceEntries()`.
+ * Workspace paths this writer owns: every Provider's MCP config file plus the
+ * sidecar marker written beside it. Registered with `platformWorkspacePaths()`,
+ * which derives the root-entry set from these.
  */
-export function mcpSyncWorkspaceEntries(): string[] {
-  const entries: string[] = []
+export function mcpSyncWorkspacePaths(): string[] {
+  const paths: string[] = []
   for (const manifest of Object.values(BUILTIN_PROVIDER_MANIFESTS)) {
     const delivery = manifest.capabilities?.mcpDelivery
     if (delivery?.mode !== 'workspace-file' || !delivery.defaultPath) continue
-    entries.push(delivery.defaultPath.split('/')[0])
-    if (!delivery.defaultPath.includes('/')) {
-      entries.push(`${delivery.defaultPath}${MCP_MANAGED_MARKER_SUFFIX}`)
-    }
+    paths.push(delivery.defaultPath, `${delivery.defaultPath}${MCP_MANAGED_MARKER_SUFFIX}`)
   }
-  return entries
+  return paths
 }
 
 interface ManagedMcpMarker {

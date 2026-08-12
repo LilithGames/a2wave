@@ -324,7 +324,7 @@ describe('Gateway routes', () => {
 
       const res = await invokeRequest({
         message: 'hi',
-        worktree: { name: 'agent-abc123def456ghi', cleanup: 'ephemeral' },
+        worktree: { name: 'agent-abc123def456ghi7', cleanup: 'ephemeral' },
       })
 
       expect(res.status).toBe(400)

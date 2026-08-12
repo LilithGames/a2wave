@@ -18,7 +18,7 @@ import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
 import { logger } from './logger.js'
-import { platformWorkspaceEntries } from './workspace-platform-entries.js'
+import { platformWorkspaceEntries, platformWorkspacePaths } from './workspace-platform-entries.js'
 
 const execFileAsyncRaw = promisify(execFile)
 
@@ -195,9 +195,11 @@ export async function createGitWorkspace(
       )
       // followSource branches are long-lived and may carry unmerged agent
       // commits — a rebuild must never destroy them; the fresh create below
-      // re-attaches them via buildFollowSourceAddArgs.
+      // re-attaches them via buildFollowSourceAddArgs. The name test covers the
+      // other caller: a legacy sticky config reaches a per-agent worktree
+      // through the explicit path, which never sets followSource.
       await removeGitWorkspace(localPath, wsRoot, name, config, {
-        keepBranches: Boolean(options?.followSource),
+        keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
       })
       // fall through to fresh create below
     } else {
@@ -521,6 +523,11 @@ async function followSourceHeadOnReuse(
       // repos that track e.g. .claude/skills would otherwise never advance.
       // reset --hard reverts them to repo state; the engine re-mounts before
       // spawning the CLI.
+      //
+      // Excluded at FULL DEPTH, never by root entry: a repo that tracks
+      // `.claude/settings.json` or `.claude/hooks/*` (a common layout) shares a
+      // root with the skill mount, and excluding `.claude` wholesale would let
+      // the reset below discard those edits with no error and no log.
       const { stdout: dirty } = await execFileAsync(
         'git',
         [
@@ -530,7 +537,7 @@ async function followSourceHeadOnReuse(
           '--',
           '.',
           `:(exclude)${WORKSPACE_ARTIFACTS_DIRECTORY}`,
-          ...[...platformWorkspaceEntries()].map((entry) => `:(exclude)${entry}`),
+          ...[...platformWorkspacePaths()].map((path) => `:(exclude)${path}`),
         ],
         { cwd: wsRepoPath, timeout: 5_000 },
       )

@@ -1,28 +1,38 @@
-import { kbSyncWorkspaceEntries } from '../engine/kb-sync.js'
-import { mcpSyncWorkspaceEntries } from '../engine/mcp-sync.js'
-import { skillSyncWorkspaceEntries } from '../engine/skill-sync.js'
-import { codegraphWorkspaceEntries } from './codegraph-index.js'
+import { kbSyncWorkspacePaths } from '../engine/kb-sync.js'
+import { mcpSyncWorkspacePaths } from '../engine/mcp-sync.js'
+import { skillSyncWorkspacePaths } from '../engine/skill-sync.js'
+import { codegraphWorkspacePaths } from './codegraph-index.js'
 
 /**
- * Workspace-root entries the platform itself writes into run workspaces.
+ * Workspace paths the platform itself writes into run workspaces, at full
+ * depth (".claude/skills", ".cursor/mcp.json").
  *
- * Each writer registers its own entries, so adding a writer and updating this
- * set are the same edit — the previous shape (one hand-maintained list per
+ * Each writer registers its own paths, so adding a writer and updating this set
+ * are the same edit — the previous shape (one hand-maintained list per
  * consumer) silently missed .codegraph, then .kb, each time wedging workspace
  * removal or pinning a workspace forever.
- *
- * Two consumers share the result: workspace removal treats these as disposable
- * platform output, and the followSource pinning check never counts changes
- * under them as agent work.
  *
  * Known limitation: a per-Agent skillsDir override that matches no Provider
  * preset is not derivable here.
  */
-export function platformWorkspaceEntries(): ReadonlySet<string> {
+export function platformWorkspacePaths(): ReadonlySet<string> {
   return new Set([
-    ...skillSyncWorkspaceEntries(),
-    ...mcpSyncWorkspaceEntries(),
-    ...kbSyncWorkspaceEntries(),
-    ...codegraphWorkspaceEntries(),
+    ...skillSyncWorkspacePaths(),
+    ...mcpSyncWorkspacePaths(),
+    ...kbSyncWorkspacePaths(),
+    ...codegraphWorkspacePaths(),
   ])
+}
+
+/**
+ * Workspace-root entries derived from `platformWorkspacePaths()` — the top
+ * segment of each (".claude/skills" -> ".claude").
+ *
+ * Removal needs root names: it walks `readdir(workspace)` and deletes whole
+ * entries. The dirty check must NOT use these — excluding all of `.claude`
+ * there would let `reset --hard` silently revert a repo-tracked
+ * `.claude/settings.json`, so it uses the full-depth paths instead.
+ */
+export function platformWorkspaceEntries(): ReadonlySet<string> {
+  return new Set([...platformWorkspacePaths()].map((path) => path.split('/')[0]))
 }

@@ -16,13 +16,17 @@ import { slugify } from '../lib/slug.js'
 const SKILL_MANAGED_MARKER = '.a2wave-managed'
 
 /**
- * Workspace-root entries this writer creates: the top segment of every
- * Provider's skillsDir (".claude/skills" -> ".claude"). Registered with
- * `platformWorkspaceEntries()`.
+ * Workspace paths this writer owns: every Provider's skillsDir, at full depth
+ * (".claude/skills", not ".claude"). Registered with
+ * `platformWorkspacePaths()`, which derives the root-entry set from these.
+ *
+ * Depth matters: the dirty check excludes these paths from "is this agent
+ * work?", and excluding all of `.claude` would let `reset --hard` silently
+ * discard a repo-tracked `.claude/settings.json` the agent edited.
  */
-export function skillSyncWorkspaceEntries(): string[] {
+export function skillSyncWorkspacePaths(): string[] {
   return PRESET_PROVIDERS.filter((preset) => preset.skillsDir).map(
-    (preset) => (preset.skillsDir as string).split('/')[0],
+    (preset) => preset.skillsDir as string,
   )
 }
 

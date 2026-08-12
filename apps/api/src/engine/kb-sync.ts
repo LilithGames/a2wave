@@ -9,11 +9,11 @@ import { getKbDocStoragePath } from '../lib/kb-storage.js'
 const KB_WORKSPACE_DIR = '.kb'
 
 /**
- * Workspace-root entries this writer creates. Registered with
- * `platformWorkspaceEntries()` so removal and the followSource pinning check
- * learn about them from the writer itself — a new writer cannot be forgotten.
+ * Workspace paths this writer owns. Registered with `platformWorkspacePaths()`
+ * so removal and the followSource pinning check learn about them from the
+ * writer itself — a new writer cannot be forgotten.
  */
-export function kbSyncWorkspaceEntries(): string[] {
+export function kbSyncWorkspacePaths(): string[] {
   return [KB_WORKSPACE_DIR]
 }
 

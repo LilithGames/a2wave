@@ -480,6 +480,33 @@ describe('git-workspace', () => {
       expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
     })
 
+    it('pins on a tracked .claude file the platform does not write', async () => {
+      // The skill mount lives at .claude/skills, but repos commonly track
+      // .claude/settings.json and .claude/hooks/* too. Exempting the whole
+      // .claude root would let the reset below revert an agent's edit to them
+      // with no error and no log — the exemption is per path, not per root.
+      await mkdir(join(REPO_DIR, '.claude', 'skills', 'seeded'), { recursive: true })
+      await writeFile(join(REPO_DIR, '.claude', 'skills', 'seeded', 'SKILL.md'), 'v1')
+      await writeFile(join(REPO_DIR, '.claude', 'settings.json'), '{"hooks":[]}')
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'seed tracked claude config'], { cwd: REPO_DIR })
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const pinned = await currentCommit(first.path)
+      await writeFile(join(first.path, '.claude', 'settings.json'), '{"hooks":["agent-edit"]}')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(pinned)
+      expect(await readFile(join(second.path, '.claude', 'settings.json'), 'utf8')).toBe(
+        '{"hooks":["agent-edit"]}',
+      )
+    })
+
     it('re-attaches an orphaned branch instead of resetting it', async () => {
       const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
         followSource: true,
@@ -1086,6 +1113,50 @@ describe('git-workspace', () => {
       expect(rebuilt.created).toBe(true)
       expect(existsSync(join(rebuilt.path, 'frontend', 'README.md'))).toBe(true)
       expect(existsSync(join(rebuilt.path, 'backend', 'README.md'))).toBe(true)
+    })
+
+    it('keeps a per-agent branch when an incomplete workspace is rebuilt without followSource', async () => {
+      // The rebuild's keepBranches came from the followSource flag alone, but a
+      // grandfathered sticky config reaches the very same worktree through the
+      // explicit path, which never sets it — and the branch may hold the only
+      // copy of the agent's unpushed commits.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const wsName = 'agent-abcdefghij123456'
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig, {
+        followSource: true,
+      })
+      const wsFrontend = join(created.path, 'frontend')
+      await writeFile(join(wsFrontend, 'agent-work.txt'), 'unpushed')
+      await execFileAsync('git', ['add', '.'], { cwd: wsFrontend })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: wsFrontend })
+      const { stdout: agentCommit } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: wsFrontend,
+      })
+
+      // Half-destroyed workspace → the reuse branch takes the rebuild path.
+      await execFileAsync('git', ['worktree', 'remove', '--force', join(created.path, 'backend')], {
+        cwd: backendDir,
+      })
+      await createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig)
+
+      const { stdout: branchTip } = await execFileAsync(
+        'git',
+        ['rev-parse', `refs/heads/${wsName}`],
+        { cwd: frontendDir },
+      )
+      expect(branchTip.trim()).toBe(agentCommit.trim())
     })
 
     it('refuses multi-repo deletion when the parent contains an unexpected entry', async () => {
