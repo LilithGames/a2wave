@@ -1,0 +1,1 @@
+ALTER TABLE "scm_sources" ADD COLUMN "deletion_requested_at" timestamp with time zone;

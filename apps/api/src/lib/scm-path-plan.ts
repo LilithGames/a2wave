@@ -6,7 +6,7 @@ import { scmSources } from '../db/schema.js'
 import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { env } from '../env.js'
 import { defaultWorkspacesPath } from './git-workspace.js'
-import { defaultScmLocalPath } from './scm-storage.js'
+import { defaultScmLocalPath, scmReclaimRoot } from './scm-storage.js'
 import {
   filesystemPathsOverlap,
   isSameFilesystemPath,
@@ -161,6 +161,9 @@ export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
   if (!isAbsolute(localPath)) {
     return { ok: false, status: 400, error: 'localPath must be an absolute path' }
   }
+  if (filesystemPathsOverlap(localPath, scmReclaimRoot(), platform)) {
+    return { ok: false, status: 400, error: 'localPath must not overlap the SCM reclaim root' }
+  }
 
   // Claiming a shared root as a checkout would put every other source's data
   // inside this one's working tree, where the next sync force-discards it.
@@ -179,6 +182,9 @@ export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
   const workspacesPath = input.workspacesPath ?? defaultWorkspacesPath(sourceId)
   if (!isAbsolute(workspacesPath)) {
     return { ok: false, status: 400, error: 'workspacesPath must be an absolute path' }
+  }
+  if (filesystemPathsOverlap(workspacesPath, scmReclaimRoot(), platform)) {
+    return { ok: false, status: 400, error: 'workspacesPath must not overlap the SCM reclaim root' }
   }
 
   if (filesystemPathsOverlap(workspacesPath, localPath, platform)) {

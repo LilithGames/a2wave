@@ -109,6 +109,22 @@ describe('validateScmWorkspacesRoot', () => {
     ).toBeNull()
   })
 
+  it('rejects the private reclaim root even for an administrator and broad allowlist', () => {
+    const originalStorageRoot = env.SCM_STORAGE_ROOT
+    env.SCM_STORAGE_ROOT = '/data/workspace'
+    try {
+      expect(
+        validateScmWorkspacesRoot(
+          '/data/workspace/.a2wave-scm-reclaim-v1/operator-worktrees',
+          '/data/workspace',
+          { allowOutsideConfiguredRoots: true, protectedPaths: [] },
+        ),
+      ).toMatch(/reclaim root/)
+    } finally {
+      env.SCM_STORAGE_ROOT = originalStorageRoot
+    }
+  })
+
   it('rejects platform storage even when an operator configures a broad allowed root', async () => {
     expect(
       validateScmWorkspacesRoot('/app/data/skills/worktrees', '/app/data', {

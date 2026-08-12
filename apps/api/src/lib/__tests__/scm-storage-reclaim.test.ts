@@ -190,23 +190,69 @@ describe('isolateManagedScmStorage', () => {
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true)
   })
 
-  // A crash between the rename and the delete must not strand the volume: the
-  // isolation area is swept at boot, and nothing outside it is ever touched.
-  it('sweeps directories stranded by an earlier crash', async () => {
+  it('never adopts a pre-existing non-empty operator directory as its reclaim root', async () => {
     const root = await makeStorageRoot()
-    const stranded = join(root, RECLAIM_ISOLATION_DIR, 'scm_aBcD-localPath-abc123')
-    await mkdir(stranded, { recursive: true })
-    const liveCheckout = join(root, 'sources', 'zZzZ')
-    await mkdir(liveCheckout, { recursive: true })
+    const operatorData = join(root, RECLAIM_ISOLATION_DIR, 'operator-checkout')
+    const checkout = join(root, 'sources', 'aBcD')
+    await mkdir(operatorData, { recursive: true })
+    await writeFile(join(operatorData, 'keep.txt'), 'operator data')
+    await mkdir(checkout, { recursive: true })
 
-    const { sweepIsolatedScmStorage } = await import('../scm-storage-reclaim.js')
-    const swept = await sweepIsolatedScmStorage()
+    await expect(
+      isolateManagedScmStorage({
+        id: 'scm_aBcD',
+        localPath: checkout,
+        workspacesPath: null,
+      }),
+    ).rejects.toThrow('Refusing to use unowned SCM reclaim root')
+    expect(existsSync(join(operatorData, 'keep.txt'))).toBe(true)
+    expect(existsSync(checkout)).toBe(true)
+  })
 
-    expect(swept).toEqual([stranded])
-    expect(existsSync(stranded)).toBe(false)
-    expect(existsSync(liveCheckout)).toBe(true)
-    // The isolation root itself survives, ready for the next reclaim.
-    expect(await readdir(join(root, RECLAIM_ISOLATION_DIR))).toEqual([])
+  it('fails without losing the original when a previous parked copy conflicts', async () => {
+    const root = await makeStorageRoot()
+    const checkout = join(root, 'sources', 'aBcD')
+    await mkdir(checkout, { recursive: true })
+
+    const firstAttempt = await isolateManagedScmStorage({
+      id: 'scm_aBcD',
+      localPath: checkout,
+      workspacesPath: null,
+    })
+    await mkdir(checkout, { recursive: true })
+    await writeFile(join(checkout, 'only-copy.txt'), 'keep')
+
+    await expect(
+      isolateManagedScmStorage({
+        id: 'scm_aBcD',
+        localPath: checkout,
+        workspacesPath: null,
+      }),
+    ).rejects.toThrow('Reclaim destination already exists')
+    expect(existsSync(join(checkout, 'only-copy.txt'))).toBe(true)
+    await firstAttempt.commit()
+  })
+
+  it('recovers a deterministic parked directory only for the same pending source', async () => {
+    const root = await makeStorageRoot()
+    const checkout = join(root, 'sources', 'aBcD')
+    await mkdir(checkout, { recursive: true })
+
+    const firstAttempt = await isolateManagedScmStorage({
+      id: 'scm_aBcD',
+      localPath: checkout,
+      workspacesPath: null,
+    })
+    const parked = firstAttempt.isolated[0].isolatedPath
+
+    const recovered = await isolateManagedScmStorage({
+      id: 'scm_aBcD',
+      localPath: checkout,
+      workspacesPath: null,
+    })
+    expect(recovered.isolated).toEqual([{ originalPath: checkout, isolatedPath: parked }])
+    await recovered.commit()
+    expect(existsSync(parked)).toBe(false)
   })
 
   it('is a no-op when the allocated directory was never created', async () => {

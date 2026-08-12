@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, P4Config } from '@a2wave/shared'
-import { and, eq, ne } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
 import { env } from '../env.js'
@@ -11,7 +11,10 @@ import { isCodegraphEnabled, runCodegraphIndex } from './codegraph-index.js'
 import { executeGitSync, sanitizeCredentials } from './git-sync.js'
 import { logger } from './logger.js'
 import { verifyP4ClientRootCoverage } from './p4-client-root.js'
-import { sweepIsolatedScmStorage } from './scm-storage-reclaim.js'
+import { selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
+import { isolateManagedScmStorage } from './scm-storage-reclaim.js'
+import { scmReclaimRoot } from './scm-storage.js'
+import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
 const execFileAsync = promisify(execFile)
@@ -504,7 +507,13 @@ async function runSyncUnderCheckoutLock(
       await db
         .update(scmSources)
         .set({ syncStatus: 'syncing', updatedAt: new Date() })
-        .where(and(eq(scmSources.id, sourceId), ne(scmSources.syncStatus, 'syncing')))
+        .where(
+          and(
+            eq(scmSources.id, sourceId),
+            ne(scmSources.syncStatus, 'syncing'),
+            isNull(scmSources.deletionRequestedAt),
+          ),
+        )
         .returning()
     )[0]
     if (!source) {
@@ -524,6 +533,18 @@ async function runSyncUnderCheckoutLock(
       logger.info({ sourceId }, 'Skipping SCM sync: already in progress')
       return { ok: false, message: 'Sync already in progress', alreadyRunning: true }
     }
+  }
+
+  if (source.deletionRequestedAt) {
+    releaseCheckout(sourceId)
+    await releasePreAcquiredSync(sourceId, 'SCM source deletion is pending')
+    return { ok: false, message: 'SCM source deletion is pending' }
+  }
+
+  if (filesystemPathsOverlap(source.localPath, scmReclaimRoot())) {
+    releaseCheckout(sourceId)
+    await releasePreAcquiredSync(sourceId, 'SCM localPath overlaps the private reclaim root')
+    return { ok: false, message: 'SCM localPath overlaps the private reclaim root' }
   }
 
   logger.info({ sourceId, name: source.name, type: source.type }, 'Starting SCM sync')
@@ -779,14 +800,33 @@ export async function initAutoSyncSchedulers(): Promise<void> {
     )
   }
 
-  // A delete isolates its directories before deleting them, so a crash in that
-  // gap strands them under the reserved isolation root. Nothing else can reach
-  // them — no row names them and no allocation derives them — so a restart is
-  // the only opportunity to reclaim the space. Deliberately not awaited into
-  // the critical path: unlike the status resets above, nothing blocks on it.
-  void sweepIsolatedScmStorage().catch((error) => {
-    logger.error({ error }, 'Failed to sweep isolated SCM storage on startup')
-  })
+  // Only a durable deletion reservation authorizes reclaim. Never sweep the
+  // isolation directory by filename: an older bind mount may already contain
+  // operator data there, and a crash before COMMIT must restore the live row.
+  const pendingDeletions = await db
+    .select()
+    .from(scmSources)
+    .where(isNotNull(scmSources.deletionRequestedAt))
+  for (const source of pendingDeletions) {
+    try {
+      const peers = await selectScmPathPeers()
+      const isolated = await isolateManagedScmStorage(source, { peers })
+      await isolated.commit()
+      const deleted = await withScmPathMutation(async (tx) => {
+        return (
+          await tx
+            .delete(scmSources)
+            .where(and(eq(scmSources.id, source.id), isNotNull(scmSources.deletionRequestedAt)))
+            .returning()
+        )[0]
+      })
+      if (deleted) {
+        logger.info({ sourceId: source.id }, 'Completed interrupted SCM source deletion')
+      }
+    } catch (error) {
+      logger.error({ sourceId: source.id, error }, 'Failed to resume SCM source deletion')
+    }
+  }
 
   const sources = await db.select().from(scmSources).where(eq(scmSources.isEnabled, true))
   const incompleteSourceIds: string[] = []

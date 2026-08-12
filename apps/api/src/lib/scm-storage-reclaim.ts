@@ -1,10 +1,16 @@
-import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, readdir, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { env } from '../env.js'
 import { logger } from './logger.js'
-import { defaultScmLocalPath, defaultScmWorkspacesPath, scmSourceIdSuffix } from './scm-storage.js'
+import {
+  SCM_RECLAIM_DIR,
+  SCM_RECLAIM_MARKER,
+  defaultScmLocalPath,
+  defaultScmWorkspacesPath,
+  scmReclaimRoot,
+  scmSourceIdSuffix,
+} from './scm-storage.js'
 import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 
 /**
@@ -28,12 +34,11 @@ import { filesystemPathsOverlap } from './scm-workspace-safety.js'
  * concurrent create could observe no peer, allocate the freed path, clone into
  * it, and have the still-pending delete remove the new source's checkout.
  *
- * `isolateManagedScmStorage` therefore runs inside the delete transaction while
- * the lock is held and only *renames* each directory into `.reclaiming/`. That
- * rename is the atomic hand-off: an allocator that arrives earlier is refused
- * by the row that still exists, and one that arrives later finds a free, empty
- * path. The slow recursive delete then runs afterwards against a parked copy no
- * live row can name, and a crash in between is swept at the next startup.
+ * DELETE first commits a durable deletion reservation while the source row
+ * continues to reserve its paths. Only after that commit does this module move
+ * exact managed directories into an a2wave-owned reclaim root. Startup recovery
+ * consults the durable row and resumes that same source; it never sweeps by
+ * filename. The final row delete happens only after recursive removal succeeds.
  */
 
 export interface ReclaimableScmSource {
@@ -68,16 +73,49 @@ export interface IsolateOptions extends ReclaimOptions {
 /**
  * Where vacated directories are parked between the rename and the delete.
  *
- * A source path is always `sources/<suffix>` or `workspaces/<suffix>`, so a
- * third sibling name is unreachable by construction: no id derives it, the
- * planner never allocates it, and an operator path pointing inside it would be
- * rejected as overlapping managed storage. That is what makes the parked copy
- * safe to delete at leisure — nothing live can come to occupy it.
+ * The planner and runtime backstops reserve this root, while the marker proves
+ * a2wave created it. A pre-existing non-empty operator directory is never
+ * adopted, even if it happens to use the same name.
  */
-export const RECLAIM_ISOLATION_DIR = '.reclaiming'
+export const RECLAIM_ISOLATION_DIR = SCM_RECLAIM_DIR
 
 function isolationRoot(): string {
-  return join(env.SCM_STORAGE_ROOT, RECLAIM_ISOLATION_DIR)
+  return scmReclaimRoot()
+}
+
+async function ensureOwnedIsolationRoot(): Promise<boolean> {
+  const root = isolationRoot()
+  const marker = join(root, SCM_RECLAIM_MARKER)
+  try {
+    const existing = await readFile(marker, 'utf8')
+    return existing === 'a2wave-scm-reclaim-v1\n'
+  } catch {
+    try {
+      const entries = await readdir(root)
+      if (entries.length > 0) {
+        logger.error({ root }, 'Refusing to use unowned non-empty SCM reclaim root')
+        return false
+      }
+    } catch {
+      await mkdir(root, { recursive: true })
+    }
+    await writeFile(marker, 'a2wave-scm-reclaim-v1\n', { flag: 'wx' }).catch(() => {})
+    return readFile(marker, 'utf8').then(
+      (value) => value === 'a2wave-scm-reclaim-v1\n',
+      () => false,
+    )
+  }
+}
+
+async function hasOwnedIsolationRoot(): Promise<boolean> {
+  try {
+    return (
+      (await readFile(join(isolationRoot(), SCM_RECLAIM_MARKER), 'utf8')) ===
+      'a2wave-scm-reclaim-v1\n'
+    )
+  } catch {
+    return false
+  }
 }
 
 export interface IsolatedScmPath {
@@ -169,12 +207,10 @@ function findOccupyingPeer(
 /**
  * Vacate this source's allocated directories, without deleting anything yet.
  *
- * Call this while holding the path mutation lock, in the same transaction that
- * removes the row. The rename is the atomic step: after it returns, the
- * allocated name is free and holds nothing, so a create/PATCH that acquires the
- * lock next either found the row still present (and was refused) or finds a
- * genuinely empty path. Deleting in place instead left a window in which the
- * freed name could be re-allocated and then recursively deleted.
+ * Call this only after a durable deletion reservation commits. The source row
+ * remains present while the rename and recursive removal run, so create/PATCH
+ * continue to reject overlapping allocations. The deterministic destination
+ * lets startup recovery rediscover a move interrupted by process exit.
  */
 export async function isolateManagedScmStorage(
   source: ReclaimableScmSource,
@@ -196,17 +232,29 @@ export async function isolateManagedScmStorage(
       continue
     }
 
-    if (!(await isReclaimableDir(path))) continue
+    const isolatedPath = join(isolationRoot(), `${source.id}-${label}`)
+    if (!(await isReclaimableDir(path))) {
+      if ((await hasOwnedIsolationRoot()) && (await isReclaimableDir(isolatedPath))) {
+        isolated.push({ originalPath: path, isolatedPath })
+      }
+      continue
+    }
 
-    const isolatedPath = join(isolationRoot(), `${source.id}-${label}-${randomUUID()}`)
+    if (!(await ensureOwnedIsolationRoot())) {
+      throw new Error(`Refusing to use unowned SCM reclaim root: ${isolationRoot()}`)
+    }
     try {
-      await mkdir(isolationRoot(), { recursive: true })
+      if (await isReclaimableDir(isolatedPath)) {
+        throw new Error(`Reclaim destination already exists: ${isolatedPath}`)
+      }
       await rename(path, isolatedPath)
       isolated.push({ originalPath: path, isolatedPath })
     } catch (error) {
-      // The row is going away regardless, so this cannot fail the request. The
-      // directory stays where it is and is simply not reclaimed.
       logger.error({ path, error }, 'Failed to isolate managed SCM storage')
+      // Keep the durable deletion reservation when the move fails. Finalizing
+      // the row here would strand an allocated checkout with no row capable of
+      // naming or retrying it; startup recovery can safely try again instead.
+      throw error
     }
   }
 
@@ -215,14 +263,8 @@ export async function isolateManagedScmStorage(
     commit: async () => {
       const reclaimed: string[] = []
       for (const { originalPath, isolatedPath } of isolated) {
-        try {
-          await removeDir(isolatedPath)
-          reclaimed.push(originalPath)
-        } catch (error) {
-          // Already vacated and unreachable, so a failure here costs disk, not
-          // correctness. The boot sweep retries it.
-          logger.error({ isolatedPath, error }, 'Failed to delete isolated managed SCM storage')
-        }
+        await removeDir(isolatedPath)
+        reclaimed.push(originalPath)
       }
       if (reclaimed.length > 0) {
         logger.info({ sourceId: source.id, reclaimed }, 'Reclaimed managed SCM storage')
@@ -230,39 +272,4 @@ export async function isolateManagedScmStorage(
       return reclaimed
     },
   }
-}
-
-/**
- * Delete anything a crash stranded between the rename and the delete.
- *
- * Only the isolation area is swept, and every entry in it is by definition
- * already detached from a live row — so this needs no lock and can never race a
- * running allocation.
- */
-export async function sweepIsolatedScmStorage(options: ReclaimOptions = {}): Promise<string[]> {
-  const removeDir =
-    options.removeDir ?? ((path: string) => rm(path, { recursive: true, force: true }))
-
-  let entries: string[]
-  try {
-    entries = await readdir(isolationRoot())
-  } catch {
-    return [] // Nothing was ever isolated.
-  }
-
-  const swept: string[] = []
-  for (const entry of entries) {
-    const path = join(isolationRoot(), entry)
-    try {
-      await removeDir(path)
-      swept.push(path)
-    } catch (error) {
-      logger.error({ path, error }, 'Failed to sweep isolated managed SCM storage')
-    }
-  }
-
-  if (swept.length > 0) {
-    logger.info({ swept }, 'Swept SCM storage stranded by an earlier restart')
-  }
-  return swept
 }

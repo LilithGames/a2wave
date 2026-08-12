@@ -33,6 +33,7 @@ vi.mock('../../db/schema.js', () => ({
     createdAt: 'scmSources.createdAt',
     syncStatus: 'scmSources.syncStatus',
     codegraphStatus: 'scmSources.codegraphStatus',
+    deletionRequestedAt: 'scmSources.deletionRequestedAt',
   },
   runs: { id: 'runs.id', workDir: 'runs.workDir', status: 'runs.status' },
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
@@ -203,6 +204,7 @@ describe('SCM Sources routes', () => {
       isolated: [],
       commit: vi.fn().mockResolvedValue([]),
     })
+    ;(writeAudit as Mock).mockResolvedValue(undefined)
     const mod = await import('../scm-sources.js')
     app = new Hono()
     // Production authMiddleware injects userRole; tests default to admin so
@@ -449,6 +451,18 @@ describe('SCM Sources routes', () => {
   })
 
   describe('DELETE /:id', () => {
+    beforeEach(() => {
+      ;(db.select as Mock).mockReturnValue(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({
+          id: 'scm_1',
+          name: 'Source',
+          localPath: '/data/workspace/sources/1',
+          workspacesPath: null,
+          deletionRequestedAt: new Date(),
+        }),
+      )
+    })
     it('deletes a source with no agent references', async () => {
       // First select: find source; Second select: find referencing agents (empty)
       ;(db.select as Mock)
@@ -546,12 +560,11 @@ describe('SCM Sources routes', () => {
      * mutation lock, observe no peer, allocate the freed path and clone into it
      * — and the pending recursive delete then removed the NEW source's checkout.
      *
-     * Vacating has to happen inside the same locked transaction as the row
-     * delete, so the freed name is already empty by the time any allocator can
-     * see the row is gone. The delete of the parked copy may then run late; it
-     * no longer names anything a live row can point at.
+     * The reservation must commit before vacating, while the row still blocks
+     * every allocator. Only after the parked copy is removed may phase two
+     * delete the row and release its path reservation.
      */
-    it('vacates the allocated path inside the locked delete transaction', async () => {
+    it('commits the deletion reservation before vacating the allocated path', async () => {
       const source = {
         id: 'scm_1',
         name: 'Source',
@@ -565,6 +578,10 @@ describe('SCM Sources routes', () => {
       ;(db.delete as Mock).mockImplementation(() => {
         order.push('delete')
         return makeDeleteChain(source)
+      })
+      ;(db.update as Mock).mockImplementation(() => {
+        order.push('reserve')
+        return makeUpdateChain({ ...source, deletionRequestedAt: new Date() })
       })
       ;(isolateManagedScmStorage as Mock).mockImplementationOnce(async () => {
         order.push('isolate')
@@ -583,15 +600,12 @@ describe('SCM Sources routes', () => {
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
       expect(res.status).toBe(200)
-      const begin = order.indexOf('BEGIN')
-      const commit = order.indexOf('COMMIT')
-      // The rename lands strictly between BEGIN and COMMIT — while the lock is
-      // held — so no allocator can observe the freed row before the freed path.
-      expect(order.indexOf('isolate')).toBeGreaterThan(order.indexOf('delete'))
-      expect(order.indexOf('isolate')).toBeLessThan(commit)
-      expect(begin).toBeGreaterThanOrEqual(0)
-      // Only the (slow) recursive delete is allowed to trail the commit.
-      expect(order.indexOf('commit-delete')).toBeGreaterThan(commit)
+      const firstCommit = order.indexOf('COMMIT')
+      expect(order.indexOf('reserve')).toBeGreaterThanOrEqual(0)
+      expect(firstCommit).toBeGreaterThan(order.indexOf('reserve'))
+      expect(order.indexOf('isolate')).toBeGreaterThan(firstCommit)
+      expect(order.indexOf('commit-delete')).toBeGreaterThan(order.indexOf('isolate'))
+      expect(order.indexOf('delete')).toBeGreaterThan(order.indexOf('commit-delete'))
     })
 
     /**
@@ -636,7 +650,7 @@ describe('SCM Sources routes', () => {
      * `withTransaction` gives, and what makes "who deleted this" always
      * answerable (Iron Rule 5).
      */
-    it('commits the row delete and its audit entry in one transaction', async () => {
+    it('commits the deletion reservation and audit entry in one transaction', async () => {
       const source = {
         id: 'scm_1',
         name: 'Source',
@@ -650,6 +664,10 @@ describe('SCM Sources routes', () => {
       ;(db.delete as Mock).mockImplementation(() => {
         order.push('delete')
         return makeDeleteChain(source)
+      })
+      ;(db.update as Mock).mockImplementation(() => {
+        order.push('reserve')
+        return makeUpdateChain({ ...source, deletionRequestedAt: new Date() })
       })
       ;(writeAudit as Mock).mockImplementation(async () => {
         order.push('audit:insert')
@@ -665,12 +683,13 @@ describe('SCM Sources routes', () => {
       const commit = order.indexOf('COMMIT')
       expect(begin).toBeGreaterThanOrEqual(0)
       expect(commit).toBeGreaterThan(begin)
-      // The row delete and the audit INSERT both land strictly inside the
-      // BEGIN/COMMIT window, so a crash cannot leave one without the other.
-      for (const step of ['delete', 'audit:insert']) {
+      // The durable reservation and audit INSERT land together. The row delete
+      // is a later phase after filesystem reclaim has settled.
+      for (const step of ['reserve', 'audit:insert']) {
         expect(order.indexOf(step)).toBeGreaterThan(begin)
         expect(order.indexOf(step)).toBeLessThan(commit)
       }
+      expect(order.indexOf('delete')).toBeGreaterThan(commit)
     })
 
     it('does not delete or reclaim storage when the durable audit insert fails', async () => {
@@ -690,6 +709,81 @@ describe('SCM Sources routes', () => {
 
       expect(res.status).toBe(500)
       expect(isolateManagedScmStorage).not.toHaveBeenCalled()
+    })
+
+    // PROBE A: isolation now throws to preserve the reservation. What does the
+    // caller see, and is the row still there?
+    it('PROBE A: reports a retryable failure when isolation throws', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
+      )
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+      ;(isolateManagedScmStorage as Mock).mockRejectedValueOnce(
+        new Error('Reclaim destination already exists: /data/workspace/.a2wave-scm-reclaim-v1/x'),
+      )
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+      const body = await res.json().catch(() => ({}))
+      expect({ probeA: res.status, body }).toBe('SHOWME')
+      expect(db.delete).not.toHaveBeenCalled()
+    })
+
+    // PROBE B: same for the recursive removal failing (EBUSY / EACCES).
+    it('PROBE B: reports a retryable failure when commit throws', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
+      )
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+      ;(isolateManagedScmStorage as Mock).mockResolvedValueOnce({
+        isolated: [{ originalPath: source.localPath, isolatedPath: '/x' }],
+        commit: vi.fn().mockRejectedValue(new Error('EBUSY')),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+      const body = await res.json().catch(() => ({}))
+      expect({ probeB: res.status, body }).toBe('SHOWME')
+      expect(db.delete).not.toHaveBeenCalled()
+    })
+
+    // PROBE C: a row reserved for deletion still satisfies the plain listing
+    // filter. Does GET / still show a source the user was told is deleted?
+    it('PROBE C: hides sources reserved for deletion from the list', async () => {
+      const pending = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+        deletionRequestedAt: new Date(),
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain([{ count: 1 }]))
+        .mockReturnValueOnce(makeDbChain([pending]))
+
+      const res = await app.request('/api/scm-sources')
+      const body = await res.json()
+      console.log(
+        'PROBE C listed ids:',
+        JSON.stringify(body.data?.map((s: { id: string }) => s.id)),
+      )
+      expect(body.data).toHaveLength(0)
     })
 
     it('returns 404 for non-existent source', async () => {
@@ -745,6 +839,26 @@ describe('SCM Sources routes', () => {
   })
 
   describe('PATCH /:id', () => {
+    it('refuses to mutate a source with a durable deletion reservation', async () => {
+      ;(db.select as Mock).mockReturnValueOnce(
+        makeDbChain({
+          id: 'scm_1',
+          name: 'Source',
+          deletionRequestedAt: new Date(),
+        }),
+      )
+
+      const res = await app.request('/api/scm-sources/scm_1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Changed while deleting' }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({ error: 'SCM source deletion is pending' })
+      expect(db.update).not.toHaveBeenCalled()
+    })
+
     it('cancels and waits for an automatic initial sync before repairing its config', async () => {
       const existingSource = {
         id: 'scm_1',
@@ -1931,6 +2045,7 @@ describe('SCM Sources routes', () => {
     it('returns 409 when workspace is occupied', async () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
         .mockReturnValueOnce(makeDbChain({ id: 'run_running' }))
       mockCreateScmSource.mockReturnValue({
         wsRoot: '/workspaces/scm_1',

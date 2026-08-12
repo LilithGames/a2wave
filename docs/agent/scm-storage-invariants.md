@@ -37,22 +37,26 @@ below hold across every affected entry point.
 - PATCH and DELETE may cancel an automatic initial checkout. Periodic sync and
   indexing keep the busy guard; weakening it risks concurrent checkout damage.
 - Cancellation is not a sync failure and must not emit a failure notification.
-- Deleting a source row and writing `scm_source.delete` commit atomically.
-- Freeing a path is a path mutation: DELETE takes the same lock as create and
-  PATCH, and **vacates** the allocated directories inside that transaction by
-  renaming them into the reserved `.reclaiming/` sibling of `sources/` and
-  `workspaces/`. Deleting in place after the commit is a race — a concurrent
-  create sees no peer row, allocates the freed path, and the pending recursive
-  delete then removes the new source's checkout.
-- The recursive delete of the parked copy runs after commit and has its own
-  outcome audit. It can only ever name a directory no live row points at, so it
-  is safe to run late, to fail, or to be retried by the startup sweep.
+- DELETE is a durable two-phase operation. Its first transaction writes
+  `deletion_requested_at`, disables the source, and writes `scm_source.delete`;
+  the source row remains as a path reservation until filesystem reclaim
+  succeeds. No filesystem operation may run before that transaction commits.
+- After the reservation commits, exact managed paths may be atomically renamed
+  into `.a2wave-scm-reclaim-v1/` and recursively removed. Only then may a second
+  transaction delete the source row. A failure leaves the reservation for a
+  retry rather than losing the row-to-checkout relationship.
+- Startup recovery is database-directed: only rows with a durable deletion
+  reservation authorize cleanup. Never sweep the reclaim directory by filename.
+  A transaction rollback or an unmarked directory must preserve its contents.
+- The reclaim root requires the a2wave ownership marker. The planner, runtime
+  workspace validation, and sync backstop reject any source path overlapping
+  that root. An existing non-empty operator directory is never adopted.
 - Reclaim only exact id-derived managed paths, including the exact legacy
   worktree path. Never recursively delete an operator-chosen path or a symlink,
   and never vacate a path that still overlaps a surviving peer — legacy rows can
   nest a worktree root inside another source's checkout.
-- A restart sweeps `.reclaiming/`; nothing else may be swept, and no allocation
-  may ever resolve into it.
+- The legacy `.reclaiming/` name is not swept. Existing operator data with that
+  name remains untouched during upgrade.
 
 ## Container ownership
 

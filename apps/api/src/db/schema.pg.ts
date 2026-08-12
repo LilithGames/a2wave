@@ -380,6 +380,8 @@ export const scmSources = pgTable('scm_sources', {
   workspacesPath: text('workspaces_path').unique(),
   /** Whether enabled */
   isEnabled: boolean('is_enabled').notNull().default(true),
+  /** Durable first phase of an SCM source deletion. */
+  deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true, mode: 'date' }),
   /** Owning user */
   userId: text('user_id').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })

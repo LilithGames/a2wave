@@ -7,7 +7,7 @@ import {
   updateScmSourceInput,
 } from '@a2wave/shared'
 import type { GitConfig, P4Config, ScmSourceConfig } from '@a2wave/shared'
-import { and, count, desc, eq, inArray, ne } from 'drizzle-orm'
+import { and, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
@@ -222,6 +222,9 @@ app.patch('/:id', async (c) => {
   let existing = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!existing) {
     return c.json({ error: 'SCM source not found' }, 404)
+  }
+  if (existing.deletionRequestedAt) {
+    return c.json({ error: 'SCM source deletion is pending' }, 409)
   }
 
   const body = await c.req.json()
@@ -479,26 +482,19 @@ app.delete('/:id', async (c) => {
         ne(scmSources.syncStatus, 'syncing'),
         ne(scmSources.codegraphStatus, 'indexing'),
       )
-  // The row delete and its audit entry commit together. Merely ordering the
-  // audit first shrank the loss window but left two independent writes, so a
-  // crash or pod eviction between them still deleted the source with nothing
-  // recording it. One transaction makes that unrepresentable: either both land
-  // or neither does, so "who deleted this" stays answerable (Iron Rule 5).
-  //
-  // Deletion joins the same path mutation protocol as create and PATCH, because
-  // freeing a path is as much a path mutation as claiming one. Reclaiming after
-  // the commit instead left a window where the row was gone but its directory
-  // was not: a concurrent create could acquire the lock, see no peer, allocate
-  // the freed path and clone into it — and the pending recursive delete then
-  // removed the new source's checkout. Vacating inside the lock closes that
-  // ordering: an allocator either precedes the rename and is refused by the row
-  // that still exists, or follows it and finds an empty path.
-  //
-  // `reclaimedPaths` deliberately stays out of this entry — the directories are
-  // only renamed here, and the delete is audited separately once it settles.
-  const outcome = await withScmPathMutation(async (tx) => {
+  // Phase one is durable before the filesystem changes: the row remains as a
+  // path reservation while deletionRequestedAt records the recovery decision.
+  // A rollback therefore leaves both the row and checkout untouched. Startup
+  // can finish any request that committed but did not reach phase two.
+  const reservation = await withScmPathMutation(async (tx) => {
     const peers = await selectScmPathPeers(tx)
-    const row = (await tx.delete(scmSources).where(deleteConditions).returning())[0]
+    const row = (
+      await tx
+        .update(scmSources)
+        .set({ deletionRequestedAt: new Date(), isEnabled: false, updatedAt: new Date() })
+        .where(and(deleteConditions, isNull(scmSources.deletionRequestedAt)))
+        .returning()
+    )[0]
     if (!row) return undefined
     await writeAudit(
       c,
@@ -510,24 +506,28 @@ app.delete('/:id', async (c) => {
       },
       tx,
     )
-    // Only what a2wave allocated is vacated. A managed path is derived from the
-    // source id, so leaving it behind strands a checkout nothing can name
-    // again; an operator-chosen path is their data and is never touched, and a
-    // legacy path nested under a surviving peer is refused by the peer scan.
-    const isolatedStorage = await isolateManagedScmStorage(row, { peers })
-    return { row, isolatedStorage }
+    return { row, peers }
   })
-  if (!outcome) {
-    return c.json({ error: 'Cannot delete an SCM source while its checkout is in use' }, 409)
+  const pendingSource = reservation?.row ?? source
+  if (!reservation && !source.deletionRequestedAt) {
+    return c.json({ error: 'Cannot reserve the SCM source for deletion' }, 409)
   }
-  const { row: deleted, isolatedStorage } = outcome
 
   stopAutoSync(id)
 
-  // The parked directories are unreachable by any live row, so deleting them
-  // outside the lock cannot race an allocation. A failure here costs disk
-  // rather than correctness, and the boot sweep retries it.
+  const peers = reservation?.peers ?? (await selectScmPathPeers())
+  const isolatedStorage = await isolateManagedScmStorage(pendingSource, { peers })
   const reclaimedPaths = await isolatedStorage.commit()
+
+  const deleted = await withScmPathMutation(async (tx) => {
+    return (
+      await tx
+        .delete(scmSources)
+        .where(and(eq(scmSources.id, id), isNotNull(scmSources.deletionRequestedAt)))
+        .returning()
+    )[0]
+  })
+  if (!deleted) return c.json({ error: 'SCM deletion reservation was lost' }, 409)
 
   // Only worth an entry when a2wave actually removed something: an
   // operator-chosen path is never reclaimed, and an empty list would add a row
@@ -745,8 +745,17 @@ app.post('/:id/sync', async (c) => {
   // Acquired here so the ownership filter applies; syncScmSource is then told the
   // status is already held so it does not try to acquire a second time.
   const atomicConditions = ownerFilter
-    ? and(eq(scmSources.id, id), ownerFilter, ne(scmSources.syncStatus, 'syncing'))
-    : and(eq(scmSources.id, id), ne(scmSources.syncStatus, 'syncing'))
+    ? and(
+        eq(scmSources.id, id),
+        ownerFilter,
+        ne(scmSources.syncStatus, 'syncing'),
+        isNull(scmSources.deletionRequestedAt),
+      )
+    : and(
+        eq(scmSources.id, id),
+        ne(scmSources.syncStatus, 'syncing'),
+        isNull(scmSources.deletionRequestedAt),
+      )
   const acquired = (
     await db
       .update(scmSources)
@@ -852,8 +861,17 @@ app.post('/:id/codegraph/reindex', async (c) => {
   }
 
   const atomicConditions = ownerFilter
-    ? and(eq(scmSources.id, id), ownerFilter, ne(scmSources.codegraphStatus, 'indexing'))
-    : and(eq(scmSources.id, id), ne(scmSources.codegraphStatus, 'indexing'))
+    ? and(
+        eq(scmSources.id, id),
+        ownerFilter,
+        ne(scmSources.codegraphStatus, 'indexing'),
+        isNull(scmSources.deletionRequestedAt),
+      )
+    : and(
+        eq(scmSources.id, id),
+        ne(scmSources.codegraphStatus, 'indexing'),
+        isNull(scmSources.deletionRequestedAt),
+      )
   const acquired = (
     await db
       .update(scmSources)

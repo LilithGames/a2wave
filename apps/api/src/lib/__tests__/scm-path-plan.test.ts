@@ -141,6 +141,24 @@ describe('resolveScmPathPlan', () => {
     expect(plan.status).toBe(400)
   })
 
+  it.each(['localPath', 'workspacesPath'] as const)(
+    'rejects %s anywhere inside the private reclaim root',
+    (field) => {
+      const plan = resolveScmPathPlan({
+        sourceId: 'scm_zZzZ',
+        type: 'git',
+        [field]: '/data/workspace/.a2wave-scm-reclaim-v1/operator-data',
+        existingSources: [],
+        isAdmin: true,
+      })
+
+      expect(plan.ok).toBe(false)
+      if (plan.ok) return
+      expect(plan.status).toBe(400)
+      expect(plan.error).toContain('reclaim')
+    },
+  )
+
   it('still rejects an exactly duplicated localPath', () => {
     const plan = resolveScmPathPlan({
       sourceId: 'scm_zZzZ',
