@@ -1,7 +1,7 @@
-import { codegraphWorkspaceEntries } from './codegraph-index.js'
 import { kbSyncWorkspaceEntries } from '../engine/kb-sync.js'
 import { mcpSyncWorkspaceEntries } from '../engine/mcp-sync.js'
 import { skillSyncWorkspaceEntries } from '../engine/skill-sync.js'
+import { codegraphWorkspaceEntries } from './codegraph-index.js'
 
 /**
  * Workspace-root entries the platform itself writes into run workspaces.
