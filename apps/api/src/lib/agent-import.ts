@@ -971,7 +971,7 @@ export async function importAgentFromZip(
       // A *missing* mode counts as `feishu_scope`, not as the new default: bundles exported
       // before 0071 carry no `oauthAccessMode`, yet their source Agent ran on this column's
       // old DEFAULT — which was `feishu_scope`, i.e. restricted. Reading absence as
-      // `all_idaas_users` would republish it open to every enterprise SSO user.
+      // `all_idaas_users` would republish it open to every OIDC-authenticated user.
       //
       // And as in 0100, "restricted" only means something for a bundle that actually
       // publishes the oauth channel; everything else lands on the new default rather than
