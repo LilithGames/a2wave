@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   WORKSPACE_STATE_FILE,
   WorktreeBranchLockedError,
@@ -20,6 +20,11 @@ import {
   writeWorkspaceState,
 } from '../git-workspace.js'
 import { createScmSource } from '../scm-source.js'
+
+vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../scm-workspace-safety.js')>()),
+  assertStoredScmWorkspacesRoot: vi.fn().mockResolvedValue(undefined),
+}))
 
 const execFileAsync = promisify(execFile)
 
@@ -852,34 +857,37 @@ describe('git-workspace', () => {
     })
 
     /**
-     * End-to-end 验证 ephemeral 清理路径：
-     *   createScmSource(git) → scm.createWorkspace → scm.removeWorkspace
-     * 整条链走真 git 命令，证明 worktree 注册 + 卸载闭环。
+     * Exercises the complete ephemeral cleanup path through real Git commands:
+     * createScmSource(git) -> createWorkspace -> removeWorkspace.
+     * The stored-path database assertion is injected because unit tests never
+     * connect to a real database; its behavior is covered by its own tests.
      */
-    it('creates and removes a worktree via scm-source wrapper (no mocks)', async () => {
+    it('creates and removes a worktree via scm-source wrapper without mocking Git', async () => {
       const source = await createScmSource({
         id: `scm__round-trip-${Date.now()}`,
         type: 'git',
         localPath: REPO_DIR,
+        workspacesPath: WS_ROOT,
         name: 'round-trip',
         config: singleRepoConfig as unknown as Record<string, unknown>,
       })
       expect(source).not.toBeNull()
+      if (!source) throw new Error('Expected a Git SCM source')
 
-      const created = await source!.createWorkspace('ephemeral-ws')
+      const created = await source.createWorkspace('ephemeral-ws')
       expect(created.created).toBe(true)
       expect(existsSync(created.path)).toBe(true)
 
-      // git worktree list 中应包含新 worktree
+      // The new worktree must be registered with Git.
       const { stdout: beforeRemove } = await execFileAsync('git', ['worktree', 'list'], {
         cwd: REPO_DIR,
       })
       expect(beforeRemove).toContain('ephemeral-ws')
 
-      await source!.removeWorkspace('ephemeral-ws')
+      await source.removeWorkspace('ephemeral-ws')
       expect(existsSync(created.path)).toBe(false)
 
-      // git worktree list 中也不应再出现
+      // Removal must also clear the Git worktree registration.
       const { stdout: afterRemove } = await execFileAsync('git', ['worktree', 'list'], {
         cwd: REPO_DIR,
       })
