@@ -59,6 +59,20 @@ describe('scm_chown_targets', () => {
     assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, 'workspaces')])
   })
 
+  /**
+   * DELETE parks a vacated checkout in `.reclaiming/` and the startup sweep
+   * deletes it as appuser. A remap that skipped this subtree would leave those
+   * directories owned by the old UID, so the sweep could never remove them —
+   * a permanent leak of exactly the space reclaim exists to recover.
+   */
+  it('emits the reclaim isolation subtree so the startup sweep can delete it', () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'sources'))
+    mkdirSync(join(root, '.reclaiming'))
+
+    assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, '.reclaiming')])
+  })
+
   it('leaves an operator directory under the same mount untouched', () => {
     const root = makeRoot()
     mkdirSync(join(root, 'sources'))

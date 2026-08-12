@@ -9,7 +9,12 @@
 # that root belongs to the operator: on the shipped Compose defaults the root is
 # the /data/workspace bind mount, which is routinely a host directory used
 # directly by whoever runs the stack.
-SCM_MANAGED_SUBDIRS='sources workspaces'
+#
+# `.reclaiming` holds checkouts a DELETE has vacated but not yet deleted. It is
+# a2wave's own, and the startup sweep must be able to remove its contents as
+# appuser — so a UID remap that skipped it would strand those directories under
+# the old owner forever, leaking exactly the space reclaim exists to recover.
+SCM_MANAGED_SUBDIRS='sources workspaces .reclaiming'
 
 # Print the paths the UID remap may chown, one per line.
 #

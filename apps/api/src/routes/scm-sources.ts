@@ -12,7 +12,6 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, runs, scmSources } from '../db/schema.js'
-import { withTransaction } from '../db/transaction.js'
 import { scmSourceAuditDetails } from '../lib/audit-details.js'
 import { logAudit, writeAudit } from '../lib/audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from '../lib/codegraph-index.js'
@@ -44,7 +43,7 @@ import {
   scmConfigEquals,
 } from '../lib/scm-secret-mask.js'
 import { createScmSource } from '../lib/scm-source.js'
-import { reclaimManagedScmStorage } from '../lib/scm-storage-reclaim.js'
+import { isolateManagedScmStorage } from '../lib/scm-storage-reclaim.js'
 import { validateStoredScmWorkspacesRoot } from '../lib/scm-workspace-safety.js'
 import { isAdmin } from '../middleware/auth-middleware.js'
 import { rateLimit } from '../middleware/rate-limit.js'
@@ -486,9 +485,19 @@ app.delete('/:id', async (c) => {
   // recording it. One transaction makes that unrepresentable: either both land
   // or neither does, so "who deleted this" stays answerable (Iron Rule 5).
   //
-  // `reclaimedPaths` deliberately stays out of this entry — the filesystem work
-  // runs after the commit and is audited separately once it settles.
-  const deleted = await withTransaction(async (tx) => {
+  // Deletion joins the same path mutation protocol as create and PATCH, because
+  // freeing a path is as much a path mutation as claiming one. Reclaiming after
+  // the commit instead left a window where the row was gone but its directory
+  // was not: a concurrent create could acquire the lock, see no peer, allocate
+  // the freed path and clone into it — and the pending recursive delete then
+  // removed the new source's checkout. Vacating inside the lock closes that
+  // ordering: an allocator either precedes the rename and is refused by the row
+  // that still exists, or follows it and finds an empty path.
+  //
+  // `reclaimedPaths` deliberately stays out of this entry — the directories are
+  // only renamed here, and the delete is audited separately once it settles.
+  const outcome = await withScmPathMutation(async (tx) => {
+    const peers = await selectScmPathPeers(tx)
     const row = (await tx.delete(scmSources).where(deleteConditions).returning())[0]
     if (!row) return undefined
     await writeAudit(
@@ -501,19 +510,24 @@ app.delete('/:id', async (c) => {
       },
       tx,
     )
-    return row
+    // Only what a2wave allocated is vacated. A managed path is derived from the
+    // source id, so leaving it behind strands a checkout nothing can name
+    // again; an operator-chosen path is their data and is never touched, and a
+    // legacy path nested under a surviving peer is refused by the peer scan.
+    const isolatedStorage = await isolateManagedScmStorage(row, { peers })
+    return { row, isolatedStorage }
   })
-  if (!deleted) {
+  if (!outcome) {
     return c.json({ error: 'Cannot delete an SCM source while its checkout is in use' }, 409)
   }
+  const { row: deleted, isolatedStorage } = outcome
 
   stopAutoSync(id)
 
-  // Reclaim only what a2wave allocated. A managed path is derived from the
-  // source id, so leaving it behind strands a checkout nothing can name again;
-  // an operator-chosen path is their data and is never touched. Runs after the
-  // row is gone, so a filesystem failure logs rather than failing the delete.
-  const reclaimedPaths = await reclaimManagedScmStorage(deleted)
+  // The parked directories are unreachable by any live row, so deleting them
+  // outside the lock cannot race an allocation. A failure here costs disk
+  // rather than correctness, and the boot sweep retries it.
+  const reclaimedPaths = await isolatedStorage.commit()
 
   // Only worth an entry when a2wave actually removed something: an
   // operator-chosen path is never reclaimed, and an empty list would add a row

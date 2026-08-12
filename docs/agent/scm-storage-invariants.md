@@ -37,10 +37,22 @@ below hold across every affected entry point.
 - PATCH and DELETE may cancel an automatic initial checkout. Periodic sync and
   indexing keep the busy guard; weakening it risks concurrent checkout damage.
 - Cancellation is not a sync failure and must not emit a failure notification.
-- Deleting a source row and writing `scm_source.delete` commit atomically. The
-  filesystem reclaim runs after commit and has its own outcome audit.
+- Deleting a source row and writing `scm_source.delete` commit atomically.
+- Freeing a path is a path mutation: DELETE takes the same lock as create and
+  PATCH, and **vacates** the allocated directories inside that transaction by
+  renaming them into the reserved `.reclaiming/` sibling of `sources/` and
+  `workspaces/`. Deleting in place after the commit is a race — a concurrent
+  create sees no peer row, allocates the freed path, and the pending recursive
+  delete then removes the new source's checkout.
+- The recursive delete of the parked copy runs after commit and has its own
+  outcome audit. It can only ever name a directory no live row points at, so it
+  is safe to run late, to fail, or to be retried by the startup sweep.
 - Reclaim only exact id-derived managed paths, including the exact legacy
-  worktree path. Never recursively delete an operator-chosen path or a symlink.
+  worktree path. Never recursively delete an operator-chosen path or a symlink,
+  and never vacate a path that still overlaps a surviving peer — legacy rows can
+  nest a worktree root inside another source's checkout.
+- A restart sweeps `.reclaiming/`; nothing else may be swept, and no allocation
+  may ever resolve into it.
 
 ## Container ownership
 

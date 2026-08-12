@@ -11,6 +11,7 @@ import { isCodegraphEnabled, runCodegraphIndex } from './codegraph-index.js'
 import { executeGitSync, sanitizeCredentials } from './git-sync.js'
 import { logger } from './logger.js'
 import { verifyP4ClientRootCoverage } from './p4-client-root.js'
+import { sweepIsolatedScmStorage } from './scm-storage-reclaim.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
 const execFileAsync = promisify(execFile)
@@ -777,6 +778,15 @@ export async function initAutoSyncSchedulers(): Promise<void> {
       'Reset stuck CodeGraph indexing source to error on startup',
     )
   }
+
+  // A delete isolates its directories before deleting them, so a crash in that
+  // gap strands them under the reserved isolation root. Nothing else can reach
+  // them — no row names them and no allocation derives them — so a restart is
+  // the only opportunity to reclaim the space. Deliberately not awaited into
+  // the critical path: unlike the status resets above, nothing blocks on it.
+  void sweepIsolatedScmStorage().catch((error) => {
+    logger.error({ error }, 'Failed to sweep isolated SCM storage on startup')
+  })
 
   const sources = await db.select().from(scmSources).where(eq(scmSources.isEnabled, true))
   const incompleteSourceIds: string[] = []

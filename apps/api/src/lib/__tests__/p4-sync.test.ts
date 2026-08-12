@@ -64,6 +64,9 @@ vi.mock('node:fs', () => ({
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
   realpathSync: vi.fn((p: string) => (p === '/tmp' ? '/private/tmp' : p)),
+  // Reached via the startup isolation sweep, which pulls in the path-identity
+  // helpers in scm-workspace-safety.
+  statSync: vi.fn(() => ({ dev: 1, ino: 1 })),
 }))
 
 vi.mock('../logger.js', () => ({

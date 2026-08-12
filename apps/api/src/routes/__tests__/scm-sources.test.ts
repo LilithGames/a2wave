@@ -47,7 +47,10 @@ vi.mock('../../lib/scm-source.js', () => ({
 }))
 
 vi.mock('../../lib/scm-storage-reclaim.js', () => ({
-  reclaimManagedScmStorage: vi.fn().mockResolvedValue([]),
+  isolateManagedScmStorage: vi.fn().mockResolvedValue({
+    isolated: [],
+    commit: vi.fn().mockResolvedValue([]),
+  }),
 }))
 
 vi.mock('../../lib/owner-filter.js', () => ({
@@ -185,7 +188,7 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../../lib/p4-sync.js'
-import { reclaimManagedScmStorage } from '../../lib/scm-storage-reclaim.js'
+import { isolateManagedScmStorage } from '../../lib/scm-storage-reclaim.js'
 
 import { asyncQuery } from '../../test/async-query.js'
 
@@ -194,6 +197,12 @@ describe('SCM Sources routes', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    // clearAllMocks drops the factory's resolved value, and DELETE always awaits
+    // this handle — without a default every delete test would reject on `commit`.
+    ;(isolateManagedScmStorage as Mock).mockResolvedValue({
+      isolated: [],
+      commit: vi.fn().mockResolvedValue([]),
+    })
     const mod = await import('../scm-sources.js')
     app = new Hono()
     // Production authMiddleware injects userRole; tests default to admin so
@@ -488,8 +497,9 @@ describe('SCM Sources routes', () => {
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
       expect(res.status).toBe(200)
-      expect(reclaimManagedScmStorage).toHaveBeenCalledWith(
+      expect(isolateManagedScmStorage).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'scm_1' }),
+        expect.anything(),
       )
     })
 
@@ -512,10 +522,13 @@ describe('SCM Sources routes', () => {
       ;(writeAudit as Mock).mockImplementationOnce(async () => {
         order.push('audit')
       })
-      ;(reclaimManagedScmStorage as Mock).mockImplementationOnce(async () => {
-        order.push('reclaim')
-        return []
-      })
+      ;(isolateManagedScmStorage as Mock).mockImplementationOnce(async () => ({
+        isolated: [],
+        commit: async () => {
+          order.push('reclaim')
+          return []
+        },
+      }))
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(source))
         .mockReturnValueOnce(makeDbChain([]))
@@ -525,6 +538,94 @@ describe('SCM Sources routes', () => {
 
       expect(res.status).toBe(200)
       expect(order).toEqual(['audit', 'reclaim'])
+    })
+
+    /**
+     * The reported race. Reclaiming after the commit left the row deleted while
+     * its directory still stood: a concurrent create could take the path
+     * mutation lock, observe no peer, allocate the freed path and clone into it
+     * — and the pending recursive delete then removed the NEW source's checkout.
+     *
+     * Vacating has to happen inside the same locked transaction as the row
+     * delete, so the freed name is already empty by the time any allocator can
+     * see the row is gone. The delete of the parked copy may then run late; it
+     * no longer names anything a live row can point at.
+     */
+    it('vacates the allocated path inside the locked delete transaction', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      const order: string[] = []
+      sqliteExec.mockImplementation((sql: string) => {
+        order.push(sql)
+      })
+      ;(db.delete as Mock).mockImplementation(() => {
+        order.push('delete')
+        return makeDeleteChain(source)
+      })
+      ;(isolateManagedScmStorage as Mock).mockImplementationOnce(async () => {
+        order.push('isolate')
+        return {
+          isolated: [{ originalPath: source.localPath, isolatedPath: '/data/workspace/.r/x' }],
+          commit: async () => {
+            order.push('commit-delete')
+            return [source.localPath]
+          },
+        }
+      })
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      const begin = order.indexOf('BEGIN')
+      const commit = order.indexOf('COMMIT')
+      // The rename lands strictly between BEGIN and COMMIT — while the lock is
+      // held — so no allocator can observe the freed row before the freed path.
+      expect(order.indexOf('isolate')).toBeGreaterThan(order.indexOf('delete'))
+      expect(order.indexOf('isolate')).toBeLessThan(commit)
+      expect(begin).toBeGreaterThanOrEqual(0)
+      // Only the (slow) recursive delete is allowed to trail the commit.
+      expect(order.indexOf('commit-delete')).toBeGreaterThan(commit)
+    })
+
+    /**
+     * Vacating must be judged against the rows that survive the delete, read
+     * under the same lock. A legacy row can hold a worktree root nested inside
+     * a peer's checkout; renaming it blindly would move the peer's live
+     * directory out from under it.
+     */
+    it('passes the surviving peers to the isolation scan', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      const peer = {
+        id: 'scm_2',
+        name: 'Peer',
+        localPath: '/data/workspace/sources/2',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([peer]))
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      expect(isolateManagedScmStorage).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'scm_1' }),
+        expect.objectContaining({ peers: [peer] }),
+      )
     })
 
     /**
@@ -588,7 +689,7 @@ describe('SCM Sources routes', () => {
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
       expect(res.status).toBe(500)
-      expect(reclaimManagedScmStorage).not.toHaveBeenCalled()
+      expect(isolateManagedScmStorage).not.toHaveBeenCalled()
     })
 
     it('returns 404 for non-existent source', async () => {
