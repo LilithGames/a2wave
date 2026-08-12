@@ -169,6 +169,7 @@ import {
   cancelInitialScmSync,
   isCheckoutBusy,
   releaseCheckout,
+  startInitialScmSync,
   syncScmSource,
   tryAcquireCheckout,
 } from '../../lib/p4-sync.js'
@@ -544,6 +545,42 @@ describe('SCM Sources routes', () => {
 
       expect(res.status).toBe(200)
       expect(cancelInitialScmSync).toHaveBeenCalledWith('scm_1')
+    })
+
+    // Disabling a source must actually stop its background checkout. Cancelling
+    // only inside the resetsSyncState branch left the clone running against a
+    // source the operator believes is off, and re-enabling then started another.
+    it('cancels a running initial checkout when the source is disabled', async () => {
+      const existingSource = {
+        id: 'scm_1',
+        name: 'Source',
+        type: 'git',
+        localPath: '/data/repo',
+        workspacesPath: null,
+        isEnabled: true,
+        config: { type: 'git', repoUrl: 'https://slow.example/repo.git', branch: 'main' },
+        initialSyncCompletedAt: null,
+        syncStatus: 'syncing',
+      }
+      ;(cancelInitialScmSync as Mock).mockResolvedValueOnce(true)
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([existingSource]))
+        .mockReturnValueOnce(makeDbChain({ ...existingSource, syncStatus: 'idle' }))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...existingSource, isEnabled: false, syncStatus: 'idle' }),
+      )
+
+      const res = await app.request('/api/scm-sources/scm_1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled: false }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(cancelInitialScmSync).toHaveBeenCalledWith('scm_1')
+      // A disabled source must not be handed straight back to the scheduler.
+      expect(startInitialScmSync).not.toHaveBeenCalled()
     })
 
     it('resets sync state when localPath changes', async () => {
@@ -971,6 +1008,7 @@ describe('SCM Sources routes', () => {
       }
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([existingSource])) // path peers
         .mockReturnValueOnce(makeDbChain({ role: 'user', isActive: true }))
 
       const updateChain = makeUpdateChain(existingSource)
@@ -998,8 +1036,8 @@ describe('SCM Sources routes', () => {
       }
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([existingSource])) // path peers
         .mockReturnValueOnce(makeDbChain({ role: 'admin', isActive: true }))
-        .mockReturnValueOnce(makeDbChain([existingSource]))
       const updateChain = makeUpdateChain({ ...existingSource, name: 'Renamed' })
       ;(db.update as Mock).mockReturnValue(updateChain)
 
@@ -1029,6 +1067,7 @@ describe('SCM Sources routes', () => {
       const otherSource = {
         id: 'scm_2',
         name: 'Squatter',
+        localPath: '/data/repos-2',
         workspacesPath: defaultWorkspacesPath('scm_1'), // 另一 source 占住了 scm_1 的默认目录
       }
       ;(db.select as Mock)

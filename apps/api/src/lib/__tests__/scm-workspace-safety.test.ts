@@ -82,6 +82,23 @@ describe('validateScmWorkspacesRoot', () => {
     ).toMatch(/protected platform storage/)
   })
 
+  // The compose default narrowed from SCM_STORAGE_ROOT to
+  // SCM_STORAGE_ROOT/workspaces. A custom root the OLD default approved must
+  // keep working, or upgrading brick every non-admin source pointed at one:
+  // the stored-root check runs on every use, so even renaming the source is
+  // rejected and a non-admin cannot repair it through the UI.
+  it('keeps a custom root approved by the pre-managed-storage default allowed', () => {
+    const originalStorageRoot = env.SCM_STORAGE_ROOT
+    env.SCM_STORAGE_ROOT = '/data/workspace'
+    try {
+      expect(
+        validateScmWorkspacesRoot('/data/workspace/team-worktrees', '', { protectedPaths: [] }),
+      ).toBeNull()
+    } finally {
+      env.SCM_STORAGE_ROOT = originalStorageRoot
+    }
+  })
+
   it('rejects workspaces beneath the managed checkout tree', () => {
     const originalStorageRoot = env.SCM_STORAGE_ROOT
     env.SCM_STORAGE_ROOT = '/data/workspace'

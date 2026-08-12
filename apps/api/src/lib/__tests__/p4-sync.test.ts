@@ -71,15 +71,14 @@ vi.mock('../logger.js', () => ({
 }))
 
 import { asyncQuery } from '../../test/async-query.js'
+import { p4ClientRootCoversPath, parseP4ClientRoots } from '../p4-client-root.js'
 import {
   cancelInitialScmSync,
   checkP4Connection,
   executeP4Sync,
   initAutoSyncSchedulers,
   isCheckoutBusy,
-  p4ClientRootCoversPath,
   p4Login,
-  parseP4ClientRoots,
   releaseCheckout,
   startAutoSync,
   startInitialScmSync,
@@ -275,8 +274,12 @@ describe('executeP4Sync', () => {
     expect(result.filesUpdated).toBe(2)
     expect(mockSpawn).toHaveBeenCalled()
     expect(mockExecFile).toHaveBeenCalled()
-    expect(mockExecFile.mock.calls[0][0]).toBe('p4')
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['sync'])
+    // Indexing by content, not position: a Root-coverage preflight runs first.
+    const syncCall = mockExecFile.mock.calls.find(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === 'sync',
+    )
+    expect(syncCall?.[0]).toBe('p4')
+    expect(syncCall?.[1]).toEqual(['sync'])
   })
 
   it('continues to the real sync when managed-path root verification is unavailable', async () => {
@@ -375,7 +378,11 @@ describe('executeP4Sync', () => {
       depotPath: '//depot/main/',
     }
     await executeP4Sync(config, '/repo')
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['sync', '//depot/main/...'])
+    // Indexing by content, not position: a Root-coverage preflight runs first.
+    const syncCall = mockExecFile.mock.calls.find(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === 'sync',
+    )
+    expect(syncCall?.[1]).toEqual(['sync', '//depot/main/...'])
   })
 
   it('returns "Already up-to-date" when no files updated', async () => {
@@ -605,6 +612,40 @@ describe('syncScmSource', () => {
     expect(receivedSignal?.aborted).toBe(true)
     expect(isCheckoutBusy('s1')).toBe(false)
     expect(mockNotifyScmSyncError).not.toHaveBeenCalled()
+  })
+
+  // An abort that lands AFTER a genuine failure must not erase it. Reading
+  // signal.aborted once the sync body had already returned made a real error
+  // (bad credentials) settle as a clean 'idle' with no lastSyncError and no
+  // webhook, leaving a healthy-looking source agents cannot use.
+  it('keeps a genuine sync failure when the signal aborts after it settles', async () => {
+    const source = {
+      id: 's1',
+      name: 'initial',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.com/repo.git', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: null,
+    }
+    mockDbSelectGet(source)
+    const updateChain = mockDbUpdate()
+    mockExecuteGitSync.mockImplementation(async () => {
+      // The real failure is produced first. The cancellation then lands while
+      // the caller sits between the sync body and the terminal status write —
+      // exactly the window where sampling signal.aborted erased the error.
+      const result = { ok: false, message: 'Git sync failed: Authentication failed' }
+      queueMicrotask(() => void cancelInitialScmSync('s1'))
+      return result
+    })
+
+    await expect(startInitialScmSync('s1')).resolves.toMatchObject({ ok: false })
+
+    const written = updateChain.setFn.mock.calls.at(-1)?.[0] as {
+      syncStatus?: string
+      lastSyncError?: string | null
+    }
+    expect(written?.syncStatus).toBe('error')
+    expect(written?.lastSyncError).toMatch(/Authentication failed/)
   })
 
   it('starts CodeGraph indexing after successful sync when enabled', async () => {

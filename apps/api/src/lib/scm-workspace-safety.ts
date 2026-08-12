@@ -59,8 +59,22 @@ export function getDefaultScmWorkspacesAllowedRoot(): string {
   return join(env.SCM_STORAGE_ROOT, 'workspaces')
 }
 
-function getLegacyScmWorkspacesAllowedRoot(): string {
-  return join(homedir(), '.a2wave', 'workspaces')
+/**
+ * Roots that earlier releases approved and that must keep working across an
+ * upgrade. `validateStoredScmWorkspacesRoot` re-runs on every use, so dropping
+ * one does not merely block new sources — it retroactively bricks existing
+ * ones, down to rejecting an unrelated rename, with no in-UI repair for a
+ * non-admin owner.
+ *
+ * - `~/.a2wave/workspaces` was the built-in default before managed storage.
+ * - `SCM_STORAGE_ROOT` itself was the shipped Compose default for
+ *   SCM_WORKSPACES_ALLOWED_ROOTS before it narrowed to the `workspaces` child.
+ *
+ * The managed checkout subtree stays rejected by its own rule below, so
+ * honouring the wider historical root cannot expose one source's checkout.
+ */
+function getLegacyScmWorkspacesAllowedRoots(): string[] {
+  return [join(homedir(), '.a2wave', 'workspaces'), env.SCM_STORAGE_ROOT]
 }
 
 function getProtectedPlatformPaths(): string[] {
@@ -94,7 +108,7 @@ export function validateScmWorkspacesRoot(
     .filter(Boolean)
   const allowedRoots = [
     getDefaultScmWorkspacesAllowedRoot(),
-    getLegacyScmWorkspacesAllowedRoot(),
+    ...getLegacyScmWorkspacesAllowedRoots(),
     ...configuredRoots,
   ]
     .filter(isAbsolute)

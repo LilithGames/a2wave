@@ -10,6 +10,7 @@ import { env } from '../env.js'
 import { isCodegraphEnabled, runCodegraphIndex } from './codegraph-index.js'
 import { executeGitSync, sanitizeCredentials } from './git-sync.js'
 import { logger } from './logger.js'
+import { verifyP4ClientRootCoverage } from './p4-client-root.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
 const execFileAsync = promisify(execFile)
@@ -89,51 +90,13 @@ export interface P4CheckResult {
   clientRootWarning?: string
 }
 
-export function parseP4ClientRoots(spec: string): string[] {
-  const roots: string[] = []
-  let readingAltRoots = false
-  for (const line of spec.split(/\r?\n/)) {
-    const root = line.match(/^Root:\s*(.+)$/)?.[1]?.trim()
-    if (root) {
-      roots.push(root)
-      readingAltRoots = false
-      continue
-    }
-    const altRoots = line.match(/^AltRoots:\s*(.*)$/)
-    if (altRoots) {
-      readingAltRoots = true
-      const inlineRoot = altRoots[1]?.trim()
-      if (inlineRoot) roots.push(inlineRoot)
-      continue
-    }
-    if (readingAltRoots && /^\s+\S/.test(line)) {
-      roots.push(line.trim())
-      continue
-    }
-    if (/^\S[^:]*:/.test(line)) readingAltRoots = false
-  }
-  return roots.filter(isAbsolute)
-}
-
-export function p4ClientRootCoversPath(localPath: string, roots: string[]): boolean {
-  const candidate = resolve(localPath)
-  return roots.some((root) => {
-    const child = relative(resolve(root), candidate)
-    return child === '' || (!child.startsWith('..') && !isAbsolute(child))
-  })
-}
-
-async function getP4ClientRoots(config: P4Config, signal?: AbortSignal): Promise<string[]> {
+async function readP4ClientSpec(config: P4Config, signal?: AbortSignal): Promise<string> {
   const { stdout } = await execFileAsync('p4', ['client', '-o', config.p4client], {
     env: { ...process.env, ...buildP4Env(config) },
     timeout: 15_000,
     signal,
   })
-  return parseP4ClientRoots(stdout)
-}
-
-function isManagedLocalPath(localPath: string): boolean {
-  return p4ClientRootCoversPath(localPath, [`${resolve(env.SCM_STORAGE_ROOT)}/sources`])
+  return stdout
 }
 
 /**
@@ -156,40 +119,46 @@ export async function checkP4Connection(
     const serverVersion = versionMatch?.[1]?.trim()
     // 检查是否有有效的连接
     if (stdout.includes('Server address:') || stdout.includes('Server root:')) {
-      if (/^Client unknown\.\s*$/im.test(stdout)) {
+      // Same verifier the sync path uses, so a Root the check flags red can
+      // never be silently accepted by the sync that follows.
+      const verdict = await verifyP4ClientRootCoverage({
+        localPath: localPath ?? '',
+        infoOutput: stdout,
+        readClientSpec: () => readP4ClientSpec(config),
+        clientName: config.p4client,
+      })
+
+      if (verdict.outcome === 'client-missing') {
         return {
           ok: true,
           message: 'P4 connection is healthy',
           serverVersion,
-          clientRootWarning: `P4 client "${config.p4client}" does not exist yet. Create it with a Root or AltRoots that covers the local path before syncing.`,
+          clientRootWarning: `${verdict.detail} Create it before syncing.`,
         }
       }
-      let clientRoots: string[]
-      try {
-        clientRoots = await getP4ClientRoots(config)
-      } catch (error) {
-        const detail = sanitizeCredentials(error instanceof Error ? error.message : String(error))
+      if (verdict.outcome === 'indeterminate') {
         return {
           ok: true,
           message: 'P4 connection is healthy',
           serverVersion,
-          clientRootWarning: `P4 client Root could not be verified: ${detail}`,
+          clientRootWarning: `P4 client Root could not be verified: ${verdict.detail}`,
         }
       }
-      const clientRoot = clientRoots[0]
-      if (localPath && clientRoots.length > 0 && !p4ClientRootCoversPath(localPath, clientRoots)) {
+      // With no localPath to test (the stateless probe), coverage is not a
+      // verdict about this connection — report the detected Root and stop.
+      if (localPath && verdict.outcome === 'not-covered') {
         return {
           ok: false,
           message: `P4 client Root does not cover local path "${localPath}". Configure Root or AltRoots to include it.`,
           serverVersion,
-          clientRoot,
+          clientRoot: verdict.clientRoot,
         }
       }
       return {
         ok: true,
         message: 'P4 connection is healthy',
         serverVersion,
-        clientRoot,
+        clientRoot: verdict.clientRoot,
       }
     }
 
@@ -225,39 +194,51 @@ export async function executeP4Sync(
   timeoutMs: number = EXEC_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<P4SyncResult> {
-  if (isManagedLocalPath(localPath)) {
-    try {
-      await p4Login(config, signal)
-      const { stdout: infoOutput } = await execFileAsync('p4', ['info'], {
-        env: { ...process.env, ...buildP4Env(config) },
-        timeout: 15_000,
-        signal,
-      })
-      if (/^Client unknown\.\s*$/im.test(infoOutput)) {
-        return {
-          ok: false,
-          message: `P4 sync failed: client "${config.p4client}" does not exist yet. Create it with a Root or AltRoots that covers the local path.`,
-        }
+  // Verified for EVERY P4 source, not just managed paths: syncing into a
+  // directory the client Root does not cover makes p4 write the depot into the
+  // client's real Root instead, and the run then opens an empty checkout while
+  // the source reports success.
+  try {
+    await p4Login(config, signal)
+    const { stdout: infoOutput } = await execFileAsync('p4', ['info'], {
+      env: { ...process.env, ...buildP4Env(config) },
+      timeout: 15_000,
+      signal,
+    })
+    const verdict = await verifyP4ClientRootCoverage({
+      localPath,
+      infoOutput,
+      readClientSpec: () => readP4ClientSpec(config, signal),
+      clientName: config.p4client,
+    })
+    if (verdict.outcome === 'client-missing') {
+      return { ok: false, message: `P4 sync failed: ${verdict.detail}` }
+    }
+    if (verdict.outcome === 'not-covered') {
+      return {
+        ok: false,
+        message: `P4 sync failed: client Root does not cover local path "${localPath}". Configure Root or AltRoots to include it.`,
       }
-      const roots = await getP4ClientRoots(config, signal)
-      if (roots.length > 0 && !p4ClientRootCoversPath(localPath, roots)) {
-        return {
-          ok: false,
-          message: `P4 sync failed: client Root does not cover managed local path "${localPath}". Configure Root or AltRoots to include it.`,
-        }
-      }
-    } catch (error) {
-      if (signal?.aborted) {
-        return { ok: false, message: 'P4 sync cancelled' }
-      }
+    }
+    // 'indeterminate' is not evidence of a mismatch — same degradation as the
+    // connection check, so a transient p4d hiccup cannot block the sync.
+    if (verdict.outcome === 'indeterminate') {
       logger.warn(
-        {
-          localPath,
-          error: sanitizeCredentials(error instanceof Error ? error.message : String(error)),
-        },
+        { localPath, detail: verdict.detail },
         'P4 client Root could not be verified before sync; continuing with p4 sync',
       )
     }
+  } catch (error) {
+    if (signal?.aborted) {
+      return { ok: false, message: 'P4 sync cancelled' }
+    }
+    logger.warn(
+      {
+        localPath,
+        error: sanitizeCredentials(error instanceof Error ? error.message : String(error)),
+      },
+      'P4 client Root could not be verified before sync; continuing with p4 sync',
+    )
   }
 
   // 确保本地目录存在
@@ -556,6 +537,13 @@ async function runSyncUnderCheckoutLock(
       1000
     : EXEC_TIMEOUT_MS
 
+  // Sampled BEFORE the sync runs, and again only to confirm the failure was
+  // caused by the abort. Reading `signal.aborted` after the body returned made
+  // an abort that merely raced a genuine failure erase it: the row settled to a
+  // clean 'idle' with no lastSyncError and no webhook, leaving a
+  // healthy-looking source that agents cannot use.
+  const abortedBeforeSync = options.signal?.aborted === true
+
   // Once the status is held, no throw may escape before the terminal write
   // below — an escaping error would leave the row stuck at 'syncing'.
   try {
@@ -576,7 +564,14 @@ async function runSyncUnderCheckoutLock(
     const message = error instanceof Error ? error.message : String(error)
     result = { ok: false, message: `SCM sync failed: ${message}` }
   }
-  const cancelled = options.signal?.aborted === true
+  // A cancellation is only credited when the abort actually produced this
+  // result — it was already aborted when the sync started, or the sync itself
+  // reported that it stopped because of the abort. An abort landing after a
+  // real error leaves that error intact, status and webhook included.
+  const cancelled =
+    !result.ok &&
+    options.signal?.aborted === true &&
+    (abortedBeforeSync || /cancel|abort/i.test(result.message))
 
   // 更新最终状态；首次成功同步时写入 initialSyncCompletedAt。
   try {

@@ -31,6 +31,8 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../lib/p4-sync.js'
+import type { ScmPathPeer } from '../lib/scm-path-plan.js'
+import { resolveScmPathPlan } from '../lib/scm-path-plan.js'
 import {
   maskScmSourceRow,
   redactRepoUrlCredential,
@@ -38,11 +40,7 @@ import {
   scmConfigEquals,
 } from '../lib/scm-secret-mask.js'
 import { createScmSource } from '../lib/scm-source.js'
-import { defaultScmLocalPath } from '../lib/scm-storage.js'
-import {
-  validateScmWorkspacesRoot,
-  validateStoredScmWorkspacesRoot,
-} from '../lib/scm-workspace-safety.js'
+import { validateStoredScmWorkspacesRoot } from '../lib/scm-workspace-safety.js'
 import { isAdmin } from '../middleware/auth-middleware.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
@@ -71,47 +69,20 @@ function hasRetiredSetupScriptField(body: unknown): boolean {
 }
 
 /**
- * 检查两个路径是否重叠（相等、或一个是另一个的祖先）。
- * 大小写不敏感（兼容 macOS/Windows 默认文件系统）。
- */
-export function pathsOverlap(a: string, b: string): boolean {
-  const na = resolve(a).toLowerCase()
-  const nb = resolve(b).toLowerCase()
-  if (na === nb) return true
-  return na.startsWith(nb + sep) || nb.startsWith(na + sep)
-}
-
-/**
- * 在已有 scm sources 中查找与 candidate workspacesPath 重叠的那一条。
- * 重叠定义见 pathsOverlap：相等或祖先关系都算冲突。
+ * Every row's path fields, for cross-source conflict checks.
  *
- * 过去只用 SQL `eq` 做精确匹配，导致 `/ws/a` 和 `/ws/a/sub` 这种会逃过唯一性检查。
- * 现在拉全表在内存里过一遍——scm sources 数量小（通常几十条）。
+ * Pulled in full rather than filtered in SQL: overlap is an ancestor/descendant
+ * relation that `eq` cannot express, and the table is small (tens of rows).
  */
-export function findWorkspacesPathConflict(
-  sources: ReadonlyArray<{
-    id: string
-    name: string
-    localPath?: string
-    workspacesPath: string | null
-  }>,
-  candidate: string,
-  excludeId?: string,
-): { id: string; name: string; workspacesPath: string | null } | null {
-  for (const s of sources) {
-    if (excludeId && s.id === excludeId) continue
-    // NULL 行在运行时会落到 defaultWorkspacesPath(id)（见 scm-source.ts）。
-    // 迁移后旧数据都是 NULL，如果这里跳过，新 source 就能显式填到旧 source 的默认
-    // 目录下绕过 overlap 检查。统一按 runtime 的有效值比对。
-    const effective = s.workspacesPath ?? defaultWorkspacesPath(s.id)
-    if (
-      pathsOverlap(effective, candidate) ||
-      (s.localPath && pathsOverlap(s.localPath, candidate))
-    ) {
-      return s
-    }
-  }
-  return null
+async function selectScmPathPeers(): Promise<ScmPathPeer[]> {
+  return db
+    .select({
+      id: scmSources.id,
+      name: scmSources.name,
+      localPath: scmSources.localPath,
+      workspacesPath: scmSources.workspacesPath,
+    })
+    .from(scmSources)
 }
 
 // ============================================================
@@ -176,73 +147,26 @@ app.post('/', async (c) => {
     return c.json({ error: 'Source type does not match config type' }, 400)
   }
 
-  if (parsed.data.type === 'p4' && !parsed.data.localPath) {
-    return c.json(
-      { error: 'P4 sources require a localPath covered by the client Root or AltRoots' },
-      400,
-    )
-  }
-
-  const { workspacesPath } = parsed.data
   const id = createId('scm')
-  const localPath = parsed.data.localPath ?? defaultScmLocalPath(id)
 
-  // 验证 localPath 是绝对路径
-  if (!isAbsolute(localPath)) {
-    return c.json({ error: 'localPath must be an absolute path' }, 400)
+  // Create and PATCH resolve paths through the same planner: every rule
+  // (absolute, no overlap with any other source's checkout OR worktree root,
+  // approved workspaces root, P4 needs an explicit path) applies to both.
+  const plan = resolveScmPathPlan({
+    sourceId: id,
+    type: parsed.data.type,
+    localPath: parsed.data.localPath,
+    workspacesPath: parsed.data.workspacesPath,
+    existingSources: await selectScmPathPeers(),
+    isAdmin: isAdmin(c),
+  })
+  if (!plan.ok) {
+    return c.json({ error: plan.error }, plan.status)
   }
-
-  // 验证 workspacesPath 是绝对路径且不与 localPath 重叠
-  if (workspacesPath) {
-    if (!isAbsolute(workspacesPath)) {
-      return c.json({ error: 'workspacesPath must be an absolute path' }, 400)
-    }
-    if (pathsOverlap(workspacesPath, localPath)) {
-      return c.json({ error: 'workspacesPath must not overlap with localPath' }, 400)
-    }
-  }
-
-  // 检查 localPath 唯一性
-  const existing = (
-    await db.select().from(scmSources).where(eq(scmSources.localPath, localPath)).limit(1)
-  )[0]
-  if (existing) {
-    return c.json(
-      { error: `Path "${localPath}" is already used by source "${existing.name}"` },
-      409,
-    )
-  }
+  const { localPath, workspacesPath: finalWorkspacesPath } = plan
 
   const now = new Date()
   const userId = getCurrentUserId(c)
-
-  // workspacesPath 若未显式传，用 sourceId 计算默认值后落库（保证全局唯一）
-  const finalWorkspacesPath = workspacesPath ?? defaultWorkspacesPath(id)
-  const workspacesRootError = validateScmWorkspacesRoot(finalWorkspacesPath, undefined, {
-    allowOutsideConfiguredRoots: isAdmin(c),
-  })
-  if (workspacesRootError) {
-    return c.json({ error: workspacesRootError }, 400)
-  }
-
-  // 检查 workspacesPath 唯一性（含 overlap：祖先/后代目录也算冲突）
-  const allSources = await db
-    .select({
-      id: scmSources.id,
-      name: scmSources.name,
-      localPath: scmSources.localPath,
-      workspacesPath: scmSources.workspacesPath,
-    })
-    .from(scmSources)
-  const wsConflict = findWorkspacesPathConflict(allSources, finalWorkspacesPath)
-  if (wsConflict) {
-    return c.json(
-      {
-        error: `Workspaces path "${finalWorkspacesPath}" overlaps with source "${wsConflict.name}"`,
-      },
-      409,
-    )
-  }
 
   // Normalize before persisting, with no stored row to restore from: create has
   // nothing to rehydrate, but it must still refuse to store the mask sentinel as
@@ -319,64 +243,35 @@ app.patch('/:id', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  // 如果更新了 localPath，验证唯一性
-  if (parsed.data.localPath) {
-    if (!isAbsolute(parsed.data.localPath)) {
-      return c.json({ error: 'localPath must be an absolute path' }, 400)
-    }
-    const conflict = (
-      await db
-        .select()
-        .from(scmSources)
-        .where(eq(scmSources.localPath, parsed.data.localPath))
-        .limit(1)
-    )[0]
-    if (conflict && conflict.id !== id) {
-      return c.json(
-        { error: `Path "${parsed.data.localPath}" is already used by source "${conflict.name}"` },
-        409,
-      )
-    }
-  }
-
-  // 验证 workspacesPath 格式 + 与 localPath 不重叠
-  // 取更新后的有效值（未更新则沿用现有），任一方变化都需要重新校验
-  const effectiveLocalPath = parsed.data.localPath ?? existing.localPath
+  // 取更新后的有效值（未更新则沿用现有），任一方变化都需要重新校验。
+  // Same planner as create — see resolveScmPathPlan for why both routes share it.
   const rawWsPath =
     parsed.data.workspacesPath !== undefined ? parsed.data.workspacesPath : existing.workspacesPath
-  // 显式路径必须是绝对路径；清空（null）时运行时会落到 defaultWorkspacesPath(id)，
-  // 也要按这个有效路径做 overlap 校验，否则清空字段就能绕过跨源唯一性。
-  if (rawWsPath && !isAbsolute(rawWsPath)) {
-    return c.json({ error: 'workspacesPath must be an absolute path' }, 400)
+  const plan = resolveScmPathPlan({
+    sourceId: id,
+    type: existing.type,
+    localPath: parsed.data.localPath ?? existing.localPath,
+    workspacesPath: rawWsPath,
+    existingSources: await selectScmPathPeers(),
+    excludeId: id,
+    isAdmin: isAdmin(c),
+  })
+  if (!plan.ok) {
+    return c.json({ error: plan.error }, plan.status)
   }
-  const effectiveWsPath = rawWsPath ?? defaultWorkspacesPath(id)
+  const effectiveWsPath = plan.workspacesPath
+
   // Validate the effective root on EVERY update, including unrelated name/config
   // changes. This is the migration backstop for unsafe rows created by older
   // versions; editing another field must not reactivate their workspace access.
+  // Distinct from the planner's check: this one resolves the OWNER's live admin
+  // role, so a demoted owner loses arbitrary-root access without an edit.
   const workspacesRootError = await validateStoredScmWorkspacesRoot({
     ...existing,
     workspacesPath: effectiveWsPath,
   })
   if (workspacesRootError) {
     return c.json({ error: workspacesRootError }, 400)
-  }
-  if (pathsOverlap(effectiveWsPath, effectiveLocalPath)) {
-    return c.json({ error: 'workspacesPath must not overlap with localPath' }, 400)
-  }
-  const allSources = await db
-    .select({
-      id: scmSources.id,
-      name: scmSources.name,
-      localPath: scmSources.localPath,
-      workspacesPath: scmSources.workspacesPath,
-    })
-    .from(scmSources)
-  const wsConflict = findWorkspacesPathConflict(allSources, effectiveWsPath, id)
-  if (wsConflict) {
-    return c.json(
-      { error: `Workspaces path "${effectiveWsPath}" overlaps with source "${wsConflict.name}"` },
-      409,
-    )
   }
 
   const payload: Record<string, unknown> = { updatedAt: new Date() }
@@ -426,7 +321,11 @@ app.patch('/:id', async (c) => {
   // and start a second sync against the same working directory, and the running
   // sync would later resurrect the initialSyncCompletedAt we null out here.
   const resetsSyncState = localPathChanged || configChanged
-  if (resetsSyncState) {
+  // Disabling a source must stop its background checkout too. Cancelling only
+  // for localPath/config edits left the clone running against a source the
+  // operator believes is off — and the restart below would then start another.
+  const disablesSource = parsed.data.isEnabled === false && existing.isEnabled
+  if (resetsSyncState || disablesSource) {
     // The create/update/recovery initial checkout is cancellable so a bad URL
     // cannot lock its own repair form for the entire clone timeout. Manual and
     // recurring syncs remain non-cancellable here and retain the 409 guard.
@@ -434,6 +333,8 @@ app.patch('/:id', async (c) => {
       existing = (await db.select().from(scmSources).where(conditions).limit(1))[0]
       if (!existing) return c.json({ error: 'SCM source not found' }, 404)
     }
+  }
+  if (resetsSyncState) {
     // The checkout stays busy after syncStatus returns to 'idle' while post-sync
     // indexing runs against the old localPath. Changing localPath/config
     // then would let that job finish writing the wrong tree and resurrect the
