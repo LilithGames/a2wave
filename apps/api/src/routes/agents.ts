@@ -2408,6 +2408,17 @@ app.post('/:id/chat', async (c) => {
     }
   }
 
+  // Reserved namespace, rejected only for NEW requests: an explicit worktree
+  // addressing a per-agent workspace would downgrade its persistent state and
+  // hand its long-lived branch to run-end removal. Sticky configs persisted
+  // before this rule keep replaying (grandfathered in resolveWorkDir).
+  if (parsed.data.worktree?.name.startsWith('agent-')) {
+    return c.json(
+      { error: "Worktree names with the 'agent-' prefix are reserved for per-agent workspaces" },
+      400,
+    )
+  }
+
   // Worktree 参数：在入库 run 记录时一并写入，保证排队场景调度器能读到
   const worktreeCfg = parsed.data.worktree
     ? {

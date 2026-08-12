@@ -838,5 +838,7 @@ export async function cleanupWorktreeIfEphemeral(runId: string, agentId: string)
     { runId, workDir: run.workDir, worktreeName: wtConfig.name },
     'Cleaning up ephemeral worktree',
   )
-  await scm.removeWorkspace(wtConfig.name)
+  // Legacy sticky configs may carry an agent-* name with ephemeral cleanup;
+  // never let run-end cleanup destroy a per-agent branch.
+  await scm.removeWorkspace(wtConfig.name, { keepBranches: wtConfig.name.startsWith('agent-') })
 }

@@ -18,6 +18,7 @@ import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
 import { logger } from './logger.js'
+import { platformWorkspaceEntries } from './workspace-platform-entries.js'
 
 const execFileAsyncRaw = promisify(execFile)
 
@@ -506,12 +507,8 @@ async function followSourceHeadOnReuse(
           '-uno',
           '--',
           '.',
-          ':(exclude).claude',
-          ':(exclude).cursor',
-          ':(exclude).codex',
-          ':(exclude).mcp.json',
-          ':(exclude).mcp.json.a2wave-managed',
-          ':(exclude)artifacts',
+          `:(exclude)${WORKSPACE_ARTIFACTS_DIRECTORY}`,
+          ...[...platformWorkspaceEntries()].map((entry) => `:(exclude)${entry}`),
         ],
         { cwd: wsRepoPath, timeout: 5_000 },
       )
@@ -883,11 +880,14 @@ export async function removeGitWorkspace(
   // a final non-recursive rmdir.
   if (multiRepos) {
     await assertWorkspaceWithinRoot(wsRoot, wsPath)
+    // Every entry the platform itself writes (skill mounts, MCP configs, the
+    // CodeGraph link) is expected at the workspace root — deriving the list
+    // from the Provider definitions keeps the next Provider from wedging
+    // removal the way .codegraph once did.
     const allowedEntries = new Set([
       WORKSPACE_STATE_FILE,
       WORKSPACE_ARTIFACTS_DIRECTORY,
-      // Platform-written CodeGraph index link (ensureCodegraphLink).
-      '.codegraph',
+      ...platformWorkspaceEntries(),
       ...multiRepos.map((repo) => repo.directory),
     ])
     const unexpectedEntries = (await readdir(wsPath)).filter(
@@ -957,14 +957,17 @@ export async function removeGitWorkspace(
   if (existsSync(wsPath)) {
     await rm(join(wsPath, WORKSPACE_ARTIFACTS_DIRECTORY), { recursive: true, force: true })
     await rm(join(wsPath, WORKSPACE_STATE_FILE), { force: true })
-    // The platform writes .codegraph as a symlink (unlink it without ever
-    // following it into the shared index), but a cwd-relative CodeGraph CLI can
-    // also materialize a real directory here — that is a disposable cache and
-    // must not wedge removal (fs.rm without recursive throws EISDIR on it).
-    const codegraphPath = join(wsPath, '.codegraph')
-    const codegraphEntry = await lstat(codegraphPath).catch(() => null)
-    if (codegraphEntry) {
-      await rm(codegraphPath, { force: true, recursive: codegraphEntry.isDirectory() })
+    // Remove every platform-written entry type-aware: symlinks are unlinked
+    // without following (the .codegraph link points into the shared index),
+    // directories removed recursively (skill mounts, MCP config dirs), plain
+    // files force-removed. fs.rm without recursive throws EISDIR on a real
+    // directory, which once wedged removal permanently.
+    for (const entry of platformWorkspaceEntries()) {
+      const entryPath = join(wsPath, entry)
+      const entryStat = await lstat(entryPath).catch(() => null)
+      if (entryStat) {
+        await rm(entryPath, { force: true, recursive: entryStat.isDirectory() })
+      }
     }
     for (const entry of await readdir(wsPath)) {
       if (WORKSPACE_STATE_TEMP_FILE_PATTERN.test(entry)) {

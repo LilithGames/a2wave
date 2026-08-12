@@ -119,13 +119,14 @@ describe('createScmSource', () => {
       mockRemoveGitWorkspace.mockResolvedValue(undefined)
       const source = await createScmSource(makeGitSourceRow({ workspacesPath: '/ws/path' }))
 
-      await source!.removeWorkspace('ws-abc')
+      await source!.removeWorkspace('ws-abc', { keepBranches: true })
 
       expect(mockRemoveGitWorkspace).toHaveBeenCalledWith(
         '/data/repos/my-repo',
         '/ws/path',
         'ws-abc',
         expect.objectContaining({ type: 'git' }),
+        { keepBranches: true },
       )
     })
 

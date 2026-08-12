@@ -328,14 +328,17 @@ describe('resolveWorkDir', () => {
       ).rejects.toThrow(/Invalid worktree name/)
     })
 
-    it('rejects the reserved agent- prefix for explicit worktrees', async () => {
-      // An explicit worktree addressing a per-agent workspace would downgrade
-      // its persistent state and hand its branch to run-end removal.
+    it('grandfathers legacy sticky agent-* names instead of rejecting them', async () => {
+      // The reserved-prefix rejection lives at the request entry points; a
+      // persisted worktreeConfig from before the rule must keep replaying —
+      // this call proceeds past the name gate and fails only on the missing
+      // source, proving no reservation error fired.
+      mockDbFrom.mockReturnValueOnce(chainResult(undefined))
       const agent = worktreeAgent()
       const env: Record<string, string> = { A2WAVE_WORKSPACE_BRANCH: 'stale' }
       await expect(
-        resolveWorkDir(agent, { name: 'agent-abc123', cleanup: 'ephemeral' }, undefined, env),
-      ).rejects.toThrow(/reserved 'agent-' prefix/)
+        resolveWorkDir(agent, { name: 'agent-legacy1', cleanup: 'ttl' }, undefined, env),
+      ).rejects.toThrow(/SCM source .* not found/)
       expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
     })
 
@@ -606,7 +609,7 @@ describe('removePerAgentWorkspace', () => {
     mockExistsSync.mockReturnValue(true)
 
     await removePerAgentWorkspace(gitAgent)
-    expect(removeWorkspace).toHaveBeenCalledWith('agent-abc123')
+    expect(removeWorkspace).toHaveBeenCalledWith('agent-abc123', { keepBranches: true })
   })
 
   it('leaves the worktree in place while a run occupies it', async () => {

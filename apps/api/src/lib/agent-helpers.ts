@@ -48,6 +48,7 @@ import {
 } from './git-workspace.js'
 import { INTERNAL_ADMIN_TOKEN_ENV, getInternalAdminToken } from './internal-admin-auth.js'
 import { logger } from './logger.js'
+import { withKeyedLock } from './keyed-mutex.js'
 import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
 import { cleanupLegacyRuntimeGroupConfig } from './runtime-group-config.js'
 import { type CreateWorkspaceResult, type ScmSource, createScmSource } from './scm-source.js'
@@ -1130,22 +1131,6 @@ function perAgentWorkspaceName(agentId: string): string {
 export const IN_FLIGHT_RUN_STATUSES = ['running', 'pending', 'queued'] as const
 
 /**
- * Serialize workspace-mutating git operations per worktree within this
- * process. Two runs resolving the same per-agent worktree concurrently must
- * not interleave `worktree add` / `reset --hard` / `checkout` on one tree.
- */
-const workspaceOps = new Map<string, Promise<unknown>>()
-async function withWorkspaceLock<T>(wsPath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = workspaceOps.get(wsPath) ?? Promise.resolve()
-  const next = prev.then(fn, fn)
-  workspaceOps.set(
-    wsPath,
-    next.catch(() => undefined),
-  )
-  return next
-}
-
-/**
  * Locate an Agent's per-agent worktree without side effects. Returns null when
  * the source is not git or the SCM layer is unavailable — callers degrade.
  */
@@ -1221,7 +1206,10 @@ async function resolvePerAgentWorkspace(
       .limit(1)
   )[0]
 
-  const result = await withWorkspaceLock(wsPath, () =>
+  // Serialize workspace-mutating git operations per worktree within this
+  // process: two runs resolving concurrently must not interleave
+  // `worktree add` / `reset --hard` / `checkout` on one tree.
+  const result = await withKeyedLock(`workspace:${wsPath}`, () =>
     scm.createWorkspace(name, { followSource: true, advance: !sibling }),
   )
 
@@ -1290,9 +1278,10 @@ export async function resolveCleanupWorkDirs(agent: typeof agents.$inferSelect):
 /**
  * Best-effort reclaim of an Agent's per-agent worktree on Agent deletion.
  * Removal goes through scm.removeWorkspace (registry-checked, never a raw
- * recursive delete); its branch is deleted with it — the Agent, and therefore
- * any unpublished work on that branch, is being destroyed deliberately.
- * Failures only log: a stuck worktree must not block the deletion.
+ * recursive delete) with keepBranches: the branch is a few refs while the
+ * commits on it may be the only copy of unpushed work — reclaim the disk,
+ * keep the history recoverable. Failures only log: a stuck worktree must not
+ * block the deletion.
  */
 export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect): Promise<void> {
   if (agent.workspaceType !== 'scm' || !agent.scmSourceId) return
@@ -1306,32 +1295,37 @@ export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect)
   const { scm, wsPath, name } = located
   if (!existsSync(wsPath)) return
 
-  // A chat-debug run can be in flight even though only stopped agents are
-  // deletable — yanking its cwd would lose unpushed work. Leave the worktree
-  // behind instead; the workspace-delete route can reclaim it once idle.
-  const occupant = (
-    await db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(and(eq(runs.workDir, wsPath), inArray(runs.status, [...IN_FLIGHT_RUN_STATUSES])))
-      .limit(1)
-  )[0]
-  if (occupant) {
-    logger.warn(
-      { agentId: agent.id, workspace: name, runId: occupant.id },
-      'Per-agent worktree occupied by an in-flight run; leaving it for later cleanup',
-    )
-    return
-  }
+  // Probe and removal share the workspace lock so a run resolving this
+  // worktree concurrently (A2A resolves before its run row exists) cannot
+  // slip between the occupancy check and the removal.
+  await withKeyedLock(`workspace:${wsPath}`, async () => {
+    // A chat-debug run can be in flight even though only stopped agents are
+    // deletable — yanking its cwd would lose unpushed work. Leave the worktree
+    // behind instead; the workspace-delete route can reclaim it once idle.
+    const occupant = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.workDir, wsPath), inArray(runs.status, [...IN_FLIGHT_RUN_STATUSES])))
+        .limit(1)
+    )[0]
+    if (occupant) {
+      logger.warn(
+        { agentId: agent.id, workspace: name, runId: occupant.id },
+        'Per-agent worktree occupied by an in-flight run; leaving it for later cleanup',
+      )
+      return
+    }
 
-  try {
-    await scm.removeWorkspace(name)
-  } catch (err) {
-    logger.warn(
-      { err, agentId: agent.id, workspace: name },
-      'Failed to remove per-agent worktree during agent deletion',
-    )
-  }
+    try {
+      await scm.removeWorkspace(name, { keepBranches: true })
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id, workspace: name },
+        'Failed to remove per-agent worktree during agent deletion',
+      )
+    }
+  })
 }
 
 export class WorktreeOccupiedError extends Error {
@@ -1355,12 +1349,6 @@ export async function resolveWorkDir(
     }
     if (!WORKTREE_NAME_REGEX.test(worktreeParams.name)) {
       throw new Error(`Invalid worktree name: ${worktreeParams.name}`)
-    }
-    if (worktreeParams.name.startsWith('agent-')) {
-      // Reserved namespace: an explicit worktree addressing a per-agent
-      // workspace would downgrade its persistent state to the caller's
-      // cleanup mode and hand its long-lived branch to run-end removal.
-      throw new Error(`Worktree name '${worktreeParams.name}' uses the reserved 'agent-' prefix`)
     }
 
     const source = (

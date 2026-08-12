@@ -162,6 +162,19 @@ app.post('/:agentId/invoke', async (c) => {
       400,
     )
   }
+  // Reserved namespace, rejected only for NEW requests: an explicit worktree
+  // addressing a per-agent workspace would downgrade its persistent state and
+  // hand its long-lived branch to run-end removal. Sticky configs persisted
+  // before this rule keep replaying (grandfathered in resolveWorkDir).
+  if (parsed.data.worktree?.name.startsWith('agent-')) {
+    return c.json(
+      gatewayError(
+        GatewayErrorCode.INVALID_REQUEST,
+        "Worktree names with the 'agent-' prefix are reserved for per-agent workspaces",
+      ),
+      400,
+    )
+  }
 
   let agentConfig: Awaited<ReturnType<typeof buildAgentConfig>>
   try {

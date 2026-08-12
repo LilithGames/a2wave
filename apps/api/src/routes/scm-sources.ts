@@ -905,7 +905,11 @@ app.delete('/:id/workspaces/:name', async (c) => {
     return c.json({ error: 'Workspace is occupied by a running or pending run' }, 409)
   }
 
-  await scm.removeWorkspace(name)
+  // Per-agent worktrees carry a long-lived branch that may hold unmerged agent
+  // commits; deleting the directory reclaims disk, but the branch must survive
+  // (the next run re-attaches it). Explicit worktrees keep the pre-existing
+  // delete-branch semantics — their branches belong to this workspace alone.
+  await scm.removeWorkspace(name, { keepBranches: name.startsWith('agent-') })
   return c.json({ data: { message: 'Workspace removed' } })
 })
 

@@ -434,6 +434,29 @@ describe('git-workspace', () => {
       ).rejects.toBeInstanceOf(WorktreeBranchLockedError)
     })
 
+    it('still advances when a non-default provider skills dir is modified', async () => {
+      // The exemption list is derived from the provider definitions — a repo
+      // tracking .kimi-code/skills content must not pin the workspace either.
+      await mkdir(join(REPO_DIR, '.kimi-code', 'skills', 'seeded'), { recursive: true })
+      await writeFile(join(REPO_DIR, '.kimi-code', 'skills', 'seeded', 'SKILL.md'), 'v1')
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'seed kimi skill'], { cwd: REPO_DIR })
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(
+        join(first.path, '.kimi-code', 'skills', 'seeded', 'SKILL.md'),
+        'platform-mounted',
+      )
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
     it('still advances when only platform-managed paths differ from the index', async () => {
       // Repos may track .claude/skills content; the platform re-mounts it every
       // run, so those modifications must not pin the workspace forever.
@@ -948,6 +971,36 @@ describe('git-workspace', () => {
       expect(existsSync(created.path)).toBe(false)
       // Removing the link must never follow it into the shared index.
       expect(existsSync(indexDir)).toBe(true)
+    })
+
+    it('removes a multi-repo workspace carrying skill mounts and MCP configs', async () => {
+      // Every run writes provider-specific entries at the workspace root
+      // (.claude skill mounts, .mcp.json, .cursor, ...). Removal must treat
+      // all of them as platform output — hardcoding one name at a time is how
+      // .codegraph wedged removal before.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-mounts', multiRepoConfig)
+      await mkdir(join(created.path, '.claude', 'skills', 'my-skill'), { recursive: true })
+      await writeFile(join(created.path, '.claude', 'skills', 'my-skill', 'SKILL.md'), 'x')
+      await writeFile(join(created.path, '.mcp.json'), '{}')
+      await writeFile(join(created.path, '.mcp.json.a2wave-managed'), '{}')
+      await mkdir(join(created.path, '.cursor'), { recursive: true })
+      await writeFile(join(created.path, '.cursor', 'mcp.json'), '{}')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-mounts', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
     })
 
     it('removes a multi-repo workspace where .codegraph is a real directory', async () => {
