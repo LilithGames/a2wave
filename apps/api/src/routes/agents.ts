@@ -2655,22 +2655,26 @@ app.post('/:id/chat', async (c) => {
       (await agentConfig).agentEnv,
     )
   } catch (err) {
+    // 释放已占用的 slot。新建的 run 直接删除；复用的 run 还原 intent/executionMetadata/status
+    // 到覆盖前的原值（不留 pending）——留 pending 会被 409 guard 永久挡死且 scheduleNext 不恢复
+    // pending（review [P1]）；不还原 intent 则历史被污染成一条从未执行的新消息（review [P2]）。
+    // Awaited: the restore must land before scheduleNext runs, which is the
+    // ordering the comment above depends on.
+    //
+    // Unconditional: any failure leaves a run the queue counts as running, so
+    // an untyped error (a workspace bookkeeping failure, a broken SCM config)
+    // would otherwise pin the Agent at maxConcurrency until someone edits the
+    // database.
+    await abandonRun()
+    completeExecutionLease(runId)
+    scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
       err instanceof WorktreeDirtyError
     ) {
-      // 释放已占用的 slot。新建的 run 直接删除；复用的 run 还原 intent/executionMetadata/status
-      // 到覆盖前的原值（不留 pending）——留 pending 会被 409 guard 永久挡死且 scheduleNext 不恢复
-      // pending（review [P1]）；不还原 intent 则历史被污染成一条从未执行的新消息（review [P2]）。
-      // Awaited: the restore must land before scheduleNext runs, which is the
-      // ordering the comment above depends on.
-      await abandonRun()
-      completeExecutionLease(runId)
-      scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
       return c.json({ error: err.message }, 409)
     }
-    completeExecutionLease(runId)
     throw err
   }
 

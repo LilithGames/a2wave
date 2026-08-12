@@ -2123,6 +2123,25 @@ describe('POST /agents/:id/chat — worktree 409', () => {
     expect(mockExecuteInWorker).not.toHaveBeenCalled()
   })
 
+  it('reclaims the run row on an untyped resolveWorkDir failure', async () => {
+    // Same reason as the typed paths: the run already counts against
+    // maxConcurrency, so an error that is not one of the three known types
+    // would otherwise pin the Agent at its limit until the row is edited by
+    // hand. A workspace bookkeeping failure now reaches exactly here.
+    mockDb.select.mockReturnValue(makeSelectChain(CHAT_AGENT))
+    mockDb.insert.mockReturnValue(makeInsertChain())
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockDb.delete.mockReturnValue(makeDeleteChain())
+    mockResolveWorkDir.mockRejectedValueOnce(new Error('workDir bookkeeping failed'))
+
+    const res = await chatRequest({ message: 'hi' })
+
+    expect(res.status).not.toBe(409)
+    expect(mockDb.delete).toHaveBeenCalled()
+    expect(mockScheduleNext).toHaveBeenCalled()
+    expect(mockExecuteInWorker).not.toHaveBeenCalled()
+  })
+
   it('returns 409 on WorktreeBranchLockedError with scheduleNext + run delete', async () => {
     mockDb.select.mockReturnValue(makeSelectChain(CHAT_AGENT))
     mockDb.insert.mockReturnValue(makeInsertChain())

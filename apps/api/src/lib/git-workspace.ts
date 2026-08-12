@@ -152,9 +152,12 @@ export function perAgentWorkspaceName(agentId: string): string {
  * a legacy explicit workspace such as `agent-refactor` is NOT one of these.
  */
 export function isPerAgentWorkspaceName(name: string): boolean {
-  // createId suffixes are base64url and at least 16 chars — long enough to
-  // separate them from hand-typed names like `agent-refactor`.
-  return /^agent-[A-Za-z0-9_-]{16,}$/.test(name)
+  // `createId` is randomBytes(12).toString('base64url') — EXACTLY 16 base64url
+  // chars. Matching `{16,}` instead let a legacy hand-typed workspace such as
+  // `agent-payments-refactor` (17) read as per-agent, which leaks its branch on
+  // every removal. Anchored at 16, only a hand-typed name of exactly that
+  // length still collides.
+  return /^agent-[A-Za-z0-9_-]{16}$/.test(name)
 }
 
 // ============================================================
@@ -262,10 +265,13 @@ export async function createGitWorkspace(
     }
 
     if (lockedError || errors.length > 0) {
-      // 回滚已创建的 worktree
+      // 回滚已创建的 worktree。keepBranches follows the same two-sided rule as
+      // the rebuild above: a per-agent branch may hold unpushed commits from an
+      // earlier run, and the explicit path that a legacy sticky config takes
+      // never sets followSource.
       try {
         await removeGitWorkspace(localPath, wsRoot, name, config, {
-          keepBranches: Boolean(options?.followSource),
+          keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
         })
       } catch (rollbackErr) {
         // If the first `git worktree add` failed, there is no Git registration
@@ -986,17 +992,36 @@ export async function removeGitWorkspace(
   if (existsSync(wsPath)) {
     await rm(join(wsPath, WORKSPACE_ARTIFACTS_DIRECTORY), { recursive: true, force: true })
     await rm(join(wsPath, WORKSPACE_STATE_FILE), { force: true })
-    // Remove every platform-written entry type-aware: symlinks are unlinked
-    // without following (the .codegraph link points into the shared index),
-    // directories removed recursively (skill mounts, MCP config dirs), plain
-    // files force-removed. fs.rm without recursive throws EISDIR on a real
-    // directory, which once wedged removal permanently.
-    for (const entry of platformWorkspaceEntries()) {
-      const entryPath = join(wsPath, entry)
+    // Remove the platform's own paths first, at full depth, type-aware:
+    // symlinks are unlinked without following (the .codegraph link points into
+    // the shared index), directories removed recursively (skill mounts, MCP
+    // config dirs), plain files force-removed. fs.rm without recursive throws
+    // EISDIR on a real directory, which once wedged removal permanently.
+    for (const path of platformWorkspacePaths()) {
+      const entryPath = join(wsPath, path)
       const entryStat = await lstat(entryPath).catch(() => null)
       if (entryStat) {
         await rm(entryPath, { force: true, recursive: entryStat.isDirectory() })
       }
+    }
+    // A shared root (.claude, .cursor) may hold content the platform never
+    // wrote — a repo-tracked settings.json, or settings.local.json the CLI
+    // wrote itself. The workspace directory is going away either way (the repo
+    // checkouts were just removed with --force), so refusing here would only
+    // wedge TTL sweeps and Agent-deletion reclaims. Name what is being removed
+    // instead of deleting it silently, which is what the top-level
+    // unexpected-entries check does for the level above.
+    for (const entry of platformWorkspaceEntries()) {
+      const entryPath = join(wsPath, entry)
+      const leftovers = await readdir(entryPath).catch(() => null)
+      if (!leftovers) continue
+      if (leftovers.length > 0) {
+        logger.warn(
+          { wsPath, entry, leftovers },
+          'Removing workspace entries the platform did not write',
+        )
+      }
+      await rm(entryPath, { force: true, recursive: true })
     }
     for (const entry of await readdir(wsPath)) {
       if (WORKSPACE_STATE_TEMP_FILE_PATTERN.test(entry)) {

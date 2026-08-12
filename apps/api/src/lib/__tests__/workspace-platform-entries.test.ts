@@ -18,6 +18,16 @@ const UNREGISTERED_BY_DESIGN: Record<string, string> = {
     'legacy memory-override strip: only rewritten when the platform’s own marker is present, so an agent edit there IS agent work and must pin the workspace',
 }
 
+/**
+ * Files that write into a workspace root without registering paths. Same rule:
+ * a reason, or register.
+ */
+const UNREGISTERED_WRITER_FILES: Record<string, string> = {
+  'engine/base-engine.ts':
+    'strips the legacy memory-override section from CLAUDE.md / AGENTS.md — registering those would exempt them from the dirty check and let reset --hard discard agent edits',
+  'lib/git-workspace.ts': 'the consumer — it removes these paths, it does not write them',
+}
+
 async function collectTsFiles(dir: string): Promise<string[]> {
   const found: string[] = []
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -70,20 +80,47 @@ describe('platformWorkspacePaths', () => {
     // The real guard against the recurring blind spot: scan for writers instead
     // of re-listing the ones the aggregator already imports (a test that walks
     // the known writers is a tautology — a fifth writer keeps it green).
-    const pattern =
-      /join\(\s*(?:workDir|workspacePath|wsPath|workspaceDir|cwd)\s*,\s*['"]([^'"]+)['"]/g
-    const unregistered: string[] = []
+    //
+    // Two rules, because the literal scan alone caught no actual mount writer:
+    // skill-sync/mcp-sync join a *variable* path, so string matching sees
+    // nothing. A file that writes into a workspace root must therefore either
+    // register its own paths or be waived by name.
+    const joinPattern = /join\(\s*(?:workDir|workspacePath|wsPath|workspaceDir)\s*,/g
+    const literalPattern =
+      /join\(\s*(?:workDir|workspacePath|wsPath|workspaceDir)\s*,\s*['"]([^'"]+)['"]/g
+    const offenders: string[] = []
+    let writerFilesSeen = 0
     for (const file of await collectTsFiles(SRC_ROOT)) {
       const source = await readFile(file, 'utf-8')
-      for (const match of source.matchAll(pattern)) {
+      if (!joinPattern.test(source)) continue
+      joinPattern.lastIndex = 0
+      writerFilesSeen++
+      const relative = file.slice(SRC_ROOT.length)
+      const registers = /export function \w*WorkspacePaths\(/.test(source)
+      const literalJoins = [...source.matchAll(literalPattern)]
+      const joins = [...source.matchAll(joinPattern)]
+      // A non-literal path (`join(workDir, skillsDir)`) is invisible to the
+      // literal check below — the file has to register instead.
+      if (
+        joins.length > literalJoins.length &&
+        !registers &&
+        !UNREGISTERED_WRITER_FILES[relative]
+      ) {
+        offenders.push(`${relative}: writes a computed workspace path but registers none`)
+      }
+      for (const match of literalJoins) {
         const written = match[1]
         if (UNREGISTERED_BY_DESIGN[written]) continue
         if (!platformWorkspaceEntries().has(written.split('/')[0])) {
-          unregistered.push(`${file.slice(SRC_ROOT.length)}: ${written}`)
+          offenders.push(`${relative}: unregistered literal '${written}'`)
         }
       }
     }
-    expect(unregistered).toEqual([])
+    expect(offenders).toEqual([])
+    // Guards the scan itself: a regex that silently stops matching would make
+    // every future writer pass. The four registered writers plus the waived
+    // files are the floor.
+    expect(writerFilesSeen).toBeGreaterThanOrEqual(8)
   })
 })
 

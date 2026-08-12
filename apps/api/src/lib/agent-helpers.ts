@@ -24,7 +24,7 @@ import {
   skills,
   users,
 } from '../db/schema.js'
-import { withTransaction } from '../db/transaction.js'
+import { runExclusive, withTransaction } from '../db/transaction.js'
 import { kbDocFilename } from '../engine/kb-sync.js'
 import type { ResolvedMcpServer } from '../engine/mcp-sync.js'
 import { providerCatalog } from '../engine/provider-catalog.js'
@@ -1148,14 +1148,20 @@ const WORKDIR_RECORD_RETRY_MS = 25
  * The workspace-delete route's 409, `removePerAgentWorkspace`'s occupancy probe
  * and the sibling-advance check all read it, so a swallowed write leaves an
  * administrator free to delete the worktree of a running Agent. A transient
- * SQLITE_BUSY is retried; a persistent failure fails the run instead of
- * executing unprotected.
+ * failure is retried; a persistent one fails the run instead of executing
+ * unprotected.
+ *
+ * `runExclusive` is what makes the retry meaningful. On SQLite the process
+ * shares one connection, so a bare write landing inside another request's
+ * transaction is erased by that transaction's ROLLBACK — silently, with no
+ * error for the retry to catch. Serialising against transactions removes the
+ * failure mode instead of reacting to it.
  */
 async function recordRunWorkDir(runId: string, wsPath: string): Promise<void> {
   let lastErr: unknown
   for (let attempt = 1; attempt <= WORKDIR_RECORD_ATTEMPTS; attempt++) {
     try {
-      await db.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId))
+      await runExclusive(() => db.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId)))
       return
     } catch (err) {
       lastErr = err

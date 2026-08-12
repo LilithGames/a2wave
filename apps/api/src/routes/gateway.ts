@@ -326,17 +326,20 @@ app.post('/:agentId/invoke', async (c) => {
   try {
     resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId, agentConfig.agentEnv)
   } catch (err) {
+    // The run row already exists and the queue counts it as occupying a
+    // concurrency slot, so it must be reclaimed on EVERY failure path — not
+    // just the three typed ones. Leaving it behind wedges the Agent at
+    // maxConcurrency forever, recoverable only by editing the database.
+    await db.delete(runs).where(eq(runs.id, runId))
+    completeExecutionLease(runId)
+    void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
       err instanceof WorktreeDirtyError
     ) {
-      await db.delete(runs).where(eq(runs.id, runId))
-      completeExecutionLease(runId)
-      void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
       return c.json(gatewayError(GatewayErrorCode.EXECUTION_ERROR, err.message), 409)
     }
-    completeExecutionLease(runId)
     throw err
   }
 

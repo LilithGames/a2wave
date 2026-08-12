@@ -939,6 +939,24 @@ describe('Gateway routes', () => {
       })
       expect(res.status).not.toBe(409)
     })
+
+    it('reclaims the run row on an untyped resolveWorkDir failure', async () => {
+      // The run already counts against maxConcurrency. Leaving it behind on the
+      // rethrow path pins the Agent at its concurrency limit permanently —
+      // recoverable only by editing the database.
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(resolveWorkDir as Mock).mockRejectedValueOnce(new Error('workDir bookkeeping failed'))
+
+      await invokeRequest({
+        message: 'hi',
+        async: false,
+        worktree: { name: 'wt-a', cleanup: 'ephemeral' },
+      })
+
+      expect(db.delete).toHaveBeenCalled()
+      expect(scheduleNext).toHaveBeenCalled()
+      expect(executeInWorker).not.toHaveBeenCalled()
+    })
   })
 
   describe('GET /:agentId/runs/:runId', () => {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   WORKSPACE_STATE_FILE,
   WorktreeBranchLockedError,
@@ -19,6 +19,7 @@ import {
   removeGitWorkspace,
   writeWorkspaceState,
 } from '../git-workspace.js'
+import { logger } from '../logger.js'
 import { createScmSource } from '../scm-source.js'
 
 const execFileAsync = promisify(execFile)
@@ -1032,6 +1033,39 @@ describe('git-workspace', () => {
       expect(existsSync(created.path)).toBe(false)
     })
 
+    it('names content the platform did not write before removing it', async () => {
+      // The platform writes .claude/skills; a repo or the CLI itself may put
+      // settings.json / hooks in the same root. The workspace is going away
+      // either way — refusing would wedge every TTL sweep — but the removal
+      // must not be silent about deleting something it never wrote.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-user-files', multiRepoConfig)
+      await mkdir(join(created.path, '.claude', 'skills', 'mounted'), { recursive: true })
+      await writeFile(join(created.path, '.claude', 'skills', 'mounted', 'SKILL.md'), 'platform')
+      await writeFile(join(created.path, '.claude', 'settings.local.json'), '{}')
+
+      const warn = vi.spyOn(logger, 'warn')
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-user-files', multiRepoConfig)
+
+      expect(existsSync(created.path)).toBe(false)
+      const named = warn.mock.calls.some(
+        (call) =>
+          (call[0] as { leftovers?: string[] })?.leftovers?.includes('settings.local.json') ??
+          false,
+      )
+      expect(named).toBe(true)
+      warn.mockRestore()
+    })
+
     it('removes a multi-repo workspace where .codegraph is a real directory', async () => {
       // A cwd-relative CodeGraph CLI can materialize a real index directory in
       // the workspace when the link was absent — a disposable cache that must
@@ -1113,6 +1147,53 @@ describe('git-workspace', () => {
       expect(rebuilt.created).toBe(true)
       expect(existsSync(join(rebuilt.path, 'frontend', 'README.md'))).toBe(true)
       expect(existsSync(join(rebuilt.path, 'backend', 'README.md'))).toBe(true)
+    })
+
+    it('keeps a per-agent branch when a multi-repo create rolls back', async () => {
+      // Rollback is the third removal call in this function; rebuild and the
+      // route were fixed first. It runs on the explicit path too, where
+      // followSource is never set, so the flag alone cannot decide.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const wsName = 'agent-abcdefghij123456'
+
+      // The branch pre-exists with an unmerged commit — an earlier run's work.
+      const scratch = join(TEST_DIR, 'scratch-rollback')
+      await execFileAsync('git', ['worktree', 'add', '-b', wsName, scratch, 'main'], {
+        cwd: frontendDir,
+      })
+      await writeFile(join(scratch, 'unpushed.txt'), 'agent work')
+      await execFileAsync('git', ['add', '.'], { cwd: scratch })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: scratch })
+      const { stdout: branchTipBefore } = await execFileAsync('git', ['rev-parse', wsName], {
+        cwd: scratch,
+      })
+      await execFileAsync('git', ['worktree', 'remove', scratch], { cwd: frontendDir })
+
+      // Break the second repo so its `worktree add` fails and create rolls back.
+      await rm(join(backendDir, '.git'), { recursive: true, force: true })
+
+      await expect(
+        createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig, { branch: wsName }),
+      ).rejects.toThrow()
+
+      const { stdout: branchTipAfter } = await execFileAsync(
+        'git',
+        ['rev-parse', `refs/heads/${wsName}`],
+        { cwd: frontendDir },
+      )
+      expect(branchTipAfter.trim()).toBe(branchTipBefore.trim())
     })
 
     it('keeps a per-agent branch when an incomplete workspace is rebuilt without followSource', async () => {
