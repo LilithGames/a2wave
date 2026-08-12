@@ -121,13 +121,14 @@ private DNS hostnames without disabling the remaining protections.
 The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <OIDC_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
 
 > [!IMPORTANT]
-> This channel accepts **only JWTs issued by your enterprise OIDC provider** (typically an access token), verified against the IdP JWKS with an `aud` on the administrator-configured allowlist (`A2WAVE_OIDC_CHANNEL_AUDIENCES`). SAML login uses a browser-based assertion flow and produces no token that can be placed in an `Authorization` header, so **a SAML-only deployment cannot use the OAuth invocation channel**.
+> This channel accepts **only JWTs issued by your enterprise OIDC provider** (typically an access token), verified against the IdP JWKS with an `aud` in the **current effective OIDC channel audience configuration**. Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no valid OIDC configuration exists in Settings. SAML login uses a browser-based assertion flow and produces no token that can be placed in an `Authorization` header, so **a SAML-only deployment cannot use the OAuth invocation channel**.
 
 When an error is returned, prefer reading `error.code`, `error.message`, and `error.action`:
 
 | code | Who needs to act | Next step |
 |------|------------|--------|
-| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Log in again and obtain a new OIDC JWT |
+| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Obtain a fresh JWT from the caller's own OIDC client for the configured a2wave resource audience |
+| `CALLER_TOKEN_CLAIMS_INVALID` | Caller / platform admin | Obtain a new JWT from the configured OIDC provider containing an email claim; `specified_users` additionally requires a verified email |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | Caller + Agent owner | Request permission or switch to an allowed network |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent owner | Re-log in or update the Agent's Provider credentials; the caller does not need to re-log in |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent owner | Fix the engine, model, MCP, or workspace configuration; non-occupancy errors return `424` |

@@ -98,15 +98,27 @@ export function classifyOAuthAuthError(
         ).error,
       }
     case GatewayAuthErrors.MISSING_EMAIL_CLAIM:
+      return {
+        httpStatus: 403,
+        error: createOAuthGatewayError(
+          GatewayErrorCode.CALLER_TOKEN_CLAIMS_INVALID,
+          "The caller's token does not contain an email claim. Obtain a new JWT from the configured OIDC provider that includes an email claim, then retry the request.",
+          {
+            source: 'caller',
+            action: 'obtain_new_access_token',
+            retryable: false,
+          },
+        ).error,
+      }
     case GatewayAuthErrors.MISSING_VERIFIED_EMAIL:
       return {
         httpStatus: 403,
         error: createOAuthGatewayError(
           GatewayErrorCode.CALLER_TOKEN_CLAIMS_INVALID,
-          "The caller's token does not contain the email claim required by this agent. Sign in through the configured enterprise SSO flow or contact the platform administrator.",
+          "The caller's token does not contain the verified email required by this agent's specified-users access policy. Obtain a new JWT from the configured OIDC provider with a verified email claim, then retry the request.",
           {
             source: 'caller',
-            action: 'contact_platform_administrator',
+            action: 'obtain_new_access_token',
             retryable: false,
           },
         ).error,

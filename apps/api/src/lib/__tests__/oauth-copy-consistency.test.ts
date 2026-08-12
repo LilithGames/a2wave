@@ -22,6 +22,9 @@ const zhRunsManual = readRepoFile('apps/web/src/content/manual/zh/15-runs.md')
 const enLocale = JSON.parse(readRepoFile('apps/web/src/locales/en.json'))
 const zhLocale = JSON.parse(readRepoFile('apps/web/src/locales/zh.json'))
 const openApiSource = readRepoFile('apps/api/src/openapi.ts')
+const enTriggersManual = readRepoFile('apps/web/src/content/manual/en/12-triggers.md')
+const zhTriggersManual = readRepoFile('apps/web/src/content/manual/zh/12-triggers.md')
+const envExample = readRepoFile('.env.example')
 
 describe('OAuth documentation security model', () => {
   it('never tells operators to trust the audience observed in a rejected token', () => {
@@ -84,11 +87,65 @@ describe('OAuth documentation security model', () => {
     expect(zhRunsManual).not.toContain('OAuth / 企业 SSO 可以从调用者 token 识别用户')
   })
 
-  it('describes Settings-first resolution in the OpenAPI audience help', () => {
-    expect(openApiSource).toContain('current effective OIDC channel audience configuration')
-    expect(openApiSource).toContain(
-      'Settings takes precedence; the environment variable is only a fallback',
+  it('describes Settings-first audience resolution in every operator-facing source', () => {
+    const englishSources = [
+      openApiSource,
+      oauthDeveloperDoc,
+      enTriggersManual,
+      enOauthManual,
+      envExample,
+    ]
+
+    for (const source of englishSources) {
+      expect(source).toContain('current effective OIDC channel audience configuration')
+      expect(source).toContain('Settings takes precedence')
+      expect(source).not.toContain('audience allowlist in A2WAVE_OIDC_CHANNEL_AUDIENCES')
+    }
+
+    expect(zhTriggersManual).toContain('当前生效的 OIDC 渠道受众配置')
+    expect(zhTriggersManual).toContain('Settings 中的配置优先')
+    expect(zhOauthManual).toContain('当前生效的 OIDC 渠道受众配置')
+    expect(zhOauthManual).toContain('Settings 中的配置优先')
+    expect(enOauthManual).toContain(
+      'when the environment is the active fallback, empty = channel disabled',
     )
-    expect(openApiSource).not.toContain('audience allowlist in A2WAVE_OIDC_CHANNEL_AUDIENCES')
+    expect(zhOauthManual).toContain('仅当环境变量是当前生效的回退配置时，留空才会关闭渠道')
+    expect(enOauthManual).not.toContain(
+      'Client ID is not added automatically; empty = channel disabled',
+    )
+    expect(zhOauthManual).not.toContain('Client ID 不会自动加入；留空 = 渠道关闭')
+    expect(enTriggersManual).not.toContain('allowlist (`A2WAVE_OIDC_CHANNEL_AUDIENCES`)')
+    expect(zhTriggersManual).not.toContain('受众白名单（`A2WAVE_OIDC_CHANNEL_AUDIENCES`）')
+    expect(oauthDeveloperDoc).not.toMatch(
+      /(?:allowlisted in|against) `A2WAVE_OIDC_CHANNEL_AUDIENCES`/,
+    )
+    expect(envExample).not.toContain(
+      'OIDC is configured AND A2WAVE_OIDC_CHANNEL_AUDIENCES is non-empty',
+    )
+  })
+
+  it('does not present the default a2wave login cache as an OAuth channel token', () => {
+    expect(oauthDeveloperDoc).toContain(
+      "Obtain a token from your caller's OIDC client for the configured a2wave resource audience",
+    )
+    expect(oauthDeveloperDoc).not.toContain(
+      'Example: reuse the JWT cached by `a2wave login` (default cache path)',
+    )
+    expect(oauthDeveloperDoc).not.toContain(
+      'remove the SSO token cache (default `~/.a2wave/oauth.json`)',
+    )
+    expect(oauthDeveloperDoc).not.toContain('jq -r .access_token ~/.a2wave/oauth.json')
+  })
+
+  it('documents the email claim requirement in both OAuth access modes', () => {
+    expect(oauthDeveloperDoc).toContain('both modes require an `email` claim')
+    expect(oauthDeveloperDoc).toContain('{email?, sub, tenant?}')
+    expect(oauthDeveloperDoc).toContain(
+      '`user_info.email` when the email is accepted as verified; otherwise `user_info` may be null',
+    )
+    expect(enTriggersManual).toContain('`CALLER_TOKEN_CLAIMS_INVALID`')
+    expect(enTriggersManual).toContain('`specified_users` additionally requires a verified email')
+    expect(zhTriggersManual).toContain('`CALLER_TOKEN_CLAIMS_INVALID`')
+    expect(zhTriggersManual).toContain('`specified_users` 还要求邮箱已验证')
   })
 })

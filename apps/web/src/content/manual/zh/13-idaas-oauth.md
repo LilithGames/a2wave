@@ -13,7 +13,7 @@
 > [!IMPORTANT]
 > **OAuth 发布渠道复用 OIDC 配置。** Agent 以 `oauth` 方式发布时，调用方 token 的验签走的就是这里的企业 OIDC——签名公钥由 IdP 的 JWKS 自动提供并轮换，无需单独维护密钥。两点与登录不同：
 >
-> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`，而接入自有服务的调用方并不持有它，因此渠道改按 `A2WAVE_OIDC_CHANNEL_AUDIENCES` 放行。**这里要填 IdP 为 a2wave 签发的受众**——JWT access token 的 `aud` 标识的是*目标资源服务器*（即本服务），且资源服务器必须确认自己在该受众内（[RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)）；各调用方通过 IdP 的 resource/audience 参数申请。**不要把其它应用的受众加进来**：那种 token 根本不是为 a2wave 签发的，放行它会让本渠道沦为那个服务 token 的 confused deputy——按调用方区分权限靠访问范围与邮箱名单，不是靠 `aud`。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。留空即关闭该渠道（fail closed），绝不代表放行全部。
+> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`，而接入自有服务的调用方并不持有它，因此渠道改按当前生效的 OIDC 渠道受众配置放行。Settings 中的配置优先；仅当 Settings 中没有有效 OIDC 配置时，才回落到 `A2WAVE_OIDC_CHANNEL_AUDIENCES`。**这里要填 IdP 为 a2wave 签发的受众**——JWT access token 的 `aud` 标识的是*目标资源服务器*（即本服务），且资源服务器必须确认自己在该受众内（[RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)）；各调用方通过 IdP 的 resource/audience 参数申请。**不要把其它应用的受众加进来**：那种 token 根本不是为 a2wave 签发的，放行它会让本渠道沦为那个服务 token 的 confused deputy——按调用方区分权限靠访问范围与邮箱名单，不是靠 `aud`。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。当前生效的受众配置为空时即关闭该渠道（fail closed），绝不代表放行全部。
 > - **关闭 OIDC 登录不会停掉渠道。** 登录方式的开关只管登录页出不出按钮；已发布的 oauth Agent 继续正常验签，避免「为了强制密码登录而顺手关掉 OIDC」把所有对外集成一起打断。
 >
 > OIDC 完全未配置时，渠道返回 `503 OAuth not configured`。
@@ -30,7 +30,7 @@
 | `A2WAVE_OIDC_CLIENT_ID` | 在 IdP 注册的 client_id |
 | `A2WAVE_OIDC_CLIENT_SECRET` | 可选。缺省按 PKCE 公共客户端处理 |
 | `A2WAVE_OIDC_SCOPES` | 可选。默认 `openid profile email` |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | OAuth 渠道的环境变量兜底（逗号分隔）：填 a2wave 资源的受众标识。Settings 已配置时以 Settings 为准。Client ID 不会自动加入；留空 = 渠道关闭 |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | OAuth 渠道的环境变量兜底（逗号分隔）：填 a2wave 资源的受众标识。Settings 已配置时以 Settings 为准。Client ID 不会自动加入；仅当环境变量是当前生效的回退配置时，留空才会关闭渠道 |
 
 配置好并在「设置 → 企业登录」开启 OAuth 后，登录页会出现 **「使用 OIDC 登录」** 按钮。点击后浏览器整页跳转到 IdP 完成认证，成功后自动回到站内；验签公钥走 JWKS 自动轮换，无需手动粘贴公钥。登录失败时登录页会显示具体原因（如登录会话过期、邮箱域名不在白名单等）。若 IdP 的 ID token 中不含邮箱（部分 IdP 只在 userinfo 端点返回邮箱），a2wave 会自动向 userinfo 端点补取，无需 IdP 侧额外配置。
 

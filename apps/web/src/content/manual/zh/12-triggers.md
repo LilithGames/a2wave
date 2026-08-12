@@ -115,13 +115,14 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用者自己的 `Authorization: Bearer <OIDC_JWT>`；该 token 只证明“调用者是谁”，与 Agent 执行时使用的 Codex / Cursor / Claude Code 凭证相互独立。
 
 > [!IMPORTANT]
-> 本渠道**只接受企业 OIDC 身份提供商签发的 JWT**（通常是 access token），按 IdP 的 JWKS 验签，且 `aud` 必须落在管理员配置的受众白名单（`A2WAVE_OIDC_CHANNEL_AUDIENCES`）内。SAML 登录走的是浏览器断言流程，不产生可放进 `Authorization` 头的 token，因此**只配置了 SAML 的部署无法使用 OAuth 调用渠道**。
+> 本渠道**只接受企业 OIDC 身份提供商签发的 JWT**（通常是 access token），按 IdP 的 JWKS 验签，且 `aud` 必须命中**当前生效的 OIDC 渠道受众配置**。Settings 中的配置优先；仅当 Settings 中没有有效 OIDC 配置时，才回落到 `A2WAVE_OIDC_CHANNEL_AUDIENCES`。SAML 登录走的是浏览器断言流程，不产生可放进 `Authorization` 头的 token，因此**只配置了 SAML 的部署无法使用 OAuth 调用渠道**。
 
 返回错误时优先读取 `error.code`、`error.message`、`error.action`：
 
 | code | 谁需要处理 | 下一步 |
 |------|------------|--------|
-| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | 调用者 | 重新登录并取得新的 OIDC JWT |
+| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | 调用者 | 从调用方自己的 OIDC client 获取面向已配置 a2wave 资源受众的新 JWT |
+| `CALLER_TOKEN_CLAIMS_INVALID` | 调用者 / 平台管理员 | 从已配置的 OIDC provider 获取包含 email claim 的新 JWT；`specified_users` 还要求邮箱已验证 |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | 调用者 + Agent 所有者 | 申请权限或切换允许的网络 |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent 所有者 | 重新登录或更新 Agent 的 Provider 凭证；调用者无需重登 |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent 所有者 | 修复引擎、模型、MCP 或工作区配置；非占用类错误返回 `424` |

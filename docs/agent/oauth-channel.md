@@ -30,10 +30,13 @@ Beyond `none` / `api_key`, a2wave provides a third authentication method: **OAut
 
 1. **Identity layer (who are you?)** — IdP JWT signature verification, confirming a user of your identity provider and extracting claims like sub / email
 2. **Authorization layer (can you use this agent?)** — executed per the Agent's `oauthAccessMode`:
-   - `all_idaas_users` (default): allow if the JWT is valid — every user of the identity provider can call
+   - `all_idaas_users` (default): allow if the JWT is valid and carries an `email` claim — every such user of the identity provider can call
    - `specified_users`: the caller's **verified** `email` claim must appear in the Agent's email allowlist (`agents.oauth_allowed_emails`); comparison is case-insensitive and whitespace-trimmed
 
-Both layers must pass before allowing the request, and the identity `{email?, sub, tenant?}` is written into the run channel context, which the Agent executor can use for further business permission decisions or auditing.
+Both layers must pass before allowing the request. The verified identity `{email?, sub, tenant?}` is
+written into the run channel context for business permission decisions or auditing. An address
+explicitly marked `email_verified: false` satisfies the revocation gate in `all_idaas_users`, but it
+is not promoted into `user_info.email`.
 
 > ⚠️ **Fail-closed allowlist**: `specified_users` with an empty or unset allowlist denies **everyone**. There is no "empty means unrestricted" shortcut — an Agent narrowed on purpose must never widen itself because its roster was cleared. Callers whose token carries no verified `email` claim are rejected in this mode as well (`MISSING_VERIFIED_EMAIL`).
 
@@ -65,7 +68,9 @@ Both layers must pass before allowing the request, and the identity `{email?, su
      │                  │        └───────────────────┬───────────────┘
      │                  │                            │
      │                  │        ┌───────────────────┴───────────────┐
-     │                  │        │ 2b) read oauthAccessMode          │
+     │                  │        │ 2b) email claim present?          │
+     │                  │        │      no  → 403 CLAIMS_INVALID     │
+     │                  │        │ 2c) read oauthAccessMode          │
      │                  │        │                                   │
      │                  │        │  all_idaas_users → allow          │
      │                  │        │                                   │
@@ -86,10 +91,10 @@ Both layers must pass before allowing the request, and the identity `{email?, su
 
 - JWT verification: the enterprise **OIDC** config (Settings → Enterprise login) — signature via the IdP's JWKS, plus strict `iss / exp / sub`. Keys rotate through JWKS, so there is no static public key to paste or re-paste
 - Accepted signature algorithms: `RS256` / `RS384` / `RS512` / `PS256` / `ES256` / `ES384` (symmetric algorithms are always rejected). The CLI mirrors this by exchanging any non-`HS256` JWT, so an IdP on an elliptic-curve algorithm needs no client-side change
-- Access scope: `oauthAccessMode=all_idaas_users` only does IdP JWT verification; `specified_users` additionally matches the caller's email against the Agent's allowlist
-- Allowlist decision: the JWT must carry a **verified** `email` claim (an unverified email is treated as absent); the value is trimmed and lower-cased on both sides before comparison. An empty or NULL `agents.oauth_allowed_emails` denies everyone
+- Access scope: both modes require an `email` claim; `all_idaas_users` has no further email-authorization check, while `specified_users` requires a verified email and an Agent allowlist match
+- Allowlist decision (`specified_users` only): the JWT must carry a **verified** `email` claim (an unverified email is treated as absent); the value is trimmed and lower-cased on both sides before comparison. An empty or NULL `agents.oauth_allowed_emails` denies everyone
 - The decision is a **local column read** — no outbound call, no cache, no TTL, so an allowlist edit takes effect on the very next request
-- Identity landing: `runSteps.input.context.channel.channel_info.oauth` + `user_info.email`
+- Identity landing: `runSteps.input.context.channel.channel_info.oauth` + `user_info.email` when the email is accepted as verified; otherwise `user_info` may be null
 
 Code entry points:
 
@@ -114,7 +119,8 @@ A2WAVE_OIDC_ISSUER='https://login.example.com/realms/acme'
 A2WAVE_OIDC_CLIENT_ID='a2wave'
 A2WAVE_OIDC_CLIENT_SECRET=''        # optional; omit for a PKCE public client
 
-# The a2wave resource audience your IdP mints tokens for (comma-separated).
+# Environment fallback for the a2wave resource audience your IdP mints tokens for
+# (comma-separated). Settings takes precedence when it contains a valid OIDC configuration.
 # This names THIS service, not the callers -- see the audience note in section 4.
 # Empty = channel disabled.
 A2WAVE_OIDC_CHANNEL_AUDIENCES='https://a2wave.example.com'
@@ -123,9 +129,9 @@ A2WAVE_OIDC_CHANNEL_AUDIENCES='https://a2wave.example.com'
 | Variable | Required | Description |
 |------|------|------|
 | `A2WAVE_OIDC_ISSUER` | ✓ | IdP issuer; discovery at `{issuer}/.well-known/openid-configuration`, signing keys from its JWKS |
-| `A2WAVE_OIDC_CLIENT_ID` | ✓ | client_id registered at the IdP. **Not** an implicit channel audience — list it below if callers use a2wave login tokens |
+| `A2WAVE_OIDC_CLIENT_ID` | ✓ | client_id registered at the IdP. **Not** an implicit channel audience — add it explicitly to the current effective OIDC channel audience configuration if callers use a2wave login tokens |
 | `A2WAVE_OIDC_CLIENT_SECRET` | ✗ | Omit to treat a2wave as a PKCE public client |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | ✓ (for this channel) | Environment fallback for the a2wave resource audience identifiers. Settings wins when configured. Empty = the channel is disabled |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | ✓ (for this channel) | Environment fallback for the a2wave resource audience identifiers. Settings takes precedence when a valid Settings OIDC configuration exists; when the environment is the active fallback, empty = channel disabled |
 
 > The authorization layer is now entirely local (a column on the Agent), so it has no ops-level knob
 > of its own — nothing to configure, cache, or rotate beyond the OIDC block above.
@@ -153,8 +159,9 @@ The answer is a separate allowlist, **not** skipping the check. With no `aud` co
 every token the IdP ever signed for any relying party would authenticate here — including tokens
 belonging to unrelated internal apps, and ones captured from their logs or proxies — while
 `oauthAccessMode='all_idaas_users'` has no second gate behind it. So the channel verifies `aud`
-against `A2WAVE_OIDC_CHANNEL_AUDIENCES`, and an empty allowlist disables the channel rather than
-opening it.
+against the **current effective OIDC channel audience configuration**. Settings takes precedence;
+`A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no valid Settings OIDC
+configuration exists. An empty effective allowlist disables the channel rather than opening it.
 
 `client_id` is deliberately **not** folded in. It would read as a convenience — "calling with our
 own login token just works" — but it silently turns "can sign in to the console" into "can invoke
@@ -189,7 +196,7 @@ The `OAuth Authorization` subpage of the publish page provides two access scopes
 
 | Access scope | zh copy | Behavior | Use case |
 |----------|------|------|----------|
-| `all_idaas_users` (default) | 全体企业用户 | Allow once the IdP JWT passes | Every user of the identity provider can call |
+| `all_idaas_users` (default) | 全体企业用户 | Allow once the IdP JWT passes and carries an email claim | Every user of the identity provider with an email claim can call |
 | `specified_users` | 指定企业用户 | After the IdP JWT passes, require the caller's verified email to be on the Agent's allowlist | A named set of people — a pilot group, one team, a handful of integrators |
 
 The English labels are "All enterprise users" / "Specific enterprise users".
@@ -250,16 +257,23 @@ Agent **clone** preserves the source's access tier and starts the copy with a NU
 
 ### 5.1 Prepare the Token
 
-The caller needs a JWT from the configured OIDC provider that was **issued for a2wave** — its `aud` must be the a2wave resource audience the administrator allowlisted in `A2WAVE_OIDC_CHANNEL_AUDIENCES` (see §4). Request it through your IdP's resource/audience parameter; any OIDC flow that mints such a token works.
+Obtain a token from your caller's OIDC client for the configured a2wave resource audience. Its
+`aud` must be accepted by the current effective OIDC channel audience configuration (see §3).
+Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no
+valid OIDC configuration exists in Settings.
 
 The token must also carry an email claim: the gateway rejects an address-less token with `403` in **both** access modes, and `specified_users` additionally requires that address to be **verified** and on the Agent's allowlist.
 
 The token cached by `a2wave login` is **not** automatically accepted — it is minted for the login client (`aud === client_id`), which the allowlist deliberately excludes. Without a matching `aud` the call fails with `401`, not `403`.
 
 ```bash
-# Example: reuse the JWT cached by `a2wave login` (default cache path)
-TOKEN=$(jq -r .access_token ~/.a2wave/oauth.json)
+# Obtain this through the caller application's OIDC flow. Configure that IdP client
+# to request the a2wave resource audience and the email scope.
+TOKEN='<JWT issued by the configured OIDC provider for the a2wave resource audience>'
 ```
+
+The `a2wave login` cache can be used for manual testing only when the login Client ID is explicitly
+included in the current effective channel audiences; it is rejected by default.
 
 ### 5.2 REST invocation
 
@@ -326,7 +340,11 @@ After signature + access-scope verification pass, the identity lands in `runStep
 }
 ```
 
-The Agent executor reads the user identity from `payload.context.channel.user_info.email` (plus `channel_info.oauth.sub` for the IdP-anchored subject), which can be used directly for finer-grained business permission decisions.
+For the normal verified-email case shown above, the Agent executor reads the address from
+`payload.context.channel.user_info.email` and the IdP-anchored subject from
+`channel_info.oauth.sub`. Under `all_idaas_users`, a token whose address is explicitly marked
+`email_verified: false` may still pass the revocation gate, but `user_info` is then null; use the
+subject for auditing and do not treat the unverified address as caller identity.
 
 > ⚠️ **`channel_info.feishu_scope` is no longer written.** It was populated only by the retired
 > `feishu_scope` mode, so new runs never carry it and executors no longer receive
@@ -344,8 +362,9 @@ The Agent executor reads the user identity from `payload.context.channel.user_in
 |------|------|------|------------|
 | JWT valid + has access | 200 / 202 | — | Process the response normally or poll the Run |
 | Missing `Authorization` header | 401 | `AUTH_REQUIRED` | Obtain an IdP token and add the Bearer header |
-| JWT invalid, expired, or verification failed | 401 | `CALLER_TOKEN_INVALID` | Caller re-logs in to get a new token |
-| JWT missing a verified `email` claim (`specified_users` only) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Contact the platform admin to check the IdP claim |
+| JWT invalid, expired, or verification failed | 401 | `CALLER_TOKEN_INVALID` | Request a new JWT from the caller's OIDC client for the configured a2wave resource audience |
+| JWT missing an `email` claim (both modes) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request a new JWT containing `email` |
+| JWT email is not verified (`specified_users` only) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request a new JWT containing a verified `email` |
 | Email not on the Agent's allowlist | 403 | `CALLER_NOT_AUTHORIZED` | Contact the Agent owner for authorization |
 | IP not in the allowlist | 403 | `IP_NOT_ALLOWED` | Switch to an allowed network or update the allowlist |
 | OAuth policy not deployed | 503 | `OAUTH_NOT_CONFIGURED` | Contact the platform admin; changing the token won't help |
@@ -371,7 +390,7 @@ The error envelope uniformly contains `code`, `message`, `source`, `action`, `re
 ### 7.1 Call returns `401 CALLER_TOKEN_INVALID`
 
 - Wrong `Authorization` header format (must be `Bearer <jwt>`, scheme is case-insensitive)
-- JWT expired → remove the SSO token cache (default `~/.a2wave/oauth.json`) and run the login again to trigger SSO
+- JWT expired → obtain a fresh JWT through the caller application's OIDC flow, requesting the configured a2wave resource audience; refreshing the `a2wave login` cache does not fix an audience mismatch unless the login Client ID is explicitly allowlisted
 - `iss` mismatch → decode at [jwt.io](https://jwt.io) and compare against the configured OIDC issuer (must match exactly, trailing slash included)
 - **`aud` not on the channel allowlist** — the most common failure when onboarding a new caller. Have the caller request a token issued for the configured a2wave resource audience (through the IdP's resource/audience parameter). Do **not** copy the rejected token's observed `aud` into the allowlist: it may identify another service, and accepting it would recreate the confused-deputy flaw described in §3
 - Signature not verifiable against the IdP's JWKS (token minted by a different IdP, or the key was rotated out)
@@ -445,7 +464,7 @@ the Agent's mode does not bypass it:
 **Compare the actual claim against the allowlist**: decode the caller's token and read `email` / `email_verified` — this is the exact pair the allowlist is matched against, so it settles most 403s on the spot
 
 ```bash
-jq -r .access_token ~/.a2wave/oauth.json | cut -d. -f2 | base64 -d 2>/dev/null | jq '{email, email_verified, aud, iss}'
+printf '%s' "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{email, email_verified, aud, iss}'
 ```
 
 **Read the persisted allowlist** (when you have DB access and want to confirm what was actually saved):
@@ -482,7 +501,7 @@ Two wording traps when writing user-facing copy:
 - Do **not** narrow it to "ID token" either. `verifyWithIdpJwks` requires only `exp` and `sub`
   (plus issuer / audience / algorithm) and checks no ID-token discriminator such as `typ`,
   `token_use`, or `nonce`, so a JWT **access** token with an allowlisted `aud` verifies here —
-  and §5.1's own example feeds it `.access_token`. Since the channel's `aud` allowlist
+  as well as an ID token. Since the channel's `aud` allowlist
   deliberately excludes `clientId`, an ID token (whose `aud` *is* the client id) is usually the
   wrong thing to reach for. Say "a JWT issued by the configured OIDC provider".
 
