@@ -145,7 +145,7 @@ export const openApiSpec: OpenAPIV3.Document = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description:
-          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the audience allowlist in A2WAVE_OIDC_CHANNEL_AUDIENCES. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. The token must carry an email claim. This is independent from the agent execution provider credentials.',
+          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the current effective OIDC channel audience configuration. Settings takes precedence; the environment variable is only a fallback when no valid Settings configuration exists. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. The token must carry an email claim. This is independent from the agent execution provider credentials.',
       },
     },
     parameters: {

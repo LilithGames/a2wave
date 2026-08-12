@@ -980,7 +980,7 @@
       "oauthEnvInvalid": "无效",
       "oauthEnvNone": "未配置",
       "oauthEnabled": "启用 OAuth / 企业 SSO 登录",
-      "oauthEnabledDesc": "开启后 CLI 与 Web 可走企业 SSO 登录。需运维提前配好 OIDC 或 SAML 登录方式。",
+      "oauthEnabledDesc": "开启后 Web 支持 OIDC 或 SAML；CLI 企业登录只支持 OIDC，仅配置 SAML 时需回落到本地密码登录。",
       "oauthAllowedEmailDomains": "允许的邮箱域",
       "oauthAllowedEmailDomainsDesc": "逗号分隔；空表示不限制（如 example.com, corp.example.com）。",
       "oauthAllowedEmailDomainsPlaceholder": "example.com, corp.example.com",

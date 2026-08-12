@@ -980,7 +980,7 @@
       "oauthEnvInvalid": "Invalid",
       "oauthEnvNone": "Not configured",
       "oauthEnabled": "Enable OAuth / Enterprise SSO Login",
-      "oauthEnabledDesc": "When on, CLI and Web can authenticate via enterprise SSO. Ops must configure the OIDC or SAML login method first.",
+      "oauthEnabledDesc": "When on, Web supports OIDC or SAML; CLI enterprise login requires OIDC, with local password login as the fallback for SAML-only deployments.",
       "oauthAllowedEmailDomains": "Allowed Email Domains",
       "oauthAllowedEmailDomainsDesc": "Comma-separated; empty means no restriction (e.g. example.com, corp.example.com).",
       "oauthAllowedEmailDomainsPlaceholder": "example.com, corp.example.com",

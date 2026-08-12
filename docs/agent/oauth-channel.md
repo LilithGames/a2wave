@@ -125,7 +125,7 @@ A2WAVE_OIDC_CHANNEL_AUDIENCES='https://a2wave.example.com'
 | `A2WAVE_OIDC_ISSUER` | ✓ | IdP issuer; discovery at `{issuer}/.well-known/openid-configuration`, signing keys from its JWKS |
 | `A2WAVE_OIDC_CLIENT_ID` | ✓ | client_id registered at the IdP. **Not** an implicit channel audience — list it below if callers use a2wave login tokens |
 | `A2WAVE_OIDC_CLIENT_SECRET` | ✗ | Omit to treat a2wave as a PKCE public client |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | ✓ (for this channel) | The `aud` values your callers present. Empty = the channel is disabled |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | ✓ (for this channel) | Environment fallback for the a2wave resource audience identifiers. Settings wins when configured. Empty = the channel is disabled |
 
 > The authorization layer is now entirely local (a column on the Agent), so it has no ops-level knob
 > of its own — nothing to configure, cache, or rotate beyond the OIDC block above.
@@ -373,7 +373,7 @@ The error envelope uniformly contains `code`, `message`, `source`, `action`, `re
 - Wrong `Authorization` header format (must be `Bearer <jwt>`, scheme is case-insensitive)
 - JWT expired → remove the SSO token cache (default `~/.a2wave/oauth.json`) and run the login again to trigger SSO
 - `iss` mismatch → decode at [jwt.io](https://jwt.io) and compare against the configured OIDC issuer (must match exactly, trailing slash included)
-- **`aud` not on the channel allowlist** — the most common failure when onboarding a new caller. Decode the token, read its `aud`, and add that value to `A2WAVE_OIDC_CHANNEL_AUDIENCES` (or the OIDC panel's "OAuth channel audiences"). Do not "fix" this by removing the audience check; see §3
+- **`aud` not on the channel allowlist** — the most common failure when onboarding a new caller. Have the caller request a token issued for the configured a2wave resource audience (through the IdP's resource/audience parameter). Do **not** copy the rejected token's observed `aud` into the allowlist: it may identify another service, and accepting it would recreate the confused-deputy flaw described in §3
 - Signature not verifiable against the IdP's JWKS (token minted by a different IdP, or the key was rotated out)
 
 ### 7.2 Call returns `503 OAUTH_NOT_CONFIGURED`

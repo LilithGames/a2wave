@@ -28,7 +28,7 @@ Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` 
 The Agent in the row title is the **Agent that executed this Run**. The Agent inside the provenance label is the **immediate upstream Agent that called it**. Missing layers are omitted without hiding the provenance that is known.
 
 > [!NOTE]
-> Identity availability depends on the trigger: Feishu must be configured and permitted to resolve the sender; OAuth / enterprise SSO can identify the user from the caller token; and A2A can include the calling Agent and upstream user only when the peer supports and sends the provenance extension. A regular API key proves that an integration holds the credential, not which end user is behind it, so those Runs normally show only `API`. These names support auditing and troubleshooting; access is still controlled by each channel's real authentication, and provenance data never replaces it.
+> Identity availability depends on the trigger: Feishu must be configured and permitted to resolve the sender; the OAuth channel can identify the user from its caller's OIDC JWT; and A2A can include the calling Agent and upstream user only when the peer supports and sends the provenance extension. SAML establishes a Web session and does not provide a caller bearer token for this channel. A regular API key proves that an integration holds the credential, not which end user is behind it, so those Runs normally show only `API`. These names support auditing and troubleshooting; access is still controlled by each channel's real authentication, and provenance data never replaces it.
 
 ## Viewing runs
 

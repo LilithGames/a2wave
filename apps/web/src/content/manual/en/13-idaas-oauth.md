@@ -2,7 +2,7 @@
 
 Enterprise SSO is the configuration a2wave uses to verify identities issued by an enterprise identity provider (IdP). It relates to both "backend enterprise login" and "user authenticated access":
 
-- **Backend enterprise login**: after enabling OAuth / enterprise SSO login in "Settings → Enterprise Login", both the CLI and Web can log in via enterprise SSO.
+- **Backend enterprise login**: after enabling OAuth / enterprise SSO login in "Settings → Enterprise Login", Web can use OIDC or SAML, while CLI enterprise login uses OIDC (or local password login as a fallback).
 - **User authenticated access**: after enabling it on the Agent's OAuth card on the Publish tab, an external caller must carry a JWT issued by your enterprise OIDC provider (typically an access token) to access `/api/oauth/:agentId/invoke` (this channel does not support SAML — see below).
 
 Two standard protocols are supported: **OIDC (authorization code + PKCE)** and **SAML 2.0**. Either one can be enabled once fully configured, and the corresponding button appears automatically on the login page; the master switch is "Settings → Enterprise Login → Enable OAuth / enterprise SSO login".
@@ -30,7 +30,7 @@ Configure it in the "Settings → Enterprise Login → OIDC" panel; the environm
 | `A2WAVE_OIDC_CLIENT_ID` | The client_id registered with the IdP |
 | `A2WAVE_OIDC_CLIENT_SECRET` | Optional. Treated as a PKCE public client when omitted |
 | `A2WAVE_OIDC_SCOPES` | Optional. Defaults to `openid profile email` |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | Required for the OAuth channel (comma-separated): the allowed caller token `aud` values. Client ID is not added automatically; empty = channel disabled |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | Environment fallback for the OAuth channel (comma-separated): the a2wave resource audience identifiers. Settings wins when configured. Client ID is not added automatically; empty = channel disabled |
 
 Once configured and with OAuth enabled in "Settings → Enterprise Login", the login page shows a **"Log in with OIDC"** button. Clicking it does a full-page redirect to the IdP to complete authentication, then automatically returns into the site after success; the verification public key uses JWKS auto-rotation, with no need to manually paste a public key. On login failure, the login page shows the specific reason (e.g. login session expired, email domain not on the allowlist, etc.). If the IdP's ID token does not contain an email (some IdPs only return the email at the userinfo endpoint), a2wave automatically fetches it from the userinfo endpoint, with no extra configuration needed on the IdP side.
 
@@ -110,7 +110,7 @@ Under **Specific enterprise users** an empty list means **nobody** can invoke th
 |------|------|
 | The settings-page OAuth switch turns on, but SSO doesn't work | Neither OIDC nor SAML is fully configured, or both are disabled; hit "Test" on the relevant panel to see the exact reason |
 | Red text appears after enabling OAuth authorization on the publish page | Enterprise OIDC is not configured (the channel returns `503`). Note this is unrelated to the OIDC *login* toggle — turning login off does not stop the channel |
-| A newly onboarded caller always gets 401 | Usually its token's `aud` is not on the channel allowlist. Decode the token, read `aud`, and add that value under "OAuth channel audiences" — do not "fix" it by disabling the audience check |
+| A newly onboarded caller always gets 401 | Usually the caller obtained a token for the wrong resource. Ask it to request a token issued for the configured a2wave audience; do not copy an arbitrary observed `aud` into the allowlist, because that token may have been issued for another service |
 | Every caller returns 503 "identity provider unavailable" at once | a2wave cannot reach the IdP (discovery / JWKS fetch failed). Caller credentials are fine and need no re-issuing; check egress, DNS and proxy |
 | Sending `/api/oauth/:agentId/invoke` directly to someone else still won't work for them | The other party must first authenticate at the enterprise IdP to obtain a token, and must be within that Agent's permission boundary |
 
