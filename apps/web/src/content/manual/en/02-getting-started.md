@@ -20,7 +20,7 @@ curl -X POST http://localhost:3502/api/auth/setup \
 > entirely.
 
 - **Password login**: log in with the account set by the administrator during initialization (controlled by the system setting `passwordLoginEnabled`).
-- **Enterprise SSO**: once an administrator configures **OIDC** or **SAML**, the matching sign-in button appears on the login page for single sign-on with your enterprise identity; the same OIDC config also authenticates callers of the OAuth channel / A2A.
+- **Enterprise SSO**: once an administrator configures **OIDC** or **SAML**, the matching sign-in button appears on the Web login page. The OAuth invocation channel reuses the OIDC configuration, while A2A uses the Agent's dedicated A2A API Key and does not accept that OIDC JWT.
 
 Administrators can go to "Settings → Enterprise Login" to see the effective status of both methods and verify connectivity with each panel's "Test" button. The page only shows configuration status and a non-sensitive summary; it never displays key material.
 

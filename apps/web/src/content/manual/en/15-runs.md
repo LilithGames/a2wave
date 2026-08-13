@@ -28,7 +28,7 @@ Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` 
 The Agent in the row title is the **Agent that executed this Run**. The Agent inside the provenance label is the **immediate upstream Agent that called it**. Missing layers are omitted without hiding the provenance that is known.
 
 > [!NOTE]
-> Identity availability depends on the trigger: Feishu must be configured and permitted to resolve the sender; OAuth / enterprise SSO can identify the user from the caller token; and A2A can include the calling Agent and upstream user only when the peer supports and sends the provenance extension. A regular API key proves that an integration holds the credential, not which end user is behind it, so those Runs normally show only `API`. These names support auditing and troubleshooting; access is still controlled by each channel's real authentication, and provenance data never replaces it.
+> Identity availability depends on the trigger: Feishu must be configured and permitted to resolve the sender; the OAuth channel can identify the user from its caller's OIDC JWT; and A2A can include the calling Agent and upstream user only when the peer supports and sends the provenance extension. SAML establishes a Web session and does not provide a caller bearer token for this channel. A regular API key proves that an integration holds the credential, not which end user is behind it, so those Runs normally show only `API`. These names support auditing and troubleshooting; access is still controlled by each channel's real authentication, and provenance data never replaces it.
 
 ## Viewing runs
 
@@ -86,7 +86,7 @@ The displayed total is the sum of five disjoint buckets: **input + output + reas
 
 To control database size, the execution log in run details **keeps the beginning and drops the end** once it exceeds the entry-count limit (a "log truncated" marker appears). Meanwhile, the **full process log** of each execution is written out-of-band to a server-side NDJSON file, so the latter half of long tasks isn't lost:
 
-- **View full log**: click "View full log" in the execution-log area; the in-app viewer loads the server-side log page by page, supporting filtering by All / Tool calls / Messages / Errors-retries, and paged browsing (defaults to the last page, prioritizing the failure scene).
+- **View full log**: click "View full log" in the execution-log area; the in-app viewer loads the server-side log page by page, supporting filtering by All / Tool calls / Messages / Errors-retries, and paged browsing (defaults to the last page, prioritizing the failure scene). A2A long-task polling retries, resubscription failures, and cancellation failures are also included under Errors-retries so remote recovery problems can be inspected together.
 - **Download full log**: the same area lets you download the raw NDJSON file (`GET /api/runs/:id/logs/download`), one JSON event per line, convenient for script analysis.
 
 > Full-log files are retained for 14 days by default (adjustable via the environment variable `A2WAVE_RUN_LOG_RETENTION_DAYS`) and cleaned up automatically after expiry; a single file defaults to a 256 MiB limit.
@@ -120,7 +120,7 @@ Beyond downloading, artifacts can also generate an **online share link** in one 
 2. Suspect an environment issue → go back to the Agent and run **Full Diagnosis** (Provider / engine / Feishu connection).
 3. Stuck at `queued` → concurrency may be full; raise `maxConcurrency` or wait.
 
-When an OAuth async call is queried and found `failed`, `data.result.error` is a structured error. Determine the responsible party by `source`, take the next step per `action`, and include `details.runId` when contacting the Agent owner or platform admin. `PROVIDER_*` does not mean the caller's SSO token is faulty.
+When an OAuth async call is queried and found `failed`, `data.result.error` is a structured error. Determine the responsible party by `source`, take the next step per `action`, and include `details.runId` when contacting the Agent owner or platform admin. `PROVIDER_*` does not mean the caller's OIDC JWT is faulty.
 
 ## Related
 

@@ -364,7 +364,7 @@ export const agentSchema = z.object({
   publishIpWhitelist: z.array(z.string()).nullable().optional(),
   publishDescription: z.string().nullable().optional(),
   publishChannels: z.array(publishChannelEnum).default(['api']),
-  /** OAuth channel access scope: every enterprise SSO user, or only the addresses in oauthAllowedEmails */
+  /** OAuth channel access scope: every OIDC-authenticated user, or only oauthAllowedEmails */
   oauthAccessMode: oauthAccessModeEnum.default('all_idaas_users'),
   /** Email allowlist consulted only when oauthAccessMode === 'specified_users' */
   oauthAllowedEmails: oauthAllowedEmailsSchema.nullable().optional(),

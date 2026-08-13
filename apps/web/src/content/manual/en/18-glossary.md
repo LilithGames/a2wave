@@ -25,7 +25,7 @@ Quick reference of a2wave's core terms. Click a link to go to the corresponding 
 - **Evaluation task** — one replay of a set against the Agent's current config, freezing a provider/model/prompt snapshot. See [Evaluation](/wiki/evaluation).
 - **Config snapshot** — the configuration a task recorded (provider + model + prompt, never credentials), used for comparison. See [Evaluation](/wiki/evaluation).
 - **Member roles** — the three permission levels owner / editor / viewer. See [Member Management](/wiki/members).
-- **Iron Rules** — the 5 hard constraints defining the product boundary. See [Core Concepts & Architecture](/wiki/concepts).
+- **Iron Rules** — the 6 hard constraints defining the product boundary. See [Core Concepts & Architecture](/wiki/concepts).
 
 ## Related
 

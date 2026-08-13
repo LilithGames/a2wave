@@ -341,17 +341,16 @@ export async function verifyOidcIdToken(idToken: string): Promise<JwtUserInfo> {
 }
 
 /**
- * 验签 OAuth 发布渠道（publishAuthType='oauth'）收到的调用方 token。
+ * Verifies a caller token received by the OAuth publish channel.
  *
- * 与登录用的 verifyOidcIdToken 同一套企业 OIDC 配置与 JWKS，区别只在受众：登录流里
- * id_token 的 aud 必然是本平台的 client_id，而外部服务调 Agent 时持有的是自己那条
- * 客户端链路签发的 token，aud 指向调用方而非 a2wave。沿用 client_id 会把渠道限死在
- * 「用平台登录态调用」，与该渠道存在的意义相反；但**完全不校验 aud** 同样不可接受——
- * 那样同一个 IdP 下任意 relying party 的 token（连带其用户、日志、代理里抓到的那些）
- * 都能调用本 Agent，而 oauthAccessMode='all_idaas_users' 恰恰没有第二道闸。
+ * This uses the same enterprise OIDC configuration and JWKS as `verifyOidcIdToken`, but the
+ * audience has a different role. A login ID token must include this platform's client ID, while
+ * an OAuth-channel access token must identify a2wave as its target resource server. Reusing the
+ * login client ID would restrict the channel to a2wave login tokens, but omitting audience
+ * verification would let tokens issued for any relying party at the IdP invoke the Agent.
  *
- * 所以这里用管理员显式配置的受众白名单（channelAudiences + 隐式 clientId）。未配置
- * 时 oauthChannelAudiences() 为空，verifyWithIdpJwks 抛错，渠道整体不可用（fail closed）。
+ * Consequently, this path accepts only the explicitly configured a2wave resource audiences; it
+ * does not implicitly add `clientId`. An empty list makes verification fail closed.
  */
 export async function verifyOauthChannelToken(token: string): Promise<JwtUserInfo> {
   return verifyWithIdpJwks(token, await oauthChannelAudiences())

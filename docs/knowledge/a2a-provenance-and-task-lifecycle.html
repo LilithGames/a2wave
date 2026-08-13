@@ -1,0 +1,1323 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="a2wave A2A 调用来源透传与持久化 Task 生命周期实现知识文档。"
+    />
+    <title>a2wave A2A 调用来源与 Task 生命周期</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #18201d;
+        --muted: #5f6c66;
+        --paper: #f7f8f5;
+        --surface: #ffffff;
+        --surface-soft: #edf3ef;
+        --line: #d9e1dc;
+        --brand: #087f5b;
+        --brand-dark: #075e45;
+        --brand-soft: #dff6ec;
+        --blue: #2b6cb0;
+        --blue-soft: #e8f1fb;
+        --amber: #9a6700;
+        --amber-soft: #fff4d6;
+        --red: #b42318;
+        --red-soft: #ffebe8;
+        --shadow: 0 16px 42px rgba(25, 55, 43, 0.08);
+        --radius: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 8% 4%, rgba(8, 127, 91, 0.1), transparent 26rem),
+          radial-gradient(circle at 94% 18%, rgba(43, 108, 176, 0.08), transparent 24rem),
+          var(--paper);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.65;
+      }
+
+      a {
+        color: var(--brand-dark);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 0.18em;
+      }
+
+      a:hover {
+        color: var(--brand);
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 50;
+        top: 0.75rem;
+        left: 0.75rem;
+        transform: translateY(-180%);
+        border-radius: 0.5rem;
+        padding: 0.55rem 0.8rem;
+        color: white;
+        background: var(--brand-dark);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .page-shell {
+        width: min(1180px, calc(100% - 2rem));
+        margin: 0 auto;
+      }
+
+      .hero {
+        padding: 4.5rem 0 2.3rem;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        gap: 0.45rem;
+        align-items: center;
+        margin-bottom: 1rem;
+        border: 1px solid rgba(8, 127, 91, 0.22);
+        border-radius: 999px;
+        padding: 0.35rem 0.72rem;
+        color: var(--brand-dark);
+        background: rgba(255, 255, 255, 0.72);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 0.52rem;
+        height: 0.52rem;
+        border-radius: 50%;
+        background: var(--brand);
+        content: "";
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin-top: 0;
+        line-height: 1.2;
+        letter-spacing: -0.025em;
+      }
+
+      h1 {
+        max-width: 900px;
+        margin-bottom: 1rem;
+        font-size: clamp(2.5rem, 6vw, 5.1rem);
+      }
+
+      h2 {
+        margin-bottom: 1.2rem;
+        font-size: clamp(1.65rem, 3vw, 2.35rem);
+      }
+
+      h3 {
+        margin-bottom: 0.65rem;
+        font-size: 1.18rem;
+      }
+
+      .lede {
+        max-width: 860px;
+        margin: 0;
+        color: var(--muted);
+        font-size: clamp(1.05rem, 2vw, 1.26rem);
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-top: 1.55rem;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.38rem 0.72rem;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.72);
+        font-size: 0.82rem;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 235px minmax(0, 1fr);
+        gap: 2rem;
+        align-items: start;
+        padding-bottom: 5rem;
+      }
+
+      .toc {
+        position: sticky;
+        top: 1.25rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 1rem;
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .toc strong {
+        display: block;
+        margin: 0.1rem 0 0.6rem;
+        color: var(--muted);
+        font-size: 0.76rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .toc a {
+        display: block;
+        border-radius: 0.48rem;
+        padding: 0.42rem 0.55rem;
+        color: var(--muted);
+        font-size: 0.86rem;
+        text-decoration: none;
+      }
+
+      .toc a:hover {
+        color: var(--brand-dark);
+        background: var(--surface-soft);
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      section {
+        margin-bottom: 1.55rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: clamp(1.25rem, 3vw, 2rem);
+        background: rgba(255, 255, 255, 0.93);
+        box-shadow: var(--shadow);
+        scroll-margin-top: 1rem;
+      }
+
+      section > :last-child,
+      .card > :last-child,
+      .callout > :last-child {
+        margin-bottom: 0;
+      }
+
+      .section-kicker {
+        margin: 0 0 0.35rem;
+        color: var(--brand);
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .grid-2,
+      .grid-3,
+      .metric-grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .grid-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .grid-3,
+      .metric-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card,
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1rem;
+        background: var(--surface);
+      }
+
+      .card p,
+      .card ul {
+        color: var(--muted);
+      }
+
+      .metric strong {
+        display: block;
+        margin-bottom: 0.25rem;
+        color: var(--brand-dark);
+        font-size: 1.55rem;
+        line-height: 1.1;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .callout {
+        margin: 1.1rem 0;
+        border: 1px solid rgba(43, 108, 176, 0.22);
+        border-left: 4px solid var(--blue);
+        border-radius: 12px;
+        padding: 0.9rem 1rem;
+        background: var(--blue-soft);
+      }
+
+      .callout.warning {
+        border-color: rgba(154, 103, 0, 0.22);
+        border-left-color: var(--amber);
+        background: var(--amber-soft);
+      }
+
+      .callout.security {
+        border-color: rgba(180, 35, 24, 0.18);
+        border-left-color: var(--red);
+        background: var(--red-soft);
+      }
+
+      .callout.success {
+        border-color: rgba(8, 127, 91, 0.2);
+        border-left-color: var(--brand);
+        background: var(--brand-soft);
+      }
+
+      .callout strong {
+        color: inherit;
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      code {
+        border-radius: 0.3rem;
+        padding: 0.12rem 0.32rem;
+        color: #174f3d;
+        background: #edf4f0;
+        font-size: 0.88em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 0.9rem 0;
+        border: 1px solid #253a32;
+        border-radius: 13px;
+        padding: 1rem;
+        color: #dff6ec;
+        background: #12251e;
+        font-size: 0.83rem;
+        line-height: 1.55;
+      }
+
+      pre code {
+        padding: 0;
+        color: inherit;
+        background: transparent;
+      }
+
+      pre.mermaid {
+        border-color: var(--line);
+        color: var(--ink);
+        background: #fbfdfb;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin: 0.9rem 0 1.2rem;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.88rem;
+      }
+
+      th,
+      td {
+        padding: 0.72rem 0.8rem;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--brand-dark);
+        background: var(--surface-soft);
+        font-size: 0.76rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      ul,
+      ol {
+        padding-left: 1.25rem;
+      }
+
+      li + li {
+        margin-top: 0.32rem;
+      }
+
+      .display-stack {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        margin: 0.9rem 0;
+      }
+
+      .run-chip {
+        border-radius: 0.42rem;
+        padding: 0.45rem 0.7rem;
+        color: #46524c;
+        background: #eceeeb;
+        font-size: 0.88rem;
+      }
+
+      .timeline {
+        position: relative;
+        margin: 1rem 0;
+        padding-left: 1.35rem;
+      }
+
+      .timeline::before {
+        position: absolute;
+        top: 0.2rem;
+        bottom: 0.2rem;
+        left: 0.33rem;
+        width: 2px;
+        background: var(--line);
+        content: "";
+      }
+
+      .timeline-item {
+        position: relative;
+        margin-bottom: 0.9rem;
+        padding-left: 0.5rem;
+      }
+
+      .timeline-item::before {
+        position: absolute;
+        top: 0.42rem;
+        left: -1.17rem;
+        width: 0.62rem;
+        height: 0.62rem;
+        border: 2px solid white;
+        border-radius: 50%;
+        background: var(--brand);
+        box-shadow: 0 0 0 1px var(--brand);
+        content: "";
+      }
+
+      .timeline-item strong {
+        display: block;
+      }
+
+      .timeline-item span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        border-radius: 999px;
+        padding: 0.26rem 0.58rem;
+        color: var(--brand-dark);
+        background: var(--brand-soft);
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .status::before {
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 50%;
+        background: var(--brand);
+        content: "";
+      }
+
+      footer {
+        padding: 0 0 3rem;
+        color: var(--muted);
+        text-align: center;
+        font-size: 0.82rem;
+      }
+
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          position: static;
+        }
+
+        .toc nav {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .grid-3,
+        .metric-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 620px) {
+        .page-shell {
+          width: min(100% - 1rem, 1180px);
+        }
+
+        .hero {
+          padding-top: 2.5rem;
+        }
+
+        .grid-2,
+        .grid-3,
+        .metric-grid,
+        .toc nav {
+          grid-template-columns: 1fr;
+        }
+
+        section {
+          border-radius: 13px;
+          padding: 1rem;
+        }
+      }
+
+      @media print {
+        body {
+          background: white;
+        }
+
+        .page-shell {
+          width: 100%;
+        }
+
+        .layout {
+          display: block;
+        }
+
+        .toc {
+          display: none;
+        }
+
+        section {
+          break-inside: avoid;
+          border-color: #bbb;
+          box-shadow: none;
+        }
+
+        a {
+          color: inherit;
+          text-decoration: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">跳到正文</a>
+
+    <header class="hero page-shell">
+      <span class="eyebrow">实现知识库 · 2026-08-12</span>
+      <h1>A2A 调用来源与持久化 Task 生命周期</h1>
+      <p class="lede">
+        本文记录 a2wave 关于 Agent-to-Agent 调用的最终设计：追踪调用由谁发起，并让长时间运行的
+        A2A 工作不受单条 HTTP 连接寿命限制，同时具备可恢复、可取消、有边界和可观测能力。
+      </p>
+      <div class="hero-meta" aria-label="文档范围">
+        <span class="pill">仓库：LilithGames/a2wave</span>
+        <span class="pill">协议：A2A 1.0 + 兼容 A2A 0.3</span>
+        <span class="pill">模块：API · Agent Router · CLI runner · Web</span>
+        <span class="pill">功能分支：codex/a2a-task-lifecycle</span>
+      </div>
+    </header>
+
+    <div class="layout page-shell">
+      <aside class="toc" aria-label="目录">
+        <strong>目录</strong>
+        <nav>
+          <a href="#overview">1. 实现结果</a>
+          <a href="#architecture">2. 架构设计</a>
+          <a href="#provenance">3. 调用来源透传</a>
+          <a href="#lifecycle">4. Task 生命周期</a>
+          <a href="#deadlines">5. 超时与安全边界</a>
+          <a href="#observability">6. 可观测性</a>
+          <a href="#data">7. 数据与接口</a>
+          <a href="#files">8. 关键文件</a>
+          <a href="#configuration">9. 配置</a>
+          <a href="#decisions">10. 设计决策</a>
+          <a href="#validation">11. 验证结果</a>
+          <a href="#extension">12. 扩展指南</a>
+        </nav>
+      </aside>
+
+      <main id="content">
+        <section id="overview">
+          <p class="section-kicker">01 · 实现结果</p>
+          <h2>本次实现解决了什么</h2>
+          <div class="grid-3">
+            <article class="card">
+              <h3>远程调用可追踪</h3>
+              <p>
+                双方协商启用可选的调用来源扩展后，被调用方可以记录上游用户名和直接调用它的
+                Agent。
+              </p>
+            </article>
+            <article class="card">
+              <h3>移除路由器固定五分钟限制</h3>
+              <p>
+                调用方 Agent 的 Run 超时是唯一权威执行预算。路由器不会再因为固定 HTTP 截止时间
+                到达而终止仍然有效的远程 Task。
+              </p>
+            </article>
+            <article class="card">
+              <h3>可按 Task ID 恢复</h3>
+              <p>
+                一旦取得 Task ID，连接中断后使用 <code>SubscribeToTask</code> 或
+                <code>GetTask</code> 恢复，绝不重放原始消息。
+              </p>
+            </article>
+          </div>
+
+          <div class="callout success">
+            <strong>运行结果。</strong>A2A 1.0 长任务可以跨越单条传输连接继续运行，同时仍然受父 Run
+            超时和取消控制。每个重要生命周期变化都会进入 Run 执行日志。
+          </div>
+
+          <h3>为什么旧行为看起来不一致</h3>
+          <p>
+            旧路由器为远程 A2A 请求附加了固定五分钟中止信号。调用是否会在五分钟失败取决于传输路径：
+            持续保持原响应连接的对端会直接受到该期限影响，而较早返回持久化 Task 状态的路径可能呈现
+            不同行为。最终设计移除了路由器本地执行期限，将短时控制/读取期限与父 Run 的端到端预算
+            明确分离。
+          </p>
+        </section>
+
+        <section id="architecture">
+          <p class="section-kicker">02 · 架构设计</p>
+          <h2>端到端组件流程</h2>
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as 用户 / 集成方
+    participant C as 调用方 Agent Run
+    participant CLI as Agent CLI
+    participant R as a2wave Agent Router MCP
+    participant A2A as 远程 A2A Agent
+    participant LOG as Run 结构化日志
+    participant UI as Run 页面
+
+    U->>C: 通过飞书、OAuth、API 或其他渠道触发
+    C->>CLI: 携带 timeoutMinutes 和渠道上下文执行
+    CLI->>R: invoke_agent / invoke_agents_parallel
+    R->>R: 解析 Agent Card 并协商可选调用来源扩展
+    R->>A2A: SendMessage 或 SendStreamingMessage
+    A2A-->>R: Message 或持久化 Task ID + context ID
+    alt Task 尚未到达终态
+        loop 直到终态或父调用取消
+            R->>A2A: SubscribeToTask 或 GetTask(historyLength=0)
+            A2A-->>R: 状态 / artifact / 最终消息
+        end
+    end
+    alt 父 Run 被取消或超时
+        R->>A2A: 使用独立 3 秒控制期限发送 CancelTask
+        A2A-->>R: 取消状态或尽力而为失败
+    end
+    R-->>CLI: 最终 MCP 结果
+    R-->>CLI: stderr 上的结构化生命周期记录
+    CLI->>LOG: 校验并转发安全字段投影
+    LOG->>UI: 时间线 + 问题筛选
+          </pre>
+
+          <div class="grid-2">
+            <article class="card">
+              <h3>控制面</h3>
+              <ul>
+                <li>Agent Card 发现流程选择可用的 JSON-RPC 接口。</li>
+                <li>Capabilities 决定流式传输和调用来源透传行为。</li>
+                <li>单次请求期限分别约束发现、读取和取消操作。</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>执行面</h3>
+              <ul>
+                <li>Agent CLI 将路由器作为 MCP 子进程管理。</li>
+                <li>父 Run 持有端到端执行预算。</li>
+                <li>CLI 进程组先执行优雅终止，随后才强制清理。</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="provenance">
+          <p class="section-kicker">03 · 调用来源透传</p>
+          <h2>可选、可协商、仅用于展示</h2>
+          <p>
+            扩展 URI 同时是其版本化协议标识：
+            <code>https://github.com/LilithGames/a2wave/blob/main/docs/extensions/caller-provenance-v1.md</code>.
+            它只携带直接调用方 Agent，以及上游渠道已经识别出的用户展示名。
+          </p>
+
+          <h3>Agent Card 自动协商</h3>
+          <div class="timeline">
+            <div class="timeline-item">
+              <strong>1. 被调用方声明支持</strong>
+              <span>A2A 1.0 Agent Card 在可选扩展列表中声明该 URI。</span>
+            </div>
+            <div class="timeline-item">
+              <strong>2. 调用方发现并选择接口</strong>
+              <span>路由器选择兼容的 JSON-RPC 接口，并优先选择 A2A 1.0。</span>
+            </div>
+            <div class="timeline-item">
+              <strong>3. 调用方激活扩展</strong>
+              <span>
+                URI 同时出现在 <code>A2A-Extensions</code> HTTP 头和
+                <code>params.message.extensions</code> 中；数据存放在同名 metadata key 下。
+              </span>
+            </div>
+            <div class="timeline-item">
+              <strong>4. 被调用方校验后记录</strong>
+              <span>
+                必须同时满足 A2A 1.0、HTTP 层激活、消息层标记和严格 payload schema。无效或未激活
+                的数据会被忽略，但不会导致 A2A 请求失败。
+              </span>
+            </div>
+          </div>
+
+          <div class="callout warning">
+            <strong>直连接口规则。</strong>直连路由没有 Agent Card 可用于发现可选能力，因此直连
+            A2A 1.0 必须显式开启<em>发送调用来源信息</em>。该开关默认关闭，A2A 0.3 永远不会发送
+            此扩展。
+          </div>
+
+          <h3>Run 列表字段投影</h3>
+          <div class="display-stack" aria-label="Run 调用来源展示示例">
+            <span class="run-chip">张鑫 · SDK Manager 大神 · A2A</span>
+            <span class="run-chip">SDK Manager 大神 · A2A</span>
+            <span class="run-chip">A2A</span>
+          </div>
+          <p>
+            已知信息按<strong>用户 → 调用方 Agent → 来源</strong>顺序展示，缺失层级直接省略。Run 行标题
+            中的 Agent 是实际执行该 Run 的 Agent；标签中的 Agent 是直接上游调用方。
+          </p>
+
+          <div class="callout security">
+            <strong>身份边界。</strong>调用来源名称是调用方提供的审计和排障声明。它们绝不会填充权威
+            <code>user_info</code>、授予权限或替代 API Key/OAuth 传输鉴权。普通 API Key 只能识别
+            持有凭据的集成，不能识别其背后的最终用户；OAuth/OIDC 可以识别最终用户，是因为被调用方
+            会校验由已配置 IdP 签发、包含用户身份的令牌。
+          </div>
+
+          <h3>实际 metadata payload</h3>
+          <pre><code>{
+  "https://github.com/LilithGames/a2wave/blob/main/docs/extensions/caller-provenance-v1.md": {
+    "userName": "张鑫",
+    "callerAgent": {
+      "id": "agt_example",
+      "name": "SDK Manager 大神"
+    }
+  }
+}</code></pre>
+          <ul>
+            <li>所有字符串都会去除首尾空白，并限制为 256 个字符。</li>
+            <li>payload 必须包含 <code>userName</code> 或 <code>callerAgent</code>。</li>
+            <li><code>callerAgent</code> 必须包含 ID 或名称。</li>
+            <li>出现未知字段时，整条声明无效。</li>
+            <li>不会转发邮箱、手机号、Provider subject、令牌或原始渠道上下文。</li>
+          </ul>
+        </section>
+
+        <section id="lifecycle">
+          <p class="section-kicker">04 · 持久化 Task 生命周期</p>
+          <h2>只提交一次，之后按 ID 恢复</h2>
+          <pre class="mermaid">
+flowchart TD
+    S([开始调用]) --> M{是否声明流式能力?}
+    M -- 是 --> SS[SendStreamingMessage]
+    M -- 否 --> SM[SendMessage: returnImmediately=true, historyLength=0]
+    SS --> O{是否已观测到 Task ID?}
+    SM --> O
+    O -- 否，返回 Message --> DONE([返回终态 Message])
+    O -- 否，传输失败 --> FAIL([失败且不重放])
+    O -- 是 --> T{是否到达终态?}
+    T -- 是 --> H{是否已累积可展示结果?}
+    H -- 是 --> DONE2([返回最终结果])
+    H -- 否 --> BH[GetTask: historyLength=20]
+    BH --> DONE2
+    T -- 否 --> WAIT[等待流事件或 GetTask: historyLength=0]
+    WAIT --> T
+    WAIT -- 断线或空闲 30 秒 --> SUB[执行一次 SubscribeToTask]
+    SUB -- 成功 --> T
+    SUB -- 失败 --> POLL[按退避策略轮询 GetTask]
+    POLL --> T
+    WAIT -- 父调用取消 --> CANCEL[使用独立 3 秒期限执行 CancelTask]
+    POLL -- 父调用取消 --> CANCEL
+    CANCEL --> ERR([以 MCP 错误返回取消结果])
+          </pre>
+
+          <div class="grid-2">
+            <article class="card">
+              <h3>提交不变量</h3>
+              <p>
+                原始用户消息只发送一次。在取得 Task ID 前发生的失败无法安全恢复，因此路由器直接
+                报告失败，不会冒险造成远程任务重复执行。
+              </p>
+            </article>
+            <article class="card">
+              <h3>Task 身份不变量</h3>
+              <p>
+                首次观测 Task 后，Task ID 和 context ID 必须保持不变。发现身份漂移时会拒绝结果，
+                并尽力取消已知 Task。
+              </p>
+            </article>
+            <article class="card">
+              <h3>进度不是最终答案</h3>
+              <p>
+                working 状态消息可以更新流式 UI，但终态 Task 没有正文时，它不会被误当作成功最终答案。
+              </p>
+            </article>
+            <article class="card">
+              <h3>中断型终态</h3>
+              <p>
+                <code>INPUT_REQUIRED</code> 和 <code>AUTH_REQUIRED</code> 会以非成功结果结束当前无状态
+                路由调用，同时保留 Task ID 和 context ID。
+              </p>
+            </article>
+          </div>
+
+          <h3>轮询与终态历史补取</h3>
+          <ul>
+            <li>
+              非流式提交和普通轮询使用 <code>historyLength: 0</code>，避免重复传输和解码不断增长的
+              会话历史。
+            </li>
+            <li>
+              仅当终态 Task 没有已累积的可展示结果时，才执行一次有界的
+              <code>GetTask(historyLength: 20)</code> 读取。
+            </li>
+            <li>
+              artifact 分块和消息在提交、重订阅、轮询、终态补取全过程中共享同一个累加器。
+            </li>
+            <li>
+              完整 Task 快照会替换旧 artifact 快照；增量 append 事件扩展现有 artifact，并拒绝在
+              已声明最终分块后继续追加。
+            </li>
+          </ul>
+        </section>
+
+        <section id="deadlines">
+          <p class="section-kicker">05 · 超时与安全边界</p>
+          <h2>区分执行时间与控制操作时间</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>操作</th>
+                  <th>限制</th>
+                  <th>目的</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Task 执行</td>
+                  <td>调用方 Agent 的 <code>timeoutMinutes</code></td>
+                  <td>唯一端到端执行期限；按 Agent 配置。</td>
+                </tr>
+                <tr>
+                  <td>获取 Agent Card</td>
+                  <td>15 秒</td>
+                  <td>约束发现、DNS 解析、重定向和建连过程。</td>
+                </tr>
+                <tr>
+                  <td><code>GetTask</code></td>
+                  <td>每次尝试 15 秒</td>
+                  <td>防止单次读取永久挂起，同时允许后续重试。</td>
+                </tr>
+                <tr>
+                  <td>已知 Task 的流空闲</td>
+                  <td>30 秒</td>
+                  <td>触发重连，不会将 Task 判为失败或重放消息。</td>
+                </tr>
+                <tr>
+                  <td><code>CancelTask</code></td>
+                  <td>3 秒</td>
+                  <td>独立于已经中止的父信号，并控制在进程优雅退出窗口内。</td>
+                </tr>
+                <tr>
+                  <td>CLI 进程优雅清理</td>
+                  <td>发送 <code>SIGKILL</code> 前 5 秒</td>
+                  <td>允许路由器完成尽力而为的下游取消。</td>
+                </tr>
+                <tr>
+                  <td>Codex 路由 MCP tool 超时</td>
+                  <td><code>max(660 秒, Run 秒数 + 10 秒)</code></td>
+                  <td>避免 Codex MCP 超时抢先终止父 Run 和清理流程。</td>
+                </tr>
+                <tr>
+                  <td>其他 Codex MCP tools</td>
+                  <td>660 秒</td>
+                  <td>保持内置 Agent Router 之外的既有行为。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>重试策略</h3>
+          <p>
+            可重试的 <code>GetTask</code> 失败包括 HTTP 408/429/5xx、JSON-RPC internal error、
+            DNS 解析失败、可识别的网络/套接字错误和请求超时。退避从 1 秒开始，带 0–25% 抖动并按
+            2 倍增长，本地上限为 30 秒。有效的 <code>Retry-After</code> 秒数或 HTTP-date 优先；
+            父信号仍可立即中止等待。
+          </p>
+
+          <div class="metric-grid">
+            <div class="metric">
+              <strong>16 MiB</strong>
+              <span>单次调用累计远程结果字节上限</span>
+            </div>
+            <div class="metric">
+              <strong>10,000</strong>
+              <span>单次调用远程结果事件数量上限</span>
+            </div>
+            <div class="metric">
+              <strong>20</strong>
+              <span>终态历史补取的最大消息数</span>
+            </div>
+          </div>
+
+          <p>
+            每条远程和 loopback 响应都会在 SDK 缓冲或解码前执行字节限制。已知的非终态 Task 超过
+            单次调用结果限制时，路由器保留原始限制错误，并先尝试执行 <code>CancelTask</code>。
+          </p>
+
+          <h3>出站网络策略</h3>
+          <ul>
+            <li>只接受 HTTP(S) 路由。</li>
+            <li>每一跳重定向都会重新校验。</li>
+            <li>DNS 答案经过校验并固定到连接 dispatcher。</li>
+            <li>
+              默认允许企业私网、CGNAT 和 ULA 目标，但仍阻止 loopback、link-local、云元数据、
+              multicast、unspecified 和其他保留地址段。
+            </li>
+            <li>跨源重定向会移除凭据及非安全请求头。</li>
+          </ul>
+        </section>
+
+        <section id="observability">
+          <p class="section-kicker">06 · 可观测性</p>
+          <h2>生命周期事件进入普通 Run 日志</h2>
+          <p>
+            Agent Router 在 stderr 输出白名单 JSON 记录。父 CLI runner 扫描物理行但不保留任意
+            stderr 内容，校验安全字段投影后转发给当前 worker 的结构化日志回调。
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>事件</th>
+                  <th>含义</th>
+                  <th>问题筛选</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><code>a2a.task.observed</code></td><td>首次取得 Task/context 身份。</td><td>否</td></tr>
+                <tr><td><code>a2a.task.state</code></td><td>已观测 Task 状态发生变化。</td><td>否</td></tr>
+                <tr><td><code>a2a.task.poll_retry</code></td><td>正在重试暂时性 Task 读取失败。</td><td>是</td></tr>
+                <tr><td><code>a2a.task.reconnect</code></td><td>开始按已知 Task ID 恢复。</td><td>否</td></tr>
+                <tr><td><code>a2a.task.resubscribe_failed</code></td><td>流重订阅失败，随后回退到轮询。</td><td>是</td></tr>
+                <tr><td><code>a2a.task.cancel_requested</code></td><td>已经尝试取消下游 Task。</td><td>否</td></tr>
+                <tr><td><code>a2a.task.cancel_result</code></td><td>下游返回取消状态。</td><td>否</td></tr>
+                <tr><td><code>a2a.task.cancel_failed</code></td><td>无法确认取消结果。</td><td>是</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>持久化事件示例</h3>
+          <pre><code>{
+  "type": "system",
+  "subtype": "a2a.task.state",
+  "metadata": {
+    "target": "Payment Agent",
+    "taskId": "task-remote-123",
+    "contextId": "context-remote-456",
+    "state": "TASK_STATE_WORKING"
+  },
+  "ts": 1786531200000
+}</code></pre>
+
+          <p>
+            允许的 metadata 仅包括目标、Task ID、context ID、状态和重试次数。请求正文、凭据、
+            调用方身份 payload 和任意远端错误对象不会进入生命周期记录。物理生命周期日志行在解析前
+            已限制长度；超长行会一直丢弃到下一换行符。
+          </p>
+        </section>
+
+        <section id="data">
+          <p class="section-kicker">07 · 数据与接口</p>
+          <h2>存储投影与协议示例</h2>
+          <h3>存储数据</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>存储</th>
+                  <th>字段</th>
+                  <th>生命周期</th>
+                  <th>用途</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>runs</code></td>
+                  <td><code>trigger_user_name</code>, <code>trigger_agent_name</code>, <code>trigger_source</code></td>
+                  <td>Run 保留策略</td>
+                  <td>供 Run 行展示和统计使用的反规范化审计/来源信息。</td>
+                </tr>
+                <tr>
+                  <td>A2A Task 存储</td>
+                  <td>Task envelope、context、caller scope</td>
+                  <td>既有 A2A Task 保留策略</td>
+                  <td>被调用方持久化 Task 状态和幂等执行。</td>
+                </tr>
+                <tr>
+                  <td>Worker 内存</td>
+                  <td>已知 Task/context ID、累加器、重试状态</td>
+                  <td>单次调用</td>
+                  <td>无需新增数据库表的调用方恢复状态。</td>
+                </tr>
+                <tr>
+                  <td>Run NDJSON sidecar</td>
+                  <td>结构化执行条目和生命周期 metadata</td>
+                  <td>默认 14 天</td>
+                  <td>完整日志、分页、下载和问题筛选。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>A2A 1.0 非流式提交</h3>
+          <pre><code>{
+  "jsonrpc": "2.0",
+  "id": "mcp-1786531200000",
+  "method": "SendMessage",
+  "params": {
+    "configuration": {
+      "historyLength": 0,
+      "returnImmediately": true
+    },
+    "message": {
+      "messageId": "4c80961d-46cb-4ef4-a9d3-29425b610d22",
+      "role": "ROLE_USER",
+      "parts": [
+        { "text": "查询订单 178615400834360", "mediaType": "text/plain" }
+      ]
+    }
+  }
+}</code></pre>
+
+          <h3>Task 读取与取消</h3>
+          <pre><code>{
+  "jsonrpc": "2.0",
+  "id": "read-task-1",
+  "method": "GetTask",
+  "params": {
+    "id": "task-remote-123",
+    "historyLength": 0
+  }
+}
+
+{
+  "jsonrpc": "2.0",
+  "id": "cancel-task-1",
+  "method": "CancelTask",
+  "params": {
+    "id": "task-remote-123"
+  }
+}</code></pre>
+
+          <h3>终态结果语义</h3>
+          <p>
+            提取文本时优先使用 artifacts，否则返回最新的最终 Agent 消息。failed、canceled、
+            rejected、input-required 和 auth-required Task 状态会返回 MCP 错误；可用时错误中包含
+            失败说明、Task ID 和 context ID。
+          </p>
+        </section>
+
+        <section id="files">
+          <p class="section-kicker">08 · 关键文件</p>
+          <h2>后续修改应从哪里入手</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>路径</th>
+                  <th>职责</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><code>apps/api/src/a2a/provenance.ts</code></td><td>扩展 URI、严格 schema、最小化出站声明及入站激活校验。</td></tr>
+                <tr><td><code>apps/api/src/a2a/agent-card.ts</code></td><td>在 A2A 1.0 Agent Card 中声明可选调用来源扩展。</td></tr>
+                <tr><td><code>apps/api/src/a2a/executor.ts</code></td><td>从标准 A2A 入站请求上下文提取已经校验的调用来源信息。</td></tr>
+                <tr><td><code>apps/api/src/a2a/run-recording.ts</code></td><td>将认证或声明的展示值投影到 Run 字段，不伪造 <code>user_info</code>。</td></tr>
+                <tr><td><code>apps/api/src/mcp-servers/a2wave-agent-router.ts</code></td><td>远端发现、扩展协商、Task 提交、结果累积、恢复、轮询、取消和限制。</td></tr>
+                <tr><td><code>apps/api/src/mcp-servers/agent-router-lifecycle.ts</code></td><td>跟踪当前路由调用，并在信号/stdin 关闭时执行优雅退出。</td></tr>
+                <tr><td><code>apps/api/src/lib/streaming-safe-fetch.ts</code></td><td>适配流式请求的重定向校验、DNS 固定、可中止解析和 dispatcher 释放。</td></tr>
+                <tr><td><code>apps/api/src/lib/url-safety-core.ts</code></td><td>URL/地址策略以及可分类的 DNS 解析失败。</td></tr>
+                <tr><td><code>apps/api/src/engine/codex-agent.ts</code></td><td>根据当前 Run 预算推导内置路由 MCP 超时。</td></tr>
+                <tr><td><code>apps/api/src/engine/cli-process-runner.ts</code></td><td>进程组所有权、优雅/强制终止、有界行解码和生命周期 stderr 转发。</td></tr>
+                <tr><td><code>apps/api/src/engine/execution-process-log.ts</code></td><td>校验安全生命周期记录并路由到当前 worker sink。</td></tr>
+                <tr><td><code>apps/api/src/worker/executor.ts</code></td><td>注册每个 Task 的进程日志 sink，并在取消清理完成前保持有效。</td></tr>
+                <tr><td><code>apps/api/src/lib/run-log-file.ts</code></td><td>持久化完整 NDJSON 日志，并将 A2A 恢复失败归类到问题筛选。</td></tr>
+                <tr><td><code>packages/shared/src/schemas/run.ts</code></td><td>触发用户和直接调用方 Agent 名称的共享 Run 契约。</td></tr>
+                <tr><td><code>packages/shared/src/schemas/agent.ts</code></td><td>直连路由 <code>callerProvenance</code> 显式开关契约。</td></tr>
+                <tr><td><code>apps/web/src/components/run-caller-prefix.tsx</code></td><td>Run 调用来源三层/两层/单层展示。</td></tr>
+                <tr><td><code>apps/web/src/components/stream-log-item.tsx</code></td><td>在执行时间线中渲染 A2A 生命周期条目。</td></tr>
+                <tr><td><code>docs/extensions/caller-provenance-v1.md</code></td><td>公开扩展 wire contract 和信任边界。</td></tr>
+                <tr><td><code>docs/agent/a2a-task-lifecycle.md</code></td><td>生命周期不变量、时间限制、恢复和失败语义的权威说明。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="configuration">
+          <p class="section-kicker">09 · 配置</p>
+          <h2>运维与 Agent 配置</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>配置项</th>
+                  <th>默认值</th>
+                  <th>来源</th>
+                  <th>作用</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Agent <code>timeoutMinutes</code></td>
+                  <td>10 分钟；有效范围 5–120</td>
+                  <td>Agent 配置</td>
+                  <td>权威端到端调用执行预算。</td>
+                </tr>
+                <tr>
+                  <td>直连路由 <code>protocolVersion</code></td>
+                  <td>既有数据默认为 <code>0.3</code></td>
+                  <td>Agent 发布路由配置</td>
+                  <td>未使用 Agent Card 时选择直连 A2A wire version。</td>
+                </tr>
+                <tr>
+                  <td>直连路由 <code>callerProvenance</code></td>
+                  <td><code>false</code></td>
+                  <td>Agent 发布路由配置</td>
+                  <td>为直连 A2A 1.0 显式启用 a2wave 调用来源扩展。</td>
+                </tr>
+                <tr>
+                  <td><code>ALLOW_PRIVATE_ROUTE_TARGETS</code></td>
+                  <td><code>true</code></td>
+                  <td>API 环境变量</td>
+                  <td>允许普通企业私网/CGNAT/ULA A2A 目标，同时保留强制阻止和 DNS 固定。</td>
+                </tr>
+                <tr>
+                  <td><code>TRUSTED_A2A_ROUTE_HOSTS</code></td>
+                  <td>空</td>
+                  <td>API 环境变量</td>
+                  <td>启用仅公网模式时，允许访问的精确私网 DNS 主机名例外。</td>
+                </tr>
+                <tr>
+                  <td><code>A2WAVE_RUN_LOG_RETENTION_DAYS</code></td>
+                  <td>14 天</td>
+                  <td>API 环境变量</td>
+                  <td>Run 完整 NDJSON sidecar 保留时间。</td>
+                </tr>
+                <tr>
+                  <td><code>A2WAVE_RUN_LOG_MAX_BYTES</code></td>
+                  <td>256 MiB</td>
+                  <td>API 环境变量</td>
+                  <td>单个 Run 完整日志 sidecar 最大大小。</td>
+                </tr>
+                <tr>
+                  <td><code>A2WAVE_RUN_LOG_BUFFER_LINES</code></td>
+                  <td>10,000</td>
+                  <td>API 环境变量</td>
+                  <td>文件系统背压期间允许排队的最大日志行数。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout">
+            API 会为内置 Agent Router MCP 注入
+            <code>A2WAVE_ALLOW_PRIVATE_ROUTE_TARGETS</code>，以及配置存在时的
+            <code>A2WAVE_TRUSTED_A2A_ROUTE_HOSTS</code>。运维人员配置对外暴露的 API 环境变量名；
+            <code>A2WAVE_*</code> 形式仅作为子进程传输变量。
+          </div>
+        </section>
+
+        <section id="decisions">
+          <p class="section-kicker">10 · 设计决策与易错点</p>
+          <h2>后续修改必须保持的规则</h2>
+          <div class="grid-2">
+            <article class="card">
+              <h3>不要重新引入路由器绝对 Task 超时</h3>
+              <p>
+                只有发现、读取和控制操作使用短时期限。长 Task 执行必须继承父 Run 预算。
+              </p>
+            </article>
+            <article class="card">
+              <h3>取得 Task ID 后绝不重放</h3>
+              <p>
+                恢复必须按 ID 进行。重新发送原始消息可能重复执行不可逆的远程工作。
+              </p>
+            </article>
+            <article class="card">
+              <h3>调用来源信息与授权保持分离</h3>
+              <p>
+                展示名称应存入 Run 审计字段；授权继续使用 API Key、OAuth/OIDC 和真实传输安全上下文。
+              </p>
+            </article>
+            <article class="card">
+              <h3>轮询历史必须为空</h3>
+              <p>
+                省略 <code>historyLength</code> 会使 SDK 对端返回完整历史。轮询时使用 0，仅在必要时执行
+                有界终态读取。
+              </p>
+            </article>
+            <article class="card">
+              <h3>保持单一累计结果预算</h3>
+              <p>
+                只有单响应限制无法阻止长流或重复轮询累积无界数据。
+              </p>
+            </article>
+            <article class="card">
+              <h3>等待进程组清理完成</h3>
+              <p>
+                Worker 处理超时时，必须在路由器收到 SIGTERM 并尝试 <code>CancelTask</code> 期间保持
+                结构化日志 sink 有效。
+              </p>
+            </article>
+          </div>
+
+          <div class="callout warning">
+            <strong>A2A 0.3 边界。</strong>旧直连路由保持 wire 兼容并继承父取消信号，但按 Task ID
+            重连和取消的完整保证只适用于标准 A2A 1.0 路径。长时间远程工作应使用 A2A 1.0。
+          </div>
+        </section>
+
+        <section id="validation">
+          <p class="section-kicker">11 · 验证结果</p>
+          <h2>已审查工作树中的验证证据</h2>
+          <div class="metric-grid">
+            <div class="metric"><strong>5,531</strong><span>API 完整测试通过</span></div>
+            <div class="metric"><strong>853</strong><span>Web 完整测试通过</span></div>
+            <div class="metric"><strong>4 / 4</strong><span>重启恢复 E2E 场景通过</span></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>门禁</th><th>结果</th><th>范围</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Lint</td><td><span class="status">通过</span></td><td>仓库门禁；未新增 warning。</td></tr>
+                <tr><td>Typecheck</td><td><span class="status">通过</span></td><td>根目录类型检查及 API 聚焦复查。</td></tr>
+                <tr><td>完整测试</td><td><span class="status">通过</span></td><td>Shared 170、CLI 740、Web 853、API 5,531、Provider installer 48、scripts 180。</td></tr>
+                <tr><td>生命周期聚焦复审</td><td><span class="status">通过</span></td><td>9 个 API 文件 / 258 个测试，以及 1 个 Web 生命周期测试。</td></tr>
+                <tr><td>重启恢复</td><td><span class="status">通过</span></td><td>全部 4 个恢复场景。</td></tr>
+                <tr><td>差异完整性</td><td><span class="status">通过</span></td><td><code>git diff --check HEAD</code>。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout warning">
+            <strong>当前交付状态。</strong>当前工作树中的功能改动仍未提交，包含本文档在内共有 8 个
+            未跟踪文件，分支落后 <code>origin/main</code> 两个提交。合并前需要同步主干并重新执行完整
+            门禁。目前主要的发布级验证缺口，是尚未连接独立远程 A2A 1.0 对端执行真实长时间调用测试。
+          </div>
+        </section>
+
+        <section id="extension">
+          <p class="section-kicker">12 · 扩展指南</p>
+          <h2>如何安全演进该功能</h2>
+          <ol>
+            <li>
+              <strong>新增生命周期事件：</strong>在路由器中输出一条 <code>a2a.task.*</code> 记录，
+              只在 <code>execution-process-log.ts</code> 增加有界 metadata 字段，补齐 UI 多语言文案，
+              并明确决定是否应归入问题筛选。
+            </li>
+            <li>
+              <strong>修改重试分类：</strong>更新窄范围分类器，并同时为可重试错误及相近但必须快速失败
+              的永久错误添加测试。
+            </li>
+            <li>
+              <strong>新增调用来源字段：</strong>如果 wire 语义改变，需要升级扩展 URI 版本。payload
+              必须继续仅用于展示，并同步更新 Agent Card、发送方、接收方、schema、公开扩展文档和
+              Run 字段投影。
+            </li>
+            <li>
+              <strong>新增传输方式：</strong>必须保持逐跳校验、DNS 固定、重定向凭据移除、父信号传播、
+              单响应字节限制和单次调用累计限制。
+            </li>
+            <li>
+              <strong>支持远程 Task 续接：</strong>围绕 Task/context ID 设计显式续接 API。不要静默地将
+              <code>INPUT_REQUIRED</code> 转换为一次全新提交。
+            </li>
+          </ol>
+
+          <h3>关联修改的最小回归测试集</h3>
+          <ul>
+            <li>非流式 Task：<code>SendMessage → GetTask(historyLength=0) → 终态</code>。</li>
+            <li>流式断线和空闲：重订阅成功及轮询回退。</li>
+            <li>取得 Task ID 前后的父调用取消。</li>
+            <li>暂时性 408/429/5xx、<code>Retry-After</code>、DNS 失败及永久错误对照。</li>
+            <li>终态无输出时补取历史、排除 working 消息及有界历史。</li>
+            <li>Artifact append 连续性、结果字节/事件上限和超限后的下游清理。</li>
+            <li>Agent Card 调用来源协商、直连 v1 显式开启、v0.3 不激活以及仅审计存储。</li>
+            <li>结构化进程日志、问题筛选、UI 渲染、进程组取消和退出。</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+
+    <footer class="page-shell">
+      信息来源：已审查的 <code>codex/a2a-task-lifecycle</code> 工作树，以及 <code>docs/</code>
+      中公开的调用来源扩展和 Task 生命周期规范。
+    </footer>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'
+      mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: 'strict',
+        theme: 'neutral',
+        flowchart: { curve: 'basis', htmlLabels: false },
+        sequence: { useMaxWidth: true, wrap: true },
+      })
+    </script>
+  </body>
+</html>

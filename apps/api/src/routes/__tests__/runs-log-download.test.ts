@@ -212,6 +212,35 @@ describe('GET /runs/:id/logs', () => {
     expect(body.meta.stats).toMatchObject({ total: 4, errors: 2 })
   })
 
+  it('includes A2A lifecycle retries and failures in the problems filter', async () => {
+    const lines = [
+      { type: 'system', subtype: 'a2a.task.observed', ts: 1 },
+      { type: 'system', subtype: 'a2a.task.poll_retry', ts: 2 },
+      { type: 'system', subtype: 'a2a.task.resubscribe_failed', ts: 3 },
+      { type: 'system', subtype: 'a2a.task.cancel_failed', ts: 4 },
+      { type: 'system', subtype: 'a2a.task.cancel_result', ts: 5 },
+    ]
+      .map((entry) => `${JSON.stringify(entry)}\n`)
+      .join('')
+    writeFileSync(join(tmpRoot, 'run_a2a_problems.ndjson'), lines)
+    dbSelect.mockReturnValueOnce(makeSelectChain({ id: 'run_a2a_problems' }))
+
+    const res = await app.request('/runs/run_a2a_problems/logs?filter=problems&page=last&limit=10')
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      data: Array<{ type: string; subtype?: string }>
+      meta: { totalEntries: number; stats: { total: number; errors: number } }
+    }
+    expect(body.data.map((entry) => entry.subtype)).toEqual([
+      'a2a.task.poll_retry',
+      'a2a.task.resubscribe_failed',
+      'a2a.task.cancel_failed',
+    ])
+    expect(body.meta.totalEntries).toBe(3)
+    expect(body.meta.stats).toMatchObject({ total: 5, errors: 3 })
+  })
+
   it('keeps tool heartbeat entries in the all filter', async () => {
     const lines = [
       { type: 'assistant', text: 'start', ts: 1 },

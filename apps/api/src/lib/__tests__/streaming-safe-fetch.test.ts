@@ -11,6 +11,89 @@ function dispatcherFactory(destroy = vi.fn(async () => {})) {
 }
 
 describe('createStreamingSafeFetch', () => {
+  it('does not start hostname resolution for an already-aborted request', async () => {
+    const fetchImpl = vi.fn()
+    const resolveHostname = vi.fn(async () => PUBLIC)
+    const dispatchers = dispatcherFactory()
+    const safeFetch = createStreamingSafeFetch({
+      fetchImpl,
+      resolveHostname,
+      dispatcherFactory: dispatchers.factory,
+    })
+    const controller = new AbortController()
+    const reason = new DOMException('request was already canceled', 'AbortError')
+    controller.abort(reason)
+
+    await expect(
+      safeFetch('https://canceled.example/a2a', { signal: controller.signal }),
+    ).rejects.toBe(reason)
+    expect(resolveHostname).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(dispatchers.factory).not.toHaveBeenCalled()
+  })
+
+  it('aborts stalled hostname resolution before opening a socket', async () => {
+    const fetchImpl = vi.fn()
+    const dispatchers = dispatcherFactory()
+    const safeFetch = createStreamingSafeFetch({
+      fetchImpl,
+      resolveHostname: () => new Promise(() => undefined),
+      dispatcherFactory: dispatchers.factory,
+    })
+    const controller = new AbortController()
+    const reason = new DOMException('control request timed out', 'TimeoutError')
+
+    const request = safeFetch('https://slow.example/a2a', { signal: controller.signal })
+    controller.abort(reason)
+    const outcome = await Promise.race([
+      request.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('still-pending'), 20)),
+    ])
+
+    expect(outcome).toBe(reason)
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(dispatchers.factory).not.toHaveBeenCalled()
+  })
+
+  it('aborts hostname resolution for a redirect hop', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 307,
+          headers: { location: 'https://slow.example/a2a' },
+        }),
+    )
+    const dispatchers = dispatcherFactory()
+    const resolveHostname = vi.fn((hostname: string) =>
+      hostname === 'public.example' ? Promise.resolve(PUBLIC) : new Promise<never>(() => undefined),
+    )
+    const safeFetch = createStreamingSafeFetch({
+      fetchImpl,
+      resolveHostname,
+      dispatcherFactory: dispatchers.factory,
+    })
+    const controller = new AbortController()
+    const reason = new DOMException('redirect resolution timed out', 'TimeoutError')
+
+    const request = safeFetch('https://public.example/a2a', { signal: controller.signal })
+    await vi.waitFor(() => expect(resolveHostname).toHaveBeenCalledTimes(2))
+    controller.abort(reason)
+    const outcome = await Promise.race([
+      request.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('still-pending'), 20)),
+    ])
+
+    expect(outcome).toBe(reason)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(dispatchers.destroy).toHaveBeenCalledOnce()
+  })
+
   it('rejects private and mixed DNS answers before issuing a request', async () => {
     const fetchImpl = vi.fn()
     const safeFetch = createStreamingSafeFetch({

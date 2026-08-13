@@ -15,7 +15,7 @@ describe('isRetiredOauthAccessMode', () => {
    * The case that made the import path inconsistent with the migration: a bundle exported
    * before migration 0071 added the column carries no mode at all, yet its source Agent ran on
    * that column's DEFAULT — `feishu_scope`, i.e. restricted. Reading absence as the new open
-   * default would republish it open to every enterprise SSO user.
+   * default would republish it open to every OIDC-authenticated user.
    */
   it('is true for a missing mode (pre-0071 bundle ran on the feishu_scope default)', () => {
     expect(isRetiredOauthAccessMode(undefined)).toBe(true)

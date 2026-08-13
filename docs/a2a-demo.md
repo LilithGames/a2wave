@@ -47,7 +47,7 @@ Parameters:
 | `API_KEY` | Required when the Agent is configured with API Key authentication |
 | `--stream` | Use streaming output (SSE) |
 | `--async` | Use async mode (non-blocking + polling) |
-| `TIMEOUT` | Timeout (milliseconds), defaults to 300000 (5 minutes) |
+| `TIMEOUT` | Demo client deadline (milliseconds), defaults to 300000 (5 minutes); this does not configure the Agent router or server-side Run timeout |
 | `POLL_INTERVAL` | Async-mode polling interval (milliseconds), defaults to 2000 |
 | `DEBUG=1` or `A2A_DEMO_DEBUG=1` | Output debug logs to stderr |
 
@@ -152,4 +152,5 @@ Existing clients may continue to use `message/send`, `message/stream`, `tasks/ge
 
 - [A2A Protocol](https://a2a-protocol.org/latest/)
 - [A2A source and specification](https://github.com/a2aproject/A2A)
+- [a2wave A2A Task lifecycle](./agent/a2a-task-lifecycle.md)
 - [@a2a-js/sdk](https://www.npmjs.com/package/@a2a-js/sdk)

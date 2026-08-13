@@ -100,6 +100,7 @@ export type StreamLogEntry =
       model?: string
       providerName?: string
       nextProviderName?: string
+      metadata?: Record<string, unknown>
       ts: number
     }
   | { type: 'assistant'; text: string; ts: number }

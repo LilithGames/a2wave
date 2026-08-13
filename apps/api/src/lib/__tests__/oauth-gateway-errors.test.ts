@@ -29,14 +29,14 @@ describe('OAuth gateway caller-facing error classification', () => {
       403,
       'CALLER_TOKEN_CLAIMS_INVALID',
       'caller',
-      'contact_platform_administrator',
+      'obtain_new_access_token',
     ],
     [
       GatewayAuthErrors.MISSING_VERIFIED_EMAIL,
       403,
       'CALLER_TOKEN_CLAIMS_INVALID',
       'caller',
-      'contact_platform_administrator',
+      'obtain_new_access_token',
     ],
     // An IdP outage is a platform problem the caller can retry, not a credential failure.
     [
@@ -83,6 +83,47 @@ describe('OAuth gateway caller-facing error classification', () => {
         action: 'contact_agent_owner',
       },
     })
+  })
+
+  it.each([
+    [
+      GatewayAuthErrors.MISSING_AUTH_HEADER,
+      "A JWT from the caller's OIDC client for the configured a2wave resource audience is required. Obtain one, then send it in the Authorization: Bearer <token> header.",
+    ],
+    [
+      GatewayAuthErrors.INVALID_TOKEN,
+      "The caller's access token is invalid, expired, or issued for the wrong audience. Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience, then retry the request.",
+    ],
+    [
+      'Unknown authentication failure',
+      "The caller could not be authenticated. Obtain a new JWT from the caller's OIDC client for the configured a2wave resource audience, then retry the request.",
+    ],
+  ])('directs 401 callers to the a2wave resource audience for %s', (upstream, message) => {
+    const result = classifyOAuthAuthError(upstream, 401)
+
+    expect(result.error.message).toBe(message)
+    expect(result.error.message).not.toContain('Sign in')
+    expect(result.error.action).toBe('obtain_new_access_token')
+  })
+
+  it('requests an OIDC JWT with an email claim when email is absent in either access mode', () => {
+    const result = classifyOAuthAuthError(GatewayAuthErrors.MISSING_EMAIL_CLAIM, 403)
+
+    expect(result.error.message).toBe(
+      "The caller's token does not contain an email claim. Obtain a new JWT from the configured OIDC provider that includes an email claim, then retry the request.",
+    )
+    expect(result.error.message).not.toContain('enterprise SSO')
+    expect(result.error.message).not.toContain('required by this agent')
+    expect(result.error.action).toBe('obtain_new_access_token')
+  })
+
+  it('requests a verified email claim for specified-users access', () => {
+    const result = classifyOAuthAuthError(GatewayAuthErrors.MISSING_VERIFIED_EMAIL, 403)
+
+    expect(result.error.message).toBe(
+      "The caller's token does not contain the verified email required by this agent's specified-users access policy. Obtain a new JWT from the configured OIDC provider with a verified email claim, then retry the request.",
+    )
+    expect(result.error.action).toBe('obtain_new_access_token')
   })
 
   it.each([
