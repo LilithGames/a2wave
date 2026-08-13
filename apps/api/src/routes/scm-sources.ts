@@ -1108,53 +1108,82 @@ app.delete('/:id/workspaces/:name', async (c) => {
   const { join } = await import('node:path')
   const wsPath = join(scm.wsRoot, name)
 
-  // Refuse while the workspace is occupied by a running job
-  const occupied = (
-    await db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])))
-      .limit(1)
-  )[0]
-  if (occupied) {
-    return c.json({ error: 'Workspace is occupied by a running or pending run' }, 409)
-  }
-
-  // The run-status check above cannot see two occupants the durable lease can:
-  // an Evaluation (which writes no `runs` row at all — its `eval-<taskId>`
-  // worktree is a legal deletable name here) and a Run whose status is already
-  // terminal but whose process/cleanup still holds the directory. The lease is
-  // authoritative for both until explicitly released after cleanup.
-  const leases = await db
-    .select({
-      workloadType: scmWorkloadLeases.workloadType,
-      workloadId: scmWorkloadLeases.workloadId,
-    })
-    .from(scmWorkloadLeases)
-    .where(eq(scmWorkloadLeases.scmSourceId, id))
-  const leasedEvaluation = leases.find(
-    (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
-  )
-  if (leasedEvaluation) {
-    return c.json({ error: 'Workspace is occupied by a running evaluation' }, 409)
-  }
-  const leasedRunIds = leases
-    .filter((lease) => lease.workloadType === 'run')
-    .map((lease) => lease.workloadId)
-  if (leasedRunIds.length > 0) {
-    const leasedHere = (
-      await db
+  // Occupancy checks AND the removal share one SCM mutation critical section.
+  // Workload admission reserves its durable lease under this same lock, so an
+  // admission is strictly before this transaction (its lease is visible below
+  // and blocks the removal) or strictly after it (it starts once the worktree
+  // is already gone and resolves a fresh one). Checking first and removing
+  // outside the lock left a gap where a freshly admitted workload's worktree
+  // was deleted underneath it.
+  //
+  // The removal is filesystem/git work inside a DB critical section — a
+  // deliberate, bounded trade: it touches no database handle (no deadlock),
+  // each git call is capped by GIT_TIMEOUT_MS, and serializing SCM mutations
+  // behind an explicit admin deletion is precisely the semantics the lock
+  // exists to provide.
+  const removal = await withScmPathMutation(async (tx) => {
+    // Refuse while the workspace is occupied by a running job.
+    const occupied = (
+      await tx
         .select({ id: runs.id })
         .from(runs)
-        .where(and(inArray(runs.id, leasedRunIds), eq(runs.workDir, wsPath)))
+        .where(
+          and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])),
+        )
         .limit(1)
     )[0]
-    if (leasedHere) {
-      return c.json({ error: 'Workspace is occupied by a run that has not finished cleanup' }, 409)
+    if (occupied) {
+      return { blocked: 'Workspace is occupied by a running or pending run' } as const
     }
-  }
 
-  await scm.removeWorkspace(name)
+    // The run-status check above cannot see two occupants the durable lease
+    // can: an Evaluation (which writes no `runs` row at all — its
+    // `eval-<taskId>` worktree is a legal deletable name here) and a Run whose
+    // status is already terminal but whose process/cleanup still holds the
+    // directory. The lease is authoritative until released after cleanup.
+    const leases = await tx
+      .select({
+        workloadType: scmWorkloadLeases.workloadType,
+        workloadId: scmWorkloadLeases.workloadId,
+      })
+      .from(scmWorkloadLeases)
+      .where(eq(scmWorkloadLeases.scmSourceId, id))
+    const leasedEvaluation = leases.find(
+      (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
+    )
+    if (leasedEvaluation) {
+      return { blocked: 'Workspace is occupied by a running evaluation' } as const
+    }
+    const leasedRunIds = leases
+      .filter((lease) => lease.workloadType === 'run')
+      .map((lease) => lease.workloadId)
+    if (leasedRunIds.length > 0) {
+      const leasedRuns = await tx
+        .select({ id: runs.id, workDir: runs.workDir })
+        .from(runs)
+        .where(inArray(runs.id, leasedRunIds))
+      // A NULL workDir is the admission-to-resolveWorkDir window: the run is
+      // leased but has not chosen its worktree yet, so it may legally resolve
+      // to this very name. Refusing is the only safe answer until it commits
+      // to a directory. (A lease whose run row is gone entirely matches the
+      // stale-lease sweeper's release condition and does not block.)
+      const blockingRun = leasedRuns.find((run) => run.workDir === wsPath || run.workDir == null)
+      if (blockingRun) {
+        return {
+          blocked:
+            blockingRun.workDir == null
+              ? 'Workspace may be claimed by an admitted run that has not started yet'
+              : 'Workspace is occupied by a run that has not finished cleanup',
+        } as const
+      }
+    }
+
+    await scm.removeWorkspace(name)
+    return { blocked: null } as const
+  })
+  if (removal.blocked) {
+    return c.json({ error: removal.blocked }, 409)
+  }
   return c.json({ data: { message: 'Workspace removed' } })
 })
 

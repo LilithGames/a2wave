@@ -8,6 +8,7 @@ import { logger } from './logger.js'
 import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
 import { resolveScmPathPlan, selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { scmConfigEquals } from './scm-secret-mask.js'
+import { findDurableScmSourceWorkload } from './scm-workload-lifecycle.js'
 
 const ADMIN_USER_ID = 'usr_admin'
 
@@ -139,6 +140,20 @@ async function applyEnvScmSourceUpdate(
   if (!configChanged && !localPathChanged && !workspacesPathChanged) {
     return
   }
+  // A durable workload lease means a Run or Evaluation still has this source's
+  // checkout as cwd — possibly on another replica this process cannot see.
+  // Re-pointing paths or resetting sync state in that window leaves the lease
+  // protecting the old directory while sync and workspace cleanup operate on
+  // the new one. Same authority the PATCH route consults, read inside the same
+  // mutation transaction that admission writes it in.
+  const activeWorkload = await findDurableScmSourceWorkload(tx, existing.id)
+  if (activeWorkload) {
+    logger.warn(
+      { id: existing.id, workload: activeWorkload },
+      `Deferred ${label} SCM source update from env: a durable workload lease pins the source`,
+    )
+    return
+  }
   if (existing.syncStatus === 'syncing' || existing.codegraphStatus === 'indexing') {
     // The env change waits for the next boot rather than resetting the state
     // of a checkout another process is actively writing.
@@ -166,15 +181,15 @@ async function applyEnvScmSourceUpdate(
       updatedAt: now,
     })
     // Guarded in SQL as well as in the read above: a peer replica can acquire
-    // the row between that read and this write.
+    // the row between that read and this write. Unconditional — a pure
+    // workspacesPath pin skips the sync-state reset but must not rewrite a
+    // row a peer's sync just acquired either.
     .where(
-      resetsSyncState
-        ? and(
-            eq(scmSources.id, existing.id),
-            ne(scmSources.syncStatus, 'syncing'),
-            ne(scmSources.codegraphStatus, 'indexing'),
-          )
-        : eq(scmSources.id, existing.id),
+      and(
+        eq(scmSources.id, existing.id),
+        ne(scmSources.syncStatus, 'syncing'),
+        ne(scmSources.codegraphStatus, 'indexing'),
+      ),
     )
   logger.info({ id: existing.id }, `Updated ${label} SCM source from env`)
 }

@@ -73,6 +73,13 @@ vi.mock('../../db/schema.js', () => ({
     syncStatus: 'scmSources.syncStatus',
     codegraphStatus: 'scmSources.codegraphStatus',
   },
+  scmWorkloadLeases: {
+    id: 'scmWorkloadLeases.id',
+    workloadType: 'scmWorkloadLeases.workloadType',
+    workloadId: 'scmWorkloadLeases.workloadId',
+    agentId: 'scmWorkloadLeases.agentId',
+    scmSourceId: 'scmWorkloadLeases.scmSourceId',
+  },
   settings: { category: 'settings.category', key: 'settings.key' },
 }))
 
@@ -396,6 +403,104 @@ describe('bootstrapScmGit — update path', () => {
 
     expect(dbUpdateRun).not.toHaveBeenCalled()
     expect(dbInsertRun).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Flatten a drizzle SQL object to its raw text chunks. With this file's
+   * string-mocked schema the bound values are not observable, but operators
+   * are: the busy guard contributes exactly two `<>` comparisons
+   * (`syncStatus <> 'syncing'`, `codegraphStatus <> 'indexing'`), and an
+   * unguarded `eq(id)` where clause contributes none.
+   */
+  function sqlText(node: unknown, seen = new Set<object>()): string {
+    if (!node || typeof node !== 'object' || seen.has(node as object)) return ''
+    seen.add(node as object)
+    let out = ''
+    const value = (node as { value?: unknown }).value
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+      out += value.join('')
+    }
+    for (const child of Object.values(node)) {
+      out += sqlText(child, seen)
+    }
+    return out
+  }
+
+  // A workspacesPath-only pin skips the sync-state reset, but it must still
+  // carry the busy predicate: another replica can begin a sync between this
+  // replica's pre-read and its UPDATE, and an unguarded write would rewrite
+  // the row underneath that sync. Pre-read and update predicate protect
+  // together, or the invariant does not hold.
+  it('guards a workspacesPath-only env:git update against a concurrent sync', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
+    queueSelects(
+      {
+        get: {
+          id: 'scm_g',
+          localPath: '/var/git',
+          workspacesPath: null, // legacy row: the planner pins the default
+          syncStatus: 'idle',
+          codegraphStatus: 'idle',
+          initialSyncCompletedAt: new Date(),
+          config: {
+            repoUrl: 'https://example/repo.git',
+            branch: 'main',
+            autoSync: true,
+            syncIntervalMin: 30,
+            initialSyncTimeoutMin: 60,
+          },
+        },
+      },
+      { all: [] }, // planner peers
+      { all: [] }, // no durable workload lease
+    )
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(dbUpdateRun).toHaveBeenCalledTimes(1)
+    // No sync-state reset for a pure path pin...
+    expect(updateChain.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ syncStatus: 'idle' }),
+    )
+    // ...but the where clause still refuses a row a peer replica acquired:
+    // both busy predicates (`syncStatus <> ...`, `codegraphStatus <> ...`).
+    const whereArg = dbUpdateRun.mock.calls[0][0]
+    expect(sqlText(whereArg).match(/<>/g)?.length ?? 0).toBe(2)
+  })
+
+  // A durable workload lease means a Run or Evaluation still has this
+  // source's checkout as cwd — possibly on another replica. Re-pointing the
+  // env source's paths in that window leaves the lease protecting the old
+  // directory while sync and cleanup operate on the new one.
+  it('defers an env:git update while a durable workload lease pins the source', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
+    envMock.SCM_GIT_LOCAL_PATH = '/var/git-moved'
+    queueSelects(
+      {
+        get: {
+          id: 'scm_g',
+          localPath: '/var/git',
+          workspacesPath: '/data/workspace/workspaces/scm_g',
+          syncStatus: 'idle',
+          codegraphStatus: 'idle',
+          config: {
+            repoUrl: 'https://example/repo.git',
+            branch: 'main',
+            autoSync: true,
+            syncIntervalMin: 30,
+            initialSyncTimeoutMin: 60,
+          },
+        },
+      },
+      { all: [] }, // planner peers
+      { get: { type: 'run', id: 'run_active', agentId: 'agt_1' } }, // durable lease
+    )
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(dbUpdateRun).not.toHaveBeenCalled()
   })
 
   it('defers an env:git update while another replica is syncing the row', async () => {

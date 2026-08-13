@@ -58,10 +58,18 @@ below hold across every affected entry point.
   resolve the checkout after its binding changes.
 - The lease names both sides of the relation, and **source-side mutations must
   consult it keyed by source**, not only by Agent rows: a path-changing PATCH,
-  source DELETE, and workspace DELETE all refuse while a durable lease pins the
-  source. Row state alone disagrees with the lease in exactly the windows that
-  matter — an Evaluation writes no `runs` row yet owns an `eval-<taskId>`
-  worktree, and a Run's lease outlives its terminal status until cleanup.
+  source DELETE, workspace DELETE, and an env bootstrap update all refuse or
+  defer while a durable lease pins the source. Row state alone disagrees with
+  the lease in exactly the windows that matter — an Evaluation writes no `runs`
+  row yet owns an `eval-<taskId>` worktree, and a Run's lease outlives its
+  terminal status until cleanup.
+- Workspace DELETE runs its occupancy checks **and the worktree removal in one
+  SCM mutation critical section** — admission reserves its lease under the same
+  lock, so an admission is strictly before the removal transaction (lease
+  visible, removal refused) or strictly after it (worktree gone, resolved
+  fresh). A leased Run whose `workDir` is still NULL blocks every worktree of
+  the source: it has not chosen its directory yet and may resolve to the one
+  being deleted.
 - Run admission counts durable **active** leases toward `maxConcurrency`
   alongside the runs table and the in-process registry. The in-process registry
   is empty on every other replica, and a run in its cleanup window is no longer
@@ -83,7 +91,11 @@ below hold across every affected entry point.
   source row that already matches the environment gets no write, sync state is
   reset only when the checkout's inputs (config or localPath) actually changed,
   and a row a peer replica is syncing or indexing defers the env change to the
-  next boot — guarded both by the pre-read and by the update predicate.
+  next boot. The busy predicate on the UPDATE is unconditional — a pure
+  workspacesPath pin skips the sync-state reset but must not rewrite a row a
+  peer's sync just acquired either — and a durable workload lease on the source
+  defers the update the same way, because the lease may protect a checkout on a
+  replica this process cannot observe.
 - Graceful shutdown pauses both queue admission and queued-task promotion before
   stopping producers. It closes the database only after Run/Evaluation process
   exit, workspace cleanup, durable lease release, and audit drains settle.
