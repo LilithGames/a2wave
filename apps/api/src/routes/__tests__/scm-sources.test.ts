@@ -392,6 +392,33 @@ describe('SCM Sources routes', () => {
     })
   })
 
+  it.each([
+    ['POST', '/api/scm-sources/scm_1/check'],
+    ['GET', '/api/scm-sources/scm_1/status'],
+    ['GET', '/api/scm-sources/scm_1/workspaces'],
+    ['DELETE', '/api/scm-sources/scm_1/workspaces/feature'],
+  ])('%s %s excludes deletion-pending sources', async (method, url) => {
+    const chain = makeDbChain({
+      id: 'scm_1',
+      type: 'unsupported',
+      localPath: '/data/workspace/sources/1',
+      config: {},
+    })
+    const wherePredicates: unknown[] = []
+    const query = (chain.from as Mock)()
+    const originalWhere = query.where as Mock
+    query.where = vi.fn((predicate: unknown) => {
+      wherePredicates.push(predicate)
+      return originalWhere(predicate)
+    })
+    ;(chain.from as Mock).mockReturnValue(query)
+    ;(db.select as Mock).mockReturnValueOnce(chain)
+
+    await app.request(url, { method })
+
+    expect(JSON.stringify(wherePredicates)).toContain('deletionRequestedAt')
+  })
+
   describe('POST /', () => {
     it('creates a git source with valid input', async () => {
       // Mock localPath uniqueness check returning no conflict
@@ -840,9 +867,7 @@ describe('SCM Sources routes', () => {
     })
 
     it('returns 409 while the checkout is being synced or indexed', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', name: 'Source' }))
-        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.select as Mock).mockReturnValueOnce(makeDbChain({ id: 'scm_1', name: 'Source' }))
       ;(isCheckoutBusy as Mock).mockReturnValueOnce(true)
 
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
@@ -855,7 +880,9 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', name: 'Source' }))
         .mockReturnValueOnce(makeDbChain([]))
-      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(null))
+        .mockReturnValueOnce(makeDbChain([]))
+      // The status change wins before phase-one can reserve the source.
+      ;(db.update as Mock).mockReturnValueOnce(makeUpdateChain(null))
 
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
@@ -1411,8 +1438,17 @@ describe('SCM Sources routes', () => {
         initialSyncCompletedAt: new Date(),
       }
       ;(db.select as Mock).mockReturnValueOnce(makeDbChain(existingSource))
-      const updateChain = makeUpdateChain({ ...existingSource, name: 'New Name' })
-      ;(db.update as Mock).mockReturnValue(updateChain)
+      const where = vi.fn().mockReturnValue(
+        asyncQuery({
+          returning: vi
+            .fn()
+            .mockReturnValue(
+              asyncQuery({ get: vi.fn().mockReturnValue({ ...existingSource, name: 'New Name' }) }),
+            ),
+        }),
+      )
+      const set = vi.fn().mockReturnValue(asyncQuery({ where }))
+      ;(db.update as Mock).mockReturnValue({ set })
 
       const res = await app.request('/api/scm-sources/scm_1', {
         method: 'PATCH',
@@ -1421,8 +1457,9 @@ describe('SCM Sources routes', () => {
       })
 
       expect(res.status).toBe(200)
-      const setCall = updateChain.set.mock.calls[0][0] as Record<string, unknown>
+      const setCall = set.mock.calls[0][0] as Record<string, unknown>
       expect(setCall.initialSyncCompletedAt).toBeUndefined()
+      expect(JSON.stringify(where.mock.calls)).toContain('deletionRequestedAt')
     })
 
     it('rejects an unrelated update on a legacy non-admin unsafe workspace root', async () => {

@@ -117,6 +117,7 @@ import {
 import { runWithLifecycle } from '../lib/run-launcher.js'
 import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
@@ -1199,21 +1200,46 @@ app.post('/', async (c) => {
 
   const id = createId('agt')
   const authMode = await effectiveProviderAuthMode(parsed.data.providerId, parsed.data.authMode)
-  const newAgent = (
-    await db
-      .insert(agents)
-      .values({
-        id,
-        // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
-        // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
-        oauthAccessMode: 'all_idaas_users',
-        ...parsed.data,
-        env: envRestore.value,
-        authMode,
-        userId,
-      })
-      .returning()
-  )[0]
+  const insertAgent = async (executor: typeof db) =>
+    (
+      await executor
+        .insert(agents)
+        .values({
+          id,
+          // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
+          // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
+          oauthAccessMode: 'all_idaas_users',
+          ...parsed.data,
+          env: envRestore.value,
+          authMode,
+          userId,
+        })
+        .returning()
+    )[0]
+
+  // Binding and SCM deletion reservation share one lifecycle lock. The earlier
+  // lookup gives a useful validation error, while this authoritative lookup in
+  // the write transaction closes the read-to-insert race across API replicas.
+  const bindingResult =
+    workspaceType === 'scm' && scmSourceId
+      ? await withScmPathMutation(async (tx) => {
+          const source = (
+            await tx
+              .select()
+              .from(scmSources)
+              .where(and(eq(scmSources.id, scmSourceId), isNull(scmSources.deletionRequestedAt)))
+              .limit(1)
+          )[0]
+          if (!source || source.initialSyncCompletedAt == null) {
+            return { allowed: false as const, agent: undefined }
+          }
+          return { allowed: true as const, agent: await insertAgent(tx as typeof db) }
+        })
+      : { allowed: true as const, agent: await insertAgent(db) }
+  if (!bindingResult.allowed) {
+    return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
+  }
+  const newAgent = bindingResult.agent
 
   logAudit(c, { action: 'agent.create', resource: 'agent', resourceId: id })
 
@@ -1474,9 +1500,36 @@ app.patch('/:id', async (c) => {
     disableWorkDir = await resolveWorkDir(existing)
   }
 
-  const updated = (
-    await db.update(agents).set(updatePayload).where(eq(agents.id, id)).returning()
-  )[0]
+  const effectiveWorkspaceType = parsed.data.workspaceType ?? existing.workspaceType
+  const effectiveScmSourceId =
+    scmSourceId !== undefined ? scmSourceId : (existing.scmSourceId ?? null)
+  const establishesScmBinding =
+    effectiveWorkspaceType === 'scm' &&
+    effectiveScmSourceId !== null &&
+    (existing.workspaceType !== 'scm' || effectiveScmSourceId !== existing.scmSourceId)
+  const updateAgent = async (executor: typeof db) =>
+    (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
+  const bindingResult = establishesScmBinding
+    ? await withScmPathMutation(async (tx) => {
+        const source = (
+          await tx
+            .select()
+            .from(scmSources)
+            .where(
+              and(eq(scmSources.id, effectiveScmSourceId), isNull(scmSources.deletionRequestedAt)),
+            )
+            .limit(1)
+        )[0]
+        if (!source || source.initialSyncCompletedAt == null) {
+          return { allowed: false as const, agent: undefined }
+        }
+        return { allowed: true as const, agent: await updateAgent(tx as typeof db) }
+      })
+    : { allowed: true as const, agent: await updateAgent(db) }
+  if (!bindingResult.allowed) {
+    return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
+  }
+  const updated = bindingResult.agent
 
   resyncGitTriggerAfterUpdate(id, parsed.data, updated)
 
@@ -2166,66 +2219,90 @@ app.post('/:id/clone', async (c) => {
     c,
     agent.mcpServerIds as string[] | null | undefined,
   )
-  const cloned = (
-    await db
-      .insert(agents)
-      .values({
-        id: cloneId,
-        name: `${agent.name} (Copy)`,
-        description: agent.description,
-        type: agent.type,
-        config: maskProviderChainConfig(agent.config, null),
-        status: agent.status,
-        icon: agent.icon,
-        systemPrompt: agent.systemPrompt,
-        skills: clonedSkillReferences.skillIds,
-        skillGroupIds: clonedSkillReferences.skillGroupIds,
-        // Drop admin-only / stdio MCP the caller couldn't bind themselves — the
-        // clone is theirs, and this copy would otherwise survive membership revoke.
-        mcpServerIds: clonedMcpServerIds,
-        kbDocumentIds: agent.kbDocumentIds,
-        publishStatus: 'draft',
-        endpointApiKey: null,
-        a2aEndpointApiKey: null,
-        providerApiKey: null,
-        providerBaseUrl: null,
-        providerOauthToken: null,
-        memoryProviderApiKey: null,
-        embeddingApiKey: null,
-        authMode: agent.authMode,
-        publishAuthType: 'api_key',
-        publishIpWhitelist: [],
-        publishDescription: null,
-        publishChannels: ['api'],
-        // Explicit on purpose (see db/schema.ts): omitting these writes the retired
-        // `feishu_scope`, which reads normalize to the **open** mode, so a clone of a
-        // `specified_users` Agent would come back open. Only an explicit `all_idaas_users` clones
-        // as open; anything else is a tier this code cannot establish, so it takes the restricted
-        // one. Not `normalizeOauthAccessMode()` — that resolves *unclear* to open, which is right
-        // for a read but is the write side giving away a decision it owns. The roster is
-        // deliberately not copied (personnel data), which is why the tier must survive.
-        oauthAccessMode:
-          agent.oauthAccessMode === 'all_idaas_users' ? 'all_idaas_users' : 'specified_users',
-        oauthAllowedEmails: null,
-        a2aSkills: null,
-        feishuConfig: null,
-        slackConfig: null,
-        discordConfig: null,
-        scheduleConfig: null,
-        glabConfig: null,
-        ghConfig: null,
-        publishedAt: null,
-        providerId: agent.providerId,
-        env: clonedEnv,
-        workspaceType: agent.workspaceType,
-        scmSourceId: agent.scmSourceId,
-        maxConcurrency: agent.maxConcurrency,
-        userId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
-  )[0]
+  const insertClone = async (executor: typeof db) =>
+    (
+      await executor
+        .insert(agents)
+        .values({
+          id: cloneId,
+          name: `${agent.name} (Copy)`,
+          description: agent.description,
+          type: agent.type,
+          config: maskProviderChainConfig(agent.config, null),
+          status: agent.status,
+          icon: agent.icon,
+          systemPrompt: agent.systemPrompt,
+          skills: clonedSkillReferences.skillIds,
+          skillGroupIds: clonedSkillReferences.skillGroupIds,
+          // Drop admin-only / stdio MCP the caller couldn't bind themselves — the
+          // clone is theirs, and this copy would otherwise survive membership revoke.
+          mcpServerIds: clonedMcpServerIds,
+          kbDocumentIds: agent.kbDocumentIds,
+          publishStatus: 'draft',
+          endpointApiKey: null,
+          a2aEndpointApiKey: null,
+          providerApiKey: null,
+          providerBaseUrl: null,
+          providerOauthToken: null,
+          memoryProviderApiKey: null,
+          embeddingApiKey: null,
+          authMode: agent.authMode,
+          publishAuthType: 'api_key',
+          publishIpWhitelist: [],
+          publishDescription: null,
+          publishChannels: ['api'],
+          // Explicit on purpose (see db/schema.ts): omitting these writes the retired
+          // `feishu_scope`, which reads normalize to the **open** mode, so a clone of a
+          // `specified_users` Agent would come back open. Only an explicit `all_idaas_users` clones
+          // as open; anything else is a tier this code cannot establish, so it takes the restricted
+          // one. Not `normalizeOauthAccessMode()` — that resolves *unclear* to open, which is right
+          // for a read but is the write side giving away a decision it owns. The roster is
+          // deliberately not copied (personnel data), which is why the tier must survive.
+          oauthAccessMode:
+            agent.oauthAccessMode === 'all_idaas_users' ? 'all_idaas_users' : 'specified_users',
+          oauthAllowedEmails: null,
+          a2aSkills: null,
+          feishuConfig: null,
+          slackConfig: null,
+          discordConfig: null,
+          scheduleConfig: null,
+          glabConfig: null,
+          ghConfig: null,
+          publishedAt: null,
+          providerId: agent.providerId,
+          env: clonedEnv,
+          workspaceType: agent.workspaceType,
+          scmSourceId: agent.scmSourceId,
+          maxConcurrency: agent.maxConcurrency,
+          userId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+    )[0]
+  const bindingResult =
+    agent.workspaceType === 'scm' && agent.scmSourceId
+      ? await withScmPathMutation(async (tx) => {
+          const source = (
+            await tx
+              .select({ id: scmSources.id })
+              .from(scmSources)
+              .where(
+                and(
+                  eq(scmSources.id, agent.scmSourceId as string),
+                  isNull(scmSources.deletionRequestedAt),
+                ),
+              )
+              .limit(1)
+          )[0]
+          if (!source) return { allowed: false as const, agent: undefined }
+          return { allowed: true as const, agent: await insertClone(tx as typeof db) }
+        })
+      : { allowed: true as const, agent: await insertClone(db) }
+  if (!bindingResult.allowed) {
+    return c.json({ error: 'The Agent SCM source is no longer available' }, 409)
+  }
+  const cloned = bindingResult.agent
   logAudit(c, { action: 'agent.clone', resource: 'agent', resourceId: cloneId })
 
   return c.json({ data: maskAgentSecrets(cloned) }, 201)

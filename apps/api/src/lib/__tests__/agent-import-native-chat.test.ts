@@ -2,11 +2,14 @@ import AdmZip from 'adm-zip'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const insertValues = vi.fn((_values: unknown) => asyncQuery({ run: vi.fn() }))
+const selectWhere = vi.fn(() => asyncQuery({ get: () => undefined }))
+const execute = vi.fn()
 const txStub = {
   insert: vi.fn(() => ({ values: insertValues })),
   select: vi.fn(() => ({
-    from: vi.fn(() => ({ where: vi.fn(() => asyncQuery({ get: () => undefined })) })),
+    from: vi.fn(() => ({ where: selectWhere })),
   })),
+  execute,
 }
 
 // `isPostgres: true` keeps `withTransaction` on the branch that calls
@@ -21,7 +24,7 @@ vi.mock('../../db/schema.js', () => ({
   kbDocuments: {},
   mcpServers: {},
   providers: {},
-  scmSources: {},
+  scmSources: { name: 'scmSources.name', deletionRequestedAt: 'scmSources.deletionRequestedAt' },
   skills: {},
 }))
 vi.mock('../skill-storage.js', () => ({
@@ -88,9 +91,29 @@ function buildNativeChatExportZip(
 
 beforeEach(() => {
   insertValues.mockClear()
+  selectWhere.mockClear()
+  execute.mockClear()
 })
 
 describe('agent import native chat credentials', () => {
+  it('resolves SCM bindings under the deletion lifecycle lock and excludes pending sources', async () => {
+    const result = await importAgentFromZip(
+      buildNativeChatExportZip(null, {
+        workspaceType: 'scm',
+        scmSourceRef: 'main-repo',
+      }),
+      'usr_test',
+    )
+    const insertedAgent = insertValues.mock.calls.at(-1)?.[0] as { scmSourceId: string | null }
+
+    expect(execute).toHaveBeenCalledOnce()
+    expect(JSON.stringify(selectWhere.mock.calls)).toContain('deletionRequestedAt')
+    expect(insertedAgent.scmSourceId).toBeNull()
+    expect(result.warnings).toContain(
+      'SCM Source "main-repo" does not exist on the target instance; it was cleared and must be configured manually',
+    )
+  })
+
   it('disables Slack and Discord until credentials are reconfigured', async () => {
     const result = await importAgentFromZip(buildNativeChatExportZip(), 'usr_test')
     const insertedAgent = insertValues.mock.calls[0]?.[0] as {

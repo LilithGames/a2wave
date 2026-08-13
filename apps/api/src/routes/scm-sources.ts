@@ -373,8 +373,9 @@ app.patch('/:id', async (c) => {
         eq(scmSources.id, id),
         ne(scmSources.syncStatus, 'syncing'),
         ne(scmSources.codegraphStatus, 'indexing'),
+        isNull(scmSources.deletionRequestedAt),
       )
-    : eq(scmSources.id, id)
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const mutatesPath =
     parsed.data.localPath !== undefined || parsed.data.workspacesPath !== undefined
   const updateResult = mutatesPath
@@ -453,17 +454,6 @@ app.delete('/:id', async (c) => {
     return c.json({ error: 'SCM source not found' }, 404)
   }
 
-  // Reject the delete while any Agent still references this source
-  const referencingAgents = await db
-    .select({ id: agents.id, name: agents.name })
-    .from(agents)
-    .where(eq(agents.scmSourceId, id))
-
-  if (referencingAgents.length > 0) {
-    const names = referencingAgents.map((a) => a.name).join(', ')
-    return c.json({ error: `Cannot delete: referenced by agents: ${names}` }, 409)
-  }
-
   // Automatic initial checkouts are owned by this process and are safe to
   // cancel before deletion. Manual/recurring syncs and indexing jobs remain
   // protected by the busy and atomic DB guards below.
@@ -492,6 +482,13 @@ app.delete('/:id', async (c) => {
   // A rollback therefore leaves both the row and checkout untouched. Startup
   // can finish any request that committed but did not reach phase two.
   const reservation = await withScmPathMutation(async (tx) => {
+    const lockedReferences = await tx
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(eq(agents.scmSourceId, id))
+    if (lockedReferences.length > 0) {
+      return { referencedBy: lockedReferences, row: undefined, peers: undefined } as const
+    }
     const peers = await selectScmPathPeers(tx)
     const row = (
       await tx
@@ -500,7 +497,7 @@ app.delete('/:id', async (c) => {
         .where(and(deleteConditions, isNull(scmSources.deletionRequestedAt)))
         .returning()
     )[0]
-    if (!row) return undefined
+    if (!row) return { referencedBy: [], row: undefined, peers: undefined } as const
     await writeAudit(
       c,
       {
@@ -511,10 +508,14 @@ app.delete('/:id', async (c) => {
       },
       tx,
     )
-    return { row, peers }
+    return { referencedBy: [], row, peers } as const
   })
+  if (reservation.referencedBy.length > 0) {
+    const names = reservation.referencedBy.map((agent) => agent.name).join(', ')
+    return c.json({ error: `Cannot delete: referenced by agents: ${names}` }, 409)
+  }
   const pendingSource = reservation?.row ?? source
-  if (!reservation && !source.deletionRequestedAt) {
+  if (!reservation.row && !source.deletionRequestedAt) {
     return c.json({ error: 'Cannot reserve the SCM source for deletion' }, 409)
   }
 
@@ -522,7 +523,7 @@ app.delete('/:id', async (c) => {
 
   let reclaimedPaths: string[]
   try {
-    const peers = reservation?.peers ?? (await selectScmPathPeers())
+    const peers = reservation.peers ?? (await selectScmPathPeers())
     const isolatedStorage = await isolateManagedScmStorage(pendingSource, { peers })
     reclaimedPaths = await isolatedStorage.commit()
   } catch (error) {
@@ -696,8 +697,8 @@ app.post('/probe', probeScmRateLimit, async (c) => {
   if (sourceId) {
     const ownerFilter = getOwnerFilter(c, scmSources.userId)
     const conditions = ownerFilter
-      ? and(eq(scmSources.id, sourceId), ownerFilter)
-      : eq(scmSources.id, sourceId)
+      ? and(eq(scmSources.id, sourceId), ownerFilter, isNull(scmSources.deletionRequestedAt))
+      : and(eq(scmSources.id, sourceId), isNull(scmSources.deletionRequestedAt))
     const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
     if (!source) {
       return c.json({ error: 'SCM source not found' }, 404)
@@ -752,7 +753,9 @@ app.post('/probe', probeScmRateLimit, async (c) => {
 app.post('/:id/sync', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) {
     return c.json({ error: 'SCM source not found' }, 404)
@@ -807,7 +810,9 @@ app.post('/:id/sync', async (c) => {
 app.post('/:id/check', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) {
     return c.json({ error: 'SCM source not found' }, 404)
@@ -832,7 +837,9 @@ app.post('/:id/check', async (c) => {
 app.get('/:id/status', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) {
     return c.json({ error: 'SCM source not found' }, 404)
@@ -860,7 +867,9 @@ app.get('/:id/status', async (c) => {
 app.post('/:id/codegraph/reindex', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) {
     return c.json({ error: 'SCM source not found' }, 404)
@@ -949,7 +958,9 @@ app.post('/:id/codegraph/reindex', async (c) => {
 app.get('/:id/workspaces', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) return c.json({ error: 'Source not found' }, 404)
 
@@ -987,7 +998,9 @@ app.delete('/:id/workspaces/:name', async (c) => {
     return c.json({ error: 'Invalid workspace name' }, 400)
   }
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  const conditions = ownerFilter
+    ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
+    : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) return c.json({ error: 'Source not found' }, 404)
 

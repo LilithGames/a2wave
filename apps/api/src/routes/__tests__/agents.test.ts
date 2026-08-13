@@ -433,6 +433,28 @@ describe('POST /agents', () => {
     expect(res.status).toBe(201)
     expect(inserted.authMode).toBe('localSession')
   })
+
+  it('does not bind when deletion is reserved after the initial SCM validation', async () => {
+    const { createAgentInput } = await import('@a2wave/shared')
+    vi.mocked(createAgentInput.safeParse).mockReturnValueOnce({
+      success: true,
+      data: { name: 'SCM Agent', workspaceType: 'scm', scmSourceId: 'scm_1' },
+    } as ReturnType<typeof createAgentInput.safeParse>)
+    const readySource = { id: 'scm_1', initialSyncCompletedAt: new Date() }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(readySource))
+      // Authoritative lookup under the lifecycle lock observes the reservation.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'SCM Agent' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.insert).not.toHaveBeenCalled()
+  })
 })
 
 describe('POST /agents/:id/clone', () => {
@@ -470,6 +492,18 @@ describe('POST /agents/:id/clone', () => {
     const data = json.data as Json
     expect(data).toBeDefined()
     expect(data.id).toBe('agt_test1')
+  })
+
+  it('does not clone an Agent after its SCM source enters deletion', async () => {
+    const sourceAgent = { ...SAMPLE_AGENT, skills: [], skillGroupIds: [], mcpServerIds: [] }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(sourceAgent))
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original/clone', { method: 'POST' })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.insert).not.toHaveBeenCalled()
   })
 
   /**
@@ -1602,6 +1636,60 @@ describe('PATCH /agents/:id - published execution-config preflight', () => {
         config: { providerChain },
       }),
     )
+    expect(mockDb.update).not.toHaveBeenCalled()
+  })
+
+  it('does not rebind when deletion is reserved after the initial SCM validation', async () => {
+    const existing = {
+      ...SAMPLE_AGENT,
+      publishStatus: 'draft' as const,
+      workspaceType: 'temp' as const,
+      scmSourceId: null,
+      skills: [],
+      skillGroupIds: [],
+      mcpServerIds: [],
+      kbDocumentIds: [],
+    }
+    const readySource = { id: 'scm_1', initialSyncCompletedAt: new Date() }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(existing))
+      .mockReturnValueOnce(makeSelectChain(readySource))
+      // Authoritative lookup under the lifecycle lock observes the reservation.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceType: 'scm', scmSourceId: 'scm_1' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.update).not.toHaveBeenCalled()
+  })
+
+  it('locks a temp-to-SCM transition that reuses an already stored source id', async () => {
+    const existing = {
+      ...SAMPLE_AGENT,
+      publishStatus: 'draft' as const,
+      workspaceType: 'temp' as const,
+      scmSourceId: 'scm_1',
+      skills: [],
+      skillGroupIds: [],
+      mcpServerIds: [],
+      kbDocumentIds: [],
+    }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(existing))
+      // The lifecycle-locked lookup must run even though scmSourceId is omitted.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceType: 'scm' }),
+    })
+
+    expect(res.status).toBe(409)
     expect(mockDb.update).not.toHaveBeenCalled()
   })
 

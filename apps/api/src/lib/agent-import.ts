@@ -30,6 +30,7 @@ import {
 } from './agent-export.js'
 import { createId } from './id.js'
 import { resolveUsageScope } from './mcp-stdio.js'
+import { acquireScmPathMutationLock } from './scm-path-plan.js'
 import { ensureDir, getSkillStoragePath, readAllSkillFiles } from './skill-storage.js'
 import {
   type StreamingSafeFetchOptions,
@@ -435,6 +436,12 @@ export async function importAgentFromZip(
 
   // Wrap all DB operations in a transaction so partial failures don't leave orphan records
   const result = await withTransaction(async (tx) => {
+    // The import may bind its new Agent to an existing SCM source. Hold the
+    // same transaction-scoped lifecycle lock used by source deletion so the
+    // name lookup and Agent insert cannot straddle a deletion reservation.
+    if (exportedAgent.scmSourceRef) {
+      await acquireScmPathMutationLock(tx)
+    }
     // 3. Import MCP Servers
     const mcpIdMap = new Map<string, string>() // ref filename -> new ID
     const importedMcps: Array<{ id: string; name: string }> = []
@@ -722,7 +729,12 @@ export async function importAgentFromZip(
         await tx
           .select()
           .from(scmSources)
-          .where(eq(scmSources.name, exportedAgent.scmSourceRef))
+          .where(
+            and(
+              eq(scmSources.name, exportedAgent.scmSourceRef),
+              isNull(scmSources.deletionRequestedAt),
+            ),
+          )
           .limit(1)
       )[0]
       if (scm) {
