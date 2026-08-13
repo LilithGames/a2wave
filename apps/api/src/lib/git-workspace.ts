@@ -1055,7 +1055,22 @@ export async function removeGitWorkspace(
     for (const entry of platformWorkspaceEntries()) {
       const entryPath = join(wsPath, entry)
       const leftovers = await readdir(entryPath).catch(() => null)
-      if (!leftovers) continue
+      if (!leftovers) {
+        // Unreadable as a directory: absent, or something non-directory sits
+        // where the shared root belongs (a plain file, a dangling symlink).
+        // The platform never writes that shape, so treat it as one more
+        // leftover to name — skipping it leaves the final rmdir failing
+        // ENOTEMPTY on every later sweep of this workspace.
+        const entryStat = await lstat(entryPath).catch(() => null)
+        if (entryStat) {
+          logger.warn(
+            { wsPath, entry },
+            'Removing a non-directory entry in place of a platform workspace root',
+          )
+          await rm(entryPath, { force: true, recursive: entryStat.isDirectory() })
+        }
+        continue
+      }
       if (leftovers.length > 0) {
         logger.warn(
           { wsPath, entry, leftovers },

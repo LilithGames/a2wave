@@ -1066,6 +1066,28 @@ describe('git-workspace', () => {
       warn.mockRestore()
     })
 
+    it('removes a workspace where a shared root exists as a plain file', async () => {
+      // The leftover-naming pass reads each shared root with readdir, which
+      // throws ENOTDIR on a plain file. Skipping it on that error leaves the
+      // file behind and the final rmdir fails ENOTEMPTY — wedging every later
+      // TTL sweep of this workspace.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-file-root', multiRepoConfig)
+      await writeFile(join(created.path, '.claude'), 'not a directory')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-file-root', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
+    })
+
     it('removes a multi-repo workspace where .codegraph is a real directory', async () => {
       // A cwd-relative CodeGraph CLI can materialize a real index directory in
       // the workspace when the link was absent — a disposable cache that must
