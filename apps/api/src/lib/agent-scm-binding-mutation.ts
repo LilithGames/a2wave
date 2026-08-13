@@ -45,7 +45,8 @@ export async function mutateAgentBinding<T>(
       const current = await loadBinding(tx, input.agentId)
       if (!current) return { allowed: false }
       const workspaceType = input.requestedWorkspaceType ?? current.workspaceType
-      const scmSourceId = input.requestedScmSourceId ?? current.scmSourceId
+      const scmSourceId =
+        input.requestedScmSourceId !== undefined ? input.requestedScmSourceId : current.scmSourceId
       const releases =
         current.workspaceType === 'scm' &&
         current.scmSourceId !== null &&

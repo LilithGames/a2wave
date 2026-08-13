@@ -10,6 +10,11 @@ const mockDbUpdate = vi.fn()
 const mockDbOrderBy = vi.fn()
 const mockDbLimit = vi.fn()
 const mockWithAdmission = vi.hoisted(() => vi.fn())
+const mockCountActiveExecutionLeases = vi.hoisted(() => vi.fn(() => 0))
+
+vi.mock('../execution-lease-registry.js', () => ({
+  countActiveExecutionLeases: mockCountActiveExecutionLeases,
+}))
 
 vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
   withScmWorkloadAdmission: mockWithAdmission,
@@ -175,6 +180,20 @@ describe('taskQueueDb queue admission', () => {
 
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_1', 1)).resolves.toEqual({
       slot: 'acquired',
+      hasScmLease: true,
+    })
+  })
+
+  it('queues while an earlier execution lease is still cleaning up', async () => {
+    const tx = admissionTx([{ id: 'run_2' }])
+    mockCountActiveExecutionLeases.mockReturnValue(1)
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_2' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_2', 1)).resolves.toEqual({
+      slot: 'queued',
       hasScmLease: true,
     })
   })

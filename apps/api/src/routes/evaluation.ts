@@ -62,6 +62,7 @@ const app = new Hono()
 const activeEvaluationExecutions = new Set<Promise<void>>()
 
 class EvaluationQueueFullError extends Error {}
+class EvaluationWorkspaceChangedError extends Error {}
 
 /** Loads a set, enforcing that it really belongs to the agent in the path. */
 async function loadSetOrThrow(agentId: string, setId: string) {
@@ -780,7 +781,7 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
             admission.workspaceType !== snapshotWorkspaceType ||
             admission.scmSourceId !== snapshotSourceId
           ) {
-            return null
+            throw new EvaluationWorkspaceChangedError()
           }
 
           // The same cross-dialect mutation transaction serializes the count,
@@ -848,9 +849,11 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
     if (error instanceof EvaluationQueueFullError) {
       return c.json({ error: 'EVALUATION_QUEUE_FULL' }, 429)
     }
+    if (error instanceof EvaluationWorkspaceChangedError) {
+      return c.json({ error: 'Agent workspace changed; retry the evaluation' }, 409)
+    }
     throw error
   }
-  if (!task) return c.json({ error: 'Agent workspace changed; retry the evaluation' }, 409)
 
   // Audited only once the task is certain to survive: the queue-full path above
   // rolls the row back, and an audit entry for an id that was never persisted

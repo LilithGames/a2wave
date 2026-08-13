@@ -48,6 +48,21 @@ function dependencies(tx: typeof db, active: { type: 'run'; id: string } | null 
 }
 
 describe('Agent SCM binding mutation', () => {
+  it('treats an explicit null source id as an SCM unbind', async () => {
+    const tx = transactionWithRows({ workspaceType: 'scm', scmSourceId: 'scm_live' })
+    const deps = dependencies(tx, { type: 'run', id: 'run_active' })
+    const mutate = vi.fn()
+
+    const result = await mutateAgentBinding(
+      { agentId: 'agt_1', requestedScmSourceId: null, mutate },
+      deps,
+    )
+
+    expect(result).toEqual({ allowed: false, active: { type: 'run', id: 'run_active' } })
+    expect(deps.findActive).toHaveBeenCalledOnce()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
   it('rechecks a stale PATCH binding inside the lifecycle transaction', async () => {
     const tx = transactionWithRows({ workspaceType: 'scm', scmSourceId: 'scm_live' })
     const deps = dependencies(tx, { type: 'run', id: 'run_active' })

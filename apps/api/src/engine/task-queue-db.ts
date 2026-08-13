@@ -9,6 +9,7 @@ import {
   releaseReservedScmWorkload,
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
+import { countActiveExecutionLeases } from './execution-lease-registry.js'
 import type { RunRow, TaskQueueDb } from './task-queue.js'
 import { MAX_QUEUE_LENGTH } from './task-queue.js'
 
@@ -74,7 +75,7 @@ export const taskQueueDb: TaskQueueDb = {
         { type: 'run', workloadId: runId, agentId },
         async (tx, admission) => {
           const executor = tx as TransactionHandle
-          const running =
+          const runningInDb =
             (
               await executor
                 .select({ value: count() })
@@ -82,6 +83,7 @@ export const taskQueueDb: TaskQueueDb = {
                 .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))
                 .limit(1)
             )[0]?.value ?? 0
+          const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
           let slot: 'acquired' | 'queued' = 'acquired'
           if (running >= maxConcurrency) {
             const queued =
