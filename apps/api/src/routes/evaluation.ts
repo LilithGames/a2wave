@@ -742,7 +742,7 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
       ) {
         return null
       }
-      return (
+      const insertedTask = (
         await tx
           .insert(evaluationTasks)
           .values({
@@ -758,21 +758,23 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
           })
           .returning()
       )[0]
+
+      await tx.insert(evaluationResults).values(
+        cases.map((evalCase, index) => ({
+          id: createId('evr'),
+          taskId,
+          caseId: evalCase.id,
+          caseName: evalCase.name,
+          turnsSnapshot: evalCase.turns,
+          status: 'pending' as const,
+          sortOrder: index,
+        })),
+      )
+
+      return insertedTask
     }),
   )
   if (!task) return c.json({ error: 'Agent workspace changed; retry the evaluation' }, 409)
-
-  for (const [index, evalCase] of cases.entries()) {
-    await db.insert(evaluationResults).values({
-      id: createId('evr'),
-      taskId,
-      caseId: evalCase.id,
-      caseName: evalCase.name,
-      turnsSnapshot: evalCase.turns,
-      status: 'pending',
-      sortOrder: index,
-    })
-  }
 
   // Queued per agent: an evaluation task fans out into N sequential agent
   // invocations, so letting every submission run at once would swamp the box.

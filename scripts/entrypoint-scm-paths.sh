@@ -112,7 +112,10 @@ scm_prepare_reclaim_root() {
     # adopt a symlink, non-directory, or a directory containing any data.
     [ -L "$reclaim_root" ] && return 1
     [ -d "$reclaim_root" ] || return 1
-    [ -z "$(find "$reclaim_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 1
+    if ! reclaim_entry="$(find "$reclaim_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)"; then
+      return 1
+    fi
+    [ -z "$reclaim_entry" ] || return 1
     (set -C; printf '%s\n' "$SCM_RECLAIM_MARKER_CONTENT" > "$reclaim_root/$SCM_RECLAIM_MARKER") 2>/dev/null ||
       scm_reclaim_is_owned "$reclaim_root" || return 1
     scm_reclaim_is_owned "$reclaim_root"

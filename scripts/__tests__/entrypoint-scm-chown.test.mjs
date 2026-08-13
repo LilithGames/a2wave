@@ -84,10 +84,16 @@ function chownTargets(storageRoot) {
 }
 
 /** Run the same reclaim-root provisioning helper the entrypoint calls. */
-function prepareReclaimRoot(storageRoot) {
+function prepareReclaimRoot(storageRoot, prelude = '') {
   return spawnSync(
     'bash',
-    ['-c', `set -eu; . "$1"; scm_prepare_reclaim_root "$2"`, '_', SCRIPT, storageRoot],
+    [
+      '-c',
+      `set -eu; . "$1"; ${prelude ? `${prelude}; ` : ''}scm_prepare_reclaim_root "$2"`,
+      '_',
+      SCRIPT,
+      storageRoot,
+    ],
     { encoding: 'utf8' },
   )
 }
@@ -156,6 +162,18 @@ describe('scm_chown_targets', () => {
 
     assert.equal(result.status, 0, result.stderr)
     assert.equal(readFileSync(join(reclaimRoot, RECLAIM_MARKER), 'utf8'), 'a2wave-scm-reclaim-v1\n')
+  })
+
+  it('refuses to adopt an unmarked reclaim root when its directory scan fails', () => {
+    const root = makeRoot()
+    assert.equal(prepareManagedStorage(root).status, 0)
+    const reclaimRoot = join(root, RECLAIM_DIR)
+    mkdirSync(reclaimRoot)
+
+    const result = prepareReclaimRoot(root, 'find() { return 74; }')
+
+    assert.notEqual(result.status, 0)
+    assert.throws(() => readFileSync(join(reclaimRoot, RECLAIM_MARKER), 'utf8'), { code: 'ENOENT' })
   })
 
   it('refuses an unmarked existing reclaim root without mutating its contents', () => {

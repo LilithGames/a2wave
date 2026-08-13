@@ -319,6 +319,27 @@ describe('POST /:agentId/evaluation-tasks', () => {
     expect(results).toHaveLength(3)
   })
 
+  it('rolls back the task when any result snapshot cannot be persisted', async () => {
+    const app = appAs(OWNER)
+    const setId = await seedSet(app, AGENT_ID, 2)
+    db.run(sql`
+      CREATE TRIGGER fail_evaluation_result_snapshot
+      BEFORE INSERT ON evaluation_results
+      BEGIN
+        SELECT RAISE(ABORT, 'result snapshot failure');
+      END
+    `)
+
+    try {
+      await expect(createTask(app, AGENT_ID, { setId })).rejects.toThrow('result snapshot failure')
+    } finally {
+      db.run(sql`DROP TRIGGER fail_evaluation_result_snapshot`)
+    }
+
+    expect(db.select().from(evaluationTasks).all()).toHaveLength(0)
+    expect(db.select().from(evaluationResults).all()).toHaveLength(0)
+  })
+
   /**
    * Regression: `buildEvaluationSnapshot` is async, and the insert used to pass
    * the unawaited Promise through an `as never` cast. A Promise JSON-serialises
