@@ -861,6 +861,16 @@ export async function initAutoSyncSchedulers(): Promise<void> {
     try {
       const peers = await selectScmPathPeers()
       const isolated = await isolateManagedScmStorage(source, { peers })
+      // Same rule as the DELETE route: a peer-blocked path keeps the durable
+      // reservation. Finalizing the row now would orphan the id-derived
+      // directory with nothing left able to name or retry it.
+      if (isolated.blocked.length > 0) {
+        logger.warn(
+          { sourceId: source.id, blocked: isolated.blocked },
+          'SCM source deletion stays reserved: managed path still overlaps a surviving source',
+        )
+        continue
+      }
       await isolated.commit()
       const deleted = await withScmPathMutation(async (tx) => {
         const row = (

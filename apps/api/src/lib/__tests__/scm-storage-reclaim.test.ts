@@ -167,6 +167,43 @@ describe('isolateManagedScmStorage', () => {
     expect(existsSync(nestedWorktrees)).toBe(true)
   })
 
+  // A silently skipped path is how a deletion orphans a directory: the caller
+  // sees commit() succeed, finalizes the row, and the skipped directory loses
+  // the only row able to name it. The blocked list is the caller's signal to
+  // keep the deletion reservation instead of finalizing.
+  it('reports a peer-blocked path so the caller keeps the deletion reservation', async () => {
+    const root = await makeStorageRoot()
+    const peerCheckout = join(root, 'sources', 'aBcD')
+    const nestedWorktrees = join(peerCheckout, 'nested-worktrees')
+    await mkdir(nestedWorktrees, { recursive: true })
+
+    const isolated = await isolateManagedScmStorage(
+      { id: 'scm_zZzZ', localPath: join(root, 'sources', 'zZzZ'), workspacesPath: nestedWorktrees },
+      {
+        legacyWorkspacesPath: () => nestedWorktrees,
+        peers: [{ id: 'scm_aBcD', name: 'peer', localPath: peerCheckout, workspacesPath: null }],
+      },
+    )
+
+    expect(isolated.blocked).toEqual([
+      expect.objectContaining({ path: nestedWorktrees, peerId: 'scm_aBcD' }),
+    ])
+  })
+
+  it('reports no blocked path when every candidate is free or absent', async () => {
+    const root = await makeStorageRoot()
+    const checkout = join(root, 'sources', 'aBcD')
+    await mkdir(checkout, { recursive: true })
+
+    const isolated = await isolateManagedScmStorage({
+      id: 'scm_aBcD',
+      localPath: checkout,
+      workspacesPath: null,
+    })
+
+    expect(isolated.blocked).toEqual([])
+  })
+
   it('leaves an operator-chosen path untouched', async () => {
     await makeStorageRoot()
     const operatorPath = await mkdtemp(join(tmpdir(), 'a2wave-operator-'))

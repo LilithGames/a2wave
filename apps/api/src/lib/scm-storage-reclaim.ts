@@ -124,8 +124,21 @@ export interface IsolatedScmPath {
   isolatedPath: string
 }
 
+/** A managed path this deletion may not touch yet, and the row occupying it. */
+export interface BlockedScmPath {
+  path: string
+  peerId: string
+}
+
 export interface IsolatedScmStorage {
   isolated: IsolatedScmPath[]
+  /**
+   * Paths still occupied by a surviving peer. Non-empty means the deletion
+   * must NOT finalize its row: doing so orphans the directory, because the
+   * id-derived path can never be named again once the row is gone. The caller
+   * keeps the durable deletion reservation and retries after the peer goes.
+   */
+  blocked: BlockedScmPath[]
   /** Delete the parked directories. @returns the original paths reclaimed. */
   commit: () => Promise<string[]>
 }
@@ -242,6 +255,7 @@ export async function isolateManagedScmStorage(
   const peers = options.peers ?? []
 
   const isolated: IsolatedScmPath[] = []
+  const blocked: BlockedScmPath[] = []
   for (const { path, label, isolationRoot } of allocatedCandidates(source, legacyWorkspacesPath)) {
     const occupyingPeer = findOccupyingPeer(peers, path, source.id)
     if (occupyingPeer) {
@@ -249,6 +263,9 @@ export async function isolateManagedScmStorage(
         { sourceId: source.id, path, peerId: occupyingPeer.id },
         'Refusing to reclaim managed SCM path: still occupied by another source',
       )
+      // Reported, not just skipped: the caller must keep the deletion
+      // reservation, or this directory loses the only row able to name it.
+      blocked.push({ path, peerId: occupyingPeer.id })
       continue
     }
 
@@ -283,6 +300,7 @@ export async function isolateManagedScmStorage(
 
   return {
     isolated,
+    blocked,
     commit: async () => {
       const reclaimed: string[] = []
       for (const { originalPath, isolatedPath } of isolated) {

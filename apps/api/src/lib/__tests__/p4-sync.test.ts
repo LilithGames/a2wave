@@ -47,6 +47,7 @@ const {
     mockWriteBackgroundAudit: vi.fn().mockResolvedValue(undefined),
     mockIsolateManagedScmStorage: vi.fn().mockResolvedValue({
       isolated: [],
+      blocked: [],
       commit: vi.fn().mockResolvedValue([]),
     }),
   }
@@ -1408,6 +1409,56 @@ describe('initAutoSyncSchedulers', () => {
         action: 'scm_source.delete',
         userId: 'usr_admin_requester',
       }),
+      mockDb,
+    )
+  })
+
+  // Same rule as the DELETE route: finalizing a deletion whose managed path a
+  // surviving peer still occupies orphans that directory forever — the row is
+  // its only name. Recovery must hold the reservation until the peer is gone.
+  it('keeps a recovered deletion reservation when a managed path is blocked by a peer', async () => {
+    const pendingSource = {
+      id: 'scm_pending',
+      name: 'Pending source',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.test/repo.git' },
+      localPath: '/data/workspace/sources/pending',
+      workspacesPath: '/data/workspace/workspaces/pending',
+      deletionRequestedAt: new Date(),
+      deletionRequestedBy: 'usr_admin_requester',
+      userId: 'usr_source_owner',
+    }
+    let selectCall = 0
+    mockDb.select.mockImplementation(
+      () =>
+        asyncQuery({
+          from: vi.fn(() =>
+            asyncQuery({
+              where: vi.fn(() => {
+                selectCall++
+                if (selectCall <= 2) return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+                if (selectCall === 3) {
+                  return asyncQuery({ all: vi.fn(() => [pendingSource]), get: vi.fn() })
+                }
+                return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+              }),
+            }),
+          ),
+        }) as any,
+    )
+    const commit = vi.fn().mockResolvedValue([])
+    mockIsolateManagedScmStorage.mockResolvedValueOnce({
+      isolated: [],
+      blocked: [{ path: pendingSource.localPath, peerId: 'scm_peer' }],
+      commit,
+    })
+
+    await initAutoSyncSchedulers()
+
+    expect(commit).not.toHaveBeenCalled()
+    expect(mockDb.delete).not.toHaveBeenCalled()
+    expect(mockWriteBackgroundAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'scm_source.delete' }),
       mockDb,
     )
   })

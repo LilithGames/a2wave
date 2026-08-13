@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNotNull, lt, notExists } from 'drizzle-orm'
+import { and, asc, count, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
@@ -83,7 +83,37 @@ export const taskQueueDb: TaskQueueDb = {
                 .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))
                 .limit(1)
             )[0]?.value ?? 0
-          const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
+          // The in-process registry below covers only this replica, and a run
+          // in its terminal-status-to-process-exit window is no longer
+          // `running` in the runs table. The durable *active* lease is the one
+          // cross-replica record of that window (reserved-phase leases are
+          // queued work, not an occupied slot), so it joins the concurrency
+          // count — otherwise a second replica over-admits into a checkout the
+          // first replica's process is still writing. A lease whose run row
+          // was deleted outright is excluded: that is the stale-lease
+          // sweeper's release condition, not an occupied slot, and counting it
+          // would block admission on garbage until the next sweep.
+          const durableActive =
+            (
+              await executor
+                .select({ value: count() })
+                .from(scmWorkloadLeases)
+                .where(
+                  and(
+                    eq(scmWorkloadLeases.agentId, agentId),
+                    eq(scmWorkloadLeases.workloadType, 'run'),
+                    eq(scmWorkloadLeases.phase, 'active'),
+                    exists(
+                      db
+                        .select({ id: runs.id })
+                        .from(runs)
+                        .where(eq(runs.id, scmWorkloadLeases.workloadId)),
+                    ),
+                  ),
+                )
+                .limit(1)
+            )[0]?.value ?? 0
+          const running = Math.max(runningInDb, countActiveExecutionLeases(agentId), durableActive)
           let slot: 'acquired' | 'queued' = 'acquired'
           if (running >= maxConcurrency) {
             const queued =

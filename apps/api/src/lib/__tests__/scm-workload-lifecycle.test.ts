@@ -4,6 +4,7 @@ import {
   ScmWorkloadLeaseConflictError,
   activateScmWorkload,
   findDurableAgentScmWorkload,
+  findDurableScmSourceWorkload,
   releaseRecoveredScmWorkload,
   releaseReservedScmWorkload,
   releaseScmWorkload,
@@ -337,5 +338,32 @@ describe('SCM workload lifecycle', () => {
       type: 'run',
       id: 'run_cancelled',
     })
+  })
+
+  // The agent-keyed lookup protects binding mutation; source mutation (path
+  // PATCH, deletion, workspace removal) needs the same authority keyed by the
+  // source the lease pins — a lease names both sides of the relation.
+  it('finds a durable workload by the source it pins', async () => {
+    const { tx } = mutationTx([
+      [
+        {
+          type: 'evaluation',
+          id: 'evt_active',
+          agentId: 'agt_executor',
+        },
+      ],
+    ])
+
+    await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toEqual({
+      type: 'evaluation',
+      id: 'evt_active',
+      agentId: 'agt_executor',
+    })
+  })
+
+  it('returns null when no lease pins the source', async () => {
+    const { tx } = mutationTx([[]])
+
+    await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toBeNull()
   })
 })

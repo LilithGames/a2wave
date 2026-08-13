@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources, settings } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
@@ -7,6 +7,7 @@ import { createId } from './id.js'
 import { logger } from './logger.js'
 import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
 import { resolveScmPathPlan, selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
+import { scmConfigEquals } from './scm-secret-mask.js'
 
 const ADMIN_USER_ID = 'usr_admin'
 
@@ -101,6 +102,83 @@ async function planEnvScmPaths(
   return { localPath: plan.localPath, workspacesPath: plan.workspacesPath }
 }
 
+interface EnvScmSourceRow {
+  id: string
+  config: unknown
+  localPath: string
+  workspacesPath: string | null
+  syncStatus: string | null
+  codegraphStatus: string | null
+}
+
+/**
+ * Apply the env-derived desired state to an existing env:* source row.
+ *
+ * Every replica runs bootstrap at boot, so this must be a true upsert: a row
+ * already matching the environment gets no write at all, and sync state is
+ * reset only when the checkout's actual inputs (config or localPath) changed.
+ * The unconditional reset this replaces let one replica's boot release the
+ * sync busy-guard of a sync a peer replica was mid-flight on — and, by
+ * clearing initialSyncCompletedAt, start a second initial checkout into the
+ * same directory that sync was still writing.
+ */
+async function applyEnvScmSourceUpdate(
+  tx: TransactionHandle,
+  label: string,
+  existing: EnvScmSourceRow,
+  desired: { config: Record<string, unknown>; localPath: string; workspacesPath: string },
+  now: Date,
+): Promise<void> {
+  // The JSON round-trip drops undefined-valued keys, matching what the driver
+  // persisted — otherwise `depotPath: undefined` reads as a config change on
+  // every boot and the comparison never settles.
+  const desiredConfig = JSON.parse(JSON.stringify(desired.config)) as Record<string, unknown>
+  const configChanged = !scmConfigEquals(desiredConfig, existing.config)
+  const localPathChanged = desired.localPath !== existing.localPath
+  const workspacesPathChanged = desired.workspacesPath !== existing.workspacesPath
+  if (!configChanged && !localPathChanged && !workspacesPathChanged) {
+    return
+  }
+  if (existing.syncStatus === 'syncing' || existing.codegraphStatus === 'indexing') {
+    // The env change waits for the next boot rather than resetting the state
+    // of a checkout another process is actively writing.
+    logger.warn(
+      { id: existing.id },
+      `Deferred ${label} SCM source update from env: a sync or indexing job holds the row`,
+    )
+    return
+  }
+  const resetsSyncState = configChanged || localPathChanged
+  await tx
+    .update(scmSources)
+    .set({
+      config: desiredConfig,
+      localPath: desired.localPath,
+      workspacesPath: desired.workspacesPath,
+      ...(resetsSyncState
+        ? {
+            syncStatus: 'idle' as const,
+            lastSyncAt: null,
+            lastSyncError: null,
+            initialSyncCompletedAt: null,
+          }
+        : {}),
+      updatedAt: now,
+    })
+    // Guarded in SQL as well as in the read above: a peer replica can acquire
+    // the row between that read and this write.
+    .where(
+      resetsSyncState
+        ? and(
+            eq(scmSources.id, existing.id),
+            ne(scmSources.syncStatus, 'syncing'),
+            ne(scmSources.codegraphStatus, 'indexing'),
+          )
+        : eq(scmSources.id, existing.id),
+    )
+  logger.info({ id: existing.id }, `Updated ${label} SCM source from env`)
+}
+
 /** Upsert the env-driven P4 SCM source (name='env:p4') */
 async function bootstrapScmP4(): Promise<void> {
   if (!env.SCM_P4_PORT || !env.SCM_P4_USER || !env.SCM_P4_CLIENT) return
@@ -141,20 +219,13 @@ async function bootstrapScmP4(): Promise<void> {
       )
       if (!planned) return
 
-      await tx
-        .update(scmSources)
-        .set({
-          config: { ...config },
-          localPath: planned.localPath,
-          workspacesPath: planned.workspacesPath,
-          syncStatus: 'idle',
-          lastSyncAt: null,
-          lastSyncError: null,
-          initialSyncCompletedAt: null,
-          updatedAt: now,
-        })
-        .where(eq(scmSources.id, existing.id))
-      logger.info({ id: existing.id }, 'Updated P4 SCM source from env')
+      await applyEnvScmSourceUpdate(
+        tx,
+        'P4',
+        existing,
+        { config, localPath: planned.localPath, workspacesPath: planned.workspacesPath },
+        now,
+      )
       return
     }
 
@@ -231,20 +302,13 @@ async function bootstrapScmGit(): Promise<void> {
       )
       if (!planned) return
 
-      await tx
-        .update(scmSources)
-        .set({
-          config: { ...config },
-          localPath: planned.localPath,
-          workspacesPath: planned.workspacesPath,
-          syncStatus: 'idle',
-          lastSyncAt: null,
-          lastSyncError: null,
-          initialSyncCompletedAt: null,
-          updatedAt: now,
-        })
-        .where(eq(scmSources.id, existing.id))
-      logger.info({ id: existing.id }, 'Updated Git SCM source from env')
+      await applyEnvScmSourceUpdate(
+        tx,
+        'Git',
+        existing,
+        { config, localPath: planned.localPath, workspacesPath: planned.workspacesPath },
+        now,
+      )
       return
     }
 

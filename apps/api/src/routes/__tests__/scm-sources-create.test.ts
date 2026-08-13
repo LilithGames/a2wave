@@ -31,13 +31,18 @@ const { insertedValues, updatedValues, existingRows, storedRow, transactionEvent
 vi.mock('../../db/client.js', () => ({
   db: {
     select: () => ({
-      from: () =>
-        asyncQuery({
-          where: () =>
-            asyncQuery({ get: () => storedRow.current, all: () => existingRows.current }),
-          all: () => existingRows.current,
-          get: () => storedRow.current,
-        }),
+      // The durable workload lease check reads scm_workload_leases before the
+      // path write; answering it with the stored source row would make every
+      // path PATCH here look lease-blocked. Only the sources table has a row.
+      from: (table?: { workloadType?: unknown }) =>
+        table && 'workloadType' in table
+          ? asyncQuery({ where: () => asyncQuery({ all: () => [], get: () => undefined }) })
+          : asyncQuery({
+              where: () =>
+                asyncQuery({ get: () => storedRow.current, all: () => existingRows.current }),
+              all: () => existingRows.current,
+              get: () => storedRow.current,
+            }),
     }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {

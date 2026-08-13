@@ -31,6 +31,7 @@ import {
   scmWorkloadLeases,
   users,
 } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { evaluationQueueDb } from '../engine/evaluation-queue-db.js'
 import { EVALUATION_MAX_QUEUE_LENGTH, scheduleNextEvaluation } from '../engine/evaluation-queue.js'
 import { requireAgentRead, requireAgentWrite } from '../lib/agent-access.js'
@@ -326,15 +327,20 @@ async function settleUnfinishedResults(
   status: 'cancelled' | 'failed',
   error?: string,
 ): Promise<void> {
-  await db
-    .update(evaluationResults)
-    .set({ status, error: error ?? null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(evaluationResults.taskId, taskId),
-        inArray(evaluationResults.status, ['pending', 'running']),
-      ),
-    )
+  // runExclusive, not a bare write: this runs detached from any request, so a
+  // write absorbed into a stranger's SQLite transaction and rolled back with it
+  // would never be retried — the cases would spin forever in the UI.
+  await runExclusive(async () => {
+    await db
+      .update(evaluationResults)
+      .set({ status, error: error ?? null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(evaluationResults.taskId, taskId),
+          inArray(evaluationResults.status, ['pending', 'running']),
+        ),
+      )
+  })
 }
 
 /** Recomputes and persists the task summary from its current result rows. */
@@ -344,10 +350,12 @@ async function refreshTaskSummary(taskId: string): Promise<void> {
     .from(evaluationResults)
     .where(eq(evaluationResults.taskId, taskId))
 
-  await db
-    .update(evaluationTasks)
-    .set({ summary: summarizeResults(rows), updatedAt: new Date() })
-    .where(eq(evaluationTasks.id, taskId))
+  await runExclusive(async () => {
+    await db
+      .update(evaluationTasks)
+      .set({ summary: summarizeResults(rows), updatedAt: new Date() })
+      .where(eq(evaluationTasks.id, taskId))
+  })
 }
 
 /**
@@ -497,10 +505,15 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     // A task cancelled while queued must not start: the queue promoted it to
     // `running`, but the user's intent predates that promotion.
     if (await isCancelRequested(taskId)) {
-      await db
-        .update(evaluationTasks)
-        .set({ status: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
-        .where(eq(evaluationTasks.id, taskId))
+      // Terminal writes in this detached loop go through runExclusive: nothing
+      // retries them, so joining a stranger's rolled-back SQLite transaction
+      // would wedge the task in `running` permanently.
+      await runExclusive(async () => {
+        await db
+          .update(evaluationTasks)
+          .set({ status: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
+          .where(eq(evaluationTasks.id, taskId))
+      })
       await settleUnfinishedResults(taskId, 'cancelled')
       await refreshTaskSummary(taskId)
       return
@@ -515,10 +528,12 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     workspace = await prepareEvaluationWorkspace(agent, taskId)
     const workDir = workspace.workDir
 
-    await db
-      .update(evaluationTasks)
-      .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
+        .where(eq(evaluationTasks.id, taskId))
+    })
 
     const results = await db
       .select()
@@ -529,10 +544,12 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     for (const row of results) {
       if (await shouldStopTask(taskId)) break
 
-      await db
-        .update(evaluationResults)
-        .set({ status: 'running', updatedAt: new Date() })
-        .where(eq(evaluationResults.id, row.id))
+      await runExclusive(async () => {
+        await db
+          .update(evaluationResults)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(eq(evaluationResults.id, row.id))
+      })
 
       const replay = await replayCase({
         taskId,
@@ -547,16 +564,18 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
       execution.casesRun += 1
       execution.turnsReplayed += replay.actualTurns.length
 
-      await db
-        .update(evaluationResults)
-        .set({
-          status: replay.status,
-          actualTurns: replay.actualTurns,
-          error: replay.error,
-          durationMs: replay.durationMs,
-          updatedAt: new Date(),
-        })
-        .where(eq(evaluationResults.id, row.id))
+      await runExclusive(async () => {
+        await db
+          .update(evaluationResults)
+          .set({
+            status: replay.status,
+            actualTurns: replay.actualTurns,
+            error: replay.error,
+            durationMs: replay.durationMs,
+            updatedAt: new Date(),
+          })
+          .where(eq(evaluationResults.id, row.id))
+      })
     }
 
     // Deleted mid-run: the row and its results are already gone, and writing a
@@ -564,14 +583,16 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     if (!(await taskExists(taskId))) return
 
     const cancelled = await isCancelRequested(taskId)
-    await db
-      .update(evaluationTasks)
-      .set({
-        status: cancelled ? 'cancelled' : 'completed',
-        finishedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({
+          status: cancelled ? 'cancelled' : 'completed',
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(evaluationTasks.id, taskId))
+    })
 
     // The loop breaks on cancel with cases still untouched behind it.
     if (cancelled) await settleUnfinishedResults(taskId, 'cancelled')
@@ -580,15 +601,17 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error({ err, taskId, agentId }, 'Evaluation task failed')
-    await db
-      .update(evaluationTasks)
-      .set({
-        status: 'failed',
-        error: message,
-        finishedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({
+          status: 'failed',
+          error: message,
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(evaluationTasks.id, taskId))
+    })
     await settleUnfinishedResults(taskId, 'failed', message)
     await refreshTaskSummary(taskId)
   } finally {
@@ -598,11 +621,21 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     } finally {
       releaseWorkload()
       if (hasDurableLease) {
-        await releaseScmWorkload({
-          type: 'evaluation',
-          workloadId: taskId,
-          ownerInstanceId: processInstanceId,
-        })
+        try {
+          await releaseScmWorkload({
+            type: 'evaluation',
+            workloadId: taskId,
+            ownerInstanceId: processInstanceId,
+          })
+        } catch (error) {
+          // Never let a failed lease delete wedge this Agent's evaluation
+          // queue by skipping scheduleNextEvaluation below. The stale-lease
+          // sweeper retries the release once the terminal status is visible.
+          logger.error(
+            { error, taskId },
+            'Failed to release durable SCM workload lease; sweeper will retry',
+          )
+        }
       }
       await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
     }

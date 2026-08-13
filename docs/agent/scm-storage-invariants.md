@@ -56,11 +56,34 @@ below hold across every affected entry point.
   workspace cleanup. RunSteps still identify the actual executing Agent when it
   differs from the Run initiator. A stale pre-admission Agent snapshot must never
   resolve the checkout after its binding changes.
+- The lease names both sides of the relation, and **source-side mutations must
+  consult it keyed by source**, not only by Agent rows: a path-changing PATCH,
+  source DELETE, and workspace DELETE all refuse while a durable lease pins the
+  source. Row state alone disagrees with the lease in exactly the windows that
+  matter — an Evaluation writes no `runs` row yet owns an `eval-<taskId>`
+  worktree, and a Run's lease outlives its terminal status until cleanup.
+- Run admission counts durable **active** leases toward `maxConcurrency`
+  alongside the runs table and the in-process registry. The in-process registry
+  is empty on every other replica, and a run in its cleanup window is no longer
+  `running` in the runs table; the active lease is the only cross-replica record
+  of that window. Reserved-phase leases are queued work, not occupied slots, and
+  a lease whose run row was deleted outright is sweeper input, not occupancy.
+- Lease release after cleanup may fail transiently, and that failure must be
+  recoverable without a restart: the stale-lease sweeper releases a lease only
+  when its workload is terminal (or its row deleted), nothing local still runs
+  or cleans up the workload, and — for an active lease — this instance is the
+  recorded owner. An active lease owned by another instance is never swept;
+  a reserved lease never had a process and may be released on any replica.
 - PostgreSQL startup must not reset in-progress Run, Evaluation, sync, or index
   rows merely because another replica started. Without a positively identified
   dead owner, preserving a visible stuck lease is safer than reclaiming a checkout
   beneath a healthy peer. SQLite startup is the symmetric single-owner case: after
   failing interrupted workloads, it releases their durable leases explicitly.
+- Environment bootstrap is a true upsert under the same rule: an env-driven
+  source row that already matches the environment gets no write, sync state is
+  reset only when the checkout's inputs (config or localPath) actually changed,
+  and a row a peer replica is syncing or indexing defers the env change to the
+  next boot — guarded both by the pre-read and by the update predicate.
 - Graceful shutdown pauses both queue admission and queued-task promotion before
   stopping producers. It closes the database only after Run/Evaluation process
   exit, workspace cleanup, durable lease release, and audit drains settle.
@@ -92,6 +115,11 @@ below hold across every affected entry point.
   worktree path. Never recursively delete an operator-chosen path or a symlink,
   and never vacate a path that still overlaps a surviving peer — legacy rows can
   nest a worktree root inside another source's checkout.
+- A peer-blocked managed path keeps the deletion reservation. Isolation reports
+  blocked paths instead of silently skipping them, and neither the DELETE route
+  nor startup recovery finalizes the row while any remain: the id-derived
+  directory has no other name, so deleting the row would orphan it with nothing
+  able to retry. The deletion retries after the occupying peer is removed.
 - The legacy `.reclaiming/` name is not swept, created, or chowned by anything.
   Existing operator data with that name remains untouched during upgrade.
 

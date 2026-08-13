@@ -262,6 +262,33 @@ export async function releaseScmWorkload(
   })
 }
 
+/**
+ * Durable authority keyed by the source a lease pins.
+ *
+ * The agent-keyed lookup below protects Agent binding mutation, but a lease
+ * names both sides of the relation — and source-side mutations (path PATCH,
+ * source deletion, workspace removal) previously consulted only row state, so
+ * they could move or vacate a checkout an admitted workload still had as cwd.
+ * Any mutation of a source's paths must treat this as authoritative.
+ */
+export async function findDurableScmSourceWorkload(
+  executor: Pick<typeof db, 'select'>,
+  scmSourceId: string,
+): Promise<{ type: ScmWorkloadType; id: string; agentId: string } | null> {
+  const lease = (
+    await executor
+      .select({
+        type: scmWorkloadLeases.workloadType,
+        id: scmWorkloadLeases.workloadId,
+        agentId: scmWorkloadLeases.agentId,
+      })
+      .from(scmWorkloadLeases)
+      .where(eq(scmWorkloadLeases.scmSourceId, scmSourceId))
+      .limit(1)
+  )[0]
+  return lease ?? null
+}
+
 /** Durable authority used by Agent binding changes and source deletion. */
 export async function findDurableAgentScmWorkload(
   executor: Pick<typeof db, 'select'>,

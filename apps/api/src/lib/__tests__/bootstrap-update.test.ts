@@ -70,6 +70,8 @@ vi.mock('../../db/schema.js', () => ({
     name: 'scmSources.name',
     localPath: 'scmSources.localPath',
     workspacesPath: 'scmSources.workspacesPath',
+    syncStatus: 'scmSources.syncStatus',
+    codegraphStatus: 'scmSources.codegraphStatus',
   },
   settings: { category: 'settings.category', key: 'settings.key' },
 }))
@@ -359,6 +361,98 @@ describe('bootstrapScmGit — update path', () => {
     bootstrapFromEnv()
     await flush()
     expect(dbUpdateRun).toHaveBeenCalledTimes(1)
+    expect(dbInsertRun).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Every replica runs bootstrap at boot, and the update branch used to reset
+   * syncStatus/initialSyncCompletedAt unconditionally. On PostgreSQL that let
+   * replica B's boot release the sync busy-guard of a sync replica A was
+   * mid-flight on, then start a second initial checkout into the same
+   * directory. A row that already matches the environment gets no write at all.
+   */
+  it('leaves an env:git row untouched when config and paths already match the environment', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
+    queueSelects({
+      get: {
+        id: 'scm_g',
+        localPath: '/var/git',
+        workspacesPath: '/data/workspace/workspaces/scm_g',
+        syncStatus: 'idle',
+        codegraphStatus: 'idle',
+        initialSyncCompletedAt: new Date(),
+        config: {
+          repoUrl: 'https://example/repo.git',
+          branch: 'main',
+          autoSync: true,
+          syncIntervalMin: 30,
+          initialSyncTimeoutMin: 60,
+        },
+      },
+    })
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(dbUpdateRun).not.toHaveBeenCalled()
+    expect(dbInsertRun).not.toHaveBeenCalled()
+  })
+
+  it('defers an env:git update while another replica is syncing the row', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://changed.example/repo.git'
+    queueSelects({
+      get: {
+        id: 'scm_g',
+        localPath: '/var/git',
+        workspacesPath: '/data/workspace/workspaces/scm_g',
+        syncStatus: 'syncing',
+        codegraphStatus: 'idle',
+        config: {
+          repoUrl: 'https://example/repo.git',
+          branch: 'main',
+          autoSync: true,
+          syncIntervalMin: 30,
+          initialSyncTimeoutMin: 60,
+        },
+      },
+    })
+
+    bootstrapFromEnv()
+    await flush()
+
+    // The env change waits for the next boot rather than resetting the state
+    // of a checkout another process is actively writing.
+    expect(dbUpdateRun).not.toHaveBeenCalled()
+  })
+
+  it('leaves an env:p4 row untouched when config and paths already match the environment', async () => {
+    envMock.SCM_P4_PORT = '1666'
+    envMock.SCM_P4_USER = 'admin'
+    envMock.SCM_P4_CLIENT = 'workspace'
+    queueSelects({
+      get: {
+        id: 'scm_p',
+        localPath: '/var/p4',
+        workspacesPath: '/data/workspace/workspaces/scm_p',
+        syncStatus: 'idle',
+        codegraphStatus: 'idle',
+        initialSyncCompletedAt: new Date(),
+        config: {
+          p4port: '1666',
+          p4user: 'admin',
+          p4passwd: '',
+          p4client: 'workspace',
+          autoSync: true,
+          syncIntervalMin: 30,
+          initialSyncTimeoutMin: 60,
+        },
+      },
+    })
+
+    bootstrapFromEnv()
+    await flush()
+
+    expect(dbUpdateRun).not.toHaveBeenCalled()
     expect(dbInsertRun).not.toHaveBeenCalled()
   })
 

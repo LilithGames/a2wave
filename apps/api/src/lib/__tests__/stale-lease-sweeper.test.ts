@@ -6,12 +6,14 @@ const {
   sweepStaleLeases,
   scheduleNext,
   executeChatRun,
+  sweepOrphanedScmWorkloadLeases,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
   sweepStaleLeases: vi.fn(),
   scheduleNext: vi.fn(),
   executeChatRun: vi.fn(),
+  sweepOrphanedScmWorkloadLeases: vi.fn(),
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
@@ -21,6 +23,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
 vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
 vi.mock('../../engine/task-queue.js', () => ({ sweepStaleLeases, scheduleNext }))
 vi.mock('../execute-chat-run.js', () => ({ executeChatRun }))
+vi.mock('../scm-lease-sweeper.js', () => ({ sweepOrphanedScmWorkloadLeases }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
@@ -33,6 +36,7 @@ describe('startStaleLeaseSweeper', () => {
     vi.useFakeTimers()
     listActiveExecutionLeases.mockResolvedValue([])
     sweepStaleLeases.mockResolvedValue([])
+    sweepOrphanedScmWorkloadLeases.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -52,6 +56,31 @@ describe('startStaleLeaseSweeper', () => {
     stop()
     vi.advanceTimersByTime(5000)
     expect(sweepStaleLeases).toHaveBeenCalledTimes(2) // stopped, no more ticks
+  })
+
+  // A failed releaseScmWorkload is logged and never retried inline; this tick
+  // is the retry. Without it a single failed delete permanently locks the
+  // Agent's binding and the source's PATCH/DELETE.
+  it('sweeps orphaned durable SCM workload leases on every tick', async () => {
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sweepOrphanedScmWorkloadLeases).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sweepOrphanedScmWorkloadLeases).toHaveBeenCalledTimes(2)
+
+    stop()
+  })
+
+  it('still sweeps durable leases when the execution-lease sweep throws', async () => {
+    sweepStaleLeases.mockRejectedValue(new Error('db unavailable'))
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sweepOrphanedScmWorkloadLeases).toHaveBeenCalledTimes(1)
+
+    stop()
   })
 
   it('nudges scheduleNext once per affected agent after releasing leases', async () => {

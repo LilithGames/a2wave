@@ -18,6 +18,11 @@ export function _resetScmWorkloadLeasesForTests(): void {
   activeEvaluations.clear()
 }
 
+/** Whether this process still runs or cleans up the given evaluation. */
+export function isScmEvaluationWorkloadRegistered(taskId: string): boolean {
+  return activeEvaluations.has(taskId)
+}
+
 export type ActiveAgentScmWorkload =
   | { type: 'run'; id: string }
   | { type: 'evaluation'; id: string }

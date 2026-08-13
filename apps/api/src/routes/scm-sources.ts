@@ -11,7 +11,7 @@ import { and, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-or
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
-import { agents, runs, scmSources } from '../db/schema.js'
+import { agents, runs, scmSources, scmWorkloadLeases } from '../db/schema.js'
 import { runExclusive } from '../db/transaction.js'
 import { scmSourceAuditDetails } from '../lib/audit-details.js'
 import { logAudit, writeAudit } from '../lib/audit.js'
@@ -45,6 +45,7 @@ import {
 } from '../lib/scm-secret-mask.js'
 import { createScmSource } from '../lib/scm-source.js'
 import { isolateManagedScmStorage } from '../lib/scm-storage-reclaim.js'
+import { findDurableScmSourceWorkload } from '../lib/scm-workload-lifecycle.js'
 import { validateStoredScmWorkspacesRoot } from '../lib/scm-workspace-safety.js'
 import { isAdmin } from '../middleware/auth-middleware.js'
 import { rateLimit } from '../middleware/rate-limit.js'
@@ -381,6 +382,21 @@ app.patch('/:id', async (c) => {
     parsed.data.localPath !== undefined || parsed.data.workspacesPath !== undefined
   const updateResult = mutatesPath
     ? await withScmPathMutation(async (tx) => {
+        // A durable lease is the authority for "a workload has this checkout
+        // as cwd" — including the terminal-status-to-process-exit cleanup
+        // window, where the busy/sync guards below no longer see the run.
+        // Moving localPath or the worktree root under it would re-point the
+        // next sync at a fresh path while the process still writes the old one.
+        const activeWorkload = await findDurableScmSourceWorkload(tx, id)
+        if (activeWorkload) {
+          return {
+            ok: false,
+            error: {
+              status: 409 as const,
+              error: `Cannot change paths while ${activeWorkload.type} "${activeWorkload.id}" uses this source`,
+            },
+          } as const
+        }
         const peers = await selectScmPathPeers(tx)
         const currentPeer = peers.find((peer) => peer.id === id)
         const lockedPlan = resolveScmPathPlan({
@@ -488,7 +504,21 @@ app.delete('/:id', async (c) => {
       .from(agents)
       .where(eq(agents.scmSourceId, id))
     if (lockedReferences.length > 0) {
-      return { referencedBy: lockedReferences, row: undefined, peers: undefined } as const
+      return {
+        referencedBy: lockedReferences,
+        activeWorkload: undefined,
+        row: undefined,
+        peers: undefined,
+      } as const
+    }
+    // The Agent-reference scan above is row state; the durable lease is the
+    // workload authority. They can disagree in exactly the window that
+    // matters — a workload admitted under an Agent whose binding was since
+    // released cannot be re-derived from `agents.scmSourceId`, yet its process
+    // still has this checkout as cwd.
+    const activeWorkload = await findDurableScmSourceWorkload(tx, id)
+    if (activeWorkload) {
+      return { referencedBy: [], activeWorkload, row: undefined, peers: undefined } as const
     }
     const peers = await selectScmPathPeers(tx)
     const row = (
@@ -503,7 +533,14 @@ app.delete('/:id', async (c) => {
         .where(and(deleteConditions, isNull(scmSources.deletionRequestedAt)))
         .returning()
     )[0]
-    if (!row) return { referencedBy: [], row: undefined, peers: undefined } as const
+    if (!row) {
+      return {
+        referencedBy: [],
+        activeWorkload: undefined,
+        row: undefined,
+        peers: undefined,
+      } as const
+    }
     // The reservation is what actually commits here, so that is what this entry
     // records. Reclaim can still fail and leave the row in place; claiming the
     // deletion now would make the trail assert something that never happened.
@@ -518,11 +555,15 @@ app.delete('/:id', async (c) => {
       },
       tx,
     )
-    return { referencedBy: [], row, peers } as const
+    return { referencedBy: [], activeWorkload: undefined, row, peers } as const
   })
   if (reservation.referencedBy.length > 0) {
     const names = reservation.referencedBy.map((agent) => agent.name).join(', ')
     return c.json({ error: `Cannot delete: referenced by agents: ${names}` }, 409)
+  }
+  if (reservation.activeWorkload) {
+    const { type, id: workloadId } = reservation.activeWorkload
+    return c.json({ error: `Cannot delete: source is in use by ${type} "${workloadId}"` }, 409)
   }
   const pendingSource = reservation?.row ?? source
   if (!reservation.row && !source.deletionRequestedAt) {
@@ -535,6 +576,23 @@ app.delete('/:id', async (c) => {
   try {
     const peers = reservation.peers ?? (await selectScmPathPeers())
     const isolatedStorage = await isolateManagedScmStorage(pendingSource, { peers })
+    // A peer-blocked path must keep the row: the id-derived directory has no
+    // other name, so finalizing now would orphan it with nothing able to
+    // retry. The reservation stays, the peer's removal unblocks the retry.
+    if (isolatedStorage.blocked.length > 0) {
+      const blockedBy = isolatedStorage.blocked.map((entry) => entry.peerId).join(', ')
+      logger.warn(
+        { sourceId: id, blocked: isolatedStorage.blocked },
+        'SCM source deletion remains pending: managed path still overlaps a surviving source',
+      )
+      return c.json(
+        {
+          error: `SCM source deletion is pending: its storage overlaps surviving source(s) ${blockedBy}; delete those first, then retry`,
+          retryable: true,
+        },
+        503,
+      )
+    }
     reclaimedPaths = await isolatedStorage.commit()
   } catch (error) {
     logger.error({ sourceId: id, error }, 'SCM source deletion remains pending for retry')
@@ -1060,6 +1118,40 @@ app.delete('/:id/workspaces/:name', async (c) => {
   )[0]
   if (occupied) {
     return c.json({ error: 'Workspace is occupied by a running or pending run' }, 409)
+  }
+
+  // The run-status check above cannot see two occupants the durable lease can:
+  // an Evaluation (which writes no `runs` row at all — its `eval-<taskId>`
+  // worktree is a legal deletable name here) and a Run whose status is already
+  // terminal but whose process/cleanup still holds the directory. The lease is
+  // authoritative for both until explicitly released after cleanup.
+  const leases = await db
+    .select({
+      workloadType: scmWorkloadLeases.workloadType,
+      workloadId: scmWorkloadLeases.workloadId,
+    })
+    .from(scmWorkloadLeases)
+    .where(eq(scmWorkloadLeases.scmSourceId, id))
+  const leasedEvaluation = leases.find(
+    (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
+  )
+  if (leasedEvaluation) {
+    return c.json({ error: 'Workspace is occupied by a running evaluation' }, 409)
+  }
+  const leasedRunIds = leases
+    .filter((lease) => lease.workloadType === 'run')
+    .map((lease) => lease.workloadId)
+  if (leasedRunIds.length > 0) {
+    const leasedHere = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(inArray(runs.id, leasedRunIds), eq(runs.workDir, wsPath)))
+        .limit(1)
+    )[0]
+    if (leasedHere) {
+      return c.json({ error: 'Workspace is occupied by a run that has not finished cleanup' }, 409)
+    }
   }
 
   await scm.removeWorkspace(name)

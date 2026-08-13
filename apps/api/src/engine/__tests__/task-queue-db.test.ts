@@ -38,7 +38,12 @@ vi.mock('../../db/schema.js', () => ({
   },
   agents: { id: 'agents.id', maxConcurrency: 'agents.max_concurrency' },
   runSteps: { runId: 'run_steps.run_id', status: 'run_steps.status' },
-  scmWorkloadLeases: { id: 'scm_workload_leases.id' },
+  scmWorkloadLeases: {
+    id: 'scm_workload_leases.id',
+    agentId: 'scm_workload_leases.agent_id',
+    workloadType: 'scm_workload_leases.workload_type',
+    phase: 'scm_workload_leases.phase',
+  },
 }))
 
 import { taskQueueDb } from '../task-queue-db.js'
@@ -193,6 +198,45 @@ describe('taskQueueDb queue admission', () => {
     )
 
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_2', 1)).resolves.toEqual({
+      slot: 'queued',
+      hasScmLease: true,
+    })
+  })
+
+  /** Per-call select results, so the running/lease/queued counts can differ. */
+  function admissionTxSequenced(counts: number[], updated: Array<{ id: string }>) {
+    let call = 0
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue([{ value: counts[call++] ?? 0 }]),
+          })),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue(updated) })),
+        })),
+      })),
+    }
+  }
+
+  // The in-process registry is empty on every other replica, and a run in its
+  // terminal-status-to-process-exit window no longer counts as `running` in
+  // the runs table. The durable active lease is the only cross-replica record
+  // of that window; ignoring it over-admits past maxConcurrency into a
+  // checkout another replica's process is still writing.
+  it('queues while a peer replica still holds an active durable lease', async () => {
+    // running-in-db: 0, durable active leases: 1, queued: 0
+    const tx = admissionTxSequenced([0, 1, 0], [{ id: 'run_3' }])
+    mockCountActiveExecutionLeases.mockReturnValue(0)
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_3' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_3', 1)).resolves.toEqual({
       slot: 'queued',
       hasScmLease: true,
     })

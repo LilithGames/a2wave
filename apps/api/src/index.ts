@@ -357,7 +357,13 @@ setDurableExecutionLeaseReleaseHandler(async (runId) => {
       ownerInstanceId: processInstanceId,
     })
   } catch (error) {
-    logger.error({ error, runId }, 'Failed to release durable SCM workload lease')
+    // Not a dead end: the stale-lease sweeper retries the release once the
+    // run's terminal status is visible and no local process holds it, so a
+    // transient delete failure cannot permanently lock the Agent or source.
+    logger.error(
+      { error, runId },
+      'Failed to release durable SCM workload lease; sweeper will retry',
+    )
   }
 })
 
