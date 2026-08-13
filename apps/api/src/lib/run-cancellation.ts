@@ -7,6 +7,8 @@ import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext } from '../engine/task-queue.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { logger } from './logger.js'
+import { withScmPathMutation } from './scm-path-plan.js'
+import { releaseReservedScmWorkloadInMutation } from './scm-workload-lifecycle.js'
 
 interface BackgroundCancellationRequest {
   runId: string
@@ -25,12 +27,17 @@ export async function claimRunCancellation(
   // `changes` and node-postgres `rowCount`, so the returned rows are the one form
   // that means the same on both. This is the claim on a cancellation — reading
   // `.changes` on PostgreSQL yielded undefined, so no cancel ever succeeded.
-  const cancelled = await db
-    .update(runs)
-    .set({ status: 'cancelled', updatedAt: new Date() })
-    .where(and(eq(runs.id, runId), eq(runs.status, expectedStatus)))
-    .returning({ id: runs.id })
-  return cancelled.length === 1
+  return withScmPathMutation(async (tx) => {
+    const cancelled = await tx
+      .update(runs)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(runs.id, runId), eq(runs.status, expectedStatus)))
+      .returning({ id: runs.id })
+    if (cancelled.length === 1 && expectedStatus === 'queued') {
+      await releaseReservedScmWorkloadInMutation(tx, { type: 'run', workloadId: runId })
+    }
+    return cancelled.length === 1
+  })
 }
 
 /**

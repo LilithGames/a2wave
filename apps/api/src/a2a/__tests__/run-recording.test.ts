@@ -40,6 +40,13 @@ vi.mock('../../lib/execute-with-retry.js', () => ({
   executeWithRetry: vi.fn(),
 }))
 
+// Workspace freshness is covered by the route-level A2A regression tests.
+// Keep this recording-unit suite isolated from the settings and filesystem
+// dependencies pulled in by the real workspace resolver.
+vi.mock('../../lib/agent-helpers.js', () => ({
+  resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
+}))
+
 vi.mock('../../lib/run-lifecycle.js', () => ({
   finishRunSuccess: vi.fn(),
   finishRunError: vi.fn().mockReturnValue('error message'),

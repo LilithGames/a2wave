@@ -17,6 +17,9 @@ describe('runGracefulShutdownSequence', () => {
         stopSlack: vi.fn(() => calls.push('stopSlack')),
         stopDiscord: vi.fn(() => calls.push('stopDiscord')),
         stopSchedules: vi.fn(() => calls.push('stopSchedules')),
+        drainExecutionLeases: vi.fn(async () => {
+          calls.push('drainExecutionLeases')
+        }),
         drainAuditWrites: vi.fn(async () => {
           calls.push('drainAuditWrites')
         }),
@@ -40,18 +43,19 @@ describe('runGracefulShutdownSequence', () => {
     expect(calls.indexOf('shutdownEngines:end')).toBeLessThan(calls.indexOf('closeDatabase'))
   })
 
-  it('runs the full sequence in order: engines → feishu/schedule → database', async () => {
+  it('runs the full sequence in order: producers → engines → drains → database', async () => {
     const { calls, deps } = makeDeps()
 
     await runGracefulShutdownSequence(deps)
 
     expect(calls).toEqual([
-      'shutdownEngines:start',
-      'shutdownEngines:end',
       'stopFeishu',
       'stopSlack',
       'stopDiscord',
       'stopSchedules',
+      'shutdownEngines:start',
+      'shutdownEngines:end',
+      'drainExecutionLeases',
       'drainAuditWrites',
       'closeDatabase',
     ])

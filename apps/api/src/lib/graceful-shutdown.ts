@@ -11,6 +11,8 @@ export interface GracefulShutdownDeps {
   stopSlack: () => void
   stopDiscord: () => void
   stopSchedules: () => void
+  /** Persist durable SCM lease releases emitted while children exit. */
+  drainExecutionLeases: () => Promise<void>
   /**
    * Wait for fire-and-forget audit inserts to settle. `logAudit` returns void and
    * no route awaits it, so an entry can still be queued when the signal arrives —
@@ -28,27 +30,29 @@ export interface GracefulShutdownDeps {
 }
 
 /**
- * Ordered shutdown: reap child processes FIRST and wait for them, so their
- * terminal-state writes land before the DB closes and no agent CLI subprocess
- * outlives the pod as an orphan still mutating the workspace. Every step is
- * guarded so one failure can't strand a later one (the DB must always close).
+ * Ordered shutdown: stop every producer, then reap child processes and wait for
+ * their lifecycle cleanup. This prevents a channel callback from spawning new
+ * work after the process runner took its shutdown snapshot. The database closes
+ * only after workload and audit drains. Every step is guarded so one failure
+ * cannot strand a later one.
  *
  * NOTE: engineRegistry also registers its own SIGTERM/SIGINT handler that calls
  * the same shutdown; both awaiting the idempotent cliProcessRunner.shutdown()
  * is harmless (second call finds no active processes).
  */
 export async function runGracefulShutdownSequence(deps: GracefulShutdownDeps): Promise<void> {
+  safely(deps.stopFeishu, 'stopFeishu')
+  safely(deps.stopSlack, 'stopSlack')
+  safely(deps.stopDiscord, 'stopDiscord')
+  safely(deps.stopSchedules, 'stopSchedules')
   try {
     await deps.shutdownEngines()
   } catch (error) {
     logger.error({ error }, 'graceful-shutdown: failed to terminate agent CLI processes')
   }
-  safely(deps.stopFeishu, 'stopFeishu')
-  safely(deps.stopSlack, 'stopSlack')
-  safely(deps.stopDiscord, 'stopDiscord')
-  safely(deps.stopSchedules, 'stopSchedules')
   // After the engines (their terminal-state writes may themselves audit) and
   // strictly before the database closes.
+  await safelyAsync(deps.drainExecutionLeases, 'drainExecutionLeases')
   await safelyAsync(deps.drainAuditWrites, 'drainAuditWrites')
   await safelyAsync(deps.closeDatabase, 'closeDatabase')
 }

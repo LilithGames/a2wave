@@ -12,7 +12,9 @@ import {
   DEFAULT_PENDING_ORPHAN_TIMEOUT_MS,
   MAX_QUEUE_LENGTH,
   type TaskQueueDb,
+  _resumeTaskQueuePromotionsForTests,
   parsePendingOrphanTimeoutMs,
+  pauseTaskQueuePromotions,
   recoverOnStartup,
   scheduleNext,
   sweepStaleLeases,
@@ -42,6 +44,7 @@ function createMockDb(overrides: Partial<TaskQueueDb> = {}): TaskQueueDb {
 
 beforeEach(() => {
   _resetExecutionLeasesForTests()
+  _resumeTaskQueuePromotionsForTests()
 })
 
 describe('parsePendingOrphanTimeoutMs', () => {
@@ -57,135 +60,34 @@ describe('parsePendingOrphanTimeoutMs', () => {
 })
 
 describe('sweepStaleLeases', () => {
-  const GRACE = 5 * 60 * 1000
-
-  it('releases a lease whose run no longer exists (immediately, no grace)', async () => {
+  it('releases a lease whose run no longer exists', async () => {
     beginExecutionLease('run_gone', 'task_gone', 'agt_1')
     const db = createMockDb({ getRunStatus: vi.fn().mockResolvedValue(undefined) })
 
-    // A deleted run can never finish, so no grace.
-    const released = await sweepStaleLeases(
-      db,
-      listActiveExecutionLeases(),
-      completeExecutionLease,
-      Date.now(),
-      new Map(),
-      GRACE,
-    )
+    const released = await sweepStaleLeases(db, listActiveExecutionLeases(), completeExecutionLease)
 
     expect(released).toHaveLength(1)
     expect(released[0]?.agentId).toBe('agt_1')
     expect(countActiveExecutionLeases('agt_1')).toBe(0)
   })
 
-  it('does NOT release a terminal-run lease still inside the grace window', async () => {
-    // A run goes terminal seconds before cleanup (artifact scan / worktree
-    // removal) finishes and calls finish(). Releasing it now would drop the
-    // concurrency guard while cleanup is live — the false positive Codex found.
+  it('does not infer process exit from a terminal Run status', async () => {
     beginExecutionLease('run_cleanup', 'task_cleanup', 'agt_1')
     const leases = listActiveExecutionLeases()
     const db = createMockDb({ getRunStatus: vi.fn().mockResolvedValue('completed') })
-    const firstSeen = new Map<string, number>()
-    const t0 = Date.now()
 
-    // First tick observes the run terminal → starts the grace clock.
-    await sweepStaleLeases(db, leases, completeExecutionLease, t0, firstSeen, GRACE)
-    // Second tick 1s later — still well within grace.
-    const released = await sweepStaleLeases(
-      db,
-      leases,
-      completeExecutionLease,
-      t0 + 1000,
-      firstSeen,
-      GRACE,
-    )
+    const released = await sweepStaleLeases(db, leases, completeExecutionLease)
 
     expect(released).toHaveLength(0)
     expect(countActiveExecutionLeases('agt_1')).toBe(1)
   })
 
-  it('releases a terminal-run lease once it is older than the grace window (true leak)', async () => {
-    beginExecutionLease('run_leaked', 'task_leaked', 'agt_1')
-    const leases = listActiveExecutionLeases()
-    const db = createMockDb({ getRunStatus: vi.fn().mockResolvedValue('completed') })
-    const firstSeen = new Map<string, number>()
-    const t0 = Date.now()
-
-    // First tick starts the grace clock; a later tick past the grace releases it.
-    await sweepStaleLeases(db, leases, completeExecutionLease, t0, firstSeen, GRACE)
-    const released = await sweepStaleLeases(
-      db,
-      leases,
-      completeExecutionLease,
-      t0 + GRACE + 1000,
-      firstSeen,
-      GRACE,
-    )
-
-    expect(released).toHaveLength(1)
-    expect(countActiveExecutionLeases('agt_1')).toBe(0)
-  })
-
-  it('measures the grace window from terminal transition, NOT lease reservation', async () => {
-    // Regression: a run that executed for far longer than the grace period and
-    // only just went terminal must keep its lease for the full grace window —
-    // its cleanup is still in flight. Aging by reservedAt (as the prior fix did)
-    // would release it on the very first tick and drop the concurrency guard.
-    beginExecutionLease('run_long', 'task_long', 'agt_1')
-    const leases = listActiveExecutionLeases()
-    const db = createMockDb({ getRunStatus: vi.fn().mockResolvedValue('completed') })
-    const firstSeen = new Map<string, number>()
-
-    // Sweep runs 30 min after the lease was reserved: now - reservedAt >> grace,
-    // but the run is only observed terminal for the first time on THIS tick.
-    const longAfterReserved = leases[0].reservedAt + 30 * 60 * 1000
-    const released = await sweepStaleLeases(
-      db,
-      leases,
-      completeExecutionLease,
-      longAfterReserved,
-      firstSeen,
-      GRACE,
-    )
-
-    expect(released).toHaveLength(0)
-    expect(countActiveExecutionLeases('agt_1')).toBe(1)
-    expect(firstSeen.get('run_long')).toBe(longAfterReserved)
-  })
-
-  it('resets the terminal observation when a run goes back to non-terminal', async () => {
-    // A re-queued/retried run flips terminal→running: the earlier terminal
-    // observation must be forgotten so the grace clock restarts if it ends again.
-    beginExecutionLease('run_flip', 'task_flip', 'agt_1')
-    const leases = listActiveExecutionLeases()
-    const status = { value: 'completed' }
-    const db = createMockDb({ getRunStatus: vi.fn(async () => status.value) })
-    const firstSeen = new Map<string, number>()
-    const t0 = Date.now()
-
-    await sweepStaleLeases(db, leases, completeExecutionLease, t0, firstSeen, GRACE)
-    expect(firstSeen.has('run_flip')).toBe(true)
-
-    // Run goes back to running: observation is cleared.
-    status.value = 'running'
-    await sweepStaleLeases(db, leases, completeExecutionLease, t0 + 1000, firstSeen, GRACE)
-    expect(firstSeen.has('run_flip')).toBe(false)
-    expect(countActiveExecutionLeases('agt_1')).toBe(1)
-  })
-
-  it('leaves a live (running) lease untouched regardless of age', async () => {
+  it('leaves a running lease untouched', async () => {
     beginExecutionLease('run_live', 'task_live', 'agt_1')
     const leases = listActiveExecutionLeases()
     const db = createMockDb({ getRunStatus: vi.fn().mockResolvedValue('running') })
 
-    const released = await sweepStaleLeases(
-      db,
-      leases,
-      completeExecutionLease,
-      leases[0].reservedAt + GRACE * 10,
-      new Map(),
-      GRACE,
-    )
+    const released = await sweepStaleLeases(db, leases, completeExecutionLease)
 
     expect(released).toHaveLength(0)
     expect(countActiveExecutionLeases('agt_1')).toBe(1)
@@ -193,6 +95,45 @@ describe('sweepStaleLeases', () => {
 })
 
 describe('tryAcquireSlot', () => {
+  it('rejects new work after graceful shutdown begins', async () => {
+    const db = createMockDb()
+    pauseTaskQueuePromotions()
+
+    expect(await tryAcquireSlot(db, 'agt_1', 'run_1', 1)).toBe('queue_full')
+    expect(db.countRunsByStatus).not.toHaveBeenCalled()
+  })
+
+  it('atomically reserves the durable SCM workload before activating execution', async () => {
+    const order: string[] = []
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      admitRun: vi.fn(async () => {
+        order.push('admit')
+        return { slot: 'acquired' as const, hasScmLease: true }
+      }),
+      activateRun: vi.fn(async () => {
+        order.push('activate')
+      }),
+    })
+
+    await expect(tryAcquireSlot(db, 'agt_1', 'run_1', 1)).resolves.toBe('acquired')
+
+    expect(order).toEqual(['admit', 'activate'])
+    expect(db.updateRunStatus).not.toHaveBeenCalled()
+    completeExecutionLease('run_1')
+  })
+
+  it('uses the database admission decision across replicas without a stale local recount', async () => {
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockRejectedValue(new Error('must not count outside admission')),
+      admitRun: vi.fn().mockResolvedValue({ slot: 'queued', hasScmLease: true }),
+    })
+
+    await expect(tryAcquireSlot(db, 'agt_1', 'run_queued', 1)).resolves.toBe('queued')
+    expect(countActiveExecutionLeases('agt_1')).toBe(0)
+    expect(db.activateRun).toBeUndefined()
+  })
+
   it('counts a non-cancelled lease that is finishing lifecycle cleanup', async () => {
     const lease = beginExecutionLease('run_old', 'task_old', 'agt_1')
     const db = createMockDb({
@@ -303,6 +244,14 @@ describe('tryAcquireSlot', () => {
 })
 
 describe('scheduleNext', () => {
+  it('does not promote queued work after graceful shutdown begins', async () => {
+    const db = createMockDb()
+    pauseTaskQueuePromotions()
+
+    expect(await scheduleNext(db, 'agt_1', vi.fn())).toBe(0)
+    expect(db.countRunsByStatus).not.toHaveBeenCalled()
+  })
+
   it('never promotes the same queued run twice when two nudges race', async () => {
     // scheduleNext is fired as `void scheduleNext(...)` from ~12 places (every run
     // completion, cancellation, lease sweep, gateway path), so two nudges for one
@@ -362,6 +311,22 @@ describe('scheduleNext', () => {
     })
 
     await expect(scheduleNext(db, 'agt_1', vi.fn())).resolves.toBe(0)
+  })
+
+  it('releases the local slot when durable lease activation fails during promotion', async () => {
+    const db = createMockDb({
+      getOldestQueuedRun: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'run_q1', initiatorAgentId: 'agt_1' })
+        .mockResolvedValueOnce(undefined),
+      activateRun: vi.fn().mockRejectedValue(new Error('database unavailable')),
+    })
+    const onExecute = vi.fn()
+
+    await expect(scheduleNext(db, 'agt_1', onExecute)).resolves.toBe(0)
+
+    expect(onExecute).not.toHaveBeenCalled()
+    expect(countActiveExecutionLeases('agt_1')).toBe(0)
   })
 
   it('does not promote a queued run while a cancelled execution still owns the slot', async () => {
@@ -489,7 +454,7 @@ describe('scheduleNext', () => {
 })
 
 describe('recoverOnStartup', () => {
-  it('将所有 running 状态的 run 用结构化 reason 标记为 failed', async () => {
+  it('marks every stranded running Run failed with a structured reason', async () => {
     const db = createMockDb({
       countRunsByStatus: vi.fn(async (_, status) => {
         if (status === 'running') return 2
@@ -524,7 +489,7 @@ describe('recoverOnStartup', () => {
     expect(stats.runningAborted).toBe(2)
   })
 
-  it('扫描 pending 孤儿并标记为 failed（PENDING_ORPHAN_ON_STARTUP）', async () => {
+  it('marks orphaned pending Runs failed with PENDING_ORPHAN_ON_STARTUP', async () => {
     const db = createMockDb({
       getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
       getOrphanedPendingRuns: vi.fn(async () => [
@@ -543,7 +508,7 @@ describe('recoverOnStartup', () => {
     expect(stats.pendingOrphaned).toBe(1)
   })
 
-  it('onRunFailed hook 收到失败 run 的元信息与 reason', async () => {
+  it('passes the failed Run metadata and reason to onRunFailed', async () => {
     const db = createMockDb({
       getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
       getRunsByStatus: vi.fn(async (_, status) =>
@@ -560,6 +525,28 @@ describe('recoverOnStartup', () => {
       { id: 'run_x', triggerSource: 'a2a', triggerSessionId: 'tid' },
       FAILURE_REASONS.SERVER_RESTART_DURING_EXEC,
     )
+  })
+
+  it('does not fail in-flight work owned by another PostgreSQL replica', async () => {
+    const db = createMockDb({
+      getRunsByStatus: vi
+        .fn()
+        .mockResolvedValue([{ id: 'run_peer', triggerSource: 'api', triggerSessionId: null }]),
+      getOrphanedPendingRuns: vi
+        .fn()
+        .mockResolvedValue([{ id: 'run_pending', triggerSource: 'api', triggerSessionId: null }]),
+    })
+
+    const onRunFailed = vi.fn()
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      recoverInFlight: false,
+      onRunFailed,
+    })
+
+    expect(stats.runningAborted).toBe(0)
+    expect(stats.pendingOrphaned).toBe(0)
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
+    expect(onRunFailed).not.toHaveBeenCalled()
   })
 
   it('onRunFailed hook 抛错时不应阻断后续恢复', async () => {

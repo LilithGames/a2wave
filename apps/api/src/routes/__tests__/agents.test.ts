@@ -1676,7 +1676,12 @@ describe('PATCH /agents/:id - published execution-config preflight', () => {
       mcpServerIds: [],
       kbDocumentIds: [],
     }
-    mockDb.select.mockReturnValueOnce(makeSelectChain(existing))
+    mockDb.select.mockReturnValueOnce(makeSelectChain(existing)).mockReturnValueOnce(
+      makeSelectChain({
+        workspaceType: existing.workspaceType,
+        scmSourceId: existing.scmSourceId,
+      }),
+    )
     mockFindActiveAgentScmWorkload.mockResolvedValueOnce({ type: 'run', id: 'run_active' })
 
     const res = await app.request('/agents/agt_original', {
@@ -1878,8 +1883,7 @@ describe('DELETE /agents/:id - connection cleanup', () => {
     const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
     const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
 
-    // 删除加固：published agent 会被 409 拦在 cleanup 之前（须先停用）。
-    // 本用例验证的是「可删除态删除时停掉两类连接」，故用 stopped 态 fixture。
+    // A stopped fixture reaches connection cleanup; published Agents return 409 earlier.
     mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'stopped' }))
     mockDb.update.mockReturnValue(makeUpdateChain())
     mockDb.delete.mockReturnValue(makeDeleteChain())
@@ -1894,7 +1898,7 @@ describe('DELETE /agents/:id - connection cleanup', () => {
     const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
     const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
 
-    // 删除加固契约：published 必须先停用，409 拦截且不触达任何 cleanup / 实际删除。
+    // Published Agents must be stopped before deletion; 409 must skip every cleanup.
     mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'published' }))
 
     const res = await app.request('/agents/agt_original', { method: 'DELETE' })
@@ -2340,8 +2344,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
   }
 
   // ── PATCH /agents/:id ──
-  // 注：PATCH 使用 shared 的 updateAgentInput（未 passthrough），旧字段会被 zod 剥离。
-  // 因此 PATCH 测试验证新格式 + normalizeFeishuConfig 补齐默认值的场景。
+  // PATCH strips legacy fields, so cover normalization of the current partial shape.
 
   it('PATCH: 新格式不完整 payload 经 normalizeFeishuConfig 补齐默认值后写入 DB', async () => {
     const { getCaptured } = mockDbForUpdate(SAMPLE_AGENT)
@@ -2363,7 +2366,6 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
     const saved = getCaptured().feishuConfig as Record<string, unknown>
     expect(saved.groupTriggerOnAt).toBe(false)
     expect(saved.groupReplyMode).toBe('new')
-    // normalizeFeishuConfig 补齐的默认值
     expect(saved.topicTriggerOnAt).toBe(true)
     expect(saved.topicTriggerOnNewTopic).toBe(false)
     expect(saved.topicReplyMode).toBe('topic_reply')

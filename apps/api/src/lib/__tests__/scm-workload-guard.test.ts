@@ -68,7 +68,7 @@ describe('findActiveAgentScmWorkload', () => {
   })
 
   it('reports an active Evaluation when no Run is active', async () => {
-    const db = executor([[], [], [{ id: 'evt_1' }]])
+    const db = executor([[], [], [], [{ id: 'evt_1' }]])
 
     await expect(findActiveAgentScmWorkload(db as never, 'agt_1')).resolves.toEqual({
       type: 'evaluation',
@@ -77,7 +77,7 @@ describe('findActiveAgentScmWorkload', () => {
   })
 
   it('allows a binding change after all workloads are terminal', async () => {
-    const db = executor([[], [], []])
+    const db = executor([[], [], [], []])
 
     await expect(findActiveAgentScmWorkload(db as never, 'agt_1')).resolves.toBeNull()
   })

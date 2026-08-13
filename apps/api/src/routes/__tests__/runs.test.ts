@@ -54,6 +54,21 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
+  activateScmWorkload: vi.fn().mockResolvedValue(undefined),
+  releaseReservedScmWorkload: vi.fn().mockResolvedValue(false),
+  releaseReservedScmWorkloadInMutation: vi.fn().mockResolvedValue(false),
+  withScmWorkloadAdmission: vi.fn(async (_input, callback) => {
+    const { db } = await import('../../db/client.js')
+    return callback(db, {
+      workspaceType: 'temp',
+      scmSourceId: null,
+      leaseId: null,
+      alreadyReserved: false,
+    })
+  }),
+}))
+
 const mockTryAcquireSlot = vi.hoisted(() => vi.fn().mockReturnValue('acquired'))
 vi.mock('../../engine/task-queue.js', () => ({
   scheduleNext: vi.fn(),

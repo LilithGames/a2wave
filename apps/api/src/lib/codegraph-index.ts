@@ -104,7 +104,13 @@ export async function runCodegraphIndex(
         await db
           .update(scmSources)
           .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
-          .where(and(eq(scmSources.id, sourceId), ne(scmSources.codegraphStatus, 'indexing')))
+          .where(
+            and(
+              eq(scmSources.id, sourceId),
+              ne(scmSources.codegraphStatus, 'indexing'),
+              ne(scmSources.syncStatus, 'syncing'),
+            ),
+          )
           .returning()
       )[0]
     })

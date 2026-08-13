@@ -164,6 +164,52 @@ export interface OwnedScmWorkload extends ScmWorkloadIdentity {
   ownerInstanceId: string
 }
 
+export async function releaseReservedScmWorkloadInMutation(
+  tx: TransactionHandle,
+  input: ScmWorkloadIdentity,
+): Promise<boolean> {
+  const deleted = await tx
+    .delete(scmWorkloadLeases)
+    .where(
+      and(
+        eq(scmWorkloadLeases.id, scmWorkloadLeaseId(input)),
+        eq(scmWorkloadLeases.phase, 'reserved'),
+      ),
+    )
+    .returning({ id: scmWorkloadLeases.id })
+  return deleted.length > 0
+}
+
+/**
+ * Drop a workload that never started. The phase predicate is the safety
+ * boundary: if another worker activated the reservation first, its checkout
+ * remains protected until that worker explicitly releases it after exit.
+ */
+export async function releaseReservedScmWorkload(
+  input: ScmWorkloadIdentity,
+  deps: ScmWorkloadLifecycleDeps = defaultDeps,
+): Promise<boolean> {
+  return deps.withMutation((tx) => releaseReservedScmWorkloadInMutation(tx, input))
+}
+
+/**
+ * Release a lease after single-process startup recovery has proved its previous
+ * execution owner is dead. PostgreSQL recovery must never call this: a peer may
+ * still own the checkout even when the current replica cannot observe it.
+ */
+export async function releaseRecoveredScmWorkload(
+  input: ScmWorkloadIdentity,
+  deps: ScmWorkloadLifecycleDeps = defaultDeps,
+): Promise<boolean> {
+  return deps.withMutation(async (tx) => {
+    const deleted = await tx
+      .delete(scmWorkloadLeases)
+      .where(eq(scmWorkloadLeases.id, scmWorkloadLeaseId(input)))
+      .returning({ id: scmWorkloadLeases.id })
+    return deleted.length > 0
+  })
+}
+
 /** Claim a reserved workload immediately before its local process starts. */
 export async function activateScmWorkload(
   input: OwnedScmWorkload,

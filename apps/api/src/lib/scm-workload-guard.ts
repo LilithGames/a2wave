@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { db } from '../db/client.js'
 import { evaluationTasks, runSteps, runs } from '../db/schema.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
+import { findDurableAgentScmWorkload } from './scm-workload-lifecycle.js'
 
 type QueryExecutor = Pick<typeof db, 'select'>
 
@@ -41,6 +42,9 @@ export async function findActiveAgentScmWorkload(
     (workload) => workload.agentId === agentId,
   )
   if (leasedEvaluation) return { type: 'evaluation', id: leasedEvaluation.taskId }
+
+  const durable = await findDurableAgentScmWorkload(executor, agentId)
+  if (durable) return durable
 
   // A run may execute with an Agent other than runs.initiatorAgentId. The step
   // is the authoritative execution record, so protect that Agent as well.

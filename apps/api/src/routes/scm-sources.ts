@@ -792,11 +792,13 @@ app.post('/:id/sync', async (c) => {
         eq(scmSources.id, id),
         ownerFilter,
         ne(scmSources.syncStatus, 'syncing'),
+        ne(scmSources.codegraphStatus, 'indexing'),
         isNull(scmSources.deletionRequestedAt),
       )
     : and(
         eq(scmSources.id, id),
         ne(scmSources.syncStatus, 'syncing'),
+        ne(scmSources.codegraphStatus, 'indexing'),
         isNull(scmSources.deletionRequestedAt),
       )
   const acquired = await runExclusive(async () => {
@@ -918,11 +920,13 @@ app.post('/:id/codegraph/reindex', async (c) => {
         eq(scmSources.id, id),
         ownerFilter,
         ne(scmSources.codegraphStatus, 'indexing'),
+        ne(scmSources.syncStatus, 'syncing'),
         isNull(scmSources.deletionRequestedAt),
       )
     : and(
         eq(scmSources.id, id),
         ne(scmSources.codegraphStatus, 'indexing'),
+        ne(scmSources.syncStatus, 'syncing'),
         isNull(scmSources.deletionRequestedAt),
       )
   const acquired = await runExclusive(async () => {

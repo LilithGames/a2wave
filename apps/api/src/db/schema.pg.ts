@@ -1218,6 +1218,47 @@ export const evaluationTasks = pgTable(
 )
 
 // ============================================================
+// SCM Workload Leases - durable checkout-use reservations
+// ============================================================
+export const scmWorkloadLeases = pgTable(
+  'scm_workload_leases',
+  {
+    /** Stable identity: `<workloadType>:<workloadId>`. */
+    id: text('id').primaryKey(),
+    workloadType: text('workload_type', { enum: ['run', 'evaluation'] }).notNull(),
+    workloadId: text('workload_id').notNull(),
+    /** The actual executing Agent, which may differ from a Run's initiator. */
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    /** Binding snapshot reserved atomically with workload admission. */
+    scmSourceId: text('scm_source_id')
+      .notNull()
+      .references(() => scmSources.id),
+    /** Reserved work may be queued; active work owns a live process/cleanup lifecycle. */
+    phase: text('phase', { enum: ['reserved', 'active'] })
+      .notNull()
+      .default('reserved'),
+    /** Process instance responsible for releasing an active lease after cleanup. */
+    ownerInstanceId: text('owner_instance_id'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    workloadUnique: uniqueIndex('scm_workload_leases_workload_unique').on(
+      table.workloadType,
+      table.workloadId,
+    ),
+    agentIdIdx: index('scm_workload_leases_agent_id_idx').on(table.agentId),
+    scmSourceIdIdx: index('scm_workload_leases_scm_source_id_idx').on(table.scmSourceId),
+  }),
+)
+
+// ============================================================
 // Evaluation Results - per-case execution result + manual review, isolated by cascade on taskId
 // ============================================================
 export const evaluationResults = pgTable(

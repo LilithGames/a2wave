@@ -24,6 +24,7 @@ vi.mock('../../db/client.js', async () => {
     agents: agentsTable,
     runs: runsTable,
     scmSources: scmSourcesTable,
+    scmWorkloadLeases: scmWorkloadLeasesTable,
   } = await import('../../db/schema.sqlite.js')
   const columnsOf = (table: Parameters<typeof getTableConfig>[0]) =>
     getTableConfig(table)
@@ -39,6 +40,7 @@ vi.mock('../../db/client.js', async () => {
   // Decides whether an SCM Agent's evaluation gets a worktree: only git
   // implements one, so the source row's type drives workspace isolation.
   sqlite.exec(`CREATE TABLE scm_sources (${columnsOf(scmSourcesTable)});`)
+  sqlite.exec(`CREATE TABLE scm_workload_leases (${columnsOf(scmWorkloadLeasesTable)});`)
   sqlite.exec(`
     -- email/display_name feed the RunChannelContext a gateway-enabled Agent
     -- needs to sign its per-run token.

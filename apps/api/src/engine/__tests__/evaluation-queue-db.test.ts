@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getSetting = vi.fn()
+const withScmPathMutation = vi.fn()
 
 vi.mock('../../lib/settings.js', () => ({ getSetting }))
+vi.mock('../../lib/scm-path-plan.js', () => ({ withScmPathMutation }))
 vi.mock('../../db/client.js', () => ({ db: {} }))
 
 const { evaluationQueueDb } = await import('../evaluation-queue-db.js')
@@ -34,5 +36,44 @@ describe('evaluationQueueDb.getMaxConcurrency', () => {
   it('does not consult settings at all', async () => {
     evaluationQueueDb.getMaxConcurrency()
     expect(getSetting).not.toHaveBeenCalled()
+  })
+})
+
+describe('evaluationQueueDb.claimQueuedTasks', () => {
+  beforeEach(() => {
+    withScmPathMutation.mockReset()
+  })
+
+  it('counts and claims the oldest queued task inside one SCM mutation transaction', async () => {
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ limit: async () => [{ value: 0 }] }) }),
+        })
+        .mockReturnValueOnce({
+          from: () => ({
+            where: () => ({
+              orderBy: () => ({
+                limit: async () => [{ id: 'evt_1', agentId: 'agt_1' }],
+              }),
+            }),
+          }),
+        }),
+      update: vi.fn(() => ({
+        set: () => ({
+          where: () => ({ returning: async () => [{ id: 'evt_1' }] }),
+        }),
+      })),
+    }
+    withScmPathMutation.mockImplementation(async (mutation) => mutation(tx))
+
+    await expect(evaluationQueueDb.claimQueuedTasks?.('agt_1')).resolves.toEqual([
+      { id: 'evt_1', agentId: 'agt_1' },
+    ])
+
+    expect(withScmPathMutation).toHaveBeenCalledOnce()
+    expect(tx.select).toHaveBeenCalledTimes(2)
+    expect(tx.update).toHaveBeenCalledOnce()
   })
 })

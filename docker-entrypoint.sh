@@ -70,7 +70,7 @@ SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
 # Complete every filesystem preflight before UID remap or ownership changes.
 # Besides symlinks, this refuses pre-upgrade operator directories named
 # `sources` or `workspaces` unless the mount carries a2wave's ownership marker.
-if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT"; then
+if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "${A2WAVE_MANAGED_SCM_VOLUME:-false}"; then
   echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not an a2wave-managed SCM storage root" >&2
   exit 1
 fi

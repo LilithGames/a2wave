@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, P4Config } from '@a2wave/shared'
 import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm'
-import { db } from '../db/client.js'
+import { db, isPostgres } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
 import { runExclusive } from '../db/transaction.js'
 import { env } from '../env.js'
@@ -517,6 +517,7 @@ async function runSyncUnderCheckoutLock(
             and(
               eq(scmSources.id, sourceId),
               ne(scmSources.syncStatus, 'syncing'),
+              ne(scmSources.codegraphStatus, 'indexing'),
               isNull(scmSources.deletionRequestedAt),
             ),
           )
@@ -606,18 +607,24 @@ async function runSyncUnderCheckoutLock(
     options.signal?.aborted === true &&
     (abortedBeforeSync || /cancel|abort/i.test(result.message))
 
+  const handsOffToCodegraph = result.ok && isCodegraphEnabled(source.config)
   // Persist terminal state and stamp initialSyncCompletedAt on the first success.
+  // When CodeGraph follows, keep syncStatus at syncing: it is the durable
+  // checkout-writer lease seen by every replica until indexing settles.
   try {
     await runExclusive(async () => {
       await db
         .update(scmSources)
         .set({
-          syncStatus: result.ok || cancelled ? 'idle' : 'error',
+          syncStatus: handsOffToCodegraph ? 'syncing' : result.ok || cancelled ? 'idle' : 'error',
           lastSyncAt: new Date(),
           lastSyncError: result.ok || cancelled ? null : result.message,
           updatedAt: new Date(),
           ...(result.ok && source.initialSyncCompletedAt == null
             ? { initialSyncCompletedAt: new Date() }
+            : {}),
+          ...(handsOffToCodegraph
+            ? { codegraphStatus: 'indexing' as const, codegraphLastError: null }
             : {}),
         })
         .where(eq(scmSources.id, sourceId))
@@ -649,11 +656,20 @@ async function runSyncUnderCheckoutLock(
   // A successful sync may trigger CodeGraph indexing without delaying the sync
   // response. Keep the checkout lock until indexing settles so another sync
   // cannot mutate the same directory underneath it.
-  if (result.ok && isCodegraphEnabled(source.config)) {
-    void runCodegraphIndex(sourceId)
+  if (handsOffToCodegraph) {
+    void runCodegraphIndex(sourceId, { alreadyAcquired: true })
       .catch((err) => logger.error({ sourceId, err }, 'CodeGraph indexing unexpected error'))
-      .finally(() => {
-        releaseCheckout(sourceId)
+      .finally(async () => {
+        try {
+          await runExclusive(async () => {
+            await db
+              .update(scmSources)
+              .set({ syncStatus: 'idle', updatedAt: new Date() })
+              .where(and(eq(scmSources.id, sourceId), eq(scmSources.syncStatus, 'syncing')))
+          })
+        } finally {
+          releaseCheckout(sourceId)
+        }
       })
   } else {
     releaseCheckout(sourceId)
@@ -779,7 +795,11 @@ async function resetStuckScmSource(
  * Initialize enabled SCM source schedulers for both P4 and Git at startup.
  */
 export async function initAutoSyncSchedulers(): Promise<void> {
-  // Reset any sources stuck in an in-progress state from a previous process.
+  // SQLite has one API process, so every in-progress row belongs to the process
+  // that just died. PostgreSQL may have healthy peer replicas using the shared
+  // checkout, so a starting replica must never clear their durable writer
+  // status. Safety wins over automatic recovery there; an interrupted PG writer
+  // remains visibly stuck for operator recovery instead of risking corruption.
   const stuckSyncing = await db
     .select({ id: scmSources.id })
     .from(scmSources)
@@ -790,12 +810,19 @@ export async function initAutoSyncSchedulers(): Promise<void> {
   // else clears it, so the source stays wedged until the next restart. The
   // reset must therefore land before the schedulers below are armed (and
   // before the manual-sync route can be reached).
-  for (const { id } of stuckSyncing) {
-    await resetStuckScmSource(
-      id,
-      { syncStatus: 'idle' },
-      'Reset stuck syncing SCM source to idle on startup',
+  if (isPostgres && stuckSyncing.length > 0) {
+    logger.warn(
+      { sourceIds: stuckSyncing.map(({ id }) => id) },
+      'Preserving in-progress SCM sync state owned by another PostgreSQL replica',
     )
+  } else {
+    for (const { id } of stuckSyncing) {
+      await resetStuckScmSource(
+        id,
+        { syncStatus: 'idle' },
+        'Reset stuck syncing SCM source to idle on startup',
+      )
+    }
   }
 
   const stuckCodegraph = await db
@@ -805,15 +832,22 @@ export async function initAutoSyncSchedulers(): Promise<void> {
   // Same reasoning: the indexing guard reads `codegraphStatus`, and callers
   // observe this status the moment the API answers, so it must be settled
   // before initialisation reports done.
-  for (const { id } of stuckCodegraph) {
-    await resetStuckScmSource(
-      id,
-      {
-        codegraphStatus: 'error',
-        codegraphLastError: 'Interrupted by server restart',
-      },
-      'Reset stuck CodeGraph indexing source to error on startup',
+  if (isPostgres && stuckCodegraph.length > 0) {
+    logger.warn(
+      { sourceIds: stuckCodegraph.map(({ id }) => id) },
+      'Preserving in-progress CodeGraph state owned by another PostgreSQL replica',
     )
+  } else {
+    for (const { id } of stuckCodegraph) {
+      await resetStuckScmSource(
+        id,
+        {
+          codegraphStatus: 'error',
+          codegraphLastError: 'Interrupted by server restart',
+        },
+        'Reset stuck CodeGraph indexing source to error on startup',
+      )
+    }
   }
 
   // Only a durable deletion reservation authorizes reclaim. Never sweep the

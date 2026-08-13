@@ -1,12 +1,18 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   EVALUATION_MAX_QUEUE_LENGTH,
   type EvaluationQueueDb,
   type EvaluationTaskRow,
+  _resumeEvaluationQueuePromotionsForTests,
+  pauseEvaluationQueuePromotions,
   recoverEvaluationsOnStartup,
   scheduleNextEvaluation,
   tryAcquireEvaluationSlot,
 } from '../evaluation-queue.js'
+
+beforeEach(() => {
+  _resumeEvaluationQueuePromotionsForTests()
+})
 
 /**
  * In-memory stand-in for the evaluation tables. Holds just enough state for the
@@ -51,10 +57,33 @@ function makeDb(
     getAgentIdsWithQueuedTasks: async () => [
       ...new Set(tasks.filter((t) => t.status === 'queued').map((t) => t.agentId)),
     ],
+    claimQueuedTasks: async (agentId) => {
+      const running = tasks.filter(
+        (task) => task.agentId === agentId && task.status === 'running',
+      ).length
+      const available = Math.max(0, maxConcurrency - running)
+      const claimed = tasks
+        .filter((task) => task.agentId === agentId && task.status === 'queued')
+        .slice(0, available)
+      for (const task of claimed) task.status = 'running'
+      return claimed.map(({ id, agentId: executingAgentId }) => ({
+        id,
+        agentId: executingAgentId,
+      }))
+    },
   }
 }
 
 describe('tryAcquireEvaluationSlot', () => {
+  it('rejects new evaluations after graceful shutdown begins', async () => {
+    const tasks = [{ id: 'evt_1', agentId: 'agt_a', status: 'pending' }]
+    const db = makeDb(tasks, 1)
+    pauseEvaluationQueuePromotions()
+
+    expect(await tryAcquireEvaluationSlot(db, 'agt_a', 'evt_1')).toBe('queue_full')
+    expect(tasks[0]?.status).toBe('pending')
+  })
+
   it('runs immediately when the agent has a free slot', async () => {
     const db = makeDb([{ id: 'evt_1', agentId: 'agt_a', status: 'pending' }], 2)
 
@@ -174,6 +203,29 @@ describe('tryAcquireEvaluationSlot — concurrent submissions', () => {
 })
 
 describe('scheduleNextEvaluation', () => {
+  it('uses the database-serialized promotion path before starting work', async () => {
+    const db = makeDb([], 1)
+    const claimQueuedTasks = vi.fn().mockResolvedValue([{ id: 'evt_1', agentId: 'agt_a' }])
+    db.claimQueuedTasks = claimQueuedTasks
+    db.getOldestQueuedTask = vi.fn(db.getOldestQueuedTask)
+    const onExecute = vi.fn()
+
+    expect(await scheduleNextEvaluation(db, 'agt_a', onExecute)).toBe(1)
+
+    expect(claimQueuedTasks).toHaveBeenCalledWith('agt_a')
+    expect(db.getOldestQueuedTask).not.toHaveBeenCalled()
+    expect(onExecute).toHaveBeenCalledWith('evt_1', 'agt_a')
+  })
+
+  it('does not promote queued evaluations after graceful shutdown begins', async () => {
+    const tasks = [{ id: 'evt_1', agentId: 'agt_a', status: 'queued' }]
+    const db = makeDb(tasks, 1)
+    pauseEvaluationQueuePromotions()
+
+    expect(await scheduleNextEvaluation(db, 'agt_a', vi.fn())).toBe(0)
+    expect(tasks[0]?.status).toBe('queued')
+  })
+
   it('promotes queued tasks up to the concurrency limit', async () => {
     const db = makeDb(
       [
@@ -229,6 +281,29 @@ describe('recoverEvaluationsOnStartup', () => {
     expect(db.failed.get('evt_1')).toMatch(/restart/i)
   })
 
+  it('releases recovered workload leases after failing interrupted tasks', async () => {
+    const db = makeDb(
+      [
+        { id: 'evt_running', agentId: 'agt_a', status: 'running' },
+        { id: 'evt_pending', agentId: 'agt_a', status: 'pending' },
+      ],
+      1,
+    )
+    const onTaskFailed = vi.fn()
+
+    await recoverEvaluationsOnStartup(db, vi.fn(), { onTaskFailed })
+
+    expect(onTaskFailed).toHaveBeenCalledTimes(2)
+    expect(onTaskFailed).toHaveBeenNthCalledWith(1, {
+      id: 'evt_running',
+      agentId: 'agt_a',
+    })
+    expect(onTaskFailed).toHaveBeenNthCalledWith(2, {
+      id: 'evt_pending',
+      agentId: 'agt_a',
+    })
+  })
+
   it('re-runs tasks that were still waiting in the queue', async () => {
     const db = makeDb([{ id: 'evt_1', agentId: 'agt_a', status: 'queued' }], 2)
     const onExecute = vi.fn()
@@ -238,6 +313,26 @@ describe('recoverEvaluationsOnStartup', () => {
     expect((await stats).queuedPromoted).toBe(1)
     expect(onExecute).toHaveBeenCalledWith('evt_1', 'agt_a')
     expect(db.tasks[0].status).toBe('running')
+  })
+
+  it('preserves in-flight tasks that may belong to another PostgreSQL replica', async () => {
+    const db = makeDb(
+      [
+        { id: 'evt_running', agentId: 'agt_a', status: 'running' },
+        { id: 'evt_pending', agentId: 'agt_a', status: 'pending' },
+      ],
+      2,
+    )
+
+    const onTaskFailed = vi.fn()
+    const stats = await recoverEvaluationsOnStartup(db, vi.fn(), {
+      recoverInFlight: false,
+      onTaskFailed,
+    })
+
+    expect(stats).toEqual({ runningAborted: 0, pendingAborted: 0, queuedPromoted: 0 })
+    expect(db.tasks.map((task) => task.status)).toEqual(['running', 'pending'])
+    expect(onTaskFailed).not.toHaveBeenCalled()
   })
 
   it('leaves finished tasks untouched', async () => {

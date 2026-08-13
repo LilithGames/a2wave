@@ -48,7 +48,7 @@ export function createRecordedA2ACancelFn(c: Context, agent: AgentRow): CancelFn
     if (currentStatus !== 'running' && currentStatus !== 'queued') {
       return 'not_cancellable'
     }
-    if (!claimRunCancellation(run.id, currentStatus)) {
+    if (!(await claimRunCancellation(run.id, currentStatus))) {
       return 'not_cancellable'
     }
 
@@ -252,6 +252,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
 
     if (slotResult === 'queued') {
       await db.delete(runs).where(eq(runs.id, runId))
+      await taskQueueDb.releaseReservedRun?.(runId)
       return {
         success: false,
         output: '',

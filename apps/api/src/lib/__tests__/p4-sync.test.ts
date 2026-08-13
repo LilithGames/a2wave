@@ -51,7 +51,7 @@ const {
     }),
   }
 })
-vi.mock('../../db/client.js', () => ({ db: mockDb }))
+vi.mock('../../db/client.js', () => ({ db: mockDb, isPostgres: false }))
 vi.mock('../../db/schema.js', () => ({ scmSources: 'scmSources' }))
 // `sanitizeCredentials` is deliberately NOT mocked: redaction of p4 error text
 // is the behaviour under test, and a stubbed pass-through would make the
@@ -711,7 +711,7 @@ describe('syncScmSource', () => {
 
     await syncScmSource('s1')
 
-    expect(mockRunCodegraphIndex).toHaveBeenCalledWith('s1')
+    expect(mockRunCodegraphIndex).toHaveBeenCalledWith('s1', { alreadyAcquired: true })
   })
 
   it('does not start CodeGraph indexing when sync fails', async () => {

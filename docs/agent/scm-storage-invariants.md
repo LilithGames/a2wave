@@ -41,12 +41,21 @@ below hold across every affected entry point.
 - PATCH and DELETE may cancel an automatic initial checkout. Periodic sync and
   indexing keep the busy guard; weakening it risks concurrent checkout damage.
 - An Agent cannot release or replace its SCM binding while one of its Runs or
-  Evaluations is active. Admission and binding mutation share a per-Agent lock;
-  durable Run, RunStep, and Evaluation rows cover process/replica boundaries,
-  while in-memory execution leases cover the terminal-status-to-process-exit
-  cleanup window. RunSteps identify the actual executing Agent when it differs
-  from the Run initiator. A stale pre-admission Agent snapshot must never resolve
-  the checkout after its binding changes.
+  Evaluations is admitted. Admission and binding mutation share the same
+  cross-dialect mutation transaction. A durable SCM workload lease records the
+  actual executing Agent and source before queue admission, remains through the
+  terminal-status-to-process-exit cleanup window, and is released only after
+  workspace cleanup. RunSteps still identify the actual executing Agent when it
+  differs from the Run initiator. A stale pre-admission Agent snapshot must never
+  resolve the checkout after its binding changes.
+- PostgreSQL startup must not reset in-progress Run, Evaluation, sync, or index
+  rows merely because another replica started. Without a positively identified
+  dead owner, preserving a visible stuck lease is safer than reclaiming a checkout
+  beneath a healthy peer. SQLite startup is the symmetric single-owner case: after
+  failing interrupted workloads, it releases their durable leases explicitly.
+- Graceful shutdown pauses both queue admission and queued-task promotion before
+  stopping producers. It closes the database only after Run/Evaluation process
+  exit, workspace cleanup, durable lease release, and audit drains settle.
 - Cancellation is not a sync failure and must not emit a failure notification.
 - DELETE is a durable two-phase operation. Its first transaction writes
   `deletion_requested_at` plus `deletion_requested_by`, disables the source,

@@ -48,6 +48,7 @@ scm_storage_is_owned() {
 # silently adopted or chowned.
 scm_prepare_managed_storage() {
   scm_root="$1"
+  managed_volume="${2:-false}"
   [ -n "$scm_root" ] || return 1
   [ -L "$scm_root" ] && return 1
   mkdir -p "$scm_root" || return 1
@@ -55,17 +56,30 @@ scm_prepare_managed_storage() {
 
   if ! scm_storage_is_owned "$scm_root"; then
     marker="$scm_root/$SCM_STORAGE_MARKER"
-    # An invalid marker or any pre-existing managed name belongs to the
-    # operator. Refuse before creating or changing anything else.
+    # An invalid marker belongs to the operator. Refuse before creating or
+    # changing anything else.
     if [ -e "$marker" ] || [ -L "$marker" ]; then
       return 1
     fi
-    for scm_subdir in $SCM_MANAGED_SUBDIRS $SCM_RECLAIM_SUBDIR; do
+    for scm_subdir in $SCM_MANAGED_SUBDIRS; do
       scm_dir="$scm_root/$scm_subdir"
       if [ -e "$scm_dir" ] || [ -L "$scm_dir" ]; then
-        return 1
+        # CLI-generated Compose files explicitly identify their dedicated
+        # named volume. Releases predating the marker already created these
+        # two directories there, so adopt that exact legacy layout without
+        # weakening the operator-bind policy.
+        if [ "$managed_volume" != "true" ] || [ -L "$scm_dir" ] || [ ! -d "$scm_dir" ]; then
+          return 1
+        fi
       fi
     done
+    reclaim_root="$scm_root/$SCM_RECLAIM_SUBDIR"
+    if [ -e "$reclaim_root" ] || [ -L "$reclaim_root" ]; then
+      # An intermediate release may already have created the marker-owned
+      # reclaim root. Never adopt an unmarked directory, even on a managed
+      # volume, because startup recovery recursively deletes its contents.
+      scm_reclaim_is_owned "$reclaim_root" || return 1
+    fi
     (set -C; printf '%s\n' "$SCM_STORAGE_MARKER_CONTENT" > "$marker") 2>/dev/null ||
       scm_storage_is_owned "$scm_root" || return 1
   fi

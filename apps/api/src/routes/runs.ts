@@ -34,6 +34,7 @@ import { jsonExtractNumber } from '../lib/json-sql.js'
 import { logger } from '../lib/logger.js'
 import { getCurrentUserId } from '../lib/owner-filter.js'
 import { registerPendingContext } from '../lib/pending-job-registry.js'
+import { processInstanceId } from '../lib/process-instance.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
 import { finishRunError } from '../lib/run-lifecycle.js'
@@ -44,9 +45,12 @@ import {
   runLogFileExists,
 } from '../lib/run-log-file.js'
 import { stopLogCollector } from '../lib/run-log-registry.js'
+import { activateScmWorkload, withScmWorkloadAdmission } from '../lib/scm-workload-lifecycle.js'
 import { streamFileDownload } from '../lib/stream-file-download.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
 import type { WorkerTaskPayload } from '../worker/index.js'
+
+class RunAdmissionLostError extends Error {}
 
 /**
  * Enrich rerun context for Feishu-triggered runs.
@@ -688,14 +692,35 @@ app.post('/:id/execute', async (c) => {
     ? and(eq(runs.id, id), visibilityFilter, inArray(runs.status, canExecuteStatuses))
     : and(eq(runs.id, id), inArray(runs.status, canExecuteStatuses))
 
-  const updateRunResult = await db
-    .update(runs)
-    .set({ status: 'running', updatedAt: new Date() })
-    .where(executeConditions)
-    .returning({ id: runs.id })
+  const stepId = createId('rst')
+  let admission: { hasScmLease: boolean } | null = null
+  try {
+    admission = await withScmWorkloadAdmission(
+      { type: 'run', workloadId: id, agentId },
+      async (tx, scmAdmission) => {
+        const updateRunResult = await tx
+          .update(runs)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(executeConditions)
+          .returning({ id: runs.id })
+        if (updateRunResult.length === 0) throw new RunAdmissionLostError()
+        await tx.insert(runSteps).values({
+          id: stepId,
+          runId: id,
+          agentId,
+          order: 1,
+          input: { intent: run.intent, context: parsed.data.context },
+          status: 'running',
+        })
+        return { hasScmLease: scmAdmission.leaseId !== null }
+      },
+    )
+  } catch (error) {
+    if (!(error instanceof RunAdmissionLostError)) throw error
+  }
 
   // 防重入：若并发请求已先把状态改为 running，本请求的 update 影响 0 行，返回 409。
-  if (updateRunResult && updateRunResult.length === 0) {
+  if (!admission) {
     const latest = (
       await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
     )[0]
@@ -717,17 +742,24 @@ app.post('/:id/execute', async (c) => {
     details: { agentId },
   })
 
-  // 6. 创建 RunStep 记录
-  const stepId = createId('rst')
-  await db.insert(runSteps).values({
-    id: stepId,
-    runId: id,
-    agentId,
-    order: 1,
-    input: { intent: run.intent, context: parsed.data.context },
-    status: 'running',
-  })
-  await reserveExecutionLeaseForAgent(id, agentId)
+  const taskId = buildTaskId('', id, stepId)
+  const startTime = Date.now()
+  try {
+    await reserveExecutionLeaseForAgent(id, agentId)
+    if (admission.hasScmLease) {
+      await activateScmWorkload({
+        type: 'run',
+        workloadId: id,
+        ownerInstanceId: processInstanceId,
+      })
+    }
+  } catch (error) {
+    const publicError = await finishRunError(
+      { taskId, runId: id, stepId, agentId, startTime, userId: run.userId ?? undefined },
+      error,
+    )
+    return c.json({ error: publicError, runId: id, stepId }, 500)
+  }
 
   // 7. 构建 prompt 和 WorkerTaskPayload
   // Backward compat: if systemPrompt does NOT use {{context}} template var,
@@ -740,8 +772,6 @@ app.post('/:id/execute', async (c) => {
       ? `${run.intent}\n\nAdditional context:\n${parsed.data.context}`
       : run.intent
 
-  const taskId = buildTaskId('', id, stepId)
-  const startTime = Date.now()
   let resolvedWorkDir: string
   try {
     resolvedWorkDir = await resolveWorkDir(agent, undefined, id)

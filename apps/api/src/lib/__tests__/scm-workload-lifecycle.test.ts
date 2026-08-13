@@ -4,6 +4,8 @@ import {
   ScmWorkloadLeaseConflictError,
   activateScmWorkload,
   findDurableAgentScmWorkload,
+  releaseRecoveredScmWorkload,
+  releaseReservedScmWorkload,
   releaseScmWorkload,
   withScmWorkloadAdmission,
 } from '../scm-workload-lifecycle.js'
@@ -284,6 +286,41 @@ describe('SCM workload lifecycle', () => {
         { withMutation: (fn) => withMutation(fn, missing.tx) },
       ),
     ).resolves.toBe(false)
+  })
+
+  it('releases only a reservation and leaves an activated workload untouched', async () => {
+    const reserved = mutationTx([])
+    await expect(
+      releaseReservedScmWorkload(
+        { type: 'run', workloadId: 'run_queued' },
+        { withMutation: (fn) => withMutation(fn, reserved.tx) },
+      ),
+    ).resolves.toBe(true)
+    expect(reserved.deleted).toHaveLength(1)
+
+    const active = mutationTx([])
+    active.tx.delete = vi.fn(() => ({
+      where: () => ({ returning: () => Promise.resolve([]) }),
+    }))
+    await expect(
+      releaseReservedScmWorkload(
+        { type: 'run', workloadId: 'run_active' },
+        { withMutation: (fn) => withMutation(fn, active.tx) },
+      ),
+    ).resolves.toBe(false)
+  })
+
+  it('releases an active lease only through the explicit proven-dead recovery path', async () => {
+    const recovered = mutationTx([])
+
+    await expect(
+      releaseRecoveredScmWorkload(
+        { type: 'run', workloadId: 'run_interrupted' },
+        { withMutation: (fn) => withMutation(fn, recovered.tx) },
+      ),
+    ).resolves.toBe(true)
+
+    expect(recovered.deleted).toHaveLength(1)
   })
 
   it('treats the durable row as active after the Run status is already terminal', async () => {

@@ -1,8 +1,16 @@
 import { and, asc, count, eq, isNotNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { agents, runSteps, runs } from '../db/schema.js'
+import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
+import type { TransactionHandle } from '../db/transaction.js'
+import { processInstanceId } from '../lib/process-instance.js'
 import type { FailureReason } from '../lib/run-failure-reasons.js'
+import {
+  activateScmWorkload,
+  releaseReservedScmWorkload,
+  withScmWorkloadAdmission,
+} from '../lib/scm-workload-lifecycle.js'
 import type { RunRow, TaskQueueDb } from './task-queue.js'
+import { MAX_QUEUE_LENGTH } from './task-queue.js'
 
 const VALID_RUN_STATUSES = [
   'pending',
@@ -13,6 +21,8 @@ const VALID_RUN_STATUSES = [
   'cancelled',
 ] as const
 type RunStatus = (typeof VALID_RUN_STATUSES)[number]
+
+class RunQueueFullError extends Error {}
 
 function parseRunStatus(s: string): RunStatus | null {
   if (VALID_RUN_STATUSES.includes(s as RunStatus)) return s as RunStatus
@@ -56,6 +66,72 @@ export const taskQueueDb: TaskQueueDb = {
       .update(runs)
       .set({ status: runStatus, updatedAt: new Date() })
       .where(eq(runs.id, runId))
+  },
+
+  async admitRun(agentId: string, runId: string, maxConcurrency: number) {
+    try {
+      return await withScmWorkloadAdmission(
+        { type: 'run', workloadId: runId, agentId },
+        async (tx, admission) => {
+          const executor = tx as TransactionHandle
+          const running =
+            (
+              await executor
+                .select({ value: count() })
+                .from(runs)
+                .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))
+                .limit(1)
+            )[0]?.value ?? 0
+          let slot: 'acquired' | 'queued' = 'acquired'
+          if (running >= maxConcurrency) {
+            const queued =
+              (
+                await executor
+                  .select({ value: count() })
+                  .from(runs)
+                  .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'queued')))
+                  .limit(1)
+              )[0]?.value ?? 0
+            if (queued >= MAX_QUEUE_LENGTH) throw new RunQueueFullError()
+            slot = 'queued'
+          }
+          const updated = await executor
+            .update(runs)
+            .set({ status: slot === 'acquired' ? 'running' : 'queued', updatedAt: new Date() })
+            .where(eq(runs.id, runId))
+            .returning({ id: runs.id })
+          if (updated.length === 0) {
+            throw new Error(`Run "${runId}" disappeared before queue admission`)
+          }
+          return { slot, hasScmLease: admission.leaseId !== null }
+        },
+      )
+    } catch (error) {
+      if (error instanceof RunQueueFullError) {
+        return { slot: 'queue_full' as const, hasScmLease: false }
+      }
+      throw error
+    }
+  },
+
+  async activateRun(runId: string): Promise<void> {
+    const reserved = (
+      await db
+        .select({ id: scmWorkloadLeases.id })
+        .from(scmWorkloadLeases)
+        .where(eq(scmWorkloadLeases.id, `run:${runId}`))
+        .limit(1)
+    )[0]
+    if (!reserved) return
+    await activateScmWorkload({
+      type: 'run',
+      workloadId: runId,
+      ownerInstanceId: processInstanceId,
+    })
+  },
+
+  async releaseReservedRun(runId: string): Promise<boolean> {
+    return releaseReservedScmWorkload({ type: 'run', workloadId: runId })
   },
 
   async tryTransitionRunStatus(runId: string, from: string, to: string): Promise<boolean> {

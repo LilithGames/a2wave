@@ -8,14 +8,22 @@ import { cors } from 'hono/cors'
 import { logger as honoLogger } from 'hono/logger'
 import { secureHeaders } from 'hono/secure-headers'
 import { SqliteTaskStore } from './a2a/sqlite-task-store.js'
-import { closeDatabaseConnection, db } from './db/client.js'
+import { closeDatabaseConnection, db, isPostgres } from './db/client.js'
 import { runMigrations } from './db/migrate-runtime.js'
 import { agents, mcpServers } from './db/schema.js'
 import { evaluationQueueDb } from './engine/evaluation-queue-db.js'
-import { recoverEvaluationsOnStartup } from './engine/evaluation-queue.js'
+import {
+  pauseEvaluationQueuePromotions,
+  recoverEvaluationsOnStartup,
+} from './engine/evaluation-queue.js'
+import {
+  drainActiveExecutionLeases,
+  drainDurableExecutionLeaseReleases,
+  setDurableExecutionLeaseReleaseHandler,
+} from './engine/execution-lease-registry.js'
 import { engineRegistry } from './engine/index.js'
 import { taskQueueDb } from './engine/task-queue-db.js'
-import { recoverOnStartup } from './engine/task-queue.js'
+import { pauseTaskQueuePromotions, recoverOnStartup } from './engine/task-queue.js'
 import { env } from './env.js'
 import { startArtifactCleanupScheduler } from './lib/artifact-cleanup.js'
 import { startAttachmentStagingCleanupScheduler } from './lib/attachment-cleanup.js'
@@ -34,10 +42,12 @@ import { runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
 import { initAutoSyncSchedulers } from './lib/p4-sync.js'
+import { processInstanceId } from './lib/process-instance.js'
 import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
 import { cleanupLegacyRuntimeGroupConfigs } from './lib/runtime-group-config.js'
 import { scheduleTriggerManager } from './lib/schedule-trigger.js'
+import { releaseRecoveredScmWorkload, releaseScmWorkload } from './lib/scm-workload-lifecycle.js'
 import { seedBuiltinMcpServers } from './lib/seed-builtin-mcp.js'
 import { seedBuiltinSkills } from './lib/seed-builtin-skills.js'
 import { detectServerUrl } from './lib/server-url.js'
@@ -64,7 +74,10 @@ import authRoutes from './routes/auth.js'
 import changelogRoutes from './routes/changelog.js'
 import docsRoutes from './routes/docs.js'
 import e2eRoutes from './routes/e2e.js'
-import evaluationRoutes, { runEvaluationTask } from './routes/evaluation.js'
+import evaluationRoutes, {
+  drainActiveEvaluationTasks,
+  runEvaluationTask,
+} from './routes/evaluation.js'
 import gatewayRoutes from './routes/gateway.js'
 import healthRoutes from './routes/health.js'
 import internalRoutes from './routes/internal.js'
@@ -336,6 +349,18 @@ const port = env.PORT
 // first-boot /auth/setup race cannot be won by an unauthenticated caller.
 let server: ReturnType<typeof serve> | undefined
 
+setDurableExecutionLeaseReleaseHandler(async (runId) => {
+  try {
+    await releaseScmWorkload({
+      type: 'run',
+      workloadId: runId,
+      ownerInstanceId: processInstanceId,
+    })
+  } catch (error) {
+    logger.error({ error, runId }, 'Failed to release durable SCM workload lease')
+  }
+})
+
 function startListening(): ReturnType<typeof serve> {
   const srv = serve(
     {
@@ -378,6 +403,8 @@ function startListening(): ReturnType<typeof serve> {
 // --- Graceful shutdown ---
 function gracefulShutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`)
+  pauseTaskQueuePromotions()
+  pauseEvaluationQueuePromotions()
   // The server may not be listening yet if a signal arrives during the pre-listen
   // admin bootstrap; run the teardown sequence directly in that case.
   if (!server) {
@@ -389,6 +416,10 @@ function gracefulShutdown(signal: string) {
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
+      },
+      drainExecutionLeases: async () => {
+        await Promise.all([drainActiveExecutionLeases(), drainActiveEvaluationTasks()])
+        await drainDurableExecutionLeaseReleases()
       },
       drainAuditWrites: () => drainAuditWrites(),
       closeDatabase: () => closeDatabaseConnection(),
@@ -409,6 +440,10 @@ function gracefulShutdown(signal: string) {
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
+      },
+      drainExecutionLeases: async () => {
+        await Promise.all([drainActiveExecutionLeases(), drainActiveEvaluationTasks()])
+        await drainDurableExecutionLeaseReleases()
       },
       drainAuditWrites: () => drainAuditWrites(),
       closeDatabase: () => closeDatabaseConnection(),
@@ -514,6 +549,7 @@ void ensureAdminExists()
       (runId, agentId) => void executeChatRun(agentId, runId),
       async () => await (await db.select({ id: agents.id }).from(agents)).map((r) => r.id),
       {
+        recoverInFlight: !isPostgres,
         onRunFailed: async (run, reason) => {
           if (run.triggerSource === 'a2a' && run.triggerSessionId) {
             await recoveryA2aStore
@@ -521,6 +557,9 @@ void ensureAdminExists()
               .catch((err) =>
                 logger.warn({ err, runId: run.id }, 'markTaskFailed during recovery failed'),
               )
+          }
+          if (!isPostgres) {
+            await releaseRecoveredScmWorkload({ type: 'run', workloadId: run.id })
           }
         },
       },
@@ -535,9 +574,19 @@ void ensureAdminExists()
     // Deferred off the boot path like the run recovery above: a crash can strand
     // hundreds of tasks, and settling them all synchronously would hold the event
     // loop long enough for a startup probe to kill the pod mid-recovery.
-    setImmediate(() => {
+    setImmediate(async () => {
       try {
-        const evalStats = recoverEvaluationsOnStartup(evaluationQueueDb, runEvaluationTask)
+        const evalStats = await recoverEvaluationsOnStartup(evaluationQueueDb, runEvaluationTask, {
+          recoverInFlight: !isPostgres,
+          onTaskFailed: async (task) => {
+            if (!isPostgres) {
+              await releaseRecoveredScmWorkload({
+                type: 'evaluation',
+                workloadId: task.id,
+              })
+            }
+          },
+        })
         logger.info({ recovery: evalStats }, 'Startup evaluation recovery completed')
       } catch (err) {
         logger.error(err, 'recoverEvaluationsOnStartup failed')

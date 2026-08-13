@@ -9,6 +9,13 @@ const mockDbAll = vi.fn()
 const mockDbUpdate = vi.fn()
 const mockDbOrderBy = vi.fn()
 const mockDbLimit = vi.fn()
+const mockWithAdmission = vi.hoisted(() => vi.fn())
+
+vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
+  withScmWorkloadAdmission: mockWithAdmission,
+  activateScmWorkload: vi.fn(),
+  releaseReservedScmWorkload: vi.fn(),
+}))
 
 vi.mock('../../db/client.js', () => ({
   db: {
@@ -26,6 +33,7 @@ vi.mock('../../db/schema.js', () => ({
   },
   agents: { id: 'agents.id', maxConcurrency: 'agents.max_concurrency' },
   runSteps: { runId: 'run_steps.run_id', status: 'run_steps.status' },
+  scmWorkloadLeases: { id: 'scm_workload_leases.id' },
 }))
 
 import { taskQueueDb } from '../task-queue-db.js'
@@ -123,5 +131,51 @@ describe('taskQueueDb runtime status validation', () => {
       expect.objectContaining({ result: { error: 'Interrupted by a server restart' } }),
     )
     expect(runSpy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('taskQueueDb queue admission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function admissionTx(updated: Array<{ id: string }>) {
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ value: 0 }]) })),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue(updated) })),
+        })),
+      })),
+    }
+  }
+
+  it('rolls admission back when the Run row disappeared before the status claim', async () => {
+    const tx = admissionTx([])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_missing' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_missing', 1)).rejects.toThrow(
+      'disappeared before queue admission',
+    )
+  })
+
+  it('returns the durable lease decision only after the Run status claim succeeds', async () => {
+    const tx = admissionTx([{ id: 'run_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_1' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_1', 1)).resolves.toEqual({
+      slot: 'acquired',
+      hasScmLease: true,
+    })
   })
 })

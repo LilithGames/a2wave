@@ -52,21 +52,20 @@ one API container, while replicas must mount the same RWX-capable PVC at the sam
 `SCM_STORAGE_ROOT` path. Node-local volumes would give each replica a different
 checkout even though they share the same SCM Source row.
 
-### ⚠️ Startup recovery is not replica-aware — read this before running replicas
+### ⚠️ PostgreSQL recovery is deliberately conservative
 
-**A second replica starting up will fail every run the first one is executing.**
-`recoverInterruptedRuns()` in `engine/task-queue.ts` marks *all* `running` rows as
-`SERVER_RESTART_DURING_EXEC`, with no filter for which instance owns them — the run
-queue was written for a single process, where every `running` row really was orphaned
-by the restart. With replicas that assumption is false: during a rolling update,
-replica B boots and kills the work still executing on replica A, which then finishes
-and writes the same rows back.
+Run and Evaluation admission now persists an SCM workload lease in the same
+transaction that snapshots the Agent binding. This prevents another replica from
+unbinding the Agent or reclaiming its checkout while the workload is queued,
+executing, cancelled-but-exiting, or cleaning up. Queue capacity decisions are also
+made under the same cross-replica transaction lock.
 
-This is worse than a stale cache: it does not serve an outdated value, it destroys
-in-flight work. Until runs carry an owning-instance id and recovery filters on it,
-treat multi-replica PostgreSQL as **unsuitable for long-running Agent work**. If you
-run replicas anyway, drain runs before rolling, or accept that a deploy cancels
-whatever is executing.
+A starting PostgreSQL replica does **not** fail `running`/`pending` workloads or
+reset `syncing`/`indexing` SCM rows: those may belong to a healthy peer. SQLite keeps
+the original automatic restart recovery because it has only one API process. The
+safety trade-off is explicit: after a hard PostgreSQL process loss, an in-flight row
+or SCM lease can require operator reconciliation instead of being guessed dead from
+age. Drain workloads before intentionally removing a replica.
 
 ### ⚠️ Caches are per-process — read this before running replicas
 
@@ -93,17 +92,12 @@ save; the 1s TTL in `src/lib/oidc.ts` bounds the divergence.
 reflects only the instance answering the request — the response's `meta.scope`
 says so explicitly.
 
-**4. In-process locks are per-replica.** Every `withKeyedLock` key — the SQLite
-transaction boundary, skill reupload, and the evaluation slot acquire — serialises
-callers *within one process only*. On a single replica that is sufficient; across
-replicas two callers can hold the "same" lock simultaneously.
-
-The one with a user-visible consequence is the evaluation slot: two submissions
-landing on different replicas can both start a task for the same Agent, and a
-**P4-backed Agent has no per-task workspace isolation**, so they would share one
-checkout. Closing this properly needs the database to hold the invariant — a
-partial unique index on `(agent_id) WHERE status = 'running'` — which means a
-migration on both lineages and is not implemented.
+**4. In-process locks are per-replica.** Every remaining `withKeyedLock` key — for
+example skill reupload — serialises callers *within one process only*. SCM workload
+admission, Agent binding mutation, and Run/Evaluation queue claims are the important
+exceptions: they use the cross-dialect SCM mutation transaction, backed by a
+PostgreSQL transaction-scoped advisory lock. A queued or active workload also holds
+a durable source lease until its process and workspace cleanup finish.
 
 ## Installing with the CLI
 

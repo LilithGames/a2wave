@@ -80,6 +80,10 @@ import {
   maskProviderChainConfig,
   preserveProviderChainSecrets,
 } from '../lib/agent-provider-config.js'
+import {
+  deleteAgentWithBindingGuard,
+  mutateAgentBinding,
+} from '../lib/agent-scm-binding-mutation.js'
 import { createShareToken } from '../lib/agent-share.js'
 import { askerCountExpr } from '../lib/asker-identity.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -118,8 +122,6 @@ import { runWithLifecycle } from '../lib/run-launcher.js'
 import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
-import { findActiveAgentScmWorkload } from '../lib/scm-workload-guard.js'
-import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
@@ -1465,54 +1467,14 @@ app.patch('/:id', async (c) => {
     disableWorkDir = await resolveWorkDir(existing)
   }
 
-  const effectiveWorkspaceType = parsed.data.workspaceType ?? existing.workspaceType
-  const effectiveScmSourceId =
-    scmSourceId !== undefined ? scmSourceId : (existing.scmSourceId ?? null)
-  const releasesScmBinding =
-    existing.workspaceType === 'scm' &&
-    existing.scmSourceId !== null &&
-    (effectiveWorkspaceType !== 'scm' || effectiveScmSourceId !== existing.scmSourceId)
-  const establishesScmBinding =
-    effectiveWorkspaceType === 'scm' &&
-    effectiveScmSourceId !== null &&
-    (existing.workspaceType !== 'scm' || effectiveScmSourceId !== existing.scmSourceId)
   const updateAgent = async (executor: typeof db) =>
     (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
-  const changesScmBinding = releasesScmBinding || establishesScmBinding
-  const bindingResult = changesScmBinding
-    ? await withAgentScmWorkloadLock(id, () =>
-        withScmPathMutation(async (tx) => {
-          if (releasesScmBinding) {
-            const active = await findActiveAgentScmWorkload(tx, id)
-            if (active) {
-              return { allowed: false as const, agent: undefined, active }
-            }
-          }
-          if (establishesScmBinding) {
-            const source = (
-              await tx
-                .select()
-                .from(scmSources)
-                .where(
-                  and(
-                    eq(scmSources.id, effectiveScmSourceId),
-                    isNull(scmSources.deletionRequestedAt),
-                  ),
-                )
-                .limit(1)
-            )[0]
-            if (!source || source.initialSyncCompletedAt == null) {
-              return { allowed: false as const, agent: undefined, active: undefined }
-            }
-          }
-          return {
-            allowed: true as const,
-            agent: await updateAgent(tx as typeof db),
-            active: undefined,
-          }
-        }),
-      )
-    : { allowed: true as const, agent: await updateAgent(db), active: undefined }
+  const bindingResult = await mutateAgentBinding({
+    agentId: id,
+    requestedWorkspaceType: parsed.data.workspaceType,
+    requestedScmSourceId: scmSourceId,
+    mutate: updateAgent,
+  })
   if (!bindingResult.allowed) {
     if (bindingResult.active) {
       const label = bindingResult.active.type === 'run' ? 'Run' : 'Evaluation'
@@ -1525,7 +1487,7 @@ app.patch('/:id', async (c) => {
     }
     return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
   }
-  const updated = bindingResult.agent
+  const updated = bindingResult.value
 
   resyncGitTriggerAfterUpdate(id, parsed.data, updated)
 
@@ -2962,22 +2924,16 @@ app.delete('/:id', async (c) => {
       .where(eq(runs.initiatorAgentId, id))
     return (await executor.delete(agents).where(eq(agents.id, id)).returning())[0]
   }
-  const deletion =
-    agent.workspaceType === 'scm' && agent.scmSourceId
-      ? await withAgentScmWorkloadLock(id, () =>
-          withScmPathMutation(async (tx) => {
-            const active = await findActiveAgentScmWorkload(tx, id)
-            if (active) return { active, deleted: undefined }
-            return { active: null, deleted: await deleteRows(tx as typeof db) }
-          }),
-        )
-      : { active: null, deleted: await deleteRows(db) }
-  if (deletion.active) {
-    const label = deletion.active.type === 'run' ? 'Run' : 'Evaluation'
-    return c.json(
-      { error: `Cannot delete the Agent while ${label} ${deletion.active.id} is active` },
-      409,
-    )
+  const deletion = await deleteAgentWithBindingGuard(id, deleteRows)
+  if (!deletion.allowed) {
+    if (deletion.active) {
+      const label = deletion.active.type === 'run' ? 'Run' : 'Evaluation'
+      return c.json(
+        { error: `Cannot delete the Agent while ${label} ${deletion.active.id} is active` },
+        409,
+      )
+    }
+    return c.json({ error: 'Agent not found' }, 404)
   }
 
   feishuConnectionManager.stop(id)
@@ -2992,7 +2948,7 @@ app.delete('/:id', async (c) => {
 
   logAudit(c, { action: 'agent.delete', resource: 'agent', resourceId: id })
 
-  return c.json({ data: maskAgentSecrets(deletion.deleted) })
+  return c.json({ data: maskAgentSecrets(deletion.value) })
 })
 
 export default app

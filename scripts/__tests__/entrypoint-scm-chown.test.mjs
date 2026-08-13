@@ -99,10 +99,17 @@ function prepareReclaimRoot(storageRoot, prelude = '') {
 }
 
 /** Claim an otherwise unused mount for a2wave's managed child directories. */
-function prepareManagedStorage(storageRoot) {
+function prepareManagedStorage(storageRoot, managedVolume = false) {
   return spawnSync(
     'bash',
-    ['-c', `set -eu; . "$1"; scm_prepare_managed_storage "$2"`, '_', SCRIPT, storageRoot],
+    [
+      '-c',
+      `set -eu; . "$1"; scm_prepare_managed_storage "$2" "$3"`,
+      '_',
+      SCRIPT,
+      storageRoot,
+      String(managedVolume),
+    ],
     { encoding: 'utf8' },
   )
 }
@@ -133,6 +140,23 @@ describe('scm_chown_targets', () => {
     assert.equal(readFileSync(join(root, 'sources', 'operator-repo'), 'utf8'), 'keep exactly')
     assert.throws(() => readFileSync(join(root, STORAGE_MARKER), 'utf8'), { code: 'ENOENT' })
     assert.deepEqual(chownTargets(root), [])
+  })
+
+  it('upgrades the legacy layout only when Compose identifies its managed volume', () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'sources'))
+    mkdirSync(join(root, 'sources', 'existing-checkout'))
+    writeFileSync(join(root, 'sources', 'existing-checkout', 'README.md'), 'preserve')
+    mkdirSync(join(root, 'workspaces'))
+
+    const result = prepareManagedStorage(root, true)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(join(root, STORAGE_MARKER), 'utf8'), 'a2wave-scm-storage-v1\n')
+    assert.equal(
+      readFileSync(join(root, 'sources', 'existing-checkout', 'README.md'), 'utf8'),
+      'preserve',
+    )
   })
 
   it('creates and marks a fresh reclaim root before handing it to appuser', () => {

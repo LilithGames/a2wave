@@ -6,8 +6,6 @@ interface ExecutionLeaseEntry {
   completion: Promise<void>
   resolveCompletion: () => void
   finished: boolean
-  /** Epoch ms when the lease was reserved; the sweeper uses it as a grace period. */
-  reservedAt: number
 }
 
 export interface ExecutionLease {
@@ -17,6 +15,16 @@ export interface ExecutionLease {
 
 const leasesByRunId = new Map<string, ExecutionLeaseEntry>()
 const leasesByTaskId = new Map<string, ExecutionLeaseEntry>()
+let durableReleaseHandler: ((runId: string) => Promise<void>) | undefined
+const pendingDurableReleases = new Set<Promise<void>>()
+const durableReleaseErrors: unknown[] = []
+
+/** Composition-root hook keeps this process primitive independent of the DB. */
+export function setDurableExecutionLeaseReleaseHandler(
+  handler: ((runId: string) => Promise<void>) | undefined,
+): void {
+  durableReleaseHandler = handler
+}
 
 function createExecutionLease(runId: string, agentId?: string): ExecutionLeaseEntry {
   let resolveCompletion!: () => void
@@ -31,7 +39,6 @@ function createExecutionLease(runId: string, agentId?: string): ExecutionLeaseEn
     completion,
     resolveCompletion,
     finished: false,
-    reservedAt: Date.now(),
   }
   leasesByRunId.set(runId, entry)
   return entry
@@ -124,21 +131,36 @@ export function completeExecutionLease(runId: string): void {
 
 /**
  * Snapshot of every unfinished lease, for the stale-lease sweeper to reconcile
- * against DB run status. A lease whose run has already reached a terminal state
- * has leaked (its owner never called finish) and permanently consumes a slot.
+ * against Run existence. Terminal status is not enough: the process may still
+ * be exiting or cleaning its workspace.
  */
 export function listActiveExecutionLeases(): Array<{
   runId: string
   agentId?: string
-  reservedAt: number
 }> {
-  const out: Array<{ runId: string; agentId?: string; reservedAt: number }> = []
+  const out: Array<{ runId: string; agentId?: string }> = []
   for (const entry of leasesByRunId.values()) {
     if (!entry.finished) {
-      out.push({ runId: entry.runId, agentId: entry.agentId, reservedAt: entry.reservedAt })
+      out.push({ runId: entry.runId, agentId: entry.agentId })
     }
   }
   return out
+}
+
+/** Wait until every fire-and-forget durable release has reached the database. */
+export async function drainDurableExecutionLeaseReleases(): Promise<void> {
+  await Promise.all([...pendingDurableReleases])
+  if (durableReleaseErrors.length > 0) {
+    const errors = durableReleaseErrors.splice(0)
+    throw new AggregateError(errors, 'One or more durable SCM workload lease releases failed')
+  }
+}
+
+/** Wait for active Run lifecycles to finish process and workspace cleanup. */
+export async function drainActiveExecutionLeases(): Promise<void> {
+  while (leasesByRunId.size > 0) {
+    await Promise.all([...leasesByRunId.values()].map((entry) => entry.completion))
+  }
 }
 
 function finishExecutionLeaseEntry(entry: ExecutionLeaseEntry): void {
@@ -149,11 +171,23 @@ function finishExecutionLeaseEntry(entry: ExecutionLeaseEntry): void {
     if (leasesByTaskId.get(taskId) === entry) leasesByTaskId.delete(taskId)
   }
   entry.resolveCompletion()
+  const release = durableReleaseHandler?.(entry.runId)
+  if (release) {
+    const tracked = release
+      .catch((error) => {
+        durableReleaseErrors.push(error)
+      })
+      .finally(() => pendingDurableReleases.delete(tracked))
+    pendingDurableReleases.add(tracked)
+  }
 }
 
 export function _resetExecutionLeasesForTests(): void {
   for (const entry of leasesByRunId.values()) finishExecutionLeaseEntry(entry)
   leasesByRunId.clear()
   leasesByTaskId.clear()
+  durableReleaseHandler = undefined
+  pendingDurableReleases.clear()
+  durableReleaseErrors.length = 0
 }
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
