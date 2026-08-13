@@ -54,6 +54,13 @@ checkout even though they share the same SCM Source row.
 
 ### ⚠️ PostgreSQL recovery is deliberately conservative
 
+The workspace-removal attempt-token migration is intentionally non-rolling:
+**mixed-version operation is unsupported**. Stop all pre-attempt-token API
+replicas before applying the workspace-removal migrations (`0008` and `0009`),
+then start only the upgraded version. An older remover deletes reservations by
+stable id alone and can erase a newer attempt's fence; keeping old and new
+writers live together is therefore unsafe even though both can read the row.
+
 Run and Evaluation admission now persists an SCM workload lease in the same
 transaction that snapshots the Agent binding. This prevents another replica from
 unbinding the Agent or reclaiming its checkout while the workload is queued,
@@ -66,6 +73,27 @@ the original automatic restart recovery because it has only one API process. The
 safety trade-off is explicit: after a hard PostgreSQL process loss, an in-flight row
 or SCM lease can require operator reconciliation instead of being guessed dead from
 age. Drain workloads before intentionally removing a replica.
+
+Workspace-removal reservations follow the same fail-closed rule. A live process
+retries a transient final-release failure using the reservation's exact
+`attempt_token`. After a confirmed hard process loss, first verify that no API
+replica is still removing the target and record both values from:
+
+```sql
+SELECT id, attempt_token, owner_instance_id, created_at
+FROM scm_workspace_removals
+ORDER BY created_at;
+```
+
+Then release only the exact observed attempt (never delete by age or source):
+
+```sql
+DELETE FROM scm_workspace_removals
+WHERE id = '<observed id>' AND attempt_token = '<observed attempt_token>';
+```
+
+If zero rows are affected, the reservation changed after inspection; stop and
+re-investigate instead of broadening the predicate.
 
 ### ⚠️ Caches are per-process — read this before running replicas
 

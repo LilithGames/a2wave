@@ -2250,6 +2250,7 @@
       "scm_source.probe": "探测代码源连通性",
       "scm_source.setup-script.run": "执行代码源初始化脚本",
       "scm_source.update": "更新代码源",
+      "scm_source.workspace.delete": "删除代码源工作区",
       "settings.auth.updated": "更新登录设置",
       "settings.sso.updated": "更新企业 SSO 设置",
       "provider_cli.install": "安装 Agent CLI",

@@ -119,11 +119,12 @@ export class WorktreeDirtyError extends Error {
 // ============================================================
 
 /**
- * 默认 workspacesPath：SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>
+ * Default workspacesPath: SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>
  *
- * 取 sourceId 第一个 '_' 之后的完整随机段（`scm_` 前缀去掉）。
- * 用 slice 而不是 split('_').pop()，因为 createId 的 base64url 字母表含 '_'，
- * pop 会丢失前缀之外的前几段熵、造成跨 source 的 wsRoot 冲突。
+ * Keep the complete random suffix after the first underscore (drop `scm_`).
+ * Use slice rather than split('_').pop(): createId's base64url alphabet
+ * includes underscores, so pop would discard entropy and could make wsRoot
+ * collide across sources.
  */
 export function defaultWorkspacesPath(
   sourceId: string,

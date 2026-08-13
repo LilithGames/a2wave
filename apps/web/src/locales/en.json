@@ -2223,6 +2223,7 @@
       "scm_source.probe": "Probe SCM source connectivity",
       "scm_source.setup-script.run": "Run SCM setup script",
       "scm_source.update": "Update SCM source",
+      "scm_source.workspace.delete": "Delete SCM workspace",
       "settings.auth.updated": "Update login settings",
       "settings.sso.updated": "Update enterprise SSO settings",
       "provider_cli.install": "Install Agent CLI",

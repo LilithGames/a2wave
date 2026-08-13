@@ -7,7 +7,7 @@ import { scheduleNext, sweepStaleLeases } from '../engine/task-queue.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { logger } from './logger.js'
 import { sweepOrphanedScmWorkloadLeases } from './scm-lease-sweeper.js'
-import { sweepStaleWorkspaceRemovals } from './scm-workspace-removal.js'
+import { retryPendingWorkspaceRemovalReleases } from './scm-workspace-removal.js'
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000
 
@@ -61,21 +61,16 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: durable SCM lease sweep failed')
     }
-    // Workspace-removal reservations are transient — bounded by the removal's
-    // own git timeouts — so age alone proves abandonment, including rows
-    // leaked by a replica that no longer exists. Without this sweep a crashed
-    // removal wedges its source's PATCH/DELETE and blocks recreating that
-    // worktree forever.
     try {
-      const purgedRemovals = await sweepStaleWorkspaceRemovals()
-      if (purgedRemovals.length > 0) {
-        logger.warn(
-          { purged: purgedRemovals },
-          'stale-lease-sweeper: purged abandoned workspace removal reservations',
+      const releasedReservations = await retryPendingWorkspaceRemovalReleases()
+      if (releasedReservations.length > 0) {
+        logger.info(
+          { released: releasedReservations },
+          'stale-lease-sweeper: released workspace removal reservations after retry',
         )
       }
     } catch (error) {
-      logger.error({ error }, 'stale-lease-sweeper: workspace removal sweep failed')
+      logger.error({ error }, 'stale-lease-sweeper: workspace removal release retry failed')
     }
   }, intervalMs)
   // Don't keep the event loop alive just for the sweeper.

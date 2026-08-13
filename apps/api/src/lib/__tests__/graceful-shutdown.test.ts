@@ -20,6 +20,9 @@ describe('runGracefulShutdownSequence', () => {
         drainExecutionLeases: vi.fn(async () => {
           calls.push('drainExecutionLeases')
         }),
+        drainWorkspaceRemovalReleases: vi.fn(async () => {
+          calls.push('drainWorkspaceRemovalReleases')
+        }),
         drainAuditWrites: vi.fn(async () => {
           calls.push('drainAuditWrites')
         }),
@@ -56,6 +59,7 @@ describe('runGracefulShutdownSequence', () => {
       'shutdownEngines:start',
       'shutdownEngines:end',
       'drainExecutionLeases',
+      'drainWorkspaceRemovalReleases',
       'drainAuditWrites',
       'closeDatabase',
     ])
@@ -71,6 +75,16 @@ describe('runGracefulShutdownSequence', () => {
     await runGracefulShutdownSequence(deps)
 
     expect(calls.indexOf('drainAuditWrites')).toBeLessThan(calls.indexOf('closeDatabase'))
+  })
+
+  it('drains fenced workspace-removal releases before closing the database', async () => {
+    const { calls, deps } = makeDeps()
+
+    await runGracefulShutdownSequence(deps)
+
+    expect(calls.indexOf('drainWorkspaceRemovalReleases')).toBeLessThan(
+      calls.indexOf('closeDatabase'),
+    )
   })
 
   it('still closes the database when the audit drain fails', async () => {

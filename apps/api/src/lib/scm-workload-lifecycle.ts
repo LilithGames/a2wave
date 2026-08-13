@@ -164,6 +164,29 @@ export interface OwnedScmWorkload extends ScmWorkloadIdentity {
   ownerInstanceId: string
 }
 
+/** Activate an existing reservation inside a caller-owned SCM mutation transaction. */
+export async function activateScmWorkloadInMutation(
+  tx: TransactionHandle,
+  input: OwnedScmWorkload,
+): Promise<boolean> {
+  const lease = await loadLease(tx, input)
+  if (!lease) return false
+  if (lease.phase === 'active') {
+    if (lease.ownerInstanceId !== input.ownerInstanceId) {
+      throw new ScmWorkloadLeaseConflictError(
+        `SCM workload "${lease.id}" is active on another process instance`,
+      )
+    }
+    return true
+  }
+  await tx
+    .update(scmWorkloadLeases)
+    .set({ phase: 'active', ownerInstanceId: input.ownerInstanceId, updatedAt: new Date() })
+    .where(eq(scmWorkloadLeases.id, lease.id))
+    .returning({ id: scmWorkloadLeases.id })
+  return true
+}
+
 export async function releaseReservedScmWorkloadInMutation(
   tx: TransactionHandle,
   input: ScmWorkloadIdentity,
@@ -216,25 +239,11 @@ export async function activateScmWorkload(
   deps: ScmWorkloadLifecycleDeps = defaultDeps,
 ): Promise<void> {
   await deps.withMutation(async (tx) => {
-    const lease = await loadLease(tx, input)
-    if (!lease) {
+    if (!(await activateScmWorkloadInMutation(tx, input))) {
       throw new ScmWorkloadLeaseConflictError(
         `SCM workload "${scmWorkloadLeaseId(input)}" has no durable reservation`,
       )
     }
-    if (lease.phase === 'active') {
-      if (lease.ownerInstanceId !== input.ownerInstanceId) {
-        throw new ScmWorkloadLeaseConflictError(
-          `SCM workload "${lease.id}" is active on another process instance`,
-        )
-      }
-      return
-    }
-    await tx
-      .update(scmWorkloadLeases)
-      .set({ phase: 'active', ownerInstanceId: input.ownerInstanceId, updatedAt: new Date() })
-      .where(eq(scmWorkloadLeases.id, lease.id))
-      .returning({ id: scmWorkloadLeases.id })
   })
 }
 

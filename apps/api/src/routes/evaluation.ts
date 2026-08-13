@@ -58,6 +58,8 @@ import {
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
+import { removeOwnedSourceWorkspaceGuarded } from '../lib/scm-workspace-removal.js'
+import { retryWorkspaceCleanupUntilSuccess } from '../lib/workspace-cleanup-retry.js'
 
 const app = new Hono()
 const activeEvaluationExecutions = new Set<Promise<void>>()
@@ -617,7 +619,9 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
   } finally {
     try {
       await auditEvaluationExecution(taskId, agentId, execution)
-      await discardEvaluationWorkspace(workspace, taskId)
+      await retryWorkspaceCleanupUntilSuccess(() => discardEvaluationWorkspace(workspace, taskId), {
+        context: { type: 'evaluation', taskId, agentId },
+      })
     } finally {
       releaseWorkload()
       if (hasDurableLease) {
@@ -724,26 +728,29 @@ async function discardEvaluationWorkspace(
 ): Promise<void> {
   if (!workspace || workspace.cleanup === 'none') return
 
-  try {
-    if (workspace.cleanup === 'remove-worktree') {
-      const source = (
-        await db.select().from(scmSources).where(eq(scmSources.id, workspace.sourceId)).limit(1)
-      )[0]
-      // `rm -rf` would leave the parent repo holding a stale admin entry that
-      // blocks the next checkout of that branch until `git worktree prune`.
-      const scm = source ? await createScmSource(source) : null
-      if (scm) await scm.removeWorkspace(workspace.worktreeName)
-      return
+  if (workspace.cleanup === 'remove-worktree') {
+    const source = (
+      await db.select().from(scmSources).where(eq(scmSources.id, workspace.sourceId)).limit(1)
+    )[0]
+    // `rm -rf` would leave the parent repo holding a stale admin entry that
+    // blocks the next checkout of that branch until `git worktree prune`.
+    const scm = source ? await createScmSource(source) : null
+    if (scm) {
+      await removeOwnedSourceWorkspaceGuarded({
+        sourceId: workspace.sourceId,
+        name: workspace.worktreeName,
+        scm,
+        workload: {
+          type: 'evaluation',
+          workloadId: taskId,
+          ownerInstanceId: processInstanceId,
+        },
+      })
     }
-
-    await rm(workspace.workDir, { recursive: true, force: true })
-  } catch (err) {
-    // Best-effort: a leftover workspace is untidy, not incorrect.
-    logger.warn(
-      { err, taskId, workDir: workspace.workDir },
-      'Failed to clean up evaluation workspace',
-    )
+    return
   }
+
+  await rm(workspace.workDir, { recursive: true, force: true })
 }
 
 /**

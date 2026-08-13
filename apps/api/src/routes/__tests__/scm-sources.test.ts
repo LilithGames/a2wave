@@ -49,6 +49,7 @@ vi.mock('../../db/schema.js', () => ({
     scmSourceId: 'scmWorkspaceRemovals.scmSourceId',
     workspaceName: 'scmWorkspaceRemovals.workspaceName',
     ownerInstanceId: 'scmWorkspaceRemovals.ownerInstanceId',
+    attemptToken: 'scmWorkspaceRemovals.attemptToken',
     createdAt: 'scmWorkspaceRemovals.createdAt',
   },
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
@@ -2499,6 +2500,7 @@ describe('SCM Sources routes', () => {
       expect(res.status).toBe(409)
       expect(((await res.json()) as { error: string }).error).toMatch(/already in progress/)
       expect(removed).not.toHaveBeenCalled()
+      expect(logAudit).not.toHaveBeenCalled()
     })
 
     it('removes a workspace no lease or run occupies, then releases the reservation', async () => {
@@ -2530,6 +2532,12 @@ describe('SCM Sources routes', () => {
       // Reservation written before the removal, released after it.
       expect(db.insert).toHaveBeenCalled()
       expect(db.delete).toHaveBeenCalled()
+      expect(logAudit).toHaveBeenCalledWith(expect.anything(), {
+        action: 'scm_source.workspace.delete',
+        resource: 'scm_source',
+        resourceId: 'scm_1',
+        details: { workspaceName: 'fix-bug' },
+      })
     })
 
     // The DB transaction must never span the git/filesystem removal: on the

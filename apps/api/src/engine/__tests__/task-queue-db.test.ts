@@ -10,6 +10,8 @@ const mockDbUpdate = vi.fn()
 const mockDbOrderBy = vi.fn()
 const mockDbLimit = vi.fn()
 const mockWithAdmission = vi.hoisted(() => vi.fn())
+const mockWithScmPathMutation = vi.hoisted(() => vi.fn())
+const mockActivateScmWorkloadInMutation = vi.hoisted(() => vi.fn())
 const mockListActiveExecutionLeases = vi.hoisted(() =>
   vi.fn((): Array<{ runId: string; agentId?: string }> => []),
 )
@@ -21,8 +23,10 @@ vi.mock('../execution-lease-registry.js', () => ({
 vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
   withScmWorkloadAdmission: mockWithAdmission,
   activateScmWorkload: vi.fn(),
+  activateScmWorkloadInMutation: mockActivateScmWorkloadInMutation,
   releaseReservedScmWorkload: vi.fn(),
 }))
+vi.mock('../../lib/scm-path-plan.js', () => ({ withScmPathMutation: mockWithScmPathMutation }))
 
 vi.mock('../../db/client.js', () => ({
   db: {
@@ -39,7 +43,11 @@ vi.mock('../../db/schema.js', () => ({
     createdAt: 'runs.created_at',
     worktreeConfig: 'runs.worktree_config',
   },
-  agents: { id: 'agents.id', maxConcurrency: 'agents.max_concurrency' },
+  agents: {
+    id: 'agents.id',
+    maxConcurrency: 'agents.max_concurrency',
+    workspaceType: 'agents.workspace_type',
+  },
   runSteps: { runId: 'run_steps.run_id', status: 'run_steps.status' },
   scmWorkloadLeases: {
     id: 'scm_workload_leases.id',
@@ -156,6 +164,7 @@ describe('taskQueueDb queue admission', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockListActiveExecutionLeases.mockReturnValue([])
+    mockActivateScmWorkloadInMutation.mockResolvedValue(true)
   })
 
   /**
@@ -206,7 +215,21 @@ describe('taskQueueDb queue admission', () => {
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_1', 1)).resolves.toEqual({
       slot: 'acquired',
       hasScmLease: true,
+      scmLeaseActivated: true,
     })
+  })
+
+  it('rolls immediate SCM admission back when its durable lease cannot be activated', async () => {
+    const tx = admissionTx([[], []], [{ id: 'run_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_1' }),
+    )
+    mockActivateScmWorkloadInMutation.mockResolvedValue(false)
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_1', 1)).rejects.toThrow(
+      /reserved durable lease/,
+    )
   })
 
   it('queues while an earlier execution lease is still cleaning up', async () => {
@@ -220,6 +243,7 @@ describe('taskQueueDb queue admission', () => {
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_2', 1)).resolves.toEqual({
       slot: 'queued',
       hasScmLease: true,
+      scmLeaseActivated: false,
     })
   })
 
@@ -239,6 +263,7 @@ describe('taskQueueDb queue admission', () => {
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_3', 1)).resolves.toEqual({
       slot: 'queued',
       hasScmLease: true,
+      scmLeaseActivated: false,
     })
   })
 
@@ -264,6 +289,7 @@ describe('taskQueueDb queue admission', () => {
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_third', 2)).resolves.toEqual({
       slot: 'queued',
       hasScmLease: true,
+      scmLeaseActivated: false,
     })
   })
 
@@ -302,6 +328,109 @@ describe('taskQueueDb queue admission', () => {
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_next', 2)).resolves.toEqual({
       slot: 'acquired',
       hasScmLease: true,
+      scmLeaseActivated: true,
     })
+  })
+})
+
+describe('taskQueueDb queued promotion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('changes status and activates the durable lease in one SCM mutation', async () => {
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{ id: 'run_q1' }]),
+          })),
+        })),
+      })),
+    }
+    mockWithScmPathMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) =>
+      fn(tx as never),
+    )
+    mockActivateScmWorkloadInMutation.mockResolvedValue(true)
+
+    await expect(taskQueueDb.promoteQueuedRun?.('agt_1', 'run_q1', 99)).resolves.toBe(true)
+
+    expect(mockWithScmPathMutation).toHaveBeenCalledTimes(1)
+    expect(mockActivateScmWorkloadInMutation).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ type: 'run', workloadId: 'run_q1' }),
+    )
+  })
+
+  it('rolls promotion back when an SCM run has lost its reserved durable lease', async () => {
+    let selectCall = 0
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => {
+            const rows = selectCall++ === 2 ? [{ workspaceType: 'scm' }] : []
+            return Object.assign(Promise.resolve(rows), {
+              limit: vi.fn().mockResolvedValue(rows),
+            })
+          }),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{ id: 'run_q1' }]),
+          })),
+        })),
+      })),
+    }
+    mockWithScmPathMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) =>
+      fn(tx as never),
+    )
+    mockActivateScmWorkloadInMutation.mockResolvedValue(false)
+
+    await expect(taskQueueDb.promoteQueuedRun?.('agt_1', 'run_q1', 99)).rejects.toThrow(
+      /reserved durable lease/,
+    )
+  })
+
+  it('does not activate a lease when another promoter won the status CAS', async () => {
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+        })),
+      })),
+    }
+    mockWithScmPathMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) =>
+      fn(tx as never),
+    )
+
+    await expect(taskQueueDb.promoteQueuedRun?.('agt_1', 'run_q1', 1)).resolves.toBe(false)
+    expect(mockActivateScmWorkloadInMutation).not.toHaveBeenCalled()
+  })
+
+  it('does not claim the queued run when the transactional capacity re-check is full', async () => {
+    let selectCall = 0
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => Promise.resolve(selectCall++ === 0 ? [{ id: 'run_live' }] : [])),
+        })),
+      })),
+      update: vi.fn(),
+    }
+    mockWithScmPathMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) =>
+      fn(tx as never),
+    )
+
+    await expect(taskQueueDb.promoteQueuedRun?.('agt_1', 'run_q1', 1)).resolves.toBe(false)
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(mockActivateScmWorkloadInMutation).not.toHaveBeenCalled()
   })
 })

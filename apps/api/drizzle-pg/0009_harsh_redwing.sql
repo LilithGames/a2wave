@@ -1,0 +1,1 @@
+ALTER TABLE "scm_workspace_removals" ADD COLUMN "attempt_token" text DEFAULT 'legacy' NOT NULL;

@@ -13,6 +13,8 @@ export interface GracefulShutdownDeps {
   stopSchedules: () => void
   /** Persist durable SCM lease releases emitted while children exit. */
   drainExecutionLeases: () => Promise<void>
+  /** Persist fenced workspace-removal reservation releases before DB close. */
+  drainWorkspaceRemovalReleases: () => Promise<void>
   /**
    * Wait for fire-and-forget audit inserts to settle. `logAudit` returns void and
    * no route awaits it, so an entry can still be queued when the signal arrives —
@@ -53,6 +55,7 @@ export async function runGracefulShutdownSequence(deps: GracefulShutdownDeps): P
   // After the engines (their terminal-state writes may themselves audit) and
   // strictly before the database closes.
   await safelyAsync(deps.drainExecutionLeases, 'drainExecutionLeases')
+  await safelyAsync(deps.drainWorkspaceRemovalReleases, 'drainWorkspaceRemovalReleases')
   await safelyAsync(deps.drainAuditWrites, 'drainAuditWrites')
   await safelyAsync(deps.closeDatabase, 'closeDatabase')
 }

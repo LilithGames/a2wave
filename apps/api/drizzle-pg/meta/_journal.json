@@ -57,6 +57,20 @@
       "when": 1786619781736,
       "tag": "0007_soft_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786623041175,
+      "tag": "0008_useful_squadron_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786623520502,
+      "tag": "0009_harsh_redwing",
+      "breakpoints": true
     }
   ]
 }

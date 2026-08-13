@@ -123,6 +123,23 @@ describe('tryAcquireSlot', () => {
     completeExecutionLease('run_1')
   })
 
+  it('does not re-activate a durable lease claimed by atomic database admission', async () => {
+    const activateRun = vi.fn()
+    const db = createMockDb({
+      admitRun: vi.fn().mockResolvedValue({
+        slot: 'acquired',
+        hasScmLease: true,
+        scmLeaseActivated: true,
+      }),
+      activateRun,
+    })
+
+    await expect(tryAcquireSlot(db, 'agt_1', 'run_atomic', 1)).resolves.toBe('acquired')
+
+    expect(activateRun).not.toHaveBeenCalled()
+    completeExecutionLease('run_atomic')
+  })
+
   it('uses the database admission decision across replicas without a stale local recount', async () => {
     const db = createMockDb({
       countRunsByStatus: vi.fn().mockRejectedValue(new Error('must not count outside admission')),
@@ -352,6 +369,29 @@ describe('scheduleNext', () => {
 
     expect(onExecute).not.toHaveBeenCalled()
     expect(countActiveExecutionLeases('agt_1')).toBe(0)
+  })
+
+  it('uses one durable promotion claim instead of a separate status CAS and activation', async () => {
+    const promoteQueuedRun = vi.fn().mockResolvedValue(true)
+    const tryTransitionRunStatus = vi.fn().mockResolvedValue(true)
+    const activateRun = vi.fn().mockResolvedValue(undefined)
+    const db = createMockDb({
+      getOldestQueuedRun: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'run_q1', initiatorAgentId: 'agt_1' })
+        .mockResolvedValueOnce(undefined),
+      promoteQueuedRun,
+      tryTransitionRunStatus,
+      activateRun,
+    })
+    const onExecute = vi.fn()
+
+    await expect(scheduleNext(db, 'agt_1', onExecute)).resolves.toBe(1)
+
+    expect(promoteQueuedRun).toHaveBeenCalledWith('agt_1', 'run_q1', 1)
+    expect(tryTransitionRunStatus).not.toHaveBeenCalled()
+    expect(activateRun).not.toHaveBeenCalled()
+    expect(onExecute).toHaveBeenCalledWith('run_q1', 'agt_1')
   })
 
   it('does not promote a queued run while a cancelled execution still owns the slot', async () => {

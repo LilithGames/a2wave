@@ -22,6 +22,7 @@ import { resolveNativeChatAttachments } from './native-chat-attachments.js'
 import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
 import { runWithLifecycle } from './run-launcher.js'
+import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
 
 /**
  * Execute a chat run (used for both immediate execution and queued run scheduling).
@@ -329,15 +330,12 @@ async function cleanupPreparedExecution(
   agentId: string,
   rootDir?: string | null,
 ): Promise<void> {
-  try {
-    if (rootDir) await cleanupMaterializedRoot(rootDir).catch(() => {})
-    const { cleanupWorktreeIfEphemeral } = await import('./run-lifecycle.js')
-    await cleanupWorktreeIfEphemeral(runId, agentId).catch((err) =>
-      logger.warn({ err, runId }, 'Worktree ephemeral cleanup failed'),
-    )
-  } finally {
-    completeExecutionLease(runId)
-  }
+  if (rootDir) await cleanupMaterializedRoot(rootDir).catch(() => {})
+  const { cleanupWorktreeIfEphemeral } = await import('./run-lifecycle.js')
+  await retryWorkspaceCleanupUntilSuccess(() => cleanupWorktreeIfEphemeral(runId, agentId), {
+    context: { type: 'run', runId, agentId, phase: 'pre-execution' },
+  })
+  completeExecutionLease(runId)
 }
 
 async function failRunBeforeLifecycle(

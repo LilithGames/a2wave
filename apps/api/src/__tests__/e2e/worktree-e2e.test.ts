@@ -183,9 +183,9 @@ beforeAll(async () => {
   const mod = await import('../../routes/gateway.js')
   gatewayApp = new Hono().route('/api/gateway', mod.default)
 
-  // 5. 与 index.ts 一致：执行租约结束时释放 durable SCM workload lease。
-  //    admission 现在把 active durable lease 计入并发；没有这个 handler，
-  //    上一个 invoke 留下的 lease 会让后续 invoke 全部排队（202）。
+  // 5. Match index.ts: release the durable SCM workload lease when the
+  //    execution lease ends. Admission counts active durable leases, so
+  //    omitting this handler would leave every later invocation queued (202).
   setDurableExecutionLeaseReleaseHandler(async (runId) => {
     await releaseScmWorkload({ type: 'run', workloadId: runId, ownerInstanceId: processInstanceId })
   })

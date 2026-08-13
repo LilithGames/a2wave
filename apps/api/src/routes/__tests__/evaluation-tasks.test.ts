@@ -150,12 +150,18 @@ vi.mock('../../lib/agent-helpers.js', () => ({
 }))
 
 const removeWorkspaceMock = vi.fn(async () => {})
+const removeOwnedSourceWorkspaceGuardedMock = vi.fn(async () => {})
 
 vi.mock('../../lib/scm-source.js', () => ({
   createScmSource: vi.fn(() => ({
     type: 'git',
     removeWorkspace: (...args: unknown[]) => removeWorkspaceMock(...(args as [])),
   })),
+}))
+
+vi.mock('../../lib/scm-workspace-removal.js', () => ({
+  removeOwnedSourceWorkspaceGuarded: (...args: unknown[]) =>
+    removeOwnedSourceWorkspaceGuardedMock(...(args as [])),
 }))
 
 import { db } from '../../db/client.js'
@@ -281,6 +287,7 @@ beforeEach(() => {
   replayCaseMock.mockReset()
   replayCaseMock.mockImplementation(replayCaseDefault)
   removeWorkspaceMock.mockClear()
+  removeOwnedSourceWorkspaceGuardedMock.mockClear()
   // Cleared so `auditFor()` only ever sees entries from the current test. The
   // assertions match by resourceId rather than position (see auditFor), because
   // clearing alone is not enough: tasks are fire-and-forget, so an earlier
@@ -661,16 +668,25 @@ describe('execution honours the frozen snapshot and a real workspace', () => {
     expect(replayCaseMock.mock.calls[0]?.[0].workDir).toBe(`/tmp/worktrees/eval-${task.id}`)
   })
 
-  it('removes the worktree through the SCM source, never with rm -rf', async () => {
+  it('removes the worktree through the durable guarded-removal protocol', async () => {
     linkGitScmSource('scm_git_2')
     const app = appAs(OWNER)
     const setId = await seedSet(app, AGENT_ID, 1)
     const task = (await (await createTask(app, AGENT_ID, { setId })).json()).data as { id: string }
-    await waitFor(() => removeWorkspaceMock.mock.calls.length > 0, 'the worktree cleanup')
+    await waitFor(
+      () => removeOwnedSourceWorkspaceGuardedMock.mock.calls.length > 0,
+      'the guarded worktree cleanup',
+    )
 
     // `rm -rf` on a worktree leaves the parent repo holding a stale admin entry
     // that blocks the next checkout of that branch until `git worktree prune`.
-    expect(removeWorkspaceMock).toHaveBeenCalledWith(`eval-${task.id}`)
+    expect(removeOwnedSourceWorkspaceGuardedMock).toHaveBeenCalledWith({
+      sourceId: 'scm_git_2',
+      name: `eval-${task.id}`,
+      scm: expect.anything(),
+      workload: expect.objectContaining({ type: 'evaluation', workloadId: task.id }),
+    })
+    expect(removeWorkspaceMock).not.toHaveBeenCalled()
   })
 
   it('fails the task when its worktree cannot be created', async () => {

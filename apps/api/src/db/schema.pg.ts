@@ -1268,14 +1268,14 @@ export const scmWorkloadLeases = pgTable(
  * worktree creation path, run admission (for an explicitly named worktree),
  * path PATCH, source DELETE, and env bootstrap consults it; the two marks are
  * both written before their action under the SCM mutation lock, so any
- * interleaving sees at least one of them. Rows are transient — bounded by the
- * removal's own git timeouts — and are swept by age, plus cleared wholesale on
- * single-process (SQLite) startup.
+ * interleaving sees at least one of them. SQLite clears leaked rows before it
+ * starts listening after a restart. PostgreSQL retains an uncertain row: age
+ * cannot prove that a peer's filesystem operation has stopped.
  */
 export const scmWorkspaceRemovals = pgTable(
   'scm_workspace_removals',
   {
-    /** Stable identity: `<scmSourceId>:<workspaceName>`. */
+    /** Stable target identity: `<scmSourceId>:<workspaceName>`. */
     id: text('id').primaryKey(),
     scmSourceId: text('scm_source_id')
       .notNull()
@@ -1283,12 +1283,18 @@ export const scmWorkspaceRemovals = pgTable(
     workspaceName: text('workspace_name').notNull(),
     /** Process instance performing the removal; observability, not authority. */
     ownerInstanceId: text('owner_instance_id').notNull(),
+    /** Opaque attempt fence; final release must match it to avoid ABA deletion. */
+    attemptToken: text('attempt_token').notNull().default('legacy'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
       .notNull()
       .$defaultFn(() => new Date()),
   },
   (table) => ({
     scmSourceIdIdx: index('scm_workspace_removals_scm_source_id_idx').on(table.scmSourceId),
+    targetUnique: uniqueIndex('scm_workspace_removals_target_unique').on(
+      table.scmSourceId,
+      table.workspaceName,
+    ),
   }),
 )
 

@@ -340,7 +340,7 @@ describe('resolveWorkDir', () => {
           config: {},
           localPath: '/git',
         }
-        // 4 次 db 查询：source / occupied-check / pending-removal / active-runs
+        // Four DB reads: source / occupied check / pending removal / active runs.
         mockDbFrom
           .mockReturnValueOnce(chainResult(source))
           .mockReturnValueOnce(chainResult(undefined))
@@ -361,7 +361,7 @@ describe('resolveWorkDir', () => {
 
         const agent = worktreeAgent({ scmSourceId: sourceId })
         await resolveWorkDir(agent, { name: 'ws', cleanup: 'ttl' })
-        // 等 fire-and-forget 完成
+        // Let the fire-and-forget cleanup settle.
         await new Promise((r) => setImmediate(r))
         return { cleanupStale }
       }
@@ -388,8 +388,8 @@ describe('resolveWorkDir', () => {
         const r1 = await runResolve('scm_b', [])
         expect(r1.cleanupStale).toHaveBeenCalledTimes(1)
 
-        // 第二次调用：只消费 source + occupied + pending-removal
-        // （triggerTtlCleanup 命中 debounce 不查 activeRuns）
+        // The second call reads only source + occupied + pending removal;
+        // triggerTtlCleanup hits the debounce and does not query active runs.
         const source = {
           id: 'scm_b',
           type: 'git',

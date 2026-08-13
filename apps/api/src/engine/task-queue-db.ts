@@ -4,8 +4,10 @@ import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { processInstanceId } from '../lib/process-instance.js'
 import type { FailureReason } from '../lib/run-failure-reasons.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import {
   activateScmWorkload,
+  activateScmWorkloadInMutation,
   releaseReservedScmWorkload,
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
@@ -178,7 +180,22 @@ export const taskQueueDb: TaskQueueDb = {
           if (updated.length === 0) {
             throw new Error(`Run "${runId}" disappeared before queue admission`)
           }
-          return { slot, hasScmLease: admission.leaseId !== null }
+          let scmLeaseActivated = false
+          if (slot === 'acquired' && admission.leaseId !== null) {
+            scmLeaseActivated = await activateScmWorkloadInMutation(executor, {
+              type: 'run',
+              workloadId: runId,
+              ownerInstanceId: processInstanceId,
+            })
+            if (!scmLeaseActivated) {
+              throw new Error(`Cannot admit SCM run "${runId}" without its reserved durable lease`)
+            }
+          }
+          return {
+            slot,
+            hasScmLease: admission.leaseId !== null,
+            scmLeaseActivated,
+          }
         },
       )
     } catch (error) {
@@ -207,6 +224,36 @@ export const taskQueueDb: TaskQueueDb = {
 
   async releaseReservedRun(runId: string): Promise<boolean> {
     return releaseReservedScmWorkload({ type: 'run', workloadId: runId })
+  },
+
+  async promoteQueuedRun(agentId: string, runId: string, maxConcurrency: number): Promise<boolean> {
+    return withScmPathMutation(async (tx) => {
+      if ((await countOccupiedRunSlots(tx, agentId)) >= maxConcurrency) return false
+      const changed = await tx
+        .update(runs)
+        .set({ status: 'running', updatedAt: new Date() })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
+        .returning({ id: runs.id })
+      if (changed.length === 0) return false
+      const activated = await activateScmWorkloadInMutation(tx, {
+        type: 'run',
+        workloadId: runId,
+        ownerInstanceId: processInstanceId,
+      })
+      if (!activated) {
+        const agent = (
+          await tx
+            .select({ workspaceType: agents.workspaceType })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .limit(1)
+        )[0]
+        if (agent?.workspaceType !== 'temp') {
+          throw new Error(`Cannot promote SCM run "${runId}" without its reserved durable lease`)
+        }
+      }
+      return true
+    })
   },
 
   async tryTransitionRunStatus(runId: string, from: string, to: string): Promise<boolean> {

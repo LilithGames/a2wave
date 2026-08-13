@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { and, eq, inArray, isNull, lt } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm'
 import type { db } from '../db/client.js'
 import { runs, scmSources, scmWorkloadLeases, scmWorkspaceRemovals } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
@@ -7,6 +8,12 @@ import { defaultWorkspacesPath } from './git-workspace.js'
 import { logger } from './logger.js'
 import { processInstanceId } from './process-instance.js'
 import { withScmPathMutation } from './scm-path-plan.js'
+import {
+  type OwnedScmWorkload,
+  type ScmWorkloadIdentity,
+  scmWorkloadLeaseId,
+} from './scm-workload-lifecycle.js'
+import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
 
 /**
  * The single protocol for removing a source's worktree.
@@ -26,17 +33,30 @@ import { withScmPathMutation } from './scm-path-plan.js'
  * - Workload admitted after → its creation path runs later still, reads the
  *   already-committed reservation, and refuses to create.
  *
- * Every remover goes through `removeSourceWorkspaceGuarded` (the manual route
- * and TTL/LRU cleanup both); every counter-party — worktree creation, run
- * admission of an explicitly named worktree, path PATCH, source DELETE, env
- * bootstrap — consults `findPendingWorkspaceRemoval`.
+ * Every remover goes through this module (manual route, TTL/LRU cleanup, and
+ * ephemeral Run/Evaluation cleanup); every counter-party — worktree creation,
+ * run admission of an explicitly named worktree, path PATCH, source DELETE,
+ * env bootstrap — consults `findPendingWorkspaceRemoval`.
  *
- * Reservations are transient, bounded by the removal's own git timeouts. A
- * crash can leak one; recovery is by age (`sweepStaleWorkspaceRemovals`) and,
- * on the single-process SQLite backend, a wholesale clear at startup.
+ * A crash can leak a reservation. SQLite can prove the previous owner is gone
+ * and clears rows before listening on restart. PostgreSQL cannot infer that a
+ * peer's filesystem operation stopped from age alone, so it retains uncertain
+ * rows rather than reopening the destructive race.
  */
 
 type QueryExecutor = Pick<typeof db, 'select'>
+
+interface PendingReservationRelease {
+  reservationId: string
+  attemptToken: string
+}
+
+const pendingReservationReleases = new Map<string, PendingReservationRelease>()
+const RESERVATION_RELEASE_RETRY_DELAY_MS = 100
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export class WorkspaceRemovalBlockedError extends Error {
   constructor(message: string) {
@@ -85,6 +105,7 @@ export async function findWorkspaceRemovalBlocker(
   sourceId: string,
   scm: Pick<RemovableScmWorkspace, 'localPath' | 'wsRoot'>,
   name: string,
+  excludingWorkload?: ScmWorkloadIdentity,
 ): Promise<string | null> {
   const wsPath = join(scm.wsRoot, name)
 
@@ -108,13 +129,15 @@ export async function findWorkspaceRemovalBlocker(
   }
 
   // Occupied by a run the status machine still tracks.
-  const occupied = (
-    await tx
-      .select({ id: runs.id })
-      .from(runs)
-      .where(and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])))
-      .limit(1)
-  )[0]
+  const occupancyFilter =
+    excludingWorkload?.type === 'run'
+      ? and(
+          eq(runs.workDir, wsPath),
+          inArray(runs.status, ['running', 'pending', 'queued']),
+          ne(runs.id, excludingWorkload.workloadId),
+        )
+      : and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued']))
+  const occupied = (await tx.select({ id: runs.id }).from(runs).where(occupancyFilter).limit(1))[0]
   if (occupied) return 'Workspace is occupied by a running or pending run'
 
   // The run-status check above cannot see two occupants the durable lease
@@ -129,11 +152,16 @@ export async function findWorkspaceRemovalBlocker(
     })
     .from(scmWorkloadLeases)
     .where(eq(scmWorkloadLeases.scmSourceId, sourceId))
-  const leasedEvaluation = leases.find(
+  const relevantLeases = leases.filter(
+    (lease) =>
+      lease.workloadType !== excludingWorkload?.type ||
+      lease.workloadId !== excludingWorkload.workloadId,
+  )
+  const leasedEvaluation = relevantLeases.find(
     (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
   )
   if (leasedEvaluation) return 'Workspace is occupied by a running evaluation'
-  const leasedRunIds = leases
+  const leasedRunIds = relevantLeases
     .filter((lease) => lease.workloadType === 'run')
     .map((lease) => lease.workloadId)
   if (leasedRunIds.length > 0) {
@@ -164,22 +192,60 @@ export async function findWorkspaceRemovalBlocker(
  *   2. The removal itself runs outside any DB transaction, inside the
  *      per-worktree mutex, with a `beforeRemove` re-check immediately ahead
  *      of the filesystem work.
- *   3. The reservation is released in `finally`; a leaked row (crash) is
- *      swept by age.
+ *   3. The reservation is released in `finally`; SQLite clears a crash leak
+ *      before listening on restart, while PostgreSQL fails closed.
  *
  * Throws `WorkspaceRemovalBlockedError` when the worktree is (or became)
  * occupied, or when a removal of the same worktree is already in progress.
  */
-export async function removeSourceWorkspaceGuarded(input: {
+interface GuardedRemovalInput {
   sourceId: string
   name: string
   scm: RemovableScmWorkspace
-}): Promise<void> {
-  const { sourceId, name, scm } = input
+  ownedWorkload?: OwnedScmWorkload
+}
+
+async function validateOwnedCleanup(
+  tx: TransactionHandle,
+  sourceId: string,
+  workload: OwnedScmWorkload,
+): Promise<ScmWorkloadIdentity> {
+  if (workload.ownerInstanceId !== processInstanceId) {
+    throw new WorkspaceRemovalBlockedError('Workspace cleanup is owned by another process instance')
+  }
+  const lease = (
+    await tx
+      .select({ id: scmWorkloadLeases.id })
+      .from(scmWorkloadLeases)
+      .where(
+        and(
+          eq(scmWorkloadLeases.id, scmWorkloadLeaseId(workload)),
+          eq(scmWorkloadLeases.scmSourceId, sourceId),
+          eq(scmWorkloadLeases.phase, 'active'),
+          eq(scmWorkloadLeases.ownerInstanceId, workload.ownerInstanceId),
+        ),
+      )
+      .limit(1)
+  )[0]
+  if (!lease) {
+    throw new WorkspaceRemovalBlockedError('Workspace cleanup no longer owns an active workload')
+  }
+  return { type: workload.type, workloadId: workload.workloadId }
+}
+
+async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Promise<void> {
+  const { sourceId, name, scm, ownedWorkload } = input
+  // Keep target identity stable across migrated rows. Mixed-version writers
+  // are unsupported because a pre-token finalizer can still delete by id alone;
+  // the independent attempt token fences current-version ABA replacement.
   const reservationId = workspaceRemovalId(sourceId, name)
+  const attemptToken = randomUUID()
 
   await withScmPathMutation(async (tx) => {
-    const blocked = await findWorkspaceRemovalBlocker(tx, sourceId, scm, name)
+    const excludingWorkload = ownedWorkload
+      ? await validateOwnedCleanup(tx, sourceId, ownedWorkload)
+      : undefined
+    const blocked = await findWorkspaceRemovalBlocker(tx, sourceId, scm, name, excludingWorkload)
     if (blocked) throw new WorkspaceRemovalBlockedError(blocked)
     const reserved = await tx
       .insert(scmWorkspaceRemovals)
@@ -188,6 +254,7 @@ export async function removeSourceWorkspaceGuarded(input: {
         scmSourceId: sourceId,
         workspaceName: name,
         ownerInstanceId: processInstanceId,
+        attemptToken,
         createdAt: new Date(),
       })
       .onConflictDoNothing()
@@ -198,59 +265,110 @@ export async function removeSourceWorkspaceGuarded(input: {
   })
 
   try {
-    await scm.removeWorkspace(name, {
-      beforeRemove: async () => {
-        const blocked = await withScmPathMutation((tx) =>
-          findWorkspaceRemovalBlocker(tx, sourceId, scm, name),
-        )
-        if (blocked) throw new WorkspaceRemovalBlockedError(blocked)
-      },
-    })
+    const remove = () =>
+      scm.removeWorkspace(name, {
+        beforeRemove: async () => {
+          const blocked = await withScmPathMutation(async (tx) => {
+            const excludingWorkload = ownedWorkload
+              ? await validateOwnedCleanup(tx, sourceId, ownedWorkload)
+              : undefined
+            return findWorkspaceRemovalBlocker(tx, sourceId, scm, name, excludingWorkload)
+          })
+          if (blocked) throw new WorkspaceRemovalBlockedError(blocked)
+        },
+      })
+    if (ownedWorkload) {
+      // Keep the reservation continuously visible between retries. Releasing
+      // it after a failed attempt would let a maxConcurrency>1 peer reuse this
+      // terminal workload's path before cleanup tries again.
+      await retryWorkspaceCleanupUntilSuccess(remove, {
+        context: {
+          type: ownedWorkload.type,
+          workloadId: ownedWorkload.workloadId,
+          sourceId,
+          workspaceName: name,
+        },
+      })
+    } else {
+      await remove()
+    }
   } finally {
     // Release even when the removal failed: the reservation only needs to
-    // span the attempt, and a wedged row would block the source's mutations
-    // until the age sweep. A failed delete here degrades to that sweep.
-    await withScmPathMutation(async (tx) => {
-      await tx
-        .delete(scmWorkspaceRemovals)
-        .where(eq(scmWorkspaceRemovals.id, reservationId))
-        .returning({ id: scmWorkspaceRemovals.id })
-    }).catch((error) => {
+    // span the attempt. If this delete fails, leaving the row is safer than
+    // guessing that filesystem removal stopped and reopening the race.
+    await releaseWorkspaceRemovalReservation({ reservationId, attemptToken }).catch((error) => {
+      pendingReservationReleases.set(reservationId, { reservationId, attemptToken })
       logger.error(
         { error, reservationId },
-        'Failed to release workspace removal reservation; the age sweep will reclaim it',
+        'Failed to release workspace removal reservation; queued an exact-attempt retry',
       )
     })
   }
 }
 
-/** A removal never legitimately outlives its git timeouts; 30 min is far past. */
-export const WORKSPACE_REMOVAL_MAX_AGE_MS = 30 * 60 * 1000
-
-/**
- * Purge reservations old enough that no live removal can still own them.
- * Age-based on purpose: unlike a workload lease, a reservation's lifetime is
- * bounded by the removal's own timeouts, so age alone is a safe proof of
- * abandonment — including for rows leaked by a replica that no longer exists.
- */
-export async function sweepStaleWorkspaceRemovals(
-  maxAgeMs: number = WORKSPACE_REMOVAL_MAX_AGE_MS,
-  now: Date = new Date(),
-): Promise<string[]> {
-  return withScmPathMutation(async (tx) => {
-    const cutoff = new Date(now.getTime() - maxAgeMs)
-    const purged = await tx
+async function releaseWorkspaceRemovalReservation(
+  pending: PendingReservationRelease,
+): Promise<void> {
+  await withScmPathMutation(async (tx) => {
+    await tx
       .delete(scmWorkspaceRemovals)
-      .where(lt(scmWorkspaceRemovals.createdAt, cutoff))
+      .where(
+        and(
+          eq(scmWorkspaceRemovals.id, pending.reservationId),
+          eq(scmWorkspaceRemovals.attemptToken, pending.attemptToken),
+        ),
+      )
       .returning({ id: scmWorkspaceRemovals.id })
-    return purged.map((row) => row.id)
   })
+}
+
+/** Retry only releases this process actually attempted and fence every delete by attempt token. */
+export async function retryPendingWorkspaceRemovalReleases(): Promise<string[]> {
+  const released: string[] = []
+  for (const [reservationId, pending] of [...pendingReservationReleases]) {
+    try {
+      await releaseWorkspaceRemovalReservation(pending)
+      // A zero-row delete means the exact attempt no longer exists (for
+      // example, an operator recovered it); either way this retry is complete.
+      if (pendingReservationReleases.get(reservationId)?.attemptToken === pending.attemptToken) {
+        pendingReservationReleases.delete(reservationId)
+      }
+      released.push(reservationId)
+    } catch (error) {
+      logger.error({ error, reservationId }, 'Workspace removal reservation release retry failed')
+    }
+  }
+  return released
+}
+
+/** Keep retrying this process's fenced releases until shutdown can close the DB safely. */
+export async function drainPendingWorkspaceRemovalReleases(): Promise<void> {
+  while (pendingReservationReleases.size > 0) {
+    await retryPendingWorkspaceRemovalReleases()
+    if (pendingReservationReleases.size > 0) {
+      await delay(RESERVATION_RELEASE_RETRY_DELAY_MS)
+    }
+  }
+}
+
+export function removeSourceWorkspaceGuarded(
+  input: Omit<GuardedRemovalInput, 'ownedWorkload'>,
+): Promise<void> {
+  return removeSourceWorkspaceGuardedCore(input)
+}
+
+/** Remove the ephemeral workspace owned by this process's active workload. */
+export function removeOwnedSourceWorkspaceGuarded(
+  input: Omit<GuardedRemovalInput, 'ownedWorkload'> & { workload: OwnedScmWorkload },
+): Promise<void> {
+  const { workload, ...removal } = input
+  return removeSourceWorkspaceGuardedCore({ ...removal, ownedWorkload: workload })
 }
 
 /**
  * Single-process (SQLite) startup: no previous removal can still be running,
  * so every reservation is a leak from the dead process. PostgreSQL replicas
- * must NOT do this — a peer may be mid-removal — and rely on the age sweep.
+ * must NOT do this — a peer may be mid-removal — and retain uncertain rows.
  */
 export async function clearWorkspaceRemovalsOnStartup(): Promise<number> {
   return withScmPathMutation(async (tx) => {

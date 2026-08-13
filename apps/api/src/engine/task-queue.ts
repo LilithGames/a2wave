@@ -63,9 +63,11 @@ export interface TaskQueueDb {
     agentId: string,
     runId: string,
     maxConcurrency: number,
-  ): Promise<{ slot: SlotResult; hasScmLease: boolean }>
+  ): Promise<{ slot: SlotResult; hasScmLease: boolean; scmLeaseActivated?: boolean }>
   /** Mark a reserved SCM workload as owned by this process before execution. */
   activateRun?(runId: string): Promise<void>
+  /** Atomically re-check capacity, claim queued status, and activate its durable SCM lease. */
+  promoteQueuedRun?(agentId: string, runId: string, maxConcurrency: number): Promise<boolean>
   /** Release a queued reservation that never started. */
   releaseReservedRun?(runId: string): Promise<boolean>
   /**
@@ -157,7 +159,9 @@ export async function tryAcquireSlot(
       if (admission.slot === 'acquired') {
         reserveExecutionLease(runId, agentId)
         try {
-          if (admission.hasScmLease) await db.activateRun?.(runId)
+          if (admission.hasScmLease && !admission.scmLeaseActivated) {
+            await db.activateRun?.(runId)
+          }
         } catch (error) {
           completeExecutionLease(runId)
           throw error
@@ -291,18 +295,18 @@ async function promoteQueuedRunsLocked(
     // reserveExecutionLease is idempotent by runId — the second reservation is a
     // silent no-op, the lease count stays at 1, and both callers would proceed to
     // spawn a CLI against one run and one workspace.
-    const claimed = await db.tryTransitionRunStatus(next.id, 'queued', 'running')
+    const claimed = db.promoteQueuedRun
+      ? await db.promoteQueuedRun(agentId, next.id, maxConcurrency)
+      : await db.tryTransitionRunStatus(next.id, 'queued', 'running')
     if (!claimed) continue
     reserveExecutionLease(next.id, agentId)
-    try {
-      await db.activateRun?.(next.id)
-    } catch (error) {
-      // This process never started the workload and must not leak one of its
-      // local concurrency slots. The completion hook releases a reservation it
-      // owns; an active lease owned by a peer rejects that release and remains
-      // the durable safety boundary.
-      completeExecutionLease(next.id)
-      throw error
+    if (!db.promoteQueuedRun) {
+      try {
+        await db.activateRun?.(next.id)
+      } catch (error) {
+        completeExecutionLease(next.id)
+        throw error
+      }
     }
     onExecute(next.id, agentId)
     promoted++

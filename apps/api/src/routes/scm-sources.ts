@@ -1170,6 +1170,12 @@ app.delete('/:id/workspaces/:name', async (c) => {
     }
     throw error
   }
+  logAudit(c, {
+    action: 'scm_source.workspace.delete',
+    resource: 'scm_source',
+    resourceId: id,
+    details: { workspaceName: name },
+  })
   return c.json({ data: { message: 'Workspace removed' } })
 })
 

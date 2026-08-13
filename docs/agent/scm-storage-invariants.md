@@ -63,7 +63,8 @@ below hold across every affected entry point.
   the lease in exactly the windows that matter — an Evaluation writes no `runs`
   row yet owns an `eval-<taskId>` worktree, and a Run's lease outlives its
   terminal status until cleanup.
-- Every worktree removal — the manual DELETE route and TTL/LRU cleanup alike —
+- Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
+  Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and
   worktree lifecycle is arbitrated cross-replica by a **durable removal
   reservation** (`scm_workspace_removals`), the mirror image of the workload
@@ -83,15 +84,36 @@ below hold across every affected entry point.
   removal target — a freed root may already belong to another source — with
   the registered-worktree assertion as the filesystem-level backstop. The
   reservation is released in `finally`.
+- Ephemeral cleanup may exclude only its own workload, through the narrow owned
+  cleanup API. The reservation transaction first proves that the exact durable
+  lease is active on this process instance and pinned to this source; its own
+  Run row and lease are then excluded while every other occupant still blocks.
+  A failed cleanup is retried while the local workload owner and durable lease
+  remain active, and one removal reservation stays continuously visible across
+  filesystem retries. Queue capacity and binding/path guards are released only
+  after cleanup succeeds.
 - The reservation is recognized by every counter-party: worktree resolution
   refuses to create or reuse a reserved name; run admission rejects a run
   whose explicit `worktreeConfig.name` is reserved; path PATCH, source DELETE,
   and env bootstrap return 409 / defer while one is pending. A second removal
-  of the same worktree loses the reservation's primary-key conflict.
-- Reservations are transient — bounded by the removal's own git timeouts — so
-  recovery is by **age** (unlike leases, where age proves nothing): the sweeper
-  purges rows older than the bound, and single-process (SQLite) startup clears
-  them wholesale. PostgreSQL startup must not: a peer may be mid-removal.
+  of the same worktree loses the stable target-id / `(source, workspace)`
+  unique conflict. A separate opaque attempt token fences release and recovery,
+  so a delayed current-version `finally` cannot delete a newer reservation for
+  the same target. The attempt-token migration is intentionally non-rolling:
+  **mixed-version operation is unsupported**. Stop all pre-attempt-token API
+  replicas before applying the workspace-removal migrations, then start only
+  the upgraded version; an old writer still deletes by stable id alone.
+- Reservation age is **not** proof of abandonment: multi-repository Git work
+  and filesystem cleanup can outlive any per-command timeout, and a slow or
+  partitioned peer may still be deleting. Single-process SQLite clears leaked
+  rows synchronously before opening its port after restart. PostgreSQL retains
+  an uncertain row; startup and the lease sweeper must never delete a peer's
+  reservation merely by age. A live process retries its own failed release by
+  exact attempt token. Crash leftovers use the explicit PostgreSQL operator
+  recovery procedure, also fenced by the observed token.
+  Graceful shutdown drains these exact-token release retries before closing the
+  database, so a normal stop does not turn a transient release error into an
+  operator-only recovery.
 - A leased Run whose `workDir` is still NULL blocks every worktree of the
   source: it has not chosen its directory yet and may resolve to the one being
   deleted.
