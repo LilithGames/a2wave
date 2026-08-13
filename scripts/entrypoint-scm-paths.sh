@@ -32,17 +32,33 @@ SCM_RECLAIM_SUBDIR='.a2wave-scm-reclaim-v1'
 SCM_RECLAIM_MARKER='.a2wave-owned-reclaim-root'
 SCM_RECLAIM_MARKER_CONTENT='a2wave-scm-reclaim-v1'
 
+# The pre-managed-storage entrypoint persisted the verified CLI-home owner as
+# `UID:GID`. Its marker is positive provenance that this is an a2wave-initialized
+# home volume, rather than an arbitrary operator bind mounted at the same path.
+scm_cli_home_marker_is_valid() {
+  owner_marker="$1"
+  [ -f "$owner_marker" ] || return 1
+  [ -L "$owner_marker" ] && return 1
+  case "$(cat "$owner_marker" 2>/dev/null || true)" in
+    *[!0-9:]* | *:*:*) return 1 ;;
+    [0-9]*:[0-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Releases before managed SCM storage did not set SCM_STORAGE_ROOT. Their
 # private CLI-home volume nevertheless contains a2wave-created worktrees at
 # ~/.a2wave/workspaces. Permit marker adoption only for that exact fallback;
 # an explicitly configured path remains operator-owned even if it has the same
-# spelling. The optional third argument makes the filesystem contract testable
+# spelling. The optional fourth argument makes the filesystem contract testable
 # without requiring access to /home/appuser.
 scm_legacy_storage_adoption() {
   scm_root="$1"
   root_was_set="$2"
-  legacy_root="${3:-/home/appuser/.a2wave}"
-  if [ "$root_was_set" != "x" ] && [ "$scm_root" = "$legacy_root" ]; then
+  has_cli_home_marker="$3"
+  legacy_root="${4:-/home/appuser/.a2wave}"
+  if [ "$root_was_set" != "x" ] && [ "$has_cli_home_marker" = "true" ] &&
+    [ "$scm_root" = "$legacy_root" ]; then
     printf '%s\n' true
   else
     printf '%s\n' false
@@ -76,6 +92,14 @@ scm_prepare_managed_storage() {
     # An invalid marker belongs to the operator. Refuse before creating or
     # changing anything else.
     if [ -e "$marker" ] || [ -L "$marker" ]; then
+      return 1
+    fi
+    # Older releases created only `workspaces/` below the private SCM root.
+    # A pre-existing `sources/` therefore has no legacy a2wave provenance and
+    # must remain operator-owned even when workspaces are eligible to migrate.
+    legacy_sources="$scm_root/sources"
+    if [ "$allow_legacy_adoption" = "true" ] &&
+      { [ -e "$legacy_sources" ] || [ -L "$legacy_sources" ]; }; then
       return 1
     fi
     for scm_subdir in $SCM_MANAGED_SUBDIRS; do

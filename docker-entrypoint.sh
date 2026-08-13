@@ -70,8 +70,15 @@ SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
 # Sourced (not executed): supplies scm_chown_targets, which decides which SCM
 # subtrees the remap below may take ownership of.
 . /usr/local/bin/entrypoint-scm-paths.sh
+SCM_HAS_LEGACY_CLI_HOME_MARKER=false
+if scm_cli_home_marker_is_valid "$CLI_HOME_OWNER_MARKER"; then
+  SCM_HAS_LEGACY_CLI_HOME_MARKER=true
+fi
 SCM_LEGACY_STORAGE_ADOPTION="$(
-  scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$SCM_STORAGE_ROOT_WAS_SET"
+  scm_legacy_storage_adoption \
+    "$SCM_STORAGE_ROOT" \
+    "$SCM_STORAGE_ROOT_WAS_SET" \
+    "$SCM_HAS_LEGACY_CLI_HOME_MARKER"
 )"
 
 # Complete every filesystem preflight before UID remap or ownership changes.

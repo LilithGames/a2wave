@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
@@ -72,6 +72,15 @@ function makeRoot() {
   return dir
 }
 
+/** Validate the legacy CLI-home marker through the helper used by entrypoint. */
+function cliHomeMarkerIsValid(markerPath) {
+  return spawnSync(
+    'bash',
+    ['-c', `set -eu; . "$1"; scm_cli_home_marker_is_valid "$2"`, '_', SCRIPT, markerPath],
+    { encoding: 'utf8' },
+  )
+}
+
 /** Run `scm_chown_targets <storage_root>` and return the emitted paths. */
 function chownTargets(storageRoot) {
   const result = spawnSync(
@@ -115,7 +124,7 @@ function prepareManagedStorage(storageRoot) {
 }
 
 /** Exercise the same absent-variable fallback used by an upgraded legacy Compose file. */
-function prepareLegacyComposeStorage(storageRoot) {
+function prepareLegacyComposeStorage(storageRoot, hasCliHomeMarker = true) {
   return spawnSync(
     'bash',
     [
@@ -125,11 +134,12 @@ function prepareLegacyComposeStorage(storageRoot) {
        scm_storage_root_was_set="\${SCM_STORAGE_ROOT+x}"
        SCM_STORAGE_ROOT="\${SCM_STORAGE_ROOT:-$2}"
        . "$1"
-       legacy_adoption="$(scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$scm_storage_root_was_set" "$2")"
+       legacy_adoption="$(scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$scm_storage_root_was_set" "$3" "$2")"
        scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "$legacy_adoption"`,
       '_',
       SCRIPT,
       storageRoot,
+      String(hasCliHomeMarker),
     ],
     { encoding: 'utf8' },
   )
@@ -160,6 +170,32 @@ afterEach(() => {
 })
 
 describe('scm_chown_targets', () => {
+  it('recognizes the UID:GID marker written by the legacy entrypoint', () => {
+    const root = makeRoot()
+    const marker = join(root, '.a2wave-home-owner')
+    writeFileSync(marker, '10001:10001\n')
+
+    const result = cliHomeMarkerIsValid(marker)
+
+    assert.equal(result.status, 0, result.stderr)
+  })
+
+  it('rejects missing, malformed, and symlinked CLI-home markers', () => {
+    const root = makeRoot()
+    const missing = join(root, 'missing-owner-marker')
+    assert.notEqual(cliHomeMarkerIsValid(missing).status, 0)
+
+    const malformed = join(root, 'malformed-owner-marker')
+    writeFileSync(malformed, 'operator data\n')
+    assert.notEqual(cliHomeMarkerIsValid(malformed).status, 0)
+
+    const validTarget = join(root, 'valid-owner-marker')
+    const linked = join(root, 'linked-owner-marker')
+    writeFileSync(validTarget, '10001:10001\n')
+    symlinkSync(validTarget, linked)
+    assert.notEqual(cliHomeMarkerIsValid(linked).status, 0)
+  })
+
   it('marks a fresh mount before creating managed child directories', () => {
     const root = makeRoot()
 
@@ -197,6 +233,24 @@ describe('scm_chown_targets', () => {
       readFileSync(join(root, 'workspaces', 'existing-worktree', 'README.md'), 'utf8'),
       'preserve',
     )
+  })
+
+  it('refuses a mixed legacy root containing an operator-owned sources directory', () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'workspaces'))
+    mkdirSync(join(root, 'workspaces', 'existing-worktree'))
+    mkdirSync(join(root, 'sources'))
+    mkdirSync(join(root, 'sources', 'operator-repo'))
+    writeFileSync(join(root, 'sources', 'operator-repo', 'KEEP'), 'keep exactly')
+
+    const result = prepareLegacyComposeStorage(root)
+
+    assert.notEqual(result.status, 0)
+    assert.equal(
+      readFileSync(join(root, 'sources', 'operator-repo', 'KEEP'), 'utf8'),
+      'keep exactly',
+    )
+    assert.throws(() => readFileSync(join(root, STORAGE_MARKER), 'utf8'), { code: 'ENOENT' })
   })
 
   it('does not adopt a legacy-looking directory when SCM_STORAGE_ROOT is explicit', () => {
