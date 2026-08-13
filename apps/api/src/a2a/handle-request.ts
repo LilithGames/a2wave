@@ -12,7 +12,7 @@ import type { TaskStore, User } from '@a2a-js/sdk/server'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { agents } from '../db/schema.js'
-import { buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
+import { buildAgentConfig } from '../lib/agent-helpers.js'
 import { ProviderConfigurationError } from '../lib/errors.js'
 import {
   getStreamingCard,
@@ -202,10 +202,8 @@ export async function handleA2ARequest(
     if (preflightError) return c.json(preflightError)
 
     let agentConfig: Awaited<ReturnType<typeof buildAgentConfig>>
-    let resolvedWorkDir: string
     try {
       agentConfig = await buildAgentConfig(agent)
-      resolvedWorkDir = await resolveWorkDir(agent)
     } catch (err) {
       if (err instanceof ProviderConfigurationError) {
         return c.json({
@@ -222,7 +220,6 @@ export async function handleA2ARequest(
     }
     executorConfig = {
       agentConfig,
-      workDir: resolvedWorkDir,
       model: agentConfig.model || undefined,
     }
 

@@ -18,6 +18,8 @@ const mockFinishRunSuccess = vi.hoisted(() => vi.fn().mockResolvedValue([]))
 const mockFinishRunError = vi.hoisted(() =>
   vi.fn(() => 'Execution failed. Check server logs for details.'),
 )
+const mockResolveWorkDir = vi.hoisted(() => vi.fn().mockResolvedValue('/fresh/scm/checkout'))
+const mockTryAcquireSlot = vi.hoisted(() => vi.fn().mockReturnValue('acquired'))
 const mockCreateId = vi.hoisted(() => vi.fn((prefix: string) => `${prefix}_test`))
 const mockValidateGatewayAuth = vi.hoisted(() => vi.fn())
 
@@ -59,6 +61,7 @@ vi.mock('../../a2a/agent-card.js', () => ({
 }))
 vi.mock('../../a2a/handle-request.js', () => ({ handleA2ARequest: mockHandleA2ARequest }))
 vi.mock('../../lib/execute-with-retry.js', () => ({ executeWithRetry: mockExecuteWithRetry }))
+vi.mock('../../lib/agent-helpers.js', () => ({ resolveWorkDir: mockResolveWorkDir }))
 vi.mock('../../lib/run-lifecycle.js', () => ({
   finishRunSuccess: mockFinishRunSuccess,
   finishRunError: mockFinishRunError,
@@ -78,7 +81,7 @@ vi.mock('../../a2a/sqlite-task-store.js', () => ({
   },
 }))
 vi.mock('../../engine/task-queue.js', () => ({
-  tryAcquireSlot: vi.fn().mockReturnValue('acquired'),
+  tryAcquireSlot: mockTryAcquireSlot,
 }))
 vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
@@ -91,6 +94,8 @@ import { asyncQuery } from '../../test/async-query.js'
 describe('public A2A run recording', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockResolveWorkDir.mockReset().mockResolvedValue('/fresh/scm/checkout')
+    mockTryAcquireSlot.mockReset().mockReturnValue('acquired')
     mockValidateGatewayAuth.mockResolvedValue({})
     mockDbGet.mockReturnValue({
       id: 'agt_test',
@@ -169,6 +174,19 @@ describe('public A2A run recording', () => {
       }),
     )
     expect(mockFinishRunSuccess).toHaveBeenCalledTimes(1)
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'agt_test' }),
+      undefined,
+      'run_test',
+    )
+    expect(mockResolveWorkDir.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockTryAcquireSlot.mock.invocationCallOrder[0],
+    )
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      'task_test',
+      expect.objectContaining({ workDir: '/fresh/scm/checkout' }),
+      expect.objectContaining({ runId: 'run_test' }),
+    )
   })
 
   it('uses the TCP peer for A2A IP authorization when X-Forwarded-For is untrusted', async () => {
@@ -190,6 +208,23 @@ describe('public A2A run recording', () => {
       expect.anything(),
       expect.objectContaining({ clientIp: '198.51.100.42' }),
     )
+  })
+
+  it('fails the admitted run when the current workspace cannot be resolved', async () => {
+    mockResolveWorkDir.mockRejectedValueOnce(new Error('workspace changed'))
+
+    const res = await app.request('/agt_test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'message/stream', id: 'workspace-error' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockFinishRunError).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_test', workDir: '' }),
+      expect.objectContaining({ message: 'workspace changed' }),
+    )
+    expect(mockExecuteWithRetry).not.toHaveBeenCalled()
   })
 
   it('rate-limits A2A requests at the same 60 per minute boundary as other gateways', async () => {
