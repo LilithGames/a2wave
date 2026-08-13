@@ -10,11 +10,23 @@
 # the /data/workspace bind mount, which is routinely a host directory used
 # directly by whoever runs the stack.
 #
-# `.reclaiming` holds checkouts a DELETE has vacated but not yet deleted. It is
-# a2wave's own, and the startup sweep must be able to remove its contents as
+# The reclaim root holds checkouts a DELETE has vacated but not yet deleted. It
+# is a2wave's own, and the startup sweep must be able to remove its contents as
 # appuser — so a UID remap that skipped it would strand those directories under
 # the old owner forever, leaking exactly the space reclaim exists to recover.
-SCM_MANAGED_SUBDIRS='sources workspaces .reclaiming'
+#
+# It must also be PRE-CREATED by the entrypoint, not left to the API: the block
+# that consumes this list deliberately leaves SCM_STORAGE_ROOT root-owned (the
+# root is routinely an operator-owned host bind), so appuser cannot mkdir a
+# child of it at runtime. Without the pre-create, the API's first reclaim fails
+# with EACCES and every source deletion returns 503 with the row stuck pending.
+#
+# This name is duplicated from SCM_RECLAIM_DIR in
+# apps/api/src/lib/scm-storage.ts — a shell script cannot import a TS constant.
+# scripts/__tests__/entrypoint-scm-chown.test.mjs reads that constant and fails
+# if the two ever drift, which is how the previous `.reclaiming` name survived a
+# rename here while the API had already moved on.
+SCM_MANAGED_SUBDIRS='sources workspaces .a2wave-scm-reclaim-v1'
 
 # Print the paths the UID remap may chown, one per line.
 #

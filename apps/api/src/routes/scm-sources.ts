@@ -109,7 +109,11 @@ app.get('/', async (c) => {
 app.get('/:id', async (c) => {
   const { id } = c.req.param()
   const ownerFilter = getOwnerFilter(c, scmSources.userId)
-  const conditions = ownerFilter ? and(eq(scmSources.id, id), ownerFilter) : eq(scmSources.id, id)
+  // Same visibility rule as the list: a source with a committed deletion
+  // reservation is on its way out and rejects every write, so serving it by id
+  // would present a live source that 409s on the next edit.
+  const visible = and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
+  const conditions = ownerFilter ? and(visible, ownerFilter) : visible
   const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
   if (!source) {
     return c.json({ error: 'SCM source not found' }, 404)

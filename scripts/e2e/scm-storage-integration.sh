@@ -60,14 +60,37 @@ if [[ "${SCM_STORAGE_BUILD_IMAGE:-true}" == "true" ]]; then
   docker build -q -t "$IMAGE_NAME" "$REPO_ROOT" >/dev/null
 fi
 
+# The reclaim root must be covered too, and specifically as a *mkdir* rather
+# than a touch: DELETE moves a vacated checkout into a subdirectory of it, and
+# the entrypoint leaves SCM_STORAGE_ROOT itself root-owned, so a reclaim root
+# that was never pre-created cannot be created by appuser at runtime. That gap
+# made every source deletion fail with a 503 while this gate stayed green,
+# because it only ever exercised sources/ and workspaces/.
+SCM_RECLAIM_DIR_NAME="$(
+  sed -n "s/^export const SCM_RECLAIM_DIR = '\(.*\)'$/\1/p" \
+    "$REPO_ROOT/apps/api/src/lib/scm-storage.ts"
+)"
+[[ -n "$SCM_RECLAIM_DIR_NAME" ]] || {
+  echo "could not read SCM_RECLAIM_DIR from apps/api/src/lib/scm-storage.ts" >&2
+  exit 1
+}
+
 assert_container_writable() {
   local mount_spec="$1"
   docker run --rm \
     -e AUTH_SECRET=scm-storage-integration-secret \
     -e SCM_STORAGE_ROOT=/data/workspace \
     -v "$mount_spec:/data/workspace" \
+    -e SCM_RECLAIM_DIR_NAME="$SCM_RECLAIM_DIR_NAME" \
     "$IMAGE_NAME" \
-    sh -euc 'touch /data/workspace/sources/write-check /data/workspace/workspaces/write-check; rm /data/workspace/sources/write-check /data/workspace/workspaces/write-check'
+    sh -euc '
+      touch /data/workspace/sources/write-check /data/workspace/workspaces/write-check
+      rm /data/workspace/sources/write-check /data/workspace/workspaces/write-check
+      # Mirrors isolateManagedScmStorage: park a directory inside the reclaim
+      # root, then remove it.
+      mkdir "/data/workspace/$SCM_RECLAIM_DIR_NAME/scm_probe-localPath"
+      rmdir "/data/workspace/$SCM_RECLAIM_DIR_NAME/scm_probe-localPath"
+    '
 }
 
 # Named volume: Docker creates a root-owned mount; the entrypoint must provision
@@ -84,6 +107,9 @@ assert_container_writable "$ROOT_BIND"
 [[ "$(stat -c '%u:%g' "$ROOT_BIND")" == "0:0" ]]
 [[ "$(stat -c '%u:%g' "$ROOT_BIND/sources")" == "10001:10001" ]]
 [[ "$(stat -c '%u:%g' "$ROOT_BIND/workspaces")" == "10001:10001" ]]
+# The root stays root-owned by design, so appuser can only ever write here if
+# the entrypoint pre-created and handed over this directory.
+[[ "$(stat -c '%u:%g' "$ROOT_BIND/$SCM_RECLAIM_DIR_NAME")" == "10001:10001" ]]
 
 # User-owned explicit bind: preserve the operator's mount-root identity too.
 USER_BIND="$INTEGRATION_ROOT/user-bind"

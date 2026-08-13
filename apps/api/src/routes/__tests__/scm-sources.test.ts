@@ -312,6 +312,32 @@ describe('SCM Sources routes', () => {
       expect(res.status).toBe(200)
     })
 
+    /**
+     * A source whose deletion has been reserved is gone from the list and
+     * rejects every write, so serving it here presents a live source that
+     * 409s on any edit. The list filters it; this route must agree.
+     *
+     * Asserted on the predicate rather than the response because the db mock
+     * returns its canned row regardless of the WHERE clause.
+     */
+    it('excludes a source reserved for deletion', async () => {
+      const chain = makeDbChain({ id: 'scm_1', name: 'Source1' })
+      const wherePredicates: unknown[] = []
+      const from = chain.from as Mock
+      const query = from()
+      const originalWhere = query.where as Mock
+      query.where = vi.fn((predicate: unknown) => {
+        wherePredicates.push(predicate)
+        return originalWhere(predicate)
+      })
+      from.mockReturnValue(query)
+      ;(db.select as Mock).mockReturnValue(chain)
+
+      await app.request('/api/scm-sources/scm_1')
+
+      expect(JSON.stringify(wherePredicates)).toContain('deletionRequestedAt')
+    })
+
     it('masks git pat and repoUrl credentials on read (even for admin)', async () => {
       ;(db.select as Mock).mockReturnValue(
         makeDbChain({

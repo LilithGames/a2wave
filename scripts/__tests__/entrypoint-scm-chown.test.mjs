@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
@@ -28,6 +28,41 @@ import { afterEach, describe, it } from 'node:test'
 
 const SCRIPT = join(import.meta.dirname, '..', 'entrypoint-scm-paths.sh')
 const dirs = []
+
+/**
+ * The reclaim directory name, read from the TypeScript that actually creates it
+ * rather than restated here.
+ *
+ * Restating it is the bug this guards: the shell and the TS each carried their
+ * own copy of `.reclaiming`, the TS side was renamed to
+ * `.a2wave-scm-reclaim-v1`, and the shell kept provisioning and chowning a name
+ * nothing else used. Both this test and the entrypoint stayed green while the
+ * real directory was never handed to appuser — and since the entrypoint
+ * deliberately leaves SCM_STORAGE_ROOT root-owned, appuser could not create it
+ * at runtime either, so every source deletion failed with a 503.
+ */
+function reclaimDirFromSource() {
+  const source = readFileSync(
+    join(import.meta.dirname, '..', '..', 'apps', 'api', 'src', 'lib', 'scm-storage.ts'),
+    'utf8',
+  )
+  const match = source.match(/export const SCM_RECLAIM_DIR = '([^']+)'/)
+  assert.ok(match, 'SCM_RECLAIM_DIR not found in apps/api/src/lib/scm-storage.ts')
+  return match[1]
+}
+
+const RECLAIM_DIR = reclaimDirFromSource()
+
+/** The managed subtree list the shell helper declares. */
+function managedSubdirsFromScript() {
+  const result = spawnSync(
+    'bash',
+    ['-c', `set -eu; . "$1"; printf '%s\\n' $SCM_MANAGED_SUBDIRS`, '_', SCRIPT],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 0, `helper failed: ${result.stderr}`)
+  return result.stdout.split('\n').filter(Boolean)
+}
 
 function makeRoot() {
   const dir = mkdtempSync(join(tmpdir(), 'a2wave-scm-chown-'))
@@ -60,17 +95,35 @@ describe('scm_chown_targets', () => {
   })
 
   /**
-   * DELETE parks a vacated checkout in `.reclaiming/` and the startup sweep
+   * DELETE parks a vacated checkout in the reclaim root and the startup sweep
    * deletes it as appuser. A remap that skipped this subtree would leave those
    * directories owned by the old UID, so the sweep could never remove them —
    * a permanent leak of exactly the space reclaim exists to recover.
+   *
+   * The name comes from the TS that creates it, so a rename on either side
+   * fails here instead of silently going unswept.
    */
   it('emits the reclaim isolation subtree so the startup sweep can delete it', () => {
     const root = makeRoot()
     mkdirSync(join(root, 'sources'))
-    mkdirSync(join(root, '.reclaiming'))
+    mkdirSync(join(root, RECLAIM_DIR))
 
-    assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, '.reclaiming')])
+    assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, RECLAIM_DIR)])
+  })
+
+  /**
+   * The shell list and the TypeScript constant must name the same directory.
+   *
+   * Asserted directly rather than only through behaviour because the two live
+   * in different languages with no compiler between them: `19ba649` renamed the
+   * TS side and left the shell on the old `.reclaiming`, and every existing
+   * test still passed because they all restated the stale literal too.
+   */
+  it('declares the same reclaim directory the API creates', () => {
+    assert.ok(
+      managedSubdirsFromScript().includes(RECLAIM_DIR),
+      `SCM_MANAGED_SUBDIRS must include ${RECLAIM_DIR} (from SCM_RECLAIM_DIR)`,
+    )
   })
 
   it('leaves an operator directory under the same mount untouched', () => {

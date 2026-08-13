@@ -55,13 +55,21 @@ below hold across every affected entry point.
   worktree path. Never recursively delete an operator-chosen path or a symlink,
   and never vacate a path that still overlaps a surviving peer — legacy rows can
   nest a worktree root inside another source's checkout.
-- The legacy `.reclaiming/` name is not swept. Existing operator data with that
-  name remains untouched during upgrade.
+- The legacy `.reclaiming/` name is not swept, created, or chowned by anything.
+  Existing operator data with that name remains untouched during upgrade.
 
 ## Container ownership
 
-- The entrypoint may create and own `sources/` and `workspaces/` beneath
-  `SCM_STORAGE_ROOT`; it must not chown the mount root or unrelated contents.
+- The entrypoint may create and own `sources/`, `workspaces/` and the reclaim
+  root beneath `SCM_STORAGE_ROOT`; it must not chown the mount root or unrelated
+  contents.
+- Every directory the API must create children in has to be pre-created here.
+  Because the mount root stays root-owned, appuser cannot mkdir a child of it at
+  runtime: a managed subtree missing from the entrypoint's list fails with
+  EACCES on first use, which for the reclaim root means every source deletion
+  returns 503 with the row stuck in the pending reservation. The shell list and
+  `SCM_RECLAIM_DIR` are pinned together by
+  `scripts/__tests__/entrypoint-scm-chown.test.mjs`.
 - The same rule applies to named volumes, Docker-created root-owned binds, and
   explicit user-owned binds.
 - Refuse symlinked roots or managed children before any traversal or ownership
