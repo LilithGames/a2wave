@@ -113,6 +113,28 @@ jobs:
   # The release is pinned and checksum-verified, matching how scripts/provider-clis/install.mjs
   # fetches third-party binaries — an unpinned download would let a moved tag change what runs.
   # Bump VERSION and SHA256 together; the checksum comes from the release's tarball.
+  # Hygiene gate: a PR description must report gate RESULTS, not pasted terminal
+  # output. pnpm prints each package's absolute path before every script it runs,
+  # so a pasted run log leaks the author's home directory (PR #28 carried 131
+  # copies of it across ~3,800 lines) and buries the actual verdict.
+  #
+  # Uses the `pull_request` event's own payload rather than the API, so it keeps
+  # the workflow's read-only token and never runs untrusted code from a fork.
+  pr-description:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # Via the environment, not an inline expression: a body containing shell
+      # metacharacters must never be interpolated into the run script.
+      - name: Check PR description hygiene
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" | node scripts/gates/check-pr-body.mjs -
+
   secret-scan:
     runs-on: ubuntu-latest
     env:
