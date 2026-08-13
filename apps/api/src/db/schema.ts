@@ -47,6 +47,7 @@ export const agentMembers = active.agentMembers
 export const evaluationSets = active.evaluationSets
 export const evaluationCases = active.evaluationCases
 export const evaluationTasks = active.evaluationTasks
+export const scmWorkloadLeases = active.scmWorkloadLeases
 export const evaluationResults = active.evaluationResults
 export const cliInstallations = active.cliInstallations
 export const gitTriggerStates = active.gitTriggerStates
