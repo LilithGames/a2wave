@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { env } from '../env.js'
 
@@ -6,6 +7,11 @@ export const SCM_RECLAIM_MARKER = '.a2wave-owned-reclaim-root'
 
 export function scmReclaimRoot(): string {
   return join(env.SCM_STORAGE_ROOT, SCM_RECLAIM_DIR)
+}
+
+/** Same-filesystem parking root for worktrees created by pre-managed releases. */
+export function legacyScmReclaimRoot(): string {
+  return join(homedir(), '.a2wave', 'workspaces', SCM_RECLAIM_DIR)
 }
 
 /** Preserve the entire createId random segment, including embedded underscores. */

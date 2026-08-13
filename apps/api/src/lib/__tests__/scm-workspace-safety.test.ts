@@ -125,6 +125,16 @@ describe('validateScmWorkspacesRoot', () => {
     }
   })
 
+  it('rejects the legacy-volume reclaim root even for an administrator', async () => {
+    const { legacyScmReclaimRoot } = await import('../scm-storage.js')
+    expect(
+      validateScmWorkspacesRoot(join(legacyScmReclaimRoot(), 'operator-worktrees'), '', {
+        allowOutsideConfiguredRoots: true,
+        protectedPaths: [],
+      }),
+    ).toMatch(/reclaim root/)
+  })
+
   it('rejects platform storage even when an operator configures a broad allowed root', async () => {
     expect(
       validateScmWorkspacesRoot('/app/data/skills/worktrees', '/app/data', {

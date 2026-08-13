@@ -101,13 +101,13 @@ To deploy with the bundled PostgreSQL container:
 a2wave setup \
   --yes \
   --with-postgres \
-  --dir "$HOME/a2wave" \
-  --port 3502
+  --dir "$HOME/a2wave-pg" \
+  --port 3512
 ```
 
 The CLI automatically selects the versioned image matching its own release. Keep
 the install directory stable across upgrades: the version belongs in the CLI and
-image, not in `$HOME/a2wave`. PostgreSQL support is currently experimental; see
+image, not in `$HOME/a2wave-pg`. PostgreSQL support is currently experimental; see
 [Database Backend](#database-backend) before using it in production.
 
 The generated deployment includes a dedicated `a2wave-workspace` volume. New Git

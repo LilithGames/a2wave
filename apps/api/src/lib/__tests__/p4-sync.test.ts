@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { P4Config } from '@a2wave/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { env } from '../../env.js'
@@ -92,6 +93,7 @@ import {
   tryAcquireCheckout,
 } from '../p4-sync.js'
 import type { ScmSyncResult } from '../p4-sync.js'
+import { legacyScmReclaimRoot } from '../scm-storage.js'
 
 describe('P4 client roots', () => {
   it('parses Root and AltRoots from a client spec', () => {
@@ -583,6 +585,25 @@ describe('syncScmSource', () => {
     const result = await syncScmSource('s1')
     expect(result.ok).toBe(true)
     expect(mockExecuteGitSync).toHaveBeenCalled()
+  })
+
+  it('refuses to sync a stored source from the legacy-volume reclaim root', async () => {
+    const source = {
+      id: 's1',
+      name: 'legacy reclaim collision',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: join(legacyScmReclaimRoot(), 'parked-checkout'),
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('reclaim root')
+    expect(mockExecuteGitSync).not.toHaveBeenCalled()
   })
 
   it('aborts and waits for a cancellable automatic initial sync', async () => {

@@ -90,12 +90,12 @@ a2wave setup
 a2wave setup \
   --yes \
   --with-postgres \
-  --dir "$HOME/a2wave" \
-  --port 3502
+  --dir "$HOME/a2wave-pg" \
+  --port 3512
 ```
 
 CLI 会自动选择与自身版本一致的版本化镜像。升级时应继续使用同一个安装目录：版本号属于
-CLI 和镜像，不应写进 `$HOME/a2wave`。PostgreSQL 目前仍是实验性功能，生产环境使用前请先阅读
+CLI 和镜像，不应写进 `$HOME/a2wave-pg`。PostgreSQL 目前仍是实验性功能，生产环境使用前请先阅读
 [数据库后端](#数据库后端)。
 
 生成的部署会包含独立的 `a2wave-workspace` 命名卷。新建 Git 代码源时，a2wave 会自动在该卷中

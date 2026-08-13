@@ -21,6 +21,7 @@ vi.mock('../../db/client.js', () => ({ db: {} }))
 import { env } from '../../env.js'
 import { defaultWorkspacesPath } from '../git-workspace.js'
 import { acquireScmPathMutationLock, pathsOverlap, resolveScmPathPlan } from '../scm-path-plan.js'
+import { legacyScmReclaimRoot } from '../scm-storage.js'
 
 /**
  * One source row as the planner sees it. Kept minimal on purpose: the planner
@@ -148,6 +149,24 @@ describe('resolveScmPathPlan', () => {
         sourceId: 'scm_zZzZ',
         type: 'git',
         [field]: '/data/workspace/.a2wave-scm-reclaim-v1/operator-data',
+        existingSources: [],
+        isAdmin: true,
+      })
+
+      expect(plan.ok).toBe(false)
+      if (plan.ok) return
+      expect(plan.status).toBe(400)
+      expect(plan.error).toContain('reclaim')
+    },
+  )
+
+  it.each(['localPath', 'workspacesPath'] as const)(
+    'rejects %s inside the legacy-volume reclaim root',
+    (field) => {
+      const plan = resolveScmPathPlan({
+        sourceId: 'scm_zZzZ',
+        type: 'git',
+        [field]: join(legacyScmReclaimRoot(), 'operator-data'),
         existingSources: [],
         isAdmin: true,
       })

@@ -52,16 +52,17 @@ function reclaimDirFromSource() {
 }
 
 const RECLAIM_DIR = reclaimDirFromSource()
+const RECLAIM_MARKER = '.a2wave-owned-reclaim-root'
 
-/** The managed subtree list the shell helper declares. */
-function managedSubdirsFromScript() {
+/** The reclaim subtree name the shell helper declares. */
+function reclaimSubdirFromScript() {
   const result = spawnSync(
     'bash',
-    ['-c', `set -eu; . "$1"; printf '%s\\n' $SCM_MANAGED_SUBDIRS`, '_', SCRIPT],
+    ['-c', `set -eu; . "$1"; printf '%s\\n' "$SCM_RECLAIM_SUBDIR"`, '_', SCRIPT],
     { encoding: 'utf8' },
   )
   assert.equal(result.status, 0, `helper failed: ${result.stderr}`)
-  return result.stdout.split('\n').filter(Boolean)
+  return result.stdout.trim()
 }
 
 function makeRoot() {
@@ -81,11 +82,46 @@ function chownTargets(storageRoot) {
   return result.stdout.split('\n').filter(Boolean)
 }
 
+/** Run the same reclaim-root provisioning helper the entrypoint calls. */
+function prepareReclaimRoot(storageRoot) {
+  return spawnSync(
+    'bash',
+    ['-c', `set -eu; . "$1"; scm_prepare_reclaim_root "$2"`, '_', SCRIPT, storageRoot],
+    { encoding: 'utf8' },
+  )
+}
+
 afterEach(() => {
   while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true })
 })
 
 describe('scm_chown_targets', () => {
+  it('creates and marks a fresh reclaim root before handing it to appuser', () => {
+    const root = makeRoot()
+    const result = prepareReclaimRoot(root)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(
+      readFileSync(join(root, RECLAIM_DIR, RECLAIM_MARKER), 'utf8'),
+      'a2wave-scm-reclaim-v1\n',
+    )
+    assert.deepEqual(chownTargets(root), [join(root, RECLAIM_DIR)])
+  })
+
+  it('refuses an unmarked existing reclaim root without mutating its contents', () => {
+    const root = makeRoot()
+    const reclaimRoot = join(root, RECLAIM_DIR)
+    mkdirSync(reclaimRoot)
+    writeFileSync(join(reclaimRoot, 'operator-data'), 'keep exactly')
+
+    const result = prepareReclaimRoot(root)
+
+    assert.notEqual(result.status, 0)
+    assert.equal(readFileSync(join(reclaimRoot, 'operator-data'), 'utf8'), 'keep exactly')
+    assert.throws(() => readFileSync(join(reclaimRoot, RECLAIM_MARKER), 'utf8'), { code: 'ENOENT' })
+    assert.deepEqual(chownTargets(root), [])
+  })
+
   it('emits only the a2wave-managed subtrees, never the mount root', () => {
     const root = makeRoot()
     mkdirSync(join(root, 'sources'))
@@ -107,8 +143,27 @@ describe('scm_chown_targets', () => {
     const root = makeRoot()
     mkdirSync(join(root, 'sources'))
     mkdirSync(join(root, RECLAIM_DIR))
+    writeFileSync(join(root, RECLAIM_DIR, RECLAIM_MARKER), 'a2wave-scm-reclaim-v1\n')
 
     assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, RECLAIM_DIR)])
+  })
+
+  it('never adopts an unmarked pre-existing reclaim directory as a chown target', () => {
+    const root = makeRoot()
+    const reclaimRoot = join(root, RECLAIM_DIR)
+    mkdirSync(reclaimRoot)
+    writeFileSync(join(reclaimRoot, 'operator-data'), 'keep')
+
+    assert.deepEqual(chownTargets(root), [])
+  })
+
+  it('never adopts a reclaim directory carrying an invalid ownership marker', () => {
+    const root = makeRoot()
+    const reclaimRoot = join(root, RECLAIM_DIR)
+    mkdirSync(reclaimRoot)
+    writeFileSync(join(reclaimRoot, RECLAIM_MARKER), 'operator marker\n')
+
+    assert.deepEqual(chownTargets(root), [])
   })
 
   /**
@@ -120,9 +175,10 @@ describe('scm_chown_targets', () => {
    * test still passed because they all restated the stale literal too.
    */
   it('declares the same reclaim directory the API creates', () => {
-    assert.ok(
-      managedSubdirsFromScript().includes(RECLAIM_DIR),
-      `SCM_MANAGED_SUBDIRS must include ${RECLAIM_DIR} (from SCM_RECLAIM_DIR)`,
+    assert.equal(
+      reclaimSubdirFromScript(),
+      RECLAIM_DIR,
+      `SCM_RECLAIM_SUBDIR must equal ${RECLAIM_DIR} (from SCM_RECLAIM_DIR)`,
     )
   })
 

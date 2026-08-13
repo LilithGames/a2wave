@@ -13,7 +13,7 @@ import { logger } from './logger.js'
 import { verifyP4ClientRootCoverage } from './p4-client-root.js'
 import { selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { isolateManagedScmStorage } from './scm-storage-reclaim.js'
-import { scmReclaimRoot } from './scm-storage.js'
+import { legacyScmReclaimRoot, scmReclaimRoot } from './scm-storage.js'
 import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
@@ -541,7 +541,11 @@ async function runSyncUnderCheckoutLock(
     return { ok: false, message: 'SCM source deletion is pending' }
   }
 
-  if (filesystemPathsOverlap(source.localPath, scmReclaimRoot())) {
+  if (
+    [scmReclaimRoot(), legacyScmReclaimRoot()].some((root) =>
+      filesystemPathsOverlap(source.localPath, root),
+    )
+  ) {
     releaseCheckout(sourceId)
     await releasePreAcquiredSync(sourceId, 'SCM localPath overlaps the private reclaim root')
     return { ok: false, message: 'SCM localPath overlaps the private reclaim root' }

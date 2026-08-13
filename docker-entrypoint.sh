@@ -148,6 +148,17 @@ for scm_subdir in $SCM_MANAGED_SUBDIRS; do
   chown -h "$TARGET_UID:$TARGET_GID" "$scm_dir"
 done
 
+# The reclaim root is different from the ordinary managed children: its marker
+# is the proof that a2wave owns it. Never adopt or chown a pre-existing unmarked
+# directory, even when empty; it may be operator data using the same name.
+scm_reclaim_root="$SCM_STORAGE_ROOT/$SCM_RECLAIM_SUBDIR"
+if ! scm_prepare_reclaim_root "$SCM_STORAGE_ROOT"; then
+  echo "[entrypoint] refusing to start: $scm_reclaim_root is not an a2wave-owned reclaim root" >&2
+  exit 1
+fi
+chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root"
+chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root/$SCM_RECLAIM_MARKER"
+
 # Runtime install root for Provider CLIs (see the A2WAVE_CLI_INSTALL_ROOT comment in the Dockerfile).
 # These are chowned here rather than relying on the ownership repair below: that block is guarded by
 # a marker cache, so on a second boot it is skipped entirely and any newly created directory would

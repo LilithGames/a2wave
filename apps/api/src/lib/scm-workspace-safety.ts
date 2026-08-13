@@ -7,7 +7,7 @@ import { db } from '../db/client.js'
 import { scmSources, users } from '../db/schema.js'
 import { env } from '../env.js'
 import { defaultWorkspacesPath } from './git-workspace.js'
-import { scmReclaimRoot } from './scm-storage.js'
+import { legacyScmReclaimRoot, scmReclaimRoot } from './scm-storage.js'
 
 interface ValidationOptions {
   protectedPaths?: string[]
@@ -281,10 +281,8 @@ export function validateScmWorkspacesRoot(
   }
 
   if (
-    filesystemPathsOverlap(
-      canonicalizeThroughExistingAncestor(scmReclaimRoot()),
-      candidatePath,
-      platform,
+    [scmReclaimRoot(), legacyScmReclaimRoot()].some((root) =>
+      filesystemPathsOverlap(canonicalizeThroughExistingAncestor(root), candidatePath, platform),
     )
   ) {
     return 'workspacesPath must not overlap the SCM reclaim root'

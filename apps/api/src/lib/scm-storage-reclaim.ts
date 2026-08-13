@@ -1,6 +1,6 @@
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { env } from '../env.js'
 import { logger } from './logger.js'
 import {
@@ -79,12 +79,11 @@ export interface IsolateOptions extends ReclaimOptions {
  */
 export const RECLAIM_ISOLATION_DIR = SCM_RECLAIM_DIR
 
-function isolationRoot(): string {
+function managedIsolationRoot(): string {
   return scmReclaimRoot()
 }
 
-async function ensureOwnedIsolationRoot(): Promise<boolean> {
-  const root = isolationRoot()
+async function ensureOwnedIsolationRoot(root: string): Promise<boolean> {
   const marker = join(root, SCM_RECLAIM_MARKER)
   try {
     const existing = await readFile(marker, 'utf8')
@@ -107,12 +106,9 @@ async function ensureOwnedIsolationRoot(): Promise<boolean> {
   }
 }
 
-async function hasOwnedIsolationRoot(): Promise<boolean> {
+async function hasOwnedIsolationRoot(root: string): Promise<boolean> {
   try {
-    return (
-      (await readFile(join(isolationRoot(), SCM_RECLAIM_MARKER), 'utf8')) ===
-      'a2wave-scm-reclaim-v1\n'
-    )
+    return (await readFile(join(root, SCM_RECLAIM_MARKER), 'utf8')) === 'a2wave-scm-reclaim-v1\n'
   } catch {
     return false
   }
@@ -167,23 +163,38 @@ async function isReclaimableDir(path: string): Promise<boolean> {
 function allocatedCandidates(
   source: ReclaimableScmSource,
   legacyWorkspacesPath: (sourceId: string) => string,
-): Array<{ path: string; label: string }> {
+): Array<{ path: string; label: string; isolationRoot: string }> {
+  const legacyPath = legacyWorkspacesPath(source.id)
   const candidates = [
-    { path: source.localPath, allocated: defaultScmLocalPath(source.id), label: 'localPath' },
+    {
+      path: source.localPath,
+      allocated: defaultScmLocalPath(source.id),
+      label: 'localPath',
+      isolationRoot: managedIsolationRoot(),
+    },
     {
       path: source.workspacesPath,
       allocated: defaultScmWorkspacesPath(source.id),
       label: 'workspacesPath',
+      isolationRoot: managedIsolationRoot(),
     },
     {
       path: source.workspacesPath,
-      allocated: legacyWorkspacesPath(source.id),
+      allocated: legacyPath,
       label: 'legacyWorkspacesPath',
+      // Legacy worktrees live in the persisted CLI-home volume, while the
+      // managed reclaim root lives in the workspace volume. rename(2) cannot
+      // cross that boundary (EXDEV), so park these beside their legacy root.
+      isolationRoot: join(dirname(legacyPath), SCM_RECLAIM_DIR),
     },
   ]
   return candidates
     .filter(({ path, allocated }) => Boolean(path) && isSamePath(path as string, allocated))
-    .map(({ path, label }) => ({ path: path as string, label }))
+    .map(({ path, label, isolationRoot }) => ({
+      path: path as string,
+      label,
+      isolationRoot,
+    }))
 }
 
 /**
@@ -222,7 +233,7 @@ export async function isolateManagedScmStorage(
   const peers = options.peers ?? []
 
   const isolated: IsolatedScmPath[] = []
-  for (const { path, label } of allocatedCandidates(source, legacyWorkspacesPath)) {
+  for (const { path, label, isolationRoot } of allocatedCandidates(source, legacyWorkspacesPath)) {
     const occupyingPeer = findOccupyingPeer(peers, path, source.id)
     if (occupyingPeer) {
       logger.warn(
@@ -232,16 +243,16 @@ export async function isolateManagedScmStorage(
       continue
     }
 
-    const isolatedPath = join(isolationRoot(), `${source.id}-${label}`)
+    const isolatedPath = join(isolationRoot, `${source.id}-${label}`)
     if (!(await isReclaimableDir(path))) {
-      if ((await hasOwnedIsolationRoot()) && (await isReclaimableDir(isolatedPath))) {
+      if ((await hasOwnedIsolationRoot(isolationRoot)) && (await isReclaimableDir(isolatedPath))) {
         isolated.push({ originalPath: path, isolatedPath })
       }
       continue
     }
 
-    if (!(await ensureOwnedIsolationRoot())) {
-      throw new Error(`Refusing to use unowned SCM reclaim root: ${isolationRoot()}`)
+    if (!(await ensureOwnedIsolationRoot(isolationRoot))) {
+      throw new Error(`Refusing to use unowned SCM reclaim root: ${isolationRoot}`)
     }
     try {
       if (await isReclaimableDir(isolatedPath)) {

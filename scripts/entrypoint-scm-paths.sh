@@ -15,18 +15,44 @@
 # appuser — so a UID remap that skipped it would strand those directories under
 # the old owner forever, leaking exactly the space reclaim exists to recover.
 #
-# It must also be PRE-CREATED by the entrypoint, not left to the API: the block
-# that consumes this list deliberately leaves SCM_STORAGE_ROOT root-owned (the
-# root is routinely an operator-owned host bind), so appuser cannot mkdir a
-# child of it at runtime. Without the pre-create, the API's first reclaim fails
-# with EACCES and every source deletion returns 503 with the row stuck pending.
+# It must also be created and marked by the entrypoint, not left to the API: the
+# entrypoint deliberately leaves SCM_STORAGE_ROOT root-owned (the root is
+# routinely an operator-owned host bind), so appuser cannot mkdir a child of it
+# at runtime. Without provisioning, the API's first reclaim fails with EACCES.
 #
 # This name is duplicated from SCM_RECLAIM_DIR in
 # apps/api/src/lib/scm-storage.ts — a shell script cannot import a TS constant.
 # scripts/__tests__/entrypoint-scm-chown.test.mjs reads that constant and fails
 # if the two ever drift, which is how the previous `.reclaiming` name survived a
 # rename here while the API had already moved on.
-SCM_MANAGED_SUBDIRS='sources workspaces .a2wave-scm-reclaim-v1'
+SCM_MANAGED_SUBDIRS='sources workspaces'
+SCM_RECLAIM_SUBDIR='.a2wave-scm-reclaim-v1'
+SCM_RECLAIM_MARKER='.a2wave-owned-reclaim-root'
+SCM_RECLAIM_MARKER_CONTENT='a2wave-scm-reclaim-v1'
+
+scm_reclaim_is_owned() {
+  reclaim_root="$1"
+  marker="$reclaim_root/$SCM_RECLAIM_MARKER"
+  [ -d "$reclaim_root" ] || return 1
+  [ -L "$reclaim_root" ] && return 1
+  [ -f "$marker" ] || return 1
+  [ -L "$marker" ] && return 1
+  [ "$(cat "$marker" 2>/dev/null)" = "$SCM_RECLAIM_MARKER_CONTENT" ]
+}
+
+# Create the reclaim root only when the name is genuinely unused. Existing
+# directories require the exact marker and are otherwise left byte-for-byte
+# untouched for the operator to inspect or move.
+scm_prepare_reclaim_root() {
+  scm_root="$1"
+  reclaim_root="$scm_root/$SCM_RECLAIM_SUBDIR"
+  if [ -e "$reclaim_root" ] || [ -L "$reclaim_root" ]; then
+    scm_reclaim_is_owned "$reclaim_root"
+    return
+  fi
+  mkdir "$reclaim_root" || return 1
+  printf '%s\n' "$SCM_RECLAIM_MARKER_CONTENT" > "$reclaim_root/$SCM_RECLAIM_MARKER"
+}
 
 # Print the paths the UID remap may chown, one per line.
 #
@@ -56,4 +82,9 @@ scm_chown_targets() {
       printf '%s\n' "$scm_dir"
     fi
   done
+
+  reclaim_root="$scm_root/$SCM_RECLAIM_SUBDIR"
+  if scm_reclaim_is_owned "$reclaim_root"; then
+    printf '%s\n' "$reclaim_root"
+  fi
 }

@@ -255,6 +255,45 @@ describe('isolateManagedScmStorage', () => {
     expect(existsSync(parked)).toBe(false)
   })
 
+  it('parks a legacy worktree beside its original root instead of crossing Docker volumes', async () => {
+    const root = await makeStorageRoot()
+    const legacyVolume = await mkdtemp(join(tmpdir(), 'a2wave-legacy-volume-'))
+    tempDirs.push(legacyVolume)
+    const legacyWorkspacesRoot = join(legacyVolume, 'workspaces')
+    const legacyWorktrees = join(legacyWorkspacesRoot, 'aBcD')
+    await mkdir(legacyWorktrees, { recursive: true })
+    await writeFile(join(legacyWorktrees, 'worktree.txt'), 'legacy worktree')
+
+    const options = { legacyWorkspacesPath: () => legacyWorktrees }
+    const firstAttempt = await isolateManagedScmStorage(
+      {
+        id: 'scm_aBcD',
+        localPath: join(root, 'sources', 'aBcD'),
+        workspacesPath: legacyWorktrees,
+      },
+      options,
+    )
+
+    const parked = firstAttempt.isolated[0].isolatedPath
+    expect(parked.startsWith(join(legacyWorkspacesRoot, RECLAIM_ISOLATION_DIR))).toBe(true)
+    expect(parked.startsWith(root)).toBe(false)
+    expect(existsSync(join(parked, 'worktree.txt'))).toBe(true)
+
+    // Startup recovery derives the same same-filesystem destination from the
+    // durable row, even though the original name has already been vacated.
+    const recovered = await isolateManagedScmStorage(
+      {
+        id: 'scm_aBcD',
+        localPath: join(root, 'sources', 'aBcD'),
+        workspacesPath: legacyWorktrees,
+      },
+      options,
+    )
+    expect(recovered.isolated).toEqual([{ originalPath: legacyWorktrees, isolatedPath: parked }])
+    await recovered.commit()
+    expect(existsSync(parked)).toBe(false)
+  })
+
   it('is a no-op when the allocated directory was never created', async () => {
     const root = await makeStorageRoot()
 

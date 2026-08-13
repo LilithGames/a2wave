@@ -42,13 +42,16 @@ below hold across every affected entry point.
   the source row remains as a path reservation until filesystem reclaim
   succeeds. No filesystem operation may run before that transaction commits.
 - After the reservation commits, exact managed paths may be atomically renamed
-  into `.a2wave-scm-reclaim-v1/` and recursively removed. Only then may a second
+  into `.a2wave-scm-reclaim-v1/` and recursively removed. Legacy worktrees are
+  parked in the identically named private root beside the legacy `workspaces/`
+  directory so `rename(2)` stays on the CLI-home volume instead of failing with
+  `EXDEV` against the managed workspace volume. Only then may a second
   transaction delete the source row. A failure leaves the reservation for a
   retry rather than losing the row-to-checkout relationship.
 - Startup recovery is database-directed: only rows with a durable deletion
   reservation authorize cleanup. Never sweep the reclaim directory by filename.
   A transaction rollback or an unmarked directory must preserve its contents.
-- The reclaim root requires the a2wave ownership marker. The planner, runtime
+- Every reclaim root requires the a2wave ownership marker. The planner, runtime
   workspace validation, and sync backstop reject any source path overlapping
   that root. An existing non-empty operator directory is never adopted.
 - Reclaim only exact id-derived managed paths, including the exact legacy
@@ -60,9 +63,10 @@ below hold across every affected entry point.
 
 ## Container ownership
 
-- The entrypoint may create and own `sources/`, `workspaces/` and the reclaim
-  root beneath `SCM_STORAGE_ROOT`; it must not chown the mount root or unrelated
-  contents.
+- The entrypoint may create and own `sources/`, `workspaces/` and a newly
+  created reclaim root beneath `SCM_STORAGE_ROOT`; it must not chown the mount
+  root, unrelated contents, or a pre-existing reclaim directory without the
+  exact ownership marker.
 - Every directory the API must create children in has to be pre-created here.
   Because the mount root stays root-owned, appuser cannot mkdir a child of it at
   runtime: a managed subtree missing from the entrypoint's list fails with
