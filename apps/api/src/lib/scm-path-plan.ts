@@ -138,9 +138,26 @@ function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
   return isSameFilesystemPath(a, b, platform)
 }
 
-/** Roots a2wave allocates from; a checkout may live under one but never BE one. */
+/** Roots a2wave allocates from; a path may live under one but never BE one. */
 function getSharedStorageRoots(): string[] {
   return [join(env.SCM_STORAGE_ROOT, 'sources'), join(env.SCM_STORAGE_ROOT, 'workspaces')]
+}
+
+/**
+ * Claiming a shared allocation root itself, as either path.
+ *
+ * For a checkout it would put every other source's data inside this one's
+ * working tree, where the next sync force-discards it. For a worktree root the
+ * damage is wider still: every later source's *default* allocation is a
+ * descendant of the claimed root, so the peer scan rejects each one with a 409
+ * and managed allocation stops for the whole deployment — with no in-app repair,
+ * since PATCH validates through this same planner.
+ *
+ * Equality, not containment: a managed path legitimately lives *under* one of
+ * these roots, so only claiming the root itself is the error.
+ */
+function findClaimedSharedRoot(candidate: string, platform: NodeJS.Platform): string | null {
+  return getSharedStorageRoots().find((root) => samePath(candidate, root, platform)) ?? null
 }
 
 export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
@@ -169,17 +186,12 @@ export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
     return { ok: false, status: 400, error: 'localPath must not overlap the SCM reclaim root' }
   }
 
-  // Claiming a shared root as a checkout would put every other source's data
-  // inside this one's working tree, where the next sync force-discards it.
-  // Equality, not containment: a managed checkout legitimately lives *under*
-  // `sources/`, so only claiming the root itself is the error.
-  for (const sharedRoot of getSharedStorageRoots()) {
-    if (samePath(localPath, sharedRoot, platform)) {
-      return {
-        ok: false,
-        status: 400,
-        error: `localPath must not be the shared storage root "${sharedRoot}"`,
-      }
+  const claimedByLocal = findClaimedSharedRoot(localPath, platform)
+  if (claimedByLocal) {
+    return {
+      ok: false,
+      status: 400,
+      error: `localPath must not be the shared storage root "${claimedByLocal}"`,
     }
   }
 
@@ -193,6 +205,18 @@ export function resolveScmPathPlan(input: ScmPathPlanInput): ScmPathPlan {
     )
   ) {
     return { ok: false, status: 400, error: 'workspacesPath must not overlap the SCM reclaim root' }
+  }
+
+  // Checked before the localPath overlap below, so claiming `sources/` as a
+  // worktree root reports the root it claimed rather than the incidental
+  // collision with this same request's managed checkout.
+  const claimedByWorkspaces = findClaimedSharedRoot(workspacesPath, platform)
+  if (claimedByWorkspaces) {
+    return {
+      ok: false,
+      status: 400,
+      error: `workspacesPath must not be the shared storage root "${claimedByWorkspaces}"`,
+    }
   }
 
   if (filesystemPathsOverlap(workspacesPath, localPath, platform)) {

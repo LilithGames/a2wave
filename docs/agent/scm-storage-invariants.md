@@ -11,7 +11,11 @@ below hold across every affected entry point.
 - Compare filesystem identity, not only path strings. Existing symlinks and the
   case behavior of the mounted filesystem are part of path identity.
 - A source may live below the managed allocation roots, but it may never claim
-  the shared `sources/` or `workspaces/` root itself.
+  the shared `sources/` or `workspaces/` root itself — as **either** `localPath`
+  or `workspacesPath`. A claimed `workspaces/` root is the wider outage: every
+  later source's default allocation is a descendant of it, so the peer scan
+  rejects each one and managed allocation stops deployment-wide, with no in-app
+  repair because PATCH validates through the same planner.
 - Git may use managed storage. P4 requires an explicit path covered by the
   configured Client Root or AltRoots.
 - Create, path-changing PATCH, and environment bootstrap must plan paths through

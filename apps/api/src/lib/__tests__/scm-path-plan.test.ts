@@ -142,6 +142,51 @@ describe('resolveScmPathPlan', () => {
     expect(plan.status).toBe(400)
   })
 
+  // The mirror of the localPath rule above. Claiming a shared allocation root as
+  // a *worktree* root is worse than claiming it as a checkout: every later
+  // source's default allocation is a descendant of it, so the peer scan then
+  // rejects each one with a 409 and managed allocation stops platform-wide.
+  it.each(['/data/workspace/workspaces', '/data/workspace/sources'])(
+    'rejects a workspacesPath equal to the shared storage root %s',
+    (sharedRoot) => {
+      const plan = resolveScmPathPlan({
+        sourceId: 'scm_zZzZ',
+        type: 'git',
+        localPath: '/data/workspace/sources/zZzZ',
+        workspacesPath: sharedRoot,
+        existingSources: [],
+        isAdmin: true,
+        platform: 'linux',
+      })
+
+      expect(plan.ok).toBe(false)
+      if (plan.ok) return
+      expect(plan.status).toBe(400)
+      expect(plan.error).toContain('shared storage root')
+    },
+  )
+
+  // The consequence the rule above prevents: an ordinary managed source must
+  // never make the next source's default allocation unreachable.
+  it('keeps the managed default allocatable for a later source', () => {
+    const plan = resolveScmPathPlan({
+      sourceId: 'scm_bbb',
+      type: 'git',
+      existingSources: [
+        row({
+          id: 'scm_aaa',
+          name: 'squatter',
+          localPath: '/data/workspace/sources/aaa',
+          workspacesPath: '/data/workspace/workspaces/aaa',
+        }),
+      ],
+      isAdmin: true,
+      platform: 'linux',
+    })
+
+    expect(plan.ok).toBe(true)
+  })
+
   it.each(['localPath', 'workspacesPath'] as const)(
     'rejects %s anywhere inside the private reclaim root',
     (field) => {
