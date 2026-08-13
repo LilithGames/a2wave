@@ -491,6 +491,13 @@ async function isAncestor(cwd: string, ref: string, target: string): Promise<boo
  * - a legacy detached workspace (created before the branch strategy) is
  *   adopted onto the branch when the same guards pass
  */
+/** What the advance should do to one sub-repo, decided before anything moves. */
+type FollowSourcePlan =
+  | { kind: 'skip'; wsRepoPath: string }
+  | { kind: 'pin'; wsRepoPath: string; reason: string }
+  | { kind: 'advance'; wsRepoPath: string; target: string }
+  | { kind: 'adopt'; wsRepoPath: string; target: string; branchExists: boolean }
+
 async function followSourceHeadOnReuse(
   wsPath: string,
   localPath: string,
@@ -499,6 +506,12 @@ async function followSourceHeadOnReuse(
 ): Promise<void> {
   const repoDirs = config.repos?.length ? config.repos.map((r) => r.directory) : ['']
 
+  // Two passes. Deciding every sub-repo before moving any of them is what makes
+  // a multi-repo advance all-or-nothing: advancing repo A while repo B pins on
+  // an unmerged commit hands the agent a tree whose repos sit at commits that
+  // never coexisted upstream — a mismatch nothing downstream can detect.
+  // `switchBranchOnReuse` already pre-validates for the same reason.
+  const plans: FollowSourcePlan[] = []
   for (const dir of repoDirs) {
     const wsRepoPath = dir ? join(wsPath, dir) : wsPath
     const localRepoPath = dir ? join(localPath, dir) : localPath
@@ -510,7 +523,10 @@ async function followSourceHeadOnReuse(
         { cwd: wsRepoPath, timeout: 5_000 },
       ).catch(() => ({ stdout: '' }))
       const onBranch = onBranchRaw.trim()
-      if (onBranch && onBranch !== name) continue
+      if (onBranch && onBranch !== name) {
+        plans.push({ kind: 'skip', wsRepoPath })
+        continue
+      }
 
       const { stdout: sourceHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
         cwd: localRepoPath,
@@ -522,7 +538,10 @@ async function followSourceHeadOnReuse(
         timeout: 5_000,
       })
       const upToDate = wsHead.trim() === target
-      if (upToDate && onBranch) continue
+      if (upToDate && onBranch) {
+        plans.push({ kind: 'skip', wsRepoPath })
+        continue
+      }
 
       // The platform rewrites these on every run (skill/MCP mounts, artifacts),
       // so changes there are not agent work and must not pin the workspace —
@@ -548,26 +567,17 @@ async function followSourceHeadOnReuse(
         { cwd: wsRepoPath, timeout: 5_000 },
       )
       if (dirty.trim()) {
-        logger.warn(
-          { wsRepoPath },
-          'followSource: workspace pinned behind source HEAD (tracked modifications)',
-        )
+        plans.push({ kind: 'pin', wsRepoPath, reason: 'tracked modifications' })
         continue
       }
 
       if (!upToDate && !(await isAncestor(wsRepoPath, 'HEAD', target))) {
-        logger.warn(
-          { wsRepoPath, wsHead: wsHead.trim(), sourceHead: target },
-          'followSource: workspace pinned behind source HEAD (unmerged local commits)',
-        )
+        plans.push({ kind: 'pin', wsRepoPath, reason: 'unmerged local commits' })
         continue
       }
 
       if (onBranch) {
-        await execFileAsync('git', ['reset', '--hard', target], {
-          cwd: wsRepoPath,
-          timeout: GIT_TIMEOUT_MS,
-        })
+        plans.push({ kind: 'advance', wsRepoPath, target })
       } else {
         // Legacy detached workspace: adopt it onto the branch. Attach to an
         // existing branch as-is — it may carry unmerged commits, and forcing
@@ -589,15 +599,46 @@ async function followSourceHeadOnReuse(
             )
           }
         }
+        plans.push({ kind: 'adopt', wsRepoPath, target, branchExists })
+      }
+    } catch (err) {
+      plans.push({
+        kind: 'pin',
+        wsRepoPath,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  const pinned = plans.filter((plan) => plan.kind === 'pin')
+  if (pinned.length > 0) {
+    logger.warn(
+      { wsPath, pinned: pinned.map((plan) => ({ repo: plan.wsRepoPath, reason: plan.reason })) },
+      'followSource: workspace pinned behind source HEAD',
+    )
+    return
+  }
+
+  for (const plan of plans) {
+    try {
+      if (plan.kind === 'advance') {
+        await execFileAsync('git', ['reset', '--hard', plan.target], {
+          cwd: plan.wsRepoPath,
+          timeout: GIT_TIMEOUT_MS,
+        })
+      } else if (plan.kind === 'adopt') {
         await execFileAsync(
           'git',
-          branchExists ? ['checkout', name] : ['checkout', '-b', name, target],
-          { cwd: wsRepoPath, timeout: GIT_TIMEOUT_MS },
+          plan.branchExists ? ['checkout', name] : ['checkout', '-b', name, plan.target],
+          { cwd: plan.wsRepoPath, timeout: GIT_TIMEOUT_MS },
         )
       }
     } catch (err) {
+      // Nothing to roll back to: `reset --hard` on an earlier repo already
+      // discarded the state it would revert to. Freshness is best-effort, so a
+      // partial advance is logged and the run proceeds.
       logger.warn(
-        { err, wsRepoPath },
+        { err, wsRepoPath: plan.wsRepoPath },
         'followSource: failed to advance workspace to source HEAD, keeping previous commit',
       )
     }

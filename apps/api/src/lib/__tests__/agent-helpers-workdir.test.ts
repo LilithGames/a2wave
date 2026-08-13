@@ -283,15 +283,19 @@ describe('resolveWorkDir', () => {
       expect(mockDbUpdateWhere).toHaveBeenCalledTimes(3)
     })
 
-    it('resolves a grandfathered sticky config as the per-agent worktree', async () => {
-      // A persisted sticky worktree config naming this Agent's own worktree must
-      // not go through the explicit path: its `branch` would switch the worktree
-      // off agent-<id>, after which followSource skips it forever and the Agent
-      // silently freezes on stale code. Its cleanup mode must not stick either.
+    // Grandfathered sticky configs are normalized away in ONE place, so both a
+    // config naming this Agent's own worktree and one naming another Agent's
+    // land in the Agent's own per-agent worktree — never on the explicit path,
+    // which would write the state file, switch the branch, and expose the
+    // workspace to run-end cleanup.
+    it.each([
+      ['its own worktree', 'agent-abc123def456ghi7'],
+      ["another Agent's worktree", 'agent-zzz999yyy888xxx7'],
+    ])('normalizes a sticky worktree config naming %s', async (_label, stickyName) => {
+      const agent = { ...gitAgent(), id: 'agt_abc123def456ghi7' }
+      const wsPath = '/workspaces/scm_1/agent-abc123def456ghi7'
       mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
-      const createWorkspace = vi
-        .fn()
-        .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false })
+      const createWorkspace = vi.fn().mockResolvedValue({ path: wsPath, created: false })
       const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
       mockCreateScmSource.mockReturnValueOnce({
         wsRoot: '/workspaces/scm_1',
@@ -300,18 +304,20 @@ describe('resolveWorkDir', () => {
         cleanupStale: vi.fn().mockResolvedValue([]),
       })
 
-      const workDir = await resolveWorkDir(gitAgent(), {
-        name: 'agent-abc123',
+      const workDir = await resolveWorkDir(agent, {
+        name: stickyName,
         cleanup: 'ephemeral',
         branch: 'feature/x',
       } as any)
 
-      expect(workDir).toBe('/workspaces/scm_1/agent-abc123')
-      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123', {
+      expect(workDir).toBe(wsPath)
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123def456ghi7', {
         followSource: true,
         advance: true,
       })
-      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'persistent' })
+      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123def456ghi7', {
+        cleanup: 'persistent',
+      })
     })
 
     it('clears the branch env when degrading to the shared checkout', async () => {
@@ -671,19 +677,26 @@ describe('removePerAgentWorkspace', () => {
     expect(removeWorkspace).toHaveBeenCalledWith('agent-abc123', { keepBranches: true })
   })
 
-  it('leaves the worktree in place while a run occupies it', async () => {
+  it('leaves an occupied worktree in place but hands it to the TTL sweeper', async () => {
     // Yanking the cwd from under an in-flight run (e.g. a chat debug on a
-    // draft agent) loses its unpushed work — leak the worktree instead; the
-    // workspace-delete route can reclaim it later.
+    // draft agent) loses its unpushed work. Leaving it as `persistent` leaked
+    // it forever though: the Agent row is gone, so no run resolves it again and
+    // the sweeper skips persistent workspaces. Demote it to ttl instead.
     mockDbFrom
       .mockReturnValueOnce(chainResult({ id: 'scm_1', type: 'git', config: {}, localPath: '/git' }))
       .mockReturnValueOnce(chainResult([{ id: 'run_active' }]))
     const removeWorkspace = vi.fn().mockResolvedValue(undefined)
-    mockCreateScmSource.mockReturnValueOnce({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+    const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValueOnce({
+      wsRoot: '/workspaces/scm_1',
+      removeWorkspace,
+      writeWorkspaceState,
+    })
     mockExistsSync.mockReturnValue(true)
 
     await removePerAgentWorkspace(gitAgent)
     expect(removeWorkspace).not.toHaveBeenCalled()
+    expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'ttl' })
   })
 
   it('does nothing for non-scm agents and never throws on removal failure', async () => {

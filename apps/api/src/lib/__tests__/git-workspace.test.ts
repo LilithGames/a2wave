@@ -1149,6 +1149,48 @@ describe('git-workspace', () => {
       expect(existsSync(join(rebuilt.path, 'backend', 'README.md'))).toBe(true)
     })
 
+    it('advances multi-repo workspaces all-or-nothing', async () => {
+      // Advancing one sub-repo while another pins leaves the agent with repos at
+      // commits that never coexisted upstream, and nothing downstream can see
+      // it. One pinned repo therefore pins the whole workspace.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+      })
+      const headOf = async (cwd: string) =>
+        (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })).stdout.trim()
+      const pinnedFrontendHead = await headOf(join(first.path, 'frontend'))
+
+      // backend pins (tracked modification); both source repos move on.
+      await writeFile(join(first.path, 'backend', 'README.md'), 'agent edit')
+      for (const dir of [frontendDir, backendDir]) {
+        await writeFile(join(dir, 'upstream.txt'), 'moved')
+        await execFileAsync('git', ['add', '.'], { cwd: dir })
+        await execFileAsync('git', ['commit', '-m', 'upstream'], { cwd: dir })
+      }
+
+      const reused = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+      })
+
+      // frontend could have advanced on its own — it must not have.
+      expect(await headOf(join(reused.path, 'frontend'))).toBe(pinnedFrontendHead)
+      expect(existsSync(join(reused.path, 'frontend', 'upstream.txt'))).toBe(false)
+      expect(await readFile(join(reused.path, 'backend', 'README.md'), 'utf8')).toBe('agent edit')
+    })
+
     it('keeps a per-agent branch when a multi-repo create rolls back', async () => {
       // Rollback is the third removal call in this function; rebuild and the
       // route were fixed first. It runs on the explicit path too, where

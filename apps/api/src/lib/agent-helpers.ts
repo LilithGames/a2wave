@@ -1229,33 +1229,39 @@ async function resolvePerAgentWorkspace(
   }
   const { scm, wsPath, name } = located
 
-  // Advancing runs `reset --hard`, which is not a read-only share — while a
-  // sibling run is EXECUTING here (workDir recorded, status running), skip the
-  // advance; freshness resumes on the next solo run. pending/queued rows are
-  // deliberately excluded: Feishu reserves its row at message receipt and a
-  // backlog would otherwise suppress the advance forever on a busy agent.
-  // The remaining pre-insert window (A2A resolves before its row exists) is
-  // narrowed by the per-workspace lock below.
-  const sibling = (
-    await db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(
-        and(
-          eq(runs.workDir, wsPath),
-          eq(runs.status, 'running'),
-          ...(runId ? [ne(runs.id, runId)] : []),
-        ),
-      )
-      .limit(1)
-  )[0]
-
   // Serialize workspace-mutating git operations per worktree within this
   // process: two runs resolving concurrently must not interleave
   // `worktree add` / `reset --hard` / `checkout` on one tree.
-  const result = await withKeyedLock(`workspace:${wsPath}`, () =>
-    scm.createWorkspace(name, { followSource: true, advance: !sibling }),
-  )
+  //
+  // Probe, create and occupancy write all live INSIDE the lock. Probing
+  // outside it left a window where a sibling started executing between the
+  // probe and the `reset --hard`, which is the one thing the probe exists to
+  // prevent; recording workDir inside it means the next run to take the lock
+  // sees this one, instead of both reading an empty table and both advancing.
+  const result = await withKeyedLock(`workspace:${wsPath}`, async () => {
+    // Advancing runs `reset --hard`, which is not a read-only share — while a
+    // sibling run is EXECUTING here (workDir recorded, status running), skip
+    // the advance; freshness resumes on the next solo run. pending/queued rows
+    // are deliberately excluded: Feishu reserves its row at message receipt and
+    // a backlog would otherwise suppress the advance forever on a busy agent.
+    const sibling = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.workDir, wsPath),
+            eq(runs.status, 'running'),
+            ...(runId ? [ne(runs.id, runId)] : []),
+          ),
+        )
+        .limit(1)
+    )[0]
+
+    const created = await scm.createWorkspace(name, { followSource: true, advance: !sibling })
+    if (runId) await recordRunWorkDir(runId, created.path)
+    return created
+  })
 
   const ensureState = async () => {
     try {
@@ -1280,7 +1286,6 @@ async function resolvePerAgentWorkspace(
     isCodegraphEnabled(source.config)
       ? ensureCodegraphLink(result.path, source.localPath)
       : Promise.resolve(),
-    runId ? recordRunWorkDir(runId, result.path) : Promise.resolve(),
   ])
 
   triggerTtlCleanup(source.id, scm).catch((err) =>
@@ -1352,9 +1357,22 @@ export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect)
         .limit(1)
     )[0]
     if (occupant) {
+      // Leaving it behind used to mean leaking it forever: the Agent row is
+      // gone, so no run will ever resolve this worktree again, and `persistent`
+      // excludes it from the TTL sweeper. Demote the state file so the sweeper
+      // reclaims it once it goes idle — with keepBranches, since it is still
+      // shaped like a per-agent worktree.
+      try {
+        await scm.writeWorkspaceState(name, { cleanup: 'ttl' })
+      } catch (err) {
+        logger.warn(
+          { err, agentId: agent.id, workspace: name },
+          'Failed to demote an occupied per-agent worktree to ttl; it will need manual cleanup',
+        )
+      }
       logger.warn(
         { agentId: agent.id, workspace: name, runId: occupant.id },
-        'Per-agent worktree occupied by an in-flight run; leaving it for later cleanup',
+        'Per-agent worktree occupied by an in-flight run; left for TTL cleanup',
       )
       return
     }
@@ -1370,6 +1388,36 @@ export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect)
   })
 }
 
+/**
+ * The single place a per-agent worktree is protected from explicit addressing.
+ *
+ * Per-agent worktrees are platform-owned: only `resolvePerAgentWorkspace` may
+ * touch one. Request entry points reject the reserved `agent-` prefix with 400,
+ * but a worktree config persisted before that rule keeps replaying, and
+ * honouring it sends the run down the explicit path — which writes the
+ * workspace's state file, switches its branch, and hands it to run-end cleanup.
+ * Those were three separately-guarded ways to lose an Agent's work; dropping
+ * the params here removes the whole branch instead of guarding each end of it.
+ *
+ * The run then lands in the Agent's own per-agent worktree, which is where the
+ * same request would have gone without the stale config.
+ */
+function normalizeWorktreeParams(
+  agent: typeof agents.$inferSelect,
+  params?: WorktreeCallParams,
+): WorktreeCallParams | undefined {
+  if (!params || !isPerAgentWorkspaceName(params.name)) return params
+  logger.warn(
+    {
+      agentId: agent.id,
+      workspace: params.name,
+      own: params.name === perAgentWorkspaceName(agent.id),
+    },
+    'Ignoring a worktree config that addresses a per-agent worktree',
+  )
+  return undefined
+}
+
 export class WorktreeOccupiedError extends Error {
   constructor(public readonly worktreePath: string) {
     super(`Worktree '${worktreePath}' is occupied by a running or pending run`)
@@ -1383,8 +1431,11 @@ export async function resolveWorkDir(
   runId?: string,
   agentEnv?: Record<string, string>,
 ): Promise<string> {
+  const explicitWorktree = normalizeWorktreeParams(agent, worktreeParams)
+
   // SCM + worktree 模式
-  if (worktreeParams) {
+  if (explicitWorktree) {
+    const worktreeParams = explicitWorktree
     recordWorkspaceBranchEnv(agentEnv, null)
     if (agent.workspaceType !== 'scm' || !agent.scmSourceId) {
       throw new Error('Worktree requires SCM workspace type with a linked code source')
@@ -1398,24 +1449,6 @@ export async function resolveWorkDir(
     )[0]
     if (!source) {
       throw new Error(`SCM source '${agent.scmSourceId}' not found`)
-    }
-
-    // A grandfathered sticky config may name this Agent's own long-lived
-    // worktree. Run it through the per-agent path rather than the explicit one:
-    // the explicit path would honour the config's `branch` and switch the
-    // worktree off its own branch, after which followSource skips it forever
-    // (`onBranch !== name`) and the Agent silently freezes on stale code.
-    if (source.type === 'git' && worktreeParams.name === perAgentWorkspaceName(agent.id)) {
-      logger.info(
-        { agentId: agent.id, workspace: worktreeParams.name },
-        'Sticky worktree config names the per-agent worktree; resolving it as such',
-      )
-      const wsPath = await resolvePerAgentWorkspace(source, agent, runId)
-      recordWorkspaceBranchEnv(
-        agentEnv,
-        wsPath === source.localPath ? null : perAgentWorkspaceName(agent.id),
-      )
-      return wsPath
     }
 
     const scm = await createScmSource(source)
@@ -1449,13 +1482,7 @@ export async function resolveWorkDir(
     // 拖住其它请求（这条 run 本身在上游 catch 里要么被删要么 revert 到 pending）。
     let result: CreateWorkspaceResult
     try {
-      // A per-agent worktree reaching this path belongs to *another* Agent (our
-      // own was delegated above). Reuse it as-is: switching its branch would
-      // pin it off `agent-<id>` and stop its owner's runs advancing.
-      const branch = isPerAgentWorkspaceName(worktreeParams.name)
-        ? undefined
-        : worktreeParams.branch
-      result = await scm.createWorkspace(worktreeParams.name, { branch })
+      result = await scm.createWorkspace(worktreeParams.name, { branch: worktreeParams.branch })
     } catch (err) {
       if (runId) {
         try {
@@ -1470,19 +1497,14 @@ export async function resolveWorkDir(
       throw err
     }
 
-    // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）
-    //
-    // Exception: a grandfathered sticky config may name a per-agent worktree.
-    // Overwriting its `persistent` marker with the caller's ephemeral/ttl mode
-    // would hand that workspace to run-end cleanup or the TTL sweeper — the
-    // reservation exists to prevent exactly that, and legacy rows must not slip
-    // past it. The shape test, so another Agent's worktree is covered too.
-    if (!isPerAgentWorkspaceName(worktreeParams.name)) {
-      try {
-        await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
-      } catch (err) {
-        logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
-      }
+    // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）。
+    // A per-agent worktree can no longer reach this line — normalizeWorktreeParams
+    // drops those params — so the caller's cleanup mode is always this
+    // workspace's own.
+    try {
+      await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
+    } catch (err) {
+      logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
     }
 
     // 懒触发 TTL 清理（fire-and-forget + 每 source 1h debounce）
