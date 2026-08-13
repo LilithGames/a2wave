@@ -25,7 +25,7 @@
 - **评测任务** — 用 Agent 当前配置跑一遍评测集，并冻结 provider/模型/提示词快照。见 [评测](/wiki/evaluation)。
 - **配置快照** — 评测任务留存的配置记录（provider + 模型 + 提示词，不含密钥），用于横向对比。见 [评测](/wiki/evaluation)。
 - **成员角色** — owner / editor / viewer 三级权限。见 [成员管理](/wiki/members)。
-- **铁律** — 定义产品边界的 5 条硬约束。见 [核心理念与架构](/wiki/concepts)。
+- **铁律** — 定义产品边界的 6 条硬约束。见 [核心理念与架构](/wiki/concepts)。
 
 ## 相关
 
