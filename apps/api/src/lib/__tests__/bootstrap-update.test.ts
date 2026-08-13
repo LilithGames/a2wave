@@ -200,6 +200,26 @@ afterEach(() => {
 })
 
 describe('bootstrapScmP4 — update path', () => {
+  it('does not mutate an env:p4 row reserved for deletion', async () => {
+    envMock.SCM_P4_PORT = '1666'
+    envMock.SCM_P4_USER = 'admin'
+    envMock.SCM_P4_CLIENT = 'workspace'
+
+    queueSelects({
+      get: {
+        id: 'scm_deleting',
+        localPath: '/legacy/p4-client',
+        workspacesPath: '/legacy/p4-worktrees',
+        deletionRequestedAt: new Date('2026-08-13T00:00:00Z'),
+      },
+    })
+
+    await bootstrapFromEnv()
+
+    expect(updateChain.set).not.toHaveBeenCalled()
+    expect(dbInsertRun).not.toHaveBeenCalled()
+  })
+
   it('updates the existing env:p4 row in place (no insert)', async () => {
     envMock.SCM_P4_PORT = '1666'
     envMock.SCM_P4_USER = 'admin'
@@ -315,6 +335,23 @@ describe('bootstrapScmP4 — update path', () => {
 })
 
 describe('bootstrapScmGit — update path', () => {
+  it('does not mutate an env:git row reserved for deletion', async () => {
+    envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
+    queueSelects({
+      get: {
+        id: 'scm_deleting',
+        localPath: '/legacy/git',
+        workspacesPath: '/legacy/git-worktrees',
+        deletionRequestedAt: new Date('2026-08-13T00:00:00Z'),
+      },
+    })
+
+    await bootstrapFromEnv()
+
+    expect(updateChain.set).not.toHaveBeenCalled()
+    expect(dbInsertRun).not.toHaveBeenCalled()
+  })
+
   it('updates the existing env:git row in place', async () => {
     envMock.SCM_GIT_REPO_URL = 'https://example/repo.git'
     queueSelects({ get: { id: 'scm_g', localPath: '/var/git' } })

@@ -123,6 +123,13 @@ async function bootstrapScmP4(): Promise<void> {
     )[0]
 
     if (existing) {
+      if (existing.deletionRequestedAt) {
+        logger.info(
+          { id: existing.id },
+          'Skipped P4 SCM source bootstrap because deletion recovery is pending',
+        )
+        return
+      }
       const localPath = env.SCM_P4_LOCAL_PATH || existing.localPath
       const planned = await planEnvScmPaths(
         existing.id,
@@ -206,6 +213,13 @@ async function bootstrapScmGit(): Promise<void> {
     )[0]
 
     if (existing) {
+      if (existing.deletionRequestedAt) {
+        logger.info(
+          { id: existing.id },
+          'Skipped Git SCM source bootstrap because deletion recovery is pending',
+        )
+        return
+      }
       const localPath = env.SCM_GIT_LOCAL_PATH || existing.localPath
       const planned = await planEnvScmPaths(
         existing.id,
