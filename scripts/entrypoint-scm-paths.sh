@@ -32,6 +32,23 @@ SCM_RECLAIM_SUBDIR='.a2wave-scm-reclaim-v1'
 SCM_RECLAIM_MARKER='.a2wave-owned-reclaim-root'
 SCM_RECLAIM_MARKER_CONTENT='a2wave-scm-reclaim-v1'
 
+# Releases before managed SCM storage did not set SCM_STORAGE_ROOT. Their
+# private CLI-home volume nevertheless contains a2wave-created worktrees at
+# ~/.a2wave/workspaces. Permit marker adoption only for that exact fallback;
+# an explicitly configured path remains operator-owned even if it has the same
+# spelling. The optional third argument makes the filesystem contract testable
+# without requiring access to /home/appuser.
+scm_legacy_storage_adoption() {
+  scm_root="$1"
+  root_was_set="$2"
+  legacy_root="${3:-/home/appuser/.a2wave}"
+  if [ "$root_was_set" != "x" ] && [ "$scm_root" = "$legacy_root" ]; then
+    printf '%s\n' true
+  else
+    printf '%s\n' false
+  fi
+}
+
 scm_storage_is_owned() {
   scm_root="$1"
   marker="$scm_root/$SCM_STORAGE_MARKER"
@@ -48,7 +65,7 @@ scm_storage_is_owned() {
 # silently adopted or chowned.
 scm_prepare_managed_storage() {
   scm_root="$1"
-  managed_volume="${2:-false}"
+  allow_legacy_adoption="${2:-false}"
   [ -n "$scm_root" ] || return 1
   [ -L "$scm_root" ] && return 1
   mkdir -p "$scm_root" || return 1
@@ -64,11 +81,11 @@ scm_prepare_managed_storage() {
     for scm_subdir in $SCM_MANAGED_SUBDIRS; do
       scm_dir="$scm_root/$scm_subdir"
       if [ -e "$scm_dir" ] || [ -L "$scm_dir" ]; then
-        # CLI-generated Compose files explicitly identify their dedicated
-        # named volume. Releases predating the marker already created these
-        # two directories there, so adopt that exact legacy layout without
-        # weakening the operator-bind policy.
-        if [ "$managed_volume" != "true" ] || [ -L "$scm_dir" ] || [ ! -d "$scm_dir" ]; then
+        # Legacy Compose omitted SCM_STORAGE_ROOT while a2wave itself created
+        # worktrees in its private ~/.a2wave volume. The entrypoint derives
+        # this permission from that exact missing-variable fallback; callers
+        # cannot use it for an explicitly configured operator bind.
+        if [ "$allow_legacy_adoption" != "true" ] || [ -L "$scm_dir" ] || [ ! -d "$scm_dir" ]; then
           return 1
         fi
       fi

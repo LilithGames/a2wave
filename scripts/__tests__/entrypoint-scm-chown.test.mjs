@@ -99,7 +99,7 @@ function prepareReclaimRoot(storageRoot, prelude = '') {
 }
 
 /** Claim an otherwise unused mount for a2wave's managed child directories. */
-function prepareManagedStorage(storageRoot, managedVolume = false) {
+function prepareManagedStorage(storageRoot) {
   return spawnSync(
     'bash',
     [
@@ -108,7 +108,48 @@ function prepareManagedStorage(storageRoot, managedVolume = false) {
       '_',
       SCRIPT,
       storageRoot,
-      String(managedVolume),
+      'false',
+    ],
+    { encoding: 'utf8' },
+  )
+}
+
+/** Exercise the same absent-variable fallback used by an upgraded legacy Compose file. */
+function prepareLegacyComposeStorage(storageRoot) {
+  return spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -eu
+       unset SCM_STORAGE_ROOT
+       scm_storage_root_was_set="\${SCM_STORAGE_ROOT+x}"
+       SCM_STORAGE_ROOT="\${SCM_STORAGE_ROOT:-$2}"
+       . "$1"
+       legacy_adoption="$(scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$scm_storage_root_was_set" "$2")"
+       scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "$legacy_adoption"`,
+      '_',
+      SCRIPT,
+      storageRoot,
+    ],
+    { encoding: 'utf8' },
+  )
+}
+
+/** Explicit configuration must never gain the implicit legacy adoption policy. */
+function prepareExplicitStorage(storageRoot) {
+  return spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -eu
+       SCM_STORAGE_ROOT="$2"
+       scm_storage_root_was_set="\${SCM_STORAGE_ROOT+x}"
+       . "$1"
+       legacy_adoption="$(scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$scm_storage_root_was_set" "$2")"
+       scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "$legacy_adoption"`,
+      '_',
+      SCRIPT,
+      storageRoot,
     ],
     { encoding: 'utf8' },
   )
@@ -142,21 +183,32 @@ describe('scm_chown_targets', () => {
     assert.deepEqual(chownTargets(root), [])
   })
 
-  it('upgrades the legacy layout only when Compose identifies its managed volume', () => {
+  it('upgrades the historical private root when legacy Compose omits SCM_STORAGE_ROOT', () => {
     const root = makeRoot()
-    mkdirSync(join(root, 'sources'))
-    mkdirSync(join(root, 'sources', 'existing-checkout'))
-    writeFileSync(join(root, 'sources', 'existing-checkout', 'README.md'), 'preserve')
     mkdirSync(join(root, 'workspaces'))
+    mkdirSync(join(root, 'workspaces', 'existing-worktree'))
+    writeFileSync(join(root, 'workspaces', 'existing-worktree', 'README.md'), 'preserve')
 
-    const result = prepareManagedStorage(root, true)
+    const result = prepareLegacyComposeStorage(root)
 
     assert.equal(result.status, 0, result.stderr)
     assert.equal(readFileSync(join(root, STORAGE_MARKER), 'utf8'), 'a2wave-scm-storage-v1\n')
     assert.equal(
-      readFileSync(join(root, 'sources', 'existing-checkout', 'README.md'), 'utf8'),
+      readFileSync(join(root, 'workspaces', 'existing-worktree', 'README.md'), 'utf8'),
       'preserve',
     )
+  })
+
+  it('does not adopt a legacy-looking directory when SCM_STORAGE_ROOT is explicit', () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'workspaces'))
+    writeFileSync(join(root, 'workspaces', 'operator-data'), 'keep exactly')
+
+    const result = prepareExplicitStorage(root)
+
+    assert.notEqual(result.status, 0)
+    assert.equal(readFileSync(join(root, 'workspaces', 'operator-data'), 'utf8'), 'keep exactly')
+    assert.throws(() => readFileSync(join(root, STORAGE_MARKER), 'utf8'), { code: 'ENOENT' })
   })
 
   it('creates and marks a fresh reclaim root before handing it to appuser', () => {

@@ -31,6 +31,11 @@ below hold across every affected entry point.
   otherwise the current managed default is stored.
 - Saved legacy roots remain valid, visible, and reclaimable. Never infer that an
   arbitrary operator path is managed merely because it is below a broad root.
+- Legacy Compose files omit `SCM_STORAGE_ROOT` and therefore fall back to the
+  private `/home/appuser/.a2wave` volume where older releases created Git
+  worktrees. The entrypoint may marker-adopt reserved children in that exact
+  absent-variable fallback. An explicitly configured root, including one with
+  the same path string, remains operator-owned and receives no such exception.
 - Changes to defaults require an upgrade fixture with both the old database row
   shape and the old on-disk layout.
 

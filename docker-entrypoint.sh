@@ -60,17 +60,24 @@ else
   REASON="no mount + no override → keep default"
 fi
 
+# Preserve whether the variable existed before applying the fallback. Legacy
+# CLI-generated Compose files omit it entirely; that absence is the evidence
+# that ~/.a2wave/workspaces belongs to a2wave and may receive the new marker.
+SCM_STORAGE_ROOT_WAS_SET="${SCM_STORAGE_ROOT+x}"
 # Resolved once, above the remap block that sweeps it and the provisioning block
 # that creates it — two copies of this default is how they would drift apart.
 SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
 # Sourced (not executed): supplies scm_chown_targets, which decides which SCM
 # subtrees the remap below may take ownership of.
 . /usr/local/bin/entrypoint-scm-paths.sh
+SCM_LEGACY_STORAGE_ADOPTION="$(
+  scm_legacy_storage_adoption "$SCM_STORAGE_ROOT" "$SCM_STORAGE_ROOT_WAS_SET"
+)"
 
 # Complete every filesystem preflight before UID remap or ownership changes.
 # Besides symlinks, this refuses pre-upgrade operator directories named
 # `sources` or `workspaces` unless the mount carries a2wave's ownership marker.
-if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "${A2WAVE_MANAGED_SCM_VOLUME:-false}"; then
+if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "$SCM_LEGACY_STORAGE_ADOPTION"; then
   echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not an a2wave-managed SCM storage root" >&2
   exit 1
 fi
