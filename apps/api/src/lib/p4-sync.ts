@@ -6,7 +6,10 @@ import type { GitConfig, P4Config } from '@a2wave/shared'
 import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { env } from '../env.js'
+import { scmSourceAuditDetails } from './audit-details.js'
+import { writeBackgroundAudit } from './audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from './codegraph-index.js'
 import { executeGitSync, sanitizeCredentials } from './git-sync.js'
 import { logger } from './logger.js'
@@ -19,18 +22,18 @@ import { notifyScmSyncError } from './webhook-notifier.js'
 
 const execFileAsync = promisify(execFile)
 
-/** 执行超时：5 分钟 */
+/** Execution timeout: 5 minutes. */
 const EXEC_TIMEOUT_MS = 5 * 60 * 1000
-/** stdout/stderr 缓冲上限：200 MB（p4 sync 全量输出可能很大） */
+/** stdout/stderr buffer limit: 200 MB because a full p4 sync can be verbose. */
 const EXEC_MAX_BUFFER = 200 * 1024 * 1024
 
 // ============================================================
-// P4 环境变量构建
+// P4 environment construction
 // ============================================================
 
 function buildP4Env(config: P4Config): Record<string, string> {
   return {
-    P4CONFIG: '', // 禁用 .p4config 查找，避免覆盖 P4PASSWD
+    P4CONFIG: '', // Disable .p4config discovery so it cannot override P4PASSWD.
     P4PORT: config.p4port,
     P4USER: config.p4user,
     P4PASSWD: config.p4passwd || '',
@@ -39,12 +42,12 @@ function buildP4Env(config: P4Config): Record<string, string> {
 }
 
 // ============================================================
-// P4 Login（P4 2025 需先 login，ticket 写入默认位置供后续命令读取）
+// P4 login (P4 2025 writes a ticket that subsequent commands consume)
 // ============================================================
 
 /**
- * 执行 p4 login，将密码通过 stdin 传入，ticket 写入 $HOME/.p4tickets
- * 兼容 P4 2025 不再支持 P4PASSWD 环境变量的情况
+ * Run p4 login with the password on stdin and write the ticket to $HOME/.p4tickets.
+ * This supports P4 2025, which no longer accepts P4PASSWD alone.
  */
 export async function p4Login(config: P4Config, signal?: AbortSignal): Promise<boolean> {
   if (!config.p4passwd) {
@@ -83,7 +86,7 @@ export async function p4Login(config: P4Config, signal?: AbortSignal): Promise<b
 }
 
 // ============================================================
-// 连接检测
+// Connection checks
 // ============================================================
 
 export interface P4CheckResult {
@@ -104,8 +107,8 @@ async function readP4ClientSpec(config: P4Config, signal?: AbortSignal): Promise
 }
 
 /**
- * 检测 P4 连接是否可用
- * 先 p4 login，再执行 `p4 info` 并验证返回结果
+ * Check whether the P4 connection is healthy.
+ * Login first, then execute and validate `p4 info`.
  */
 export async function checkP4Connection(
   config: P4Config,
@@ -118,10 +121,10 @@ export async function checkP4Connection(
       timeout: 15_000,
     })
 
-    // 从 p4 info 输出中提取 Server version
+    // Extract the server version from p4 info.
     const versionMatch = stdout.match(/Server version:\s*(.+)/i)
     const serverVersion = versionMatch?.[1]?.trim()
-    // 检查是否有有效的连接
+    // Confirm that the output describes a real server connection.
     if (stdout.includes('Server address:') || stdout.includes('Server root:')) {
       // Same verifier the sync path uses, so a Root the check flags red can
       // never be silently accepted by the sync that follows.
@@ -177,7 +180,7 @@ export async function checkP4Connection(
 }
 
 // ============================================================
-// 同步执行
+// Sync execution
 // ============================================================
 
 export interface P4SyncResult {
@@ -187,10 +190,10 @@ export interface P4SyncResult {
 }
 
 /**
- * 执行 P4 sync
- * @param config P4 配置
- * @param localPath 本地工作目录
- * @param depotPath 可选 depot 路径（默认 sync 全部）
+ * Execute a P4 sync.
+ * @param config P4 configuration
+ * @param localPath Local working directory
+ * @param depotPath Optional depot path; all files are synced by default
  */
 export async function executeP4Sync(
   config: P4Config,
@@ -245,7 +248,7 @@ export async function executeP4Sync(
     )
   }
 
-  // 确保本地目录存在
+  // Ensure the local directory exists.
   if (!existsSync(localPath)) {
     mkdirSync(localPath, { recursive: true })
   }
@@ -264,7 +267,7 @@ export async function executeP4Sync(
 
     const output = stdout + stderr
 
-    // 统计更新文件数
+    // Count updated files.
     const updateMatches = output.match(/- (updating|added|deleted|refreshing)/gi)
     const filesUpdated = updateMatches?.length ?? 0
 
@@ -299,10 +302,10 @@ export async function executeP4Sync(
 }
 
 // ============================================================
-// 同步状态管理
+// Sync state management
 // ============================================================
 
-/** 通用同步结果（P4 和 Git 共用） */
+/** Shared synchronization result for P4 and Git. */
 export interface ScmSyncResult {
   ok: boolean
   message: string
@@ -415,19 +418,21 @@ export function releaseCheckout(sourceId: string): void {
  * fails until the process restarts.
  */
 async function releasePreAcquiredSync(sourceId: string, message: string): Promise<void> {
-  await db
-    .update(scmSources)
-    .set({
-      syncStatus: 'error',
-      lastSyncAt: new Date(),
-      lastSyncError: message,
-      updatedAt: new Date(),
-    })
-    .where(eq(scmSources.id, sourceId))
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({
+        syncStatus: 'error',
+        lastSyncAt: new Date(),
+        lastSyncError: message,
+        updatedAt: new Date(),
+      })
+      .where(eq(scmSources.id, sourceId))
+  })
 }
 
 /**
- * 执行同步并更新 DB 状态（按 type 分发到 P4 / Git）
+ * Execute a sync and update database state, dispatching by source type.
  *
  * Only one sync may run per source at a time: concurrent syncs write the same
  * working directory and corrupt each other, and whichever finishes first writes
@@ -503,19 +508,21 @@ async function runSyncUnderCheckoutLock(
   } else {
     // Atomic acquire: flip to 'syncing' only if it is not already 'syncing',
     // and take the row returned by the UPDATE as the authoritative snapshot.
-    source = await (
-      await db
-        .update(scmSources)
-        .set({ syncStatus: 'syncing', updatedAt: new Date() })
-        .where(
-          and(
-            eq(scmSources.id, sourceId),
-            ne(scmSources.syncStatus, 'syncing'),
-            isNull(scmSources.deletionRequestedAt),
-          ),
-        )
-        .returning()
-    )[0]
+    source = await runExclusive(async () => {
+      return (
+        await db
+          .update(scmSources)
+          .set({ syncStatus: 'syncing', updatedAt: new Date() })
+          .where(
+            and(
+              eq(scmSources.id, sourceId),
+              ne(scmSources.syncStatus, 'syncing'),
+              isNull(scmSources.deletionRequestedAt),
+            ),
+          )
+          .returning()
+      )[0]
+    })
     if (!source) {
       // Either the row is gone or a sync already holds it. Distinguish so a
       // missing source is not misreported as a conflict.
@@ -599,20 +606,22 @@ async function runSyncUnderCheckoutLock(
     options.signal?.aborted === true &&
     (abortedBeforeSync || /cancel|abort/i.test(result.message))
 
-  // 更新最终状态；首次成功同步时写入 initialSyncCompletedAt。
+  // Persist terminal state and stamp initialSyncCompletedAt on the first success.
   try {
-    await db
-      .update(scmSources)
-      .set({
-        syncStatus: result.ok || cancelled ? 'idle' : 'error',
-        lastSyncAt: new Date(),
-        lastSyncError: result.ok || cancelled ? null : result.message,
-        updatedAt: new Date(),
-        ...(result.ok && source.initialSyncCompletedAt == null
-          ? { initialSyncCompletedAt: new Date() }
-          : {}),
-      })
-      .where(eq(scmSources.id, sourceId))
+    await runExclusive(async () => {
+      await db
+        .update(scmSources)
+        .set({
+          syncStatus: result.ok || cancelled ? 'idle' : 'error',
+          lastSyncAt: new Date(),
+          lastSyncError: result.ok || cancelled ? null : result.message,
+          updatedAt: new Date(),
+          ...(result.ok && source.initialSyncCompletedAt == null
+            ? { initialSyncCompletedAt: new Date() }
+            : {}),
+        })
+        .where(eq(scmSources.id, sourceId))
+    })
   } catch (error) {
     // The status write itself failed (SQLITE_BUSY/IO). The row would otherwise
     // stay 'syncing' forever and every later CAS would 409 until restart. Best-
@@ -620,14 +629,16 @@ async function runSyncUnderCheckoutLock(
     // release the checkout lock regardless.
     logger.error({ sourceId, error }, 'Failed to write terminal SCM sync status')
     try {
-      await db
-        .update(scmSources)
-        .set({
-          syncStatus: 'error',
-          lastSyncError: 'Failed to persist sync result',
-          updatedAt: new Date(),
-        })
-        .where(eq(scmSources.id, sourceId))
+      await runExclusive(async () => {
+        await db
+          .update(scmSources)
+          .set({
+            syncStatus: 'error',
+            lastSyncError: 'Failed to persist sync result',
+            updatedAt: new Date(),
+          })
+          .where(eq(scmSources.id, sourceId))
+      })
     } catch (resetError) {
       logger.error({ sourceId, resetError }, 'Failed to reset stranded syncing status')
     }
@@ -672,7 +683,7 @@ async function runSyncUnderCheckoutLock(
 }
 
 // ============================================================
-// 定期同步调度器
+// Recurring sync scheduler
 // ============================================================
 
 const syncTimers = new Map<string, ReturnType<typeof setInterval>>()
@@ -680,14 +691,14 @@ const syncTimers = new Map<string, ReturnType<typeof setInterval>>()
 const inFlightAutoSyncs = new Set<string>()
 
 /**
- * 为指定 SCM source 启动定期同步
+ * Start recurring synchronization for one SCM source.
  *
  * A single sync can far outlast the interval (the P4 initial-sync timeout alone
  * allows 60 minutes), so each tick checks whether the previous round is still
  * running and skips its turn instead of stacking concurrent syncs.
  */
 export function startAutoSync(sourceId: string, intervalMin: number): void {
-  // 先停止已有的定时器
+  // Stop the existing timer first.
   stopAutoSync(sourceId)
 
   const intervalMs = intervalMin * 60 * 1000
@@ -715,7 +726,7 @@ export function startAutoSync(sourceId: string, intervalMin: number): void {
 }
 
 /**
- * 停止指定 SCM source 的定期同步
+ * Stop recurring synchronization for one SCM source.
  */
 export function stopAutoSync(sourceId: string): void {
   // Deliberately does NOT clear inFlightAutoSyncs: a sync started by the old
@@ -731,7 +742,7 @@ export function stopAutoSync(sourceId: string): void {
 }
 
 /**
- * 停止所有定期同步
+ * Stop all recurring synchronization.
  */
 export function stopAllAutoSync(): void {
   for (const [sourceId, timer] of syncTimers) {
@@ -752,10 +763,12 @@ async function resetStuckScmSource(
   successMessage: string,
 ): Promise<void> {
   try {
-    await db
-      .update(scmSources)
-      .set({ ...payload, updatedAt: new Date() })
-      .where(eq(scmSources.id, id))
+    await runExclusive(async () => {
+      await db
+        .update(scmSources)
+        .set({ ...payload, updatedAt: new Date() })
+        .where(eq(scmSources.id, id))
+    })
     logger.warn({ id }, successMessage)
   } catch (error) {
     logger.error({ id, error }, 'Failed to reset stuck SCM source state on startup')
@@ -763,8 +776,7 @@ async function resetStuckScmSource(
 }
 
 /**
- * 初始化所有启用了自动同步的 SCM source（支持 P4 和 Git）
- * 在应用启动时调用
+ * Initialize enabled SCM source schedulers for both P4 and Git at startup.
  */
 export async function initAutoSyncSchedulers(): Promise<void> {
   // Reset any sources stuck in an in-progress state from a previous process.
@@ -817,12 +829,24 @@ export async function initAutoSyncSchedulers(): Promise<void> {
       const isolated = await isolateManagedScmStorage(source, { peers })
       await isolated.commit()
       const deleted = await withScmPathMutation(async (tx) => {
-        return (
+        const row = (
           await tx
             .delete(scmSources)
             .where(and(eq(scmSources.id, source.id), isNotNull(scmSources.deletionRequestedAt)))
             .returning()
         )[0]
+        if (!row) return undefined
+        await writeBackgroundAudit(
+          {
+            action: 'scm_source.delete',
+            resource: 'scm_source',
+            resourceId: source.id,
+            userId: source.deletionRequestedBy ?? undefined,
+            details: scmSourceAuditDetails(source),
+          },
+          tx,
+        )
+        return row
       })
       if (deleted) {
         logger.info({ sourceId: source.id }, 'Completed interrupted SCM source deletion')

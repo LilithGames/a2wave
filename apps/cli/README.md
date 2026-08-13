@@ -63,8 +63,9 @@ SQLite-to-PostgreSQL data migration path. Use `--image` only for a locally built
 mirrored image reference.
 
 Every generated deployment also mounts a dedicated `a2wave-workspace` volume at
-`/data/workspace`. The web UI allocates Git/P4 checkout paths there automatically;
-users do not need to enter the container or create directories.
+`/data/workspace`. The web UI allocates Git checkout paths there automatically;
+users do not need to enter the container or create directories. P4 sources use
+an explicit operator-mounted path covered by the Client `Root` or `AltRoots`.
 
 The PostgreSQL setup flags were added after CLI v0.7.2 and are not present in the
 published `a2wave@0.7.2` package. Confirm that `a2wave setup --help` lists

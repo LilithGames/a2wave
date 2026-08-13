@@ -358,6 +358,10 @@ export const scmSources = sqliteTable('scm_sources', {
   isEnabled: integer('is_enabled', { mode: 'boolean' }).notNull().default(true),
   /** Durable first phase of an SCM source deletion. */
   deletionRequestedAt: integer('deletion_requested_at', { mode: 'timestamp' }),
+  /** User who requested deletion, retained for crash-recovery audit attribution. */
+  deletionRequestedBy: text('deletion_requested_by').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   /** Owning user */
   userId: text('user_id').references(() => users.id),
   createdAt: integer('created_at', { mode: 'timestamp' })

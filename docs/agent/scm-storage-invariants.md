@@ -40,18 +40,24 @@ below hold across every affected entry point.
   checkout independently of recurring `autoSync`.
 - PATCH and DELETE may cancel an automatic initial checkout. Periodic sync and
   indexing keep the busy guard; weakening it risks concurrent checkout damage.
+- An Agent cannot release or replace its SCM binding while one of its Runs or
+  Evaluations is active. The Agent row is the durable lease that keeps source
+  deletion from reclaiming a checkout still used by a workload.
 - Cancellation is not a sync failure and must not emit a failure notification.
 - DELETE is a durable two-phase operation. Its first transaction writes
-  `deletion_requested_at`, disables the source, and writes `scm_source.delete`;
-  the source row remains as a path reservation until filesystem reclaim
-  succeeds. No filesystem operation may run before that transaction commits.
+  `deletion_requested_at` plus `deletion_requested_by`, disables the source,
+  and writes `scm_source.request_deletion`; the source row remains as a path
+  reservation until filesystem reclaim succeeds. No filesystem operation may
+  run before that transaction commits.
 - After the reservation commits, exact managed paths may be atomically renamed
   into `.a2wave-scm-reclaim-v1/` and recursively removed. Legacy worktrees are
   parked in the identically named private root beside the legacy `workspaces/`
   directory so `rename(2)` stays on the CLI-home volume instead of failing with
   `EXDEV` against the managed workspace volume. Only then may a second
-  transaction delete the source row. A failure leaves the reservation for a
-  retry rather than losing the row-to-checkout relationship.
+  transaction atomically write `scm_source.delete` and delete the source row.
+  A failure leaves the reservation for a retry rather than losing either the
+  row-to-checkout relationship or the terminal audit entry. Recovery attributes
+  the terminal entry to `deletion_requested_by`, never to the source owner.
 - Startup recovery is database-directed: only rows with a durable deletion
   reservation authorize cleanup. Never sweep the reclaim directory by filename.
   A transaction rollback or an unmarked directory must preserve its contents.
@@ -68,9 +74,10 @@ below hold across every affected entry point.
 ## Container ownership
 
 - The entrypoint may create and own `sources/`, `workspaces/` and a newly
-  created reclaim root beneath `SCM_STORAGE_ROOT`; it must not chown the mount
-  root, unrelated contents, or a pre-existing reclaim directory without the
-  exact ownership marker.
+  created reclaim root beneath `SCM_STORAGE_ROOT` only when the storage root
+  carries the exact a2wave ownership marker. It must not chown the mount root,
+  unrelated contents, or pre-existing generic directories. An unmarked root
+  containing any reserved child is refused, not adopted.
 - Every directory the API must create children in has to be pre-created here.
   Because the mount root stays root-owned, appuser cannot mkdir a child of it at
   runtime: a managed subtree missing from the entrypoint's list fails with

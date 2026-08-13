@@ -2236,6 +2236,7 @@
       "scm_source.codegraph.reindex": "重建代码图索引",
       "scm_source.create": "创建代码源",
       "scm_source.delete": "删除代码源",
+      "scm_source.request_deletion": "申请删除代码源",
       "scm_source.reclaim_storage": "回收代码源托管存储",
       "scm_source.probe": "探测代码源连通性",
       "scm_source.setup-script.run": "执行代码源初始化脚本",

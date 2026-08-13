@@ -12,6 +12,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, runs, scmSources } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { scmSourceAuditDetails } from '../lib/audit-details.js'
 import { logAudit, writeAudit } from '../lib/audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from '../lib/codegraph-index.js'
@@ -401,10 +402,10 @@ app.patch('/:id', async (c) => {
         const source = (await tx.update(scmSources).set(payload).where(updateWhere).returning())[0]
         return { ok: true, source } as const
       })
-    : {
+    : await runExclusive(async () => ({
         ok: true as const,
         source: (await db.update(scmSources).set(payload).where(updateWhere).returning())[0],
-      }
+      }))
   if (!updateResult.ok) {
     return c.json({ error: updateResult.error.error }, updateResult.error.status)
   }
@@ -493,15 +494,24 @@ app.delete('/:id', async (c) => {
     const row = (
       await tx
         .update(scmSources)
-        .set({ deletionRequestedAt: new Date(), isEnabled: false, updatedAt: new Date() })
+        .set({
+          deletionRequestedAt: new Date(),
+          deletionRequestedBy: getCurrentUserId(c),
+          isEnabled: false,
+          updatedAt: new Date(),
+        })
         .where(and(deleteConditions, isNull(scmSources.deletionRequestedAt)))
         .returning()
     )[0]
     if (!row) return { referencedBy: [], row: undefined, peers: undefined } as const
+    // The reservation is what actually commits here, so that is what this entry
+    // records. Reclaim can still fail and leave the row in place; claiming the
+    // deletion now would make the trail assert something that never happened.
+    // The terminal `scm_source.delete` entry follows the row delete below.
     await writeAudit(
       c,
       {
-        action: 'scm_source.delete',
+        action: 'scm_source.request_deletion',
         resource: 'scm_source',
         resourceId: id,
         details: scmSourceAuditDetails(source),
@@ -538,12 +548,25 @@ app.delete('/:id', async (c) => {
   }
 
   const deleted = await withScmPathMutation(async (tx) => {
-    return (
+    const row = (
       await tx
         .delete(scmSources)
         .where(and(eq(scmSources.id, id), isNotNull(scmSources.deletionRequestedAt)))
         .returning()
     )[0]
+    if (!row) return undefined
+    await writeAudit(
+      c,
+      {
+        action: 'scm_source.delete',
+        resource: 'scm_source',
+        resourceId: id,
+        userId: pendingSource.deletionRequestedBy ?? getCurrentUserId(c),
+        details: scmSourceAuditDetails(source),
+      },
+      tx,
+    )
+    return row
   })
   if (!deleted) return c.json({ error: 'SCM deletion reservation was lost' }, 409)
 
@@ -776,13 +799,15 @@ app.post('/:id/sync', async (c) => {
         ne(scmSources.syncStatus, 'syncing'),
         isNull(scmSources.deletionRequestedAt),
       )
-  const acquired = (
-    await db
-      .update(scmSources)
-      .set({ syncStatus: 'syncing', updatedAt: new Date() })
-      .where(atomicConditions)
-      .returning()
-  )[0]
+  const acquired = await runExclusive(async () => {
+    return (
+      await db
+        .update(scmSources)
+        .set({ syncStatus: 'syncing', updatedAt: new Date() })
+        .where(atomicConditions)
+        .returning()
+    )[0]
+  })
   if (!acquired) {
     return c.json({ error: 'Sync already in progress' }, 409)
   }
@@ -792,10 +817,12 @@ app.post('/:id/sync', async (c) => {
   // holds the checkout, roll the status back and 409 rather than running a sync
   // over a tree that is still being written.
   if (!tryAcquireCheckout(id)) {
-    await db
-      .update(scmSources)
-      .set({ syncStatus: 'idle', updatedAt: new Date() })
-      .where(eq(scmSources.id, id))
+    await runExclusive(async () => {
+      await db
+        .update(scmSources)
+        .set({ syncStatus: 'idle', updatedAt: new Date() })
+        .where(eq(scmSources.id, id))
+    })
     return c.json({ error: 'Sync already in progress' }, 409)
   }
 
@@ -898,13 +925,15 @@ app.post('/:id/codegraph/reindex', async (c) => {
         ne(scmSources.codegraphStatus, 'indexing'),
         isNull(scmSources.deletionRequestedAt),
       )
-  const acquired = (
-    await db
-      .update(scmSources)
-      .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
-      .where(atomicConditions)
-      .returning()
-  )[0]
+  const acquired = await runExclusive(async () => {
+    return (
+      await db
+        .update(scmSources)
+        .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
+        .where(atomicConditions)
+        .returning()
+    )[0]
+  })
   if (!acquired) {
     return c.json({ error: 'CodeGraph indexing already in progress' }, 409)
   }
@@ -913,10 +942,12 @@ app.post('/:id/codegraph/reindex', async (c) => {
   // the same tree. Bail out (releasing the DB CAS) if another writer grabbed the
   // checkout between the two acquires.
   if (!tryAcquireCheckout(id)) {
-    await db
-      .update(scmSources)
-      .set({ codegraphStatus: 'idle', updatedAt: new Date() })
-      .where(eq(scmSources.id, id))
+    await runExclusive(async () => {
+      await db
+        .update(scmSources)
+        .set({ codegraphStatus: 'idle', updatedAt: new Date() })
+        .where(eq(scmSources.id, id))
+    })
     return c.json({ error: 'A sync job is currently using this checkout' }, 409)
   }
 
@@ -939,10 +970,12 @@ app.post('/:id/codegraph/reindex', async (c) => {
       })
   } catch (err) {
     releaseCheckout(id)
-    await db
-      .update(scmSources)
-      .set({ codegraphStatus: 'idle', updatedAt: new Date() })
-      .where(eq(scmSources.id, id))
+    await runExclusive(async () => {
+      await db
+        .update(scmSources)
+        .set({ codegraphStatus: 'idle', updatedAt: new Date() })
+        .where(eq(scmSources.id, id))
+    })
     logger.error({ sourceId: id, error: err }, 'Failed to start CodeGraph indexing')
     return c.json({ error: 'Failed to start CodeGraph indexing' }, 500)
   }

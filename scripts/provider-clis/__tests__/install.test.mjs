@@ -356,9 +356,11 @@ test('entrypoint creates the install root without relying on the cached ownershi
 
 test('entrypoint owns only managed SCM subdirectories, never a host mount root', () => {
   const entrypoint = readFileSync(resolve(root, 'docker-entrypoint.sh'), 'utf8')
+  const preflight = entrypoint.indexOf('scm_prepare_managed_storage "$SCM_STORAGE_ROOT"')
   const noRemap = entrypoint.indexOf('no remap needed')
-  const provisioning = entrypoint.indexOf('mkdir -p "$SCM_STORAGE_ROOT"')
-  assert.ok(provisioning > noRemap, 'SCM ownership repair must run after both UID branches')
+  const ownership = entrypoint.indexOf('for scm_subdir in $SCM_MANAGED_SUBDIRS; do')
+  assert.ok(preflight !== -1 && preflight < noRemap, 'SCM preflight must precede UID handling')
+  assert.ok(ownership > noRemap, 'SCM ownership repair must run after both UID branches')
 
   // The default is resolved ONCE, above the remap block, because both that block
   // and the provisioning below it read the variable. Two `${SCM_STORAGE_ROOT:-…}`
@@ -367,7 +369,7 @@ test('entrypoint owns only managed SCM subdirectories, never a host mount root',
   const defaults = entrypoint.match(/SCM_STORAGE_ROOT="\$\{SCM_STORAGE_ROOT:-/g) ?? []
   assert.equal(defaults.length, 1, 'SCM_STORAGE_ROOT default must be defined exactly once')
 
-  assert.match(entrypoint, /mkdir -p "\$SCM_STORAGE_ROOT"/)
+  assert.match(entrypoint, /scm_prepare_managed_storage "\$SCM_STORAGE_ROOT"/)
   // Provisioning iterates the same list the chown sweep uses, so a subtree can
   // never be created here yet missed by the remap.
   assert.match(entrypoint, /for scm_subdir in \$SCM_MANAGED_SUBDIRS; do/)
@@ -377,7 +379,7 @@ test('entrypoint owns only managed SCM subdirectories, never a host mount root',
     entrypoint,
     /chown -h "\$TARGET_UID:\$TARGET_GID" "\$SCM_STORAGE_ROOT"(?:\s|$)/,
   )
-  assert.match(entrypoint, /refusing to start: \$SCM_STORAGE_ROOT is a symlink/)
+  assert.match(entrypoint, /is not an a2wave-managed SCM storage root/)
 })
 
 /**
@@ -397,7 +399,7 @@ test('entrypoint UID remap sweeps only the managed SCM subtrees', () => {
   // The symlinked-root refusal must precede the sweep. Behind a symlink whose
   // target holds sources/ or workspaces/, sweeping first chowns real directories
   // outside the mount and only then exits 1 — too late to matter.
-  const symlinkRefusal = entrypoint.indexOf('refusing to start: $SCM_STORAGE_ROOT is a symlink')
+  const symlinkRefusal = entrypoint.indexOf('scm_prepare_managed_storage "$SCM_STORAGE_ROOT"')
   const sweep = entrypoint.indexOf('scm_chown_targets "$SCM_STORAGE_ROOT"')
   assert.ok(symlinkRefusal !== -1 && sweep !== -1)
   assert.ok(symlinkRefusal < sweep, 'symlinked-root check must run before the chown sweep')

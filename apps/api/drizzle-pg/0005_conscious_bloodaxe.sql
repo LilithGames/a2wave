@@ -1,0 +1,2 @@
+ALTER TABLE "scm_sources" ADD COLUMN "deletion_requested_by" text;--> statement-breakpoint
+ALTER TABLE "scm_sources" ADD CONSTRAINT "scm_sources_deletion_requested_by_users_id_fk" FOREIGN KEY ("deletion_requested_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;

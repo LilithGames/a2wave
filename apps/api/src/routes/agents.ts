@@ -118,6 +118,7 @@ import { runWithLifecycle } from '../lib/run-launcher.js'
 import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
+import { findActiveAgentScmWorkload } from '../lib/scm-workload-guard.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
@@ -242,12 +243,7 @@ async function findMemorySkill(): Promise<typeof skills.$inferSelect | undefined
   )[0]
 }
 
-/**
- * 统一脱敏：env.* sensitive + endpointApiKey + feishuConfig.appSecret。
- * endpointApiKey 仅通过 POST /:id/regenerate-api-key 的独立响应体明文返回；
- * feishuConfig.appSecret 在 publish 接口读取时客户端发送 '********' 即表示"保持不变"；
- * 其它所有 agent 返回路径一律回 '********'。
- */
+/** Mask every Agent secret except fields explicitly revealed to the detail editor. */
 export function maskAgentSecrets<T extends AgentRow | undefined>(
   agent: T,
   opts?: {
@@ -271,8 +267,7 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
     }),
     a2aRouteTargets: maskA2ARouteTargetSecrets(masked.a2aRouteTargets) ?? null,
   }
-  // OAuth Token 比 API Key 更长寿（Anthropic 端默认数月不轮转），泄露成本更高，对外响应统一掩码；
-  // 仅单个 Agent 详情接口（编辑页）回传明文供"点眼睛查看"，PATCH 时回传 '********' 视为「保持不变」。
+  // OAuth tokens are long-lived, so only the detail editor may reveal them.
   if (!opts?.revealOauthToken && masked.providerOauthToken) {
     masked = { ...masked, providerOauthToken: '********' }
   }
@@ -293,8 +288,7 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
   if (masked.providerBaseUrl) {
     masked = { ...masked, providerBaseUrl: '********' }
   }
-  // Feishu App Secret 在单个 Agent 详情接口回传明文，便于编辑页"点眼睛查看"；
-  // 列表及其它响应仍脱敏，避免明文随处暴露。
+  // Only the detail editor may reveal the Feishu App Secret.
   const fc = masked.feishuConfig as { appSecret?: string } | null | undefined
   if (!opts?.revealFeishuSecret && fc?.appSecret) {
     masked = {
@@ -325,7 +319,6 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
 
 // --- Routes ---
 
-/** GET /agents - 列出所有 Agent */
 app.get('/', async (c) => {
   const { page = '1', pageSize = '50' } = c.req.query()
   const pageNum = Math.max(1, Number.parseInt(page) || 1)
@@ -340,18 +333,14 @@ app.get('/', async (c) => {
     .select()
     .from(agents)
     .where(ownerFilter)
-    // 置顶优先：pinned_at 非空排在前（按置顶时间升序，先置顶的靠前，后置顶的排在最后一个置顶之后），
-    // 未置顶项按创建时间倒序。`pinned_at IS NULL` 把空值排到后面。
+    // Pinned Agents come first; unpinned Agents use reverse creation order.
     .orderBy(sql`${agents.pinnedAt} IS NULL`, asc(agents.pinnedAt), desc(agents.createdAt))
     .limit(limit)
     .offset(offset)
   const total = totalResult?.count ?? 0
 
-  // canManage：调用者是否可写该 Agent（owner/editor/admin），前端据此决定是否渲染置顶按钮，
-  // 避免 viewer 点击后被 pin 路由 403。用 getAgentPermission（与 requireAgentWrite 同一套派生规则）
-  // 判定 owner/admin，再叠加 editor 成员集合。关键：null-owner 遗留 Agent 对非 admin 一律不可写
-  // （getAgentPermission 返回 null 且 requireAgentWrite 会 404），editor 成员集合也须显式排除，
-  // 否则会渲染出一个点了必 404 的置顶按钮。
+  // canManage mirrors the write permission used by pin routes so viewers never
+  // receive a control that can only fail. Legacy null-owner Agents remain admin-only.
   const editorAgentIds = new Set<string>()
   const needsEditorLookup = data.filter(
     (a) => a.userId !== null && getAgentPermission(c, a) === null,
@@ -915,12 +904,7 @@ app.get('/:id/stats/timeseries', async (c) => {
 
 const SCM_INITIAL_SYNC_REQUIRED_MSG = 'SCM_INITIAL_SYNC_REQUIRED'
 
-/**
- * 检查非管理员是否尝试绑定 adminOnly MCP。
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）：
- * 已挂载的 ID 视为先前的所有者/管理员决定，editor 类成员的 PATCH 不应因此被拒。
- */
+/** Validate newly-added admin-only MCP bindings for non-admin callers. */
 async function checkAdminOnlyMcpAccess(
   c: import('hono').Context,
   mcpServerIds: string[] | null | undefined,
@@ -1088,11 +1072,7 @@ async function checkSkillGroupAccessForAgentOwner(
  * flattened into the clone's direct Skill ids. Foreign private Skills stay
  * excluded, and Skills from retained groups are not duplicated as direct refs.
  */
-/**
- * Validate that all kbDocumentIds are visible to the caller (admin sees all, others only their own).
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）。
- */
+/** Validate newly-added KB document ids against caller visibility. */
 async function validateKbDocumentIds(
   c: import('hono').Context,
   ids: string[] | undefined,
@@ -1114,11 +1094,7 @@ async function validateKbDocumentIds(
   return null
 }
 
-/**
- * Validate that all skillGroupIds are visible to the caller (admin sees all, others only their own).
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）。
- */
+/** Validate newly-added Skill group ids against caller visibility. */
 async function validateSkillGroupIds(
   c: import('hono').Context,
   ids: string[] | undefined,
@@ -1503,30 +1479,59 @@ app.patch('/:id', async (c) => {
   const effectiveWorkspaceType = parsed.data.workspaceType ?? existing.workspaceType
   const effectiveScmSourceId =
     scmSourceId !== undefined ? scmSourceId : (existing.scmSourceId ?? null)
+  const releasesScmBinding =
+    existing.workspaceType === 'scm' &&
+    existing.scmSourceId !== null &&
+    (effectiveWorkspaceType !== 'scm' || effectiveScmSourceId !== existing.scmSourceId)
   const establishesScmBinding =
     effectiveWorkspaceType === 'scm' &&
     effectiveScmSourceId !== null &&
     (existing.workspaceType !== 'scm' || effectiveScmSourceId !== existing.scmSourceId)
   const updateAgent = async (executor: typeof db) =>
     (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
-  const bindingResult = establishesScmBinding
+  const changesScmBinding = releasesScmBinding || establishesScmBinding
+  const bindingResult = changesScmBinding
     ? await withScmPathMutation(async (tx) => {
-        const source = (
-          await tx
-            .select()
-            .from(scmSources)
-            .where(
-              and(eq(scmSources.id, effectiveScmSourceId), isNull(scmSources.deletionRequestedAt)),
-            )
-            .limit(1)
-        )[0]
-        if (!source || source.initialSyncCompletedAt == null) {
-          return { allowed: false as const, agent: undefined }
+        if (releasesScmBinding) {
+          const active = await findActiveAgentScmWorkload(tx, id)
+          if (active) {
+            return { allowed: false as const, agent: undefined, active }
+          }
         }
-        return { allowed: true as const, agent: await updateAgent(tx as typeof db) }
+        if (establishesScmBinding) {
+          const source = (
+            await tx
+              .select()
+              .from(scmSources)
+              .where(
+                and(
+                  eq(scmSources.id, effectiveScmSourceId),
+                  isNull(scmSources.deletionRequestedAt),
+                ),
+              )
+              .limit(1)
+          )[0]
+          if (!source || source.initialSyncCompletedAt == null) {
+            return { allowed: false as const, agent: undefined, active: undefined }
+          }
+        }
+        return {
+          allowed: true as const,
+          agent: await updateAgent(tx as typeof db),
+          active: undefined,
+        }
       })
-    : { allowed: true as const, agent: await updateAgent(db) }
+    : { allowed: true as const, agent: await updateAgent(db), active: undefined }
   if (!bindingResult.allowed) {
+    if (bindingResult.active) {
+      const label = bindingResult.active.type === 'run' ? 'Run' : 'Evaluation'
+      return c.json(
+        {
+          error: `Cannot change the SCM binding while ${label} ${bindingResult.active.id} is active`,
+        },
+        409,
+      )
+    }
     return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
   }
   const updated = bindingResult.agent
@@ -2479,7 +2484,7 @@ app.post('/:id/chat', async (c) => {
     }
   }
 
-  // Worktree 参数：在入库 run 记录时一并写入，保证排队场景调度器能读到
+  // Persist worktree parameters with the Run so queued execution can recover them.
   const worktreeCfg = parsed.data.worktree
     ? {
         name: parsed.data.worktree.name,
@@ -2491,18 +2496,10 @@ app.post('/:id/chat', async (c) => {
   // --- Resolve or create Run ---
   let runId: string
   let createdRunThisRequest = false
-  // 复用已完成 run 时记下它的原终态；worktree 冲突回滚时恢复到这个终态，绝不留 pending——
-  // 否则新加的 409 guard 会因 pending 永久拒绝该 chatId，而 scheduleNext 只 promote queued
-  // 不恢复 pending，进程内无法自愈（review [P1]）。
+  // Snapshot reused Run state so an aborted turn can restore it exactly.
   let reusedRunPriorStatus: string | undefined
-  // 复用 run 时，在覆盖 intent/executionMetadata **之前**记下原值：若本请求最终没跑起来
-  // （queue_full / worktree 冲突），把这条历史行还原回去，绝不让一条从未执行的新消息污染
-  // 已有会话历史（review [P2]）。
   let reusedRunPriorIntent: string | undefined
   let reusedRunPriorExecMeta: (typeof runs.$inferSelect)['executionMetadata'] | undefined
-  // worktreeConfig 也会被新一轮覆盖（见下方 reuse update），回滚时同样要还原——否则
-  // queue_full/worktree 冲突后行上残留新一轮的 worktreeConfig，后续 rerun/出队会跑错
-  // workspace（review 回归）。
   let reusedRunPriorWorktreeConfig: (typeof runs.$inferSelect)['worktreeConfig'] | undefined
   const requestedChatId = parsed.data.chatId
   /**
@@ -2553,10 +2550,7 @@ app.post('/:id/chat', async (c) => {
     )[0]
 
     if (existingRun) {
-      // 禁止同一会话（chatId→同一 run）并发追问：上一轮还没结束（非终态）就复用同一行会
-      // 互相覆盖 intent / pending-context / executionMetadata.attachments，两个请求都可能返回
-      // 202 但只执行最后一轮（review [P1]）。与 OAuth 渠道的 SESSION_BUSY 语义一致——拒绝，
-      // 让调用方等上一轮完成再追问。
+      // One conversation row cannot safely host two concurrent turns.
       if (
         existingRun.status === 'pending' ||
         existingRun.status === 'queued' ||
@@ -2968,6 +2962,14 @@ app.delete('/:id', async (c) => {
   // A running (published) agent must be stopped before it can be deleted.
   if (agent.publishStatus === 'published') {
     return c.json({ error: 'Agent must be stopped before deletion' }, 409)
+  }
+
+  if (agent.workspaceType === 'scm' && agent.scmSourceId) {
+    const active = await withScmPathMutation(async (tx) => findActiveAgentScmWorkload(tx, id))
+    if (active) {
+      const label = active.type === 'run' ? 'Run' : 'Evaluation'
+      return c.json({ error: `Cannot delete the Agent while ${label} ${active.id} is active` }, 409)
+    }
   }
 
   // Clean up foreign key references before deleting agent

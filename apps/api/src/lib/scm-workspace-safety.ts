@@ -367,6 +367,10 @@ export async function validateStoredScmWorkspacesRoot(
   // Defensive: this is a backstop check on a read path, so an unreadable peer
   // list degrades to "no overlap found" rather than failing the request. The
   // write path (resolveScmPathPlan) is what authoritatively rejects overlap.
+  // A deletion reservation deliberately remains a path reservation until the
+  // row is finally removed. Filesystem isolation happens after that reservation
+  // commits and may fail, so treating a pending row as already vacated would let
+  // another source operate inside storage that still exists in place.
   const otherSources = Array.isArray(scanned) ? scanned.filter((peer) => peer.id !== source.id) : []
   for (const peer of otherSources) {
     const collision = peerOccupiedPaths(peer).find((path) =>

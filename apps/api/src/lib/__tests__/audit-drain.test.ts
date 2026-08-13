@@ -32,7 +32,8 @@ vi.mock('../logger.js', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }))
 
-const { logAudit, logBackgroundAudit, drainAuditWrites, writeAudit } = await import('../audit.js')
+const { logAudit, logBackgroundAudit, drainAuditWrites, writeAudit, writeBackgroundAudit } =
+  await import('../audit.js')
 const { logger } = await import('../logger.js')
 
 /** A Hono-ish context stub: logAudit only reads `userId` off it. */
@@ -138,6 +139,16 @@ describe('writeAudit', () => {
 
     await expect(
       writeAudit(ctx, { action: 'scm_source.delete', resource: 'scm_source' }),
+    ).rejects.toThrow('audit disk full')
+  })
+
+  it('propagates background persistence failures to a recovery transaction', async () => {
+    insertSpy.mockReturnValue({
+      values: () => Promise.reject(new Error('audit disk full')),
+    })
+
+    await expect(
+      writeBackgroundAudit({ action: 'scm_source.delete', resource: 'scm_source' }),
     ).rejects.toThrow('audit disk full')
   })
 })

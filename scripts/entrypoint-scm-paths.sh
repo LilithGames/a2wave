@@ -26,9 +26,64 @@
 # if the two ever drift, which is how the previous `.reclaiming` name survived a
 # rename here while the API had already moved on.
 SCM_MANAGED_SUBDIRS='sources workspaces'
+SCM_STORAGE_MARKER='.a2wave-owned-storage-root'
+SCM_STORAGE_MARKER_CONTENT='a2wave-scm-storage-v1'
 SCM_RECLAIM_SUBDIR='.a2wave-scm-reclaim-v1'
 SCM_RECLAIM_MARKER='.a2wave-owned-reclaim-root'
 SCM_RECLAIM_MARKER_CONTENT='a2wave-scm-reclaim-v1'
+
+scm_storage_is_owned() {
+  scm_root="$1"
+  marker="$scm_root/$SCM_STORAGE_MARKER"
+  [ -d "$scm_root" ] || return 1
+  [ -L "$scm_root" ] && return 1
+  [ -f "$marker" ] || return 1
+  [ -L "$marker" ] && return 1
+  [ "$(cat "$marker" 2>/dev/null)" = "$SCM_STORAGE_MARKER_CONTENT" ]
+}
+
+# Claim only a mount whose managed names are all unused. The marker owns the
+# names `sources/` and `workspaces/`, not the mount root or any sibling data.
+# A pre-upgrade operator directory with either generic name is therefore never
+# silently adopted or chowned.
+scm_prepare_managed_storage() {
+  scm_root="$1"
+  [ -n "$scm_root" ] || return 1
+  [ -L "$scm_root" ] && return 1
+  mkdir -p "$scm_root" || return 1
+  [ -d "$scm_root" ] || return 1
+
+  if ! scm_storage_is_owned "$scm_root"; then
+    marker="$scm_root/$SCM_STORAGE_MARKER"
+    # An invalid marker or any pre-existing managed name belongs to the
+    # operator. Refuse before creating or changing anything else.
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      return 1
+    fi
+    for scm_subdir in $SCM_MANAGED_SUBDIRS $SCM_RECLAIM_SUBDIR; do
+      scm_dir="$scm_root/$scm_subdir"
+      if [ -e "$scm_dir" ] || [ -L "$scm_dir" ]; then
+        return 1
+      fi
+    done
+    (set -C; printf '%s\n' "$SCM_STORAGE_MARKER_CONTENT" > "$marker") 2>/dev/null ||
+      scm_storage_is_owned "$scm_root" || return 1
+  fi
+
+  # With ownership established, missing children are recoverable from a crash
+  # between marker creation and mkdir. Existing children must still be ordinary
+  # directories; validate every one before the entrypoint performs any chown.
+  for scm_subdir in $SCM_MANAGED_SUBDIRS; do
+    scm_dir="$scm_root/$scm_subdir"
+    [ -L "$scm_dir" ] && return 1
+    if [ -e "$scm_dir" ] && [ ! -d "$scm_dir" ]; then
+      return 1
+    fi
+  done
+  for scm_subdir in $SCM_MANAGED_SUBDIRS; do
+    mkdir -p "$scm_root/$scm_subdir" || return 1
+  done
+}
 
 scm_reclaim_is_owned() {
   reclaim_root="$1"
@@ -45,6 +100,7 @@ scm_reclaim_is_owned() {
 # untouched for the operator to inspect or move.
 scm_prepare_reclaim_root() {
   scm_root="$1"
+  scm_storage_is_owned "$scm_root" || return 1
   reclaim_root="$scm_root/$SCM_RECLAIM_SUBDIR"
   if [ -e "$reclaim_root" ] || [ -L "$reclaim_root" ]; then
     scm_reclaim_is_owned "$reclaim_root"
@@ -71,6 +127,7 @@ scm_chown_targets() {
   # -L before -d: a symlink to a directory satisfies -d, so order matters.
   [ -L "$scm_root" ] && return 0
   [ -d "$scm_root" ] || return 0
+  scm_storage_is_owned "$scm_root" || return 0
 
   for scm_subdir in $SCM_MANAGED_SUBDIRS; do
     scm_dir="$scm_root/$scm_subdir"

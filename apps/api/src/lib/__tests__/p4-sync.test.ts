@@ -6,40 +6,51 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { env } from '../../env.js'
 
 // Chainable DB mock
-const { mockDb, mockNotifyScmSyncError, mockExecuteGitSync, mockRunCodegraphIndex } = vi.hoisted(
-  () => {
-    const setResult = { run: vi.fn() }
-    const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
-    const setFn = vi.fn(() => whereResult)
-    const updateResult = { set: setFn, where: vi.fn(() => setResult) }
-    // Make set().where() work as chain
-    setFn.mockImplementation((() => ({ where: vi.fn(() => setResult) })) as any)
+const {
+  mockDb,
+  mockNotifyScmSyncError,
+  mockExecuteGitSync,
+  mockRunCodegraphIndex,
+  mockWriteBackgroundAudit,
+  mockIsolateManagedScmStorage,
+} = vi.hoisted(() => {
+  const setResult = { run: vi.fn() }
+  const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
+  const setFn = vi.fn(() => whereResult)
+  const updateResult = { set: setFn, where: vi.fn(() => setResult) }
+  // Make set().where() work as chain
+  setFn.mockImplementation((() => ({ where: vi.fn(() => setResult) })) as any)
 
-    const selectChain = {
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          get: vi.fn(() => undefined),
-          all: vi.fn(() => []),
-        })),
+  const selectChain = {
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        get: vi.fn(() => undefined),
+        all: vi.fn(() => []),
       })),
-    }
+    })),
+  }
 
-    const db = {
-      select: vi.fn(() => selectChain),
-      update: vi.fn(() => updateResult),
-      _selectChain: selectChain,
-      _updateResult: updateResult,
-      _setResult: setResult,
-    }
+  const db = {
+    select: vi.fn(() => selectChain),
+    update: vi.fn(() => updateResult),
+    delete: vi.fn(),
+    _selectChain: selectChain,
+    _updateResult: updateResult,
+    _setResult: setResult,
+  }
 
-    return {
-      mockDb: db,
-      mockNotifyScmSyncError: vi.fn().mockResolvedValue(undefined),
-      mockExecuteGitSync: vi.fn(),
-      mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
-    }
-  },
-)
+  return {
+    mockDb: db,
+    mockNotifyScmSyncError: vi.fn().mockResolvedValue(undefined),
+    mockExecuteGitSync: vi.fn(),
+    mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
+    mockWriteBackgroundAudit: vi.fn().mockResolvedValue(undefined),
+    mockIsolateManagedScmStorage: vi.fn().mockResolvedValue({
+      isolated: [],
+      commit: vi.fn().mockResolvedValue([]),
+    }),
+  }
+})
 vi.mock('../../db/client.js', () => ({ db: mockDb }))
 vi.mock('../../db/schema.js', () => ({ scmSources: 'scmSources' }))
 // `sanitizeCredentials` is deliberately NOT mocked: redaction of p4 error text
@@ -55,6 +66,14 @@ vi.mock('../codegraph-index.js', () => ({
   runCodegraphIndex: mockRunCodegraphIndex,
 }))
 vi.mock('../webhook-notifier.js', () => ({ notifyScmSyncError: mockNotifyScmSyncError }))
+vi.mock('../audit.js', () => ({ writeBackgroundAudit: mockWriteBackgroundAudit }))
+vi.mock('../scm-storage-reclaim.js', () => ({
+  isolateManagedScmStorage: mockIsolateManagedScmStorage,
+}))
+vi.mock('../scm-path-plan.js', () => ({
+  selectScmPathPeers: vi.fn().mockResolvedValue([]),
+  withScmPathMutation: (fn: (executor: typeof mockDb) => unknown) => fn(mockDb),
+}))
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -1346,6 +1365,51 @@ describe('initAutoSyncSchedulers', () => {
     await expect(initAutoSyncSchedulers()).resolves.toBeUndefined()
 
     stopAutoSync('s1')
+  })
+
+  it('atomically attributes recovered deletion to the original requester', async () => {
+    const pendingSource = {
+      id: 'scm_pending',
+      name: 'Pending source',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.test/repo.git' },
+      localPath: '/data/workspace/sources/pending',
+      workspacesPath: '/data/workspace/workspaces/pending',
+      deletionRequestedAt: new Date(),
+      deletionRequestedBy: 'usr_admin_requester',
+      userId: 'usr_source_owner',
+    }
+    let selectCall = 0
+    mockDb.select.mockImplementation(
+      () =>
+        asyncQuery({
+          from: vi.fn(() =>
+            asyncQuery({
+              where: vi.fn(() => {
+                selectCall++
+                if (selectCall <= 2) return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+                if (selectCall === 3) {
+                  return asyncQuery({ all: vi.fn(() => [pendingSource]), get: vi.fn() })
+                }
+                return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+              }),
+            }),
+          ),
+        }) as any,
+    )
+    mockDb.delete.mockReturnValue({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([pendingSource]) })),
+    })
+
+    await initAutoSyncSchedulers()
+
+    expect(mockWriteBackgroundAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'scm_source.delete',
+        userId: 'usr_admin_requester',
+      }),
+      mockDb,
+    )
   })
 })
 

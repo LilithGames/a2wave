@@ -53,6 +53,7 @@ function reclaimDirFromSource() {
 
 const RECLAIM_DIR = reclaimDirFromSource()
 const RECLAIM_MARKER = '.a2wave-owned-reclaim-root'
+const STORAGE_MARKER = '.a2wave-owned-storage-root'
 
 /** The reclaim subtree name the shell helper declares. */
 function reclaimSubdirFromScript() {
@@ -91,13 +92,46 @@ function prepareReclaimRoot(storageRoot) {
   )
 }
 
+/** Claim an otherwise unused mount for a2wave's managed child directories. */
+function prepareManagedStorage(storageRoot) {
+  return spawnSync(
+    'bash',
+    ['-c', `set -eu; . "$1"; scm_prepare_managed_storage "$2"`, '_', SCRIPT, storageRoot],
+    { encoding: 'utf8' },
+  )
+}
+
 afterEach(() => {
   while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true })
 })
 
 describe('scm_chown_targets', () => {
+  it('marks a fresh mount before creating managed child directories', () => {
+    const root = makeRoot()
+
+    const result = prepareManagedStorage(root)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(join(root, STORAGE_MARKER), 'utf8'), 'a2wave-scm-storage-v1\n')
+    assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, 'workspaces')])
+  })
+
+  it('refuses to adopt a pre-existing operator sources directory', () => {
+    const root = makeRoot()
+    mkdirSync(join(root, 'sources'))
+    writeFileSync(join(root, 'sources', 'operator-repo'), 'keep exactly')
+
+    const result = prepareManagedStorage(root)
+
+    assert.notEqual(result.status, 0)
+    assert.equal(readFileSync(join(root, 'sources', 'operator-repo'), 'utf8'), 'keep exactly')
+    assert.throws(() => readFileSync(join(root, STORAGE_MARKER), 'utf8'), { code: 'ENOENT' })
+    assert.deepEqual(chownTargets(root), [])
+  })
+
   it('creates and marks a fresh reclaim root before handing it to appuser', () => {
     const root = makeRoot()
+    assert.equal(prepareManagedStorage(root).status, 0)
     const result = prepareReclaimRoot(root)
 
     assert.equal(result.status, 0, result.stderr)
@@ -105,7 +139,11 @@ describe('scm_chown_targets', () => {
       readFileSync(join(root, RECLAIM_DIR, RECLAIM_MARKER), 'utf8'),
       'a2wave-scm-reclaim-v1\n',
     )
-    assert.deepEqual(chownTargets(root), [join(root, RECLAIM_DIR)])
+    assert.deepEqual(chownTargets(root), [
+      join(root, 'sources'),
+      join(root, 'workspaces'),
+      join(root, RECLAIM_DIR),
+    ])
   })
 
   it('refuses an unmarked existing reclaim root without mutating its contents', () => {
@@ -124,8 +162,7 @@ describe('scm_chown_targets', () => {
 
   it('emits only the a2wave-managed subtrees, never the mount root', () => {
     const root = makeRoot()
-    mkdirSync(join(root, 'sources'))
-    mkdirSync(join(root, 'workspaces'))
+    assert.equal(prepareManagedStorage(root).status, 0)
 
     assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, 'workspaces')])
   })
@@ -141,11 +178,14 @@ describe('scm_chown_targets', () => {
    */
   it('emits the reclaim isolation subtree so the startup sweep can delete it', () => {
     const root = makeRoot()
-    mkdirSync(join(root, 'sources'))
-    mkdirSync(join(root, RECLAIM_DIR))
-    writeFileSync(join(root, RECLAIM_DIR, RECLAIM_MARKER), 'a2wave-scm-reclaim-v1\n')
+    assert.equal(prepareManagedStorage(root).status, 0)
+    assert.equal(prepareReclaimRoot(root).status, 0)
 
-    assert.deepEqual(chownTargets(root), [join(root, 'sources'), join(root, RECLAIM_DIR)])
+    assert.deepEqual(chownTargets(root), [
+      join(root, 'sources'),
+      join(root, 'workspaces'),
+      join(root, RECLAIM_DIR),
+    ])
   })
 
   it('never adopts an unmarked pre-existing reclaim directory as a chown target', () => {
@@ -184,8 +224,7 @@ describe('scm_chown_targets', () => {
 
   it('leaves an operator directory under the same mount untouched', () => {
     const root = makeRoot()
-    mkdirSync(join(root, 'sources'))
-    mkdirSync(join(root, 'workspaces'))
+    assert.equal(prepareManagedStorage(root).status, 0)
     // The exact shape that broke: the operator's own work beside a2wave's data.
     mkdirSync(join(root, 'my-own-repo'))
     writeFileSync(join(root, 'notes.txt'), 'operator file')
@@ -198,7 +237,8 @@ describe('scm_chown_targets', () => {
 
   it('skips a managed subtree that does not exist yet', () => {
     const root = makeRoot()
-    mkdirSync(join(root, 'sources'))
+    assert.equal(prepareManagedStorage(root).status, 0)
+    rmSync(join(root, 'workspaces'), { recursive: true })
 
     assert.deepEqual(chownTargets(root), [join(root, 'sources')])
   })
@@ -215,8 +255,9 @@ describe('scm_chown_targets', () => {
   it('refuses a symlinked managed subtree', () => {
     const root = makeRoot()
     const outside = makeRoot()
+    assert.equal(prepareManagedStorage(root).status, 0)
+    rmSync(join(root, 'sources'), { recursive: true })
     spawnSync('ln', ['-s', outside, join(root, 'sources')])
-    mkdirSync(join(root, 'workspaces'))
 
     assert.deepEqual(chownTargets(root), [join(root, 'workspaces')])
   })
@@ -230,8 +271,7 @@ describe('scm_chown_targets', () => {
    */
   it('emits nothing for a symlinked storage root', () => {
     const real = makeRoot()
-    mkdirSync(join(real, 'sources'))
-    mkdirSync(join(real, 'workspaces'))
+    assert.equal(prepareManagedStorage(real).status, 0)
     const link = join(makeRoot(), 'linked-root')
     spawnSync('ln', ['-s', real, link])
 

@@ -6,6 +6,7 @@ import type { ScmSourceConfig } from '@a2wave/shared'
 import { and, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { sanitizeCredentials } from './git-sync.js'
 import { logger } from './logger.js'
 
@@ -50,10 +51,12 @@ async function finalizePreAcquiredIndex(
   status: 'idle' | 'error',
   message: string | null,
 ): Promise<void> {
-  await db
-    .update(scmSources)
-    .set({ codegraphStatus: status, codegraphLastError: message, updatedAt: new Date() })
-    .where(eq(scmSources.id, sourceId))
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({ codegraphStatus: status, codegraphLastError: message, updatedAt: new Date() })
+      .where(eq(scmSources.id, sourceId))
+  })
 }
 
 export async function runCodegraphForPath(localPath: string): Promise<CodegraphIndexResult> {
@@ -96,13 +99,15 @@ export async function runCodegraphIndex(
   }
 
   if (!options.alreadyAcquired) {
-    const acquired = await (
-      await db
-        .update(scmSources)
-        .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
-        .where(and(eq(scmSources.id, sourceId), ne(scmSources.codegraphStatus, 'indexing')))
-        .returning()
-    )[0]
+    const acquired = await runExclusive(async () => {
+      return (
+        await db
+          .update(scmSources)
+          .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
+          .where(and(eq(scmSources.id, sourceId), ne(scmSources.codegraphStatus, 'indexing')))
+          .returning()
+      )[0]
+    })
 
     if (!acquired) {
       return {
@@ -117,15 +122,17 @@ export async function runCodegraphIndex(
   logger.info({ sourceId, localPath: source.localPath }, 'Starting CodeGraph indexing')
   const result = await runCodegraphForPath(source.localPath)
 
-  await db
-    .update(scmSources)
-    .set({
-      codegraphStatus: result.ok ? 'idle' : 'error',
-      codegraphLastIndexedAt: result.ok ? new Date() : source.codegraphLastIndexedAt,
-      codegraphLastError: result.ok ? null : result.message,
-      updatedAt: new Date(),
-    })
-    .where(eq(scmSources.id, sourceId))
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({
+        codegraphStatus: result.ok ? 'idle' : 'error',
+        codegraphLastIndexedAt: result.ok ? new Date() : source.codegraphLastIndexedAt,
+        codegraphLastError: result.ok ? null : result.message,
+        updatedAt: new Date(),
+      })
+      .where(eq(scmSources.id, sourceId))
+  })
 
   if (result.ok) {
     logger.info({ sourceId, mode: result.mode }, 'CodeGraph indexing completed')

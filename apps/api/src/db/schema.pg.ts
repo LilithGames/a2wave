@@ -382,6 +382,10 @@ export const scmSources = pgTable('scm_sources', {
   isEnabled: boolean('is_enabled').notNull().default(true),
   /** Durable first phase of an SCM source deletion. */
   deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true, mode: 'date' }),
+  /** User who requested deletion, retained for crash-recovery audit attribution. */
+  deletionRequestedBy: text('deletion_requested_by').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   /** Owning user */
   userId: text('user_id').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })

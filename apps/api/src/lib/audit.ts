@@ -80,17 +80,7 @@ export function logBackgroundAudit(
     // difference between "logged late" and "silently lost". A caller that passes
     // a transaction handle as `executor` is opted out: that write is meant to be
     // part of that transaction.
-    runExclusive(async () =>
-      executor.insert(auditLogs).values({
-        id: createId('aud'),
-        userId: entry.userId ?? null,
-        action: entry.action,
-        resource: entry.resource ?? null,
-        resourceId: entry.resourceId ?? null,
-        details: entry.details ?? null,
-        ipAddress: null,
-      }),
-    )
+    writeBackgroundAudit(entry, executor)
       .catch((err: unknown) => {
         // Deliberately not rethrown: an audit write must never fail the work that
         // triggered it, and most callers invoke this without awaiting. Swallowing
@@ -105,6 +95,24 @@ export function logBackgroundAudit(
       // signature.
       .then(() => undefined),
   )
+}
+
+/** Persist a background audit entry and surface any write failure to the caller. */
+export async function writeBackgroundAudit(
+  entry: AuditEntry,
+  executor: Pick<typeof db, 'insert'> = db,
+): Promise<void> {
+  await runExclusive(async () => {
+    await executor.insert(auditLogs).values({
+      id: createId('aud'),
+      userId: entry.userId ?? null,
+      action: entry.action,
+      resource: entry.resource ?? null,
+      resourceId: entry.resourceId ?? null,
+      details: entry.details ?? null,
+      ipAddress: null,
+    })
+  })
 }
 
 /** Persist a request audit entry and surface any write failure to the caller. */

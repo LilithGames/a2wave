@@ -67,14 +67,15 @@ SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
 # subtrees the remap below may take ownership of.
 . /usr/local/bin/entrypoint-scm-paths.sh
 
-# Reject a symlinked root BEFORE anything walks or chowns it. This check used to
-# sit further down, after the UID remap: if the link pointed at a tree that
-# happened to contain sources/ or workspaces/, the remap chowned those real
-# directories — outside the mount — and only then exited 1, with the damage done.
-# Refusing here makes the ordering safe rather than relying on what the target
-# happens to contain.
-if [ -L "$SCM_STORAGE_ROOT" ]; then
-  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is a symlink" >&2
+# Complete every filesystem preflight before UID remap or ownership changes.
+# Besides symlinks, this refuses pre-upgrade operator directories named
+# `sources` or `workspaces` unless the mount carries a2wave's ownership marker.
+if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT"; then
+  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not an a2wave-managed SCM storage root" >&2
+  exit 1
+fi
+if ! scm_prepare_reclaim_root "$SCM_STORAGE_ROOT"; then
+  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT/$SCM_RECLAIM_SUBDIR is not an a2wave-owned reclaim root" >&2
   exit 1
 fi
 
@@ -118,33 +119,10 @@ else
   echo "[entrypoint] appuser UID/GID already ${CURRENT_UID}:${CURRENT_GID}, no remap needed"
 fi
 
-# Create and own only a2wave-managed children. The root may be a host bind used
-# directly by the operator, so changing its owner would pollute the host. Root
-# can still create these children beneath a root-owned 0755 mount, after which
-# appuser can allocate per-source directories normally.
-#
-# The symlink check ran above, before the UID remap could traverse the root. It
-# is re-asserted after mkdir below, which is what catches a root that is a
-# non-directory or was swapped in between the two points.
-mkdir -p "$SCM_STORAGE_ROOT"
-if [ ! -d "$SCM_STORAGE_ROOT" ] || [ -L "$SCM_STORAGE_ROOT" ]; then
-  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not a regular directory" >&2
-  exit 1
-fi
-# Same list the chown sweep above uses, from entrypoint-scm-paths.sh: a subtree
-# provisioned here but missing from that list would be created and then never
-# handed to appuser across a UID remap.
+# Own only the already-preflighted managed children. The root may be a host bind
+# used directly by the operator, so changing its owner would pollute the host.
 for scm_subdir in $SCM_MANAGED_SUBDIRS; do
   scm_dir="$SCM_STORAGE_ROOT/$scm_subdir"
-  if [ -L "$scm_dir" ]; then
-    echo "[entrypoint] refusing to start: $scm_dir is a symlink" >&2
-    exit 1
-  fi
-  mkdir -p "$scm_dir"
-  if [ ! -d "$scm_dir" ] || [ -L "$scm_dir" ]; then
-    echo "[entrypoint] refusing to start: $scm_dir is not a regular directory" >&2
-    exit 1
-  fi
   chown -h "$TARGET_UID:$TARGET_GID" "$scm_dir"
 done
 
@@ -152,10 +130,6 @@ done
 # is the proof that a2wave owns it. Never adopt or chown a pre-existing unmarked
 # directory, even when empty; it may be operator data using the same name.
 scm_reclaim_root="$SCM_STORAGE_ROOT/$SCM_RECLAIM_SUBDIR"
-if ! scm_prepare_reclaim_root "$SCM_STORAGE_ROOT"; then
-  echo "[entrypoint] refusing to start: $scm_reclaim_root is not an a2wave-owned reclaim root" >&2
-  exit 1
-fi
 chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root"
 chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root/$SCM_RECLAIM_MARKER"
 

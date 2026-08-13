@@ -34,6 +34,7 @@ vi.mock('../../db/schema.js', () => ({
     syncStatus: 'scmSources.syncStatus',
     codegraphStatus: 'scmSources.codegraphStatus',
     deletionRequestedAt: 'scmSources.deletionRequestedAt',
+    deletionRequestedBy: 'scmSources.deletionRequestedBy',
   },
   runs: { id: 'runs.id', workDir: 'runs.workDir', status: 'runs.status' },
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
@@ -559,6 +560,9 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(source))
         .mockReturnValueOnce(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
+      )
       ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
 
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
@@ -703,7 +707,7 @@ describe('SCM Sources routes', () => {
      * `withTransaction` gives, and what makes "who deleted this" always
      * answerable (Iron Rule 5).
      */
-    it('commits the deletion reservation and audit entry in one transaction', async () => {
+    it('commits each deletion state transition with its audit entry', async () => {
       const source = {
         id: 'scm_1',
         name: 'Source',
@@ -722,8 +726,8 @@ describe('SCM Sources routes', () => {
         order.push('reserve')
         return makeUpdateChain({ ...source, deletionRequestedAt: new Date() })
       })
-      ;(writeAudit as Mock).mockImplementation(async () => {
-        order.push('audit:insert')
+      ;(writeAudit as Mock).mockImplementation(async (_context, entry) => {
+        order.push(`audit:${entry.action}`)
       })
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain(source))
@@ -732,17 +736,52 @@ describe('SCM Sources routes', () => {
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
       expect(res.status).toBe(200)
-      const begin = order.indexOf('BEGIN')
-      const commit = order.indexOf('COMMIT')
-      expect(begin).toBeGreaterThanOrEqual(0)
-      expect(commit).toBeGreaterThan(begin)
-      // The durable reservation and audit INSERT land together. The row delete
-      // is a later phase after filesystem reclaim has settled.
-      for (const step of ['reserve', 'audit:insert']) {
-        expect(order.indexOf(step)).toBeGreaterThan(begin)
-        expect(order.indexOf(step)).toBeLessThan(commit)
+      const begins = order.flatMap((step, index) => (step === 'BEGIN' ? [index] : []))
+      const commits = order.flatMap((step, index) => (step === 'COMMIT' ? [index] : []))
+      expect(begins).toHaveLength(2)
+      expect(commits).toHaveLength(2)
+      for (const [step, transaction] of [
+        ['reserve', 0],
+        ['audit:scm_source.request_deletion', 0],
+        ['delete', 1],
+        ['audit:scm_source.delete', 1],
+      ] as const) {
+        expect(order.indexOf(step)).toBeGreaterThan(begins[transaction] ?? -1)
+        expect(order.indexOf(step)).toBeLessThan(commits[transaction] ?? Number.MAX_SAFE_INTEGER)
       }
-      expect(order.indexOf('delete')).toBeGreaterThan(commit)
+    })
+
+    it('rolls back the terminal row deletion when its audit insert fails', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+        deletionRequestedBy: 'usr_requester',
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
+      )
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
+      ;(writeAudit as Mock)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('audit disk full'))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(500)
+      expect(sqliteExec.mock.calls.map(([sql]) => sql)).toEqual(['BEGIN', 'COMMIT', 'BEGIN'])
+      expect(writeAudit).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'scm_source.delete',
+          userId: 'usr_requester',
+        }),
+        expect.anything(),
+      )
     })
 
     it('does not delete or reclaim storage when the durable audit insert fails', async () => {
@@ -817,6 +856,37 @@ describe('SCM Sources routes', () => {
         retryable: true,
       })
       expect(db.delete).not.toHaveBeenCalled()
+    })
+
+    /**
+     * The reservation transaction is what makes deletion crash-safe, but the
+     * audit entry inside it asserts a deletion that has not happened yet. When
+     * reclaim then fails the route answers 503 and the row survives, so an
+     * operator who never retries is left with a log entry claiming the source
+     * was deleted. Record the reservation, and let the terminal entry follow the
+     * row delete.
+     */
+    it('audits the reservation rather than the deletion when reclaim must be retried', async () => {
+      const source = {
+        id: 'scm_1',
+        name: 'Source',
+        localPath: '/data/workspace/sources/1',
+        workspacesPath: null,
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(source))
+        .mockReturnValueOnce(makeDbChain([]))
+      ;(db.update as Mock).mockReturnValue(
+        makeUpdateChain({ ...source, deletionRequestedAt: new Date() }),
+      )
+      ;(isolateManagedScmStorage as Mock).mockRejectedValueOnce(new Error('EBUSY'))
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(503)
+      const actions = (writeAudit as Mock).mock.calls.map((call) => call[1].action)
+      expect(actions).toContain('scm_source.request_deletion')
+      expect(actions).not.toContain('scm_source.delete')
     })
 
     it('hides sources reserved for deletion from the list', async () => {
