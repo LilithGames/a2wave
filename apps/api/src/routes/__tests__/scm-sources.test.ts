@@ -2254,6 +2254,19 @@ describe('SCM Sources routes', () => {
   })
 
   describe('DELETE /:id/workspaces/:name', () => {
+    /**
+     * Mirrors the lib contract (removeGitWorkspace): `beforeRemove` runs
+     * inside the workspace mutex before any filesystem work, and a throw
+     * aborts with nothing touched. `removed` records that the mock reached
+     * actual removal.
+     */
+    function makeRemoveWorkspace(removed: () => void) {
+      return vi.fn(async (_name: string, options?: { beforeRemove?: () => Promise<void> }) => {
+        await options?.beforeRemove?.()
+        removed()
+      })
+    }
+
     it('returns 404 when source does not exist', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(undefined))
 
@@ -2276,129 +2289,20 @@ describe('SCM Sources routes', () => {
     it('returns 409 when workspace is occupied', async () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'run_running' }))
+        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' })) // beforeRemove row re-read
+        .mockReturnValueOnce(makeDbChain({ id: 'run_running' })) // occupied
+      const removed = vi.fn()
       mockCreateScmSource.mockReturnValue({
         wsRoot: '/workspaces/scm_1',
-        removeWorkspace: vi.fn(),
+        removeWorkspace: makeRemoveWorkspace(removed),
       })
 
       const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
         method: 'DELETE',
       })
       expect(res.status).toBe(409)
-    })
-
-    // Evaluations write no `runs` row, so the run-status check above cannot
-    // see them — yet their `eval-<taskId>` worktree is a perfectly legal name
-    // here. The durable lease is the only record that the directory is a live
-    // process's cwd.
-    it('returns 409 when the workspace belongs to an evaluation holding a durable lease', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
-        .mockReturnValueOnce(makeDbChain(undefined)) // no active-status run
-        .mockReturnValueOnce(makeDbChain([{ workloadType: 'evaluation', workloadId: 'evt_7' }]))
-      const removeWorkspace = vi.fn()
-      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
-
-      const res = await app.request('/api/scm-sources/scm_1/workspaces/eval-evt_7', {
-        method: 'DELETE',
-      })
-
-      expect(res.status).toBe(409)
-      expect(removeWorkspace).not.toHaveBeenCalled()
-    })
-
-    // A run's lease deliberately outlives its terminal status until process
-    // exit and cleanup settle, so "no running/pending/queued row" is not "the
-    // directory is free".
-    it('returns 409 when a leased run still holds the workspace through cleanup', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain(undefined)) // status-based check sees nothing
-        .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_9' }]))
-        .mockReturnValueOnce(
-          makeDbChain({ id: 'run_9', workDir: '/workspaces/scm_1/fix-bug' }), // holds this one
-        )
-      const removeWorkspace = vi.fn()
-      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
-
-      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
-        method: 'DELETE',
-      })
-
-      expect(res.status).toBe(409)
-      expect(removeWorkspace).not.toHaveBeenCalled()
-    })
-
-    // Admission reserves the lease before resolveWorkDir writes runs.workDir,
-    // so a leased run with a NULL workDir may still resolve to this very
-    // worktree. Matching on workDir alone waves the deletion through in
-    // exactly that window.
-    it('returns 409 while a leased run has not resolved its workDir yet', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain(undefined))
-        .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_new' }]))
-        .mockReturnValueOnce(makeDbChain({ id: 'run_new', workDir: null }))
-      const removeWorkspace = vi.fn()
-      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
-
-      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
-        method: 'DELETE',
-      })
-
-      expect(res.status).toBe(409)
-      expect(removeWorkspace).not.toHaveBeenCalled()
-    })
-
-    it('removes a workspace no lease or run occupies', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain(undefined))
-        .mockReturnValueOnce(makeDbChain([]))
-      const removeWorkspace = vi.fn().mockResolvedValue(undefined)
-      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
-
-      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
-        method: 'DELETE',
-      })
-
-      expect(res.status).toBe(200)
-      expect(removeWorkspace).toHaveBeenCalledWith('fix-bug')
-    })
-
-    // The check and the removal must be one critical section: admission
-    // reserves its lease under the same SCM mutation lock, so an admission is
-    // either before this transaction (lease visible, removal refused) or
-    // after it (worktree already gone, resolved fresh). A removal outside the
-    // transaction reopens the gap where a freshly admitted workload's
-    // worktree is deleted underneath it.
-    it('removes the worktree inside the SCM mutation critical section', async () => {
-      ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain(undefined))
-        .mockReturnValueOnce(makeDbChain([]))
-      const removeWorkspace = vi.fn().mockResolvedValue(undefined)
-      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
-
-      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
-        method: 'DELETE',
-      })
-      expect(res.status).toBe(200)
-
-      const beginCall = sqliteExec.mock.calls.findIndex(([stmt]) => stmt === 'BEGIN')
-      const commitCall = sqliteExec.mock.calls.findIndex(([stmt]) => stmt === 'COMMIT')
-      expect(beginCall).toBeGreaterThanOrEqual(0)
-      expect(commitCall).toBeGreaterThan(beginCall)
-      const removeOrder = removeWorkspace.mock.invocationCallOrder[0]
-      expect(removeOrder).toBeGreaterThan(sqliteExec.mock.invocationCallOrder[beginCall])
-      expect(removeOrder).toBeLessThan(sqliteExec.mock.invocationCallOrder[commitCall])
+      expect(removed).not.toHaveBeenCalled()
     })
 
     it.each([
@@ -2439,6 +2343,166 @@ describe('SCM Sources routes', () => {
       expect(res.status).toBe(400)
       expect((await res.json()).error).toMatch(/Unsafe saved workspacesPath/)
       expect(removeWorkspace).not.toHaveBeenCalled()
+    })
+
+    // Evaluations write no `runs` row, so the run-status check cannot see
+    // them — yet their `eval-<taskId>` worktree is a perfectly legal name
+    // here. The durable lease is the only record that the directory is a live
+    // process's cwd.
+    it('returns 409 when the workspace belongs to an evaluation holding a durable lease', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' })) // beforeRemove row re-read
+        .mockReturnValueOnce(makeDbChain(undefined)) // no active-status run
+        .mockReturnValueOnce(makeDbChain([{ workloadType: 'evaluation', workloadId: 'evt_7' }]))
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/eval-evt_7', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(409)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    // A run's lease deliberately outlives its terminal status until process
+    // exit and cleanup settle, so "no running/pending/queued row" is not "the
+    // directory is free".
+    it('returns 409 when a leased run still holds the workspace through cleanup', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(undefined)) // status-based check sees nothing
+        .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_9' }]))
+        .mockReturnValueOnce(
+          makeDbChain({ id: 'run_9', workDir: '/workspaces/scm_1/fix-bug' }), // holds this one
+        )
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(409)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    // Admission reserves the lease before resolveWorkDir writes runs.workDir,
+    // so a leased run with a NULL workDir may still resolve to this very
+    // worktree. Matching on workDir alone waves the deletion through in
+    // exactly that window.
+    it('returns 409 while a leased run has not resolved its workDir yet', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_new' }]))
+        .mockReturnValueOnce(makeDbChain({ id: 'run_new', workDir: null }))
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(409)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    // The wsPath snapshot is taken under the SCM lock, but a PATCH can move
+    // the source's paths between that transaction and the removal. The
+    // beforeRemove re-check compares the row's current paths against the
+    // snapshot — a mismatch means this wsPath may no longer belong to the
+    // source (its freed root could even have been claimed by another source).
+    it('returns 409 when the source paths changed between snapshot and removal', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git', localPath: '/orig/checkout' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', localPath: '/moved/checkout' }))
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: string }).error).toMatch(/paths changed/)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    it('removes a workspace no lease or run occupies', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+      const removed = vi.fn()
+      const removeWorkspace = makeRemoveWorkspace(removed)
+      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(200)
+      expect(removeWorkspace).toHaveBeenCalledWith(
+        'fix-bug',
+        expect.objectContaining({ beforeRemove: expect.any(Function) }),
+      )
+      expect(removed).toHaveBeenCalled()
+    })
+
+    // The DB transaction must never span the git/filesystem removal: on the
+    // shared SQLite connection an unrelated bare write landing mid-removal
+    // would join the transaction and be erased if the removal failed and
+    // rolled back. The occupancy decision instead re-runs as `beforeRemove`
+    // inside the workspace mutex, immediately before the filesystem work.
+    it('removes the worktree outside the database transaction', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+      expect(res.status).toBe(200)
+
+      // Every transaction this request opened has committed before the
+      // removal ran.
+      const commitOrders = sqliteExec.mock.calls
+        .map(([stmt], index) => ({ stmt, order: sqliteExec.mock.invocationCallOrder[index] }))
+        .filter(({ stmt }) => stmt === 'COMMIT')
+        .map(({ order }) => order)
+      expect(commitOrders.length).toBeGreaterThanOrEqual(1)
+      const removeOrder = removed.mock.invocationCallOrder[0]
+      expect(removeOrder).toBeGreaterThan(Math.max(...commitOrders))
     })
   })
 })

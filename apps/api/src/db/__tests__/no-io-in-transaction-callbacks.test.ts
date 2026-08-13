@@ -53,6 +53,13 @@ const FORBIDDEN = [
   /await\s+fs\.promises\./,
   /await\s+readFile\s*\(/,
   /await\s+writeFile\s*\(/,
+  // Worktree and reclaim operations spawn git and walk the filesystem; the
+  // helper names hide the I/O from the primitive patterns above.
+  /await\s+[\w.]+\.removeWorkspace\s*\(/,
+  /await\s+[\w.]+\.createWorkspace\s*\(/,
+  /await\s+removeGitWorkspace\s*\(/,
+  /await\s+createGitWorkspace\s*\(/,
+  /await\s+isolateManagedScmStorage\s*\(/,
 ]
 
 function* walk(dir: string): Generator<string> {
@@ -71,10 +78,18 @@ function code(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
-/** Body of each `withTransaction(...)` call, matched by brace balance. */
+/**
+ * Body of each transaction-opening call, matched by brace balance.
+ *
+ * `withScmPathMutation` is scanned alongside `withTransaction` because it IS
+ * a transaction — a wrapper adding the SCM advisory lock — and a review found
+ * git I/O parked inside one precisely because this scan did not look through
+ * the wrapper. Any new wrapper that opens a transaction belongs in this
+ * pattern.
+ */
 function transactionCallbackBodies(source: string): string[] {
   const bodies: string[] = []
-  const marker = /withTransaction\s*\(/g
+  const marker = /with(?:Transaction|ScmPathMutation)\s*\(/g
   let m: RegExpExecArray | null = marker.exec(source)
   while (m !== null) {
     let depth = 0

@@ -16,6 +16,7 @@ import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
+import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { defaultScmWorkspacesPath } from './scm-storage.js'
 
@@ -147,7 +148,30 @@ export function defaultWorkspacesPath(
  *
  * @returns `{ path, created }` — created=false 表示复用已有 worktree
  */
+/**
+ * One mutex key per worktree path: creation and removal of the same worktree
+ * must never interleave in this process. Cross-replica, Git's own admin lock
+ * files on the shared volume arbitrate the raw operations, and the durable
+ * workload lease (written before any creation) is what a removal's
+ * `beforeRemove` re-check observes.
+ */
+export function workspaceMutexKey(wsRoot: string, name: string): string {
+  return `scm-worktree:${join(wsRoot, name)}`
+}
+
 export async function createGitWorkspace(
+  localPath: string,
+  wsRoot: string,
+  name: string,
+  config: GitConfig,
+  options?: { branch?: string },
+): Promise<{ path: string; created: boolean }> {
+  return withKeyedLock(workspaceMutexKey(wsRoot, name), () =>
+    createGitWorkspaceUnlocked(localPath, wsRoot, name, config, options),
+  )
+}
+
+async function createGitWorkspaceUnlocked(
   localPath: string,
   wsRoot: string,
   name: string,
@@ -169,7 +193,8 @@ export async function createGitWorkspace(
         { wsPath, incompleteRepos },
         'Workspace is incomplete (missing sub-repo dirs), rebuilding',
       )
-      await removeGitWorkspace(localPath, wsRoot, name, config)
+      // Unlocked variant: this call site already holds the workspace mutex.
+      await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
       // fall through to fresh create below
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
@@ -219,7 +244,8 @@ export async function createGitWorkspace(
     if (lockedError || errors.length > 0) {
       // 回滚已创建的 worktree
       try {
-        await removeGitWorkspace(localPath, wsRoot, name, config)
+        // Unlocked variant: this call site already holds the workspace mutex.
+        await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
       } catch (rollbackErr) {
         // If the first `git worktree add` failed, there is no Git registration
         // to prove. The parent directory was created by this invocation and is
@@ -655,8 +681,28 @@ async function assertWorkspaceWithinRoot(wsRoot: string, workspacePath: string):
  *   1. 残留 branch 在主 repo 里越堆越多
  *   2. 下次同名 branch 创建 worktree 时误复用陈旧的 local ref（而不是从配置的
  *      baseBranch 分叉）
+ *
+ * `options.beforeRemove` runs inside the workspace mutex, immediately before
+ * any filesystem work. It is the caller's authoritative occupancy re-check:
+ * a workload admitted between the caller's earlier decision and this lock
+ * acquisition has already written its durable lease (admission precedes
+ * worktree creation on every replica), so a re-check here observes it. Throw
+ * from the callback to abort the removal with nothing touched.
  */
 export async function removeGitWorkspace(
+  localPath: string,
+  wsRoot: string,
+  name: string,
+  config: GitConfig,
+  options?: { beforeRemove?: () => Promise<void> },
+): Promise<void> {
+  return withKeyedLock(workspaceMutexKey(wsRoot, name), async () => {
+    await options?.beforeRemove?.()
+    return removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
+  })
+}
+
+async function removeGitWorkspaceUnlocked(
   localPath: string,
   wsRoot: string,
   name: string,

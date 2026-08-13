@@ -126,6 +126,23 @@ describe('createScmSource', () => {
         '/ws/path',
         'ws-abc',
         expect.objectContaining({ type: 'git' }),
+        undefined,
+      )
+    })
+
+    it('passes the beforeRemove guard through to removeGitWorkspace', async () => {
+      mockRemoveGitWorkspace.mockResolvedValue(undefined)
+      const source = await createScmSource(makeGitSourceRow({ workspacesPath: '/ws/path' }))
+      const beforeRemove = vi.fn().mockResolvedValue(undefined)
+
+      await source?.removeWorkspace('ws-abc', { beforeRemove })
+
+      expect(mockRemoveGitWorkspace).toHaveBeenCalledWith(
+        '/data/repos/my-repo',
+        '/ws/path',
+        'ws-abc',
+        expect.objectContaining({ type: 'git' }),
+        { beforeRemove },
       )
     })
 

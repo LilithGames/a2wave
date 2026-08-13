@@ -9,7 +9,7 @@ import {
   releaseReservedScmWorkload,
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
-import { countActiveExecutionLeases } from './execution-lease-registry.js'
+import { listActiveExecutionLeases } from './execution-lease-registry.js'
 import type { RunRow, TaskQueueDb } from './task-queue.js'
 import { MAX_QUEUE_LENGTH } from './task-queue.js'
 
@@ -75,45 +75,49 @@ export const taskQueueDb: TaskQueueDb = {
         { type: 'run', workloadId: runId, agentId },
         async (tx, admission) => {
           const executor = tx as TransactionHandle
-          const runningInDb =
-            (
-              await executor
-                .select({ value: count() })
-                .from(runs)
-                .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))
-                .limit(1)
-            )[0]?.value ?? 0
-          // The in-process registry below covers only this replica, and a run
-          // in its terminal-status-to-process-exit window is no longer
-          // `running` in the runs table. The durable *active* lease is the one
-          // cross-replica record of that window (reserved-phase leases are
-          // queued work, not an occupied slot), so it joins the concurrency
-          // count — otherwise a second replica over-admits into a checkout the
-          // first replica's process is still writing. A lease whose run row
-          // was deleted outright is excluded: that is the stale-lease
-          // sweeper's release condition, not an occupied slot, and counting it
-          // would block admission on garbage until the next sweep.
-          const durableActive =
-            (
-              await executor
-                .select({ value: count() })
-                .from(scmWorkloadLeases)
-                .where(
-                  and(
-                    eq(scmWorkloadLeases.agentId, agentId),
-                    eq(scmWorkloadLeases.workloadType, 'run'),
-                    eq(scmWorkloadLeases.phase, 'active'),
-                    exists(
-                      db
-                        .select({ id: runs.id })
-                        .from(runs)
-                        .where(eq(runs.id, scmWorkloadLeases.workloadId)),
-                    ),
-                  ),
-                )
-                .limit(1)
-            )[0]?.value ?? 0
-          const running = Math.max(runningInDb, countActiveExecutionLeases(agentId), durableActive)
+          // Three views of "occupying a slot", unioned BY RUN ID — they are
+          // overlapping but none subsumes another, so max() undercounts (a
+          // terminal run still in cleanup holds an active lease while another
+          // run is `running` with its lease merely reserved: max(1,0,1) = 1,
+          // true occupancy 2) and sum() double-counts. The views:
+          //  - runs.status = 'running': the queue's own cross-replica state.
+          //  - in-process execution leases: this replica's runs between
+          //    terminal status and process exit.
+          //  - durable *active* SCM leases: the same cleanup window as seen
+          //    from other replicas (reserved-phase leases are queued work, not
+          //    an occupied slot). A lease whose run row was deleted outright
+          //    is excluded: that is the stale-lease sweeper's release
+          //    condition, not occupancy, and counting it would block
+          //    admission on garbage until the next sweep.
+          const occupyingRunIds = new Set<string>()
+          for (const row of await executor
+            .select({ id: runs.id })
+            .from(runs)
+            .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))) {
+            occupyingRunIds.add(row.id)
+          }
+          for (const lease of listActiveExecutionLeases()) {
+            if (lease.agentId === agentId) occupyingRunIds.add(lease.runId)
+          }
+          for (const row of await executor
+            .select({ id: scmWorkloadLeases.workloadId })
+            .from(scmWorkloadLeases)
+            .where(
+              and(
+                eq(scmWorkloadLeases.agentId, agentId),
+                eq(scmWorkloadLeases.workloadType, 'run'),
+                eq(scmWorkloadLeases.phase, 'active'),
+                exists(
+                  db
+                    .select({ id: runs.id })
+                    .from(runs)
+                    .where(eq(runs.id, scmWorkloadLeases.workloadId)),
+                ),
+              ),
+            )) {
+            occupyingRunIds.add(row.id)
+          }
+          const running = occupyingRunIds.size
           let slot: 'acquired' | 'queued' = 'acquired'
           if (running >= maxConcurrency) {
             const queued =

@@ -10,10 +10,12 @@ const mockDbUpdate = vi.fn()
 const mockDbOrderBy = vi.fn()
 const mockDbLimit = vi.fn()
 const mockWithAdmission = vi.hoisted(() => vi.fn())
-const mockCountActiveExecutionLeases = vi.hoisted(() => vi.fn(() => 0))
+const mockListActiveExecutionLeases = vi.hoisted(() =>
+  vi.fn((): Array<{ runId: string; agentId?: string }> => []),
+)
 
 vi.mock('../execution-lease-registry.js', () => ({
-  countActiveExecutionLeases: mockCountActiveExecutionLeases,
+  listActiveExecutionLeases: mockListActiveExecutionLeases,
 }))
 
 vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
@@ -147,13 +149,25 @@ describe('taskQueueDb runtime status validation', () => {
 describe('taskQueueDb queue admission', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockListActiveExecutionLeases.mockReturnValue([])
   })
 
-  function admissionTx(updated: Array<{ id: string }>) {
+  /**
+   * Per-call select results. admitRun issues, in order: the running run ids
+   * (awaited list), the active durable lease workload ids (awaited list), and
+   * — only at capacity — the queued count (`.limit(1)` -> [{ value }]).
+   */
+  function admissionTx(selectRows: unknown[][], updated: Array<{ id: string }>) {
+    let call = 0
     return {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
-          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ value: 0 }]) })),
+          where: vi.fn(() => {
+            const rows = selectRows[call++] ?? []
+            return Object.assign(Promise.resolve(rows), {
+              limit: vi.fn().mockResolvedValue(rows),
+            })
+          }),
         })),
       })),
       update: vi.fn(() => ({
@@ -165,7 +179,7 @@ describe('taskQueueDb queue admission', () => {
   }
 
   it('rolls admission back when the Run row disappeared before the status claim', async () => {
-    const tx = admissionTx([])
+    const tx = admissionTx([[], []], [])
     mockWithAdmission.mockImplementation(
       (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
         callback(tx, { leaseId: 'run:run_missing' }),
@@ -177,7 +191,7 @@ describe('taskQueueDb queue admission', () => {
   })
 
   it('returns the durable lease decision only after the Run status claim succeeds', async () => {
-    const tx = admissionTx([{ id: 'run_1' }])
+    const tx = admissionTx([[], []], [{ id: 'run_1' }])
     mockWithAdmission.mockImplementation(
       (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
         callback(tx, { leaseId: 'run:run_1' }),
@@ -190,8 +204,8 @@ describe('taskQueueDb queue admission', () => {
   })
 
   it('queues while an earlier execution lease is still cleaning up', async () => {
-    const tx = admissionTx([{ id: 'run_2' }])
-    mockCountActiveExecutionLeases.mockReturnValue(1)
+    const tx = admissionTx([[], [], [{ value: 0 }]], [{ id: 'run_2' }])
+    mockListActiveExecutionLeases.mockReturnValue([{ runId: 'run_prev', agentId: 'agt_1' }])
     mockWithAdmission.mockImplementation(
       (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
         callback(tx, { leaseId: 'run:run_2' }),
@@ -203,34 +217,14 @@ describe('taskQueueDb queue admission', () => {
     })
   })
 
-  /** Per-call select results, so the running/lease/queued counts can differ. */
-  function admissionTxSequenced(counts: number[], updated: Array<{ id: string }>) {
-    let call = 0
-    return {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn().mockResolvedValue([{ value: counts[call++] ?? 0 }]),
-          })),
-        })),
-      })),
-      update: vi.fn(() => ({
-        set: vi.fn(() => ({
-          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue(updated) })),
-        })),
-      })),
-    }
-  }
-
   // The in-process registry is empty on every other replica, and a run in its
-  // terminal-status-to-process-exit window no longer counts as `running` in
-  // the runs table. The durable active lease is the only cross-replica record
-  // of that window; ignoring it over-admits past maxConcurrency into a
-  // checkout another replica's process is still writing.
+  // terminal-status-to-process-exit window is no longer `running` in the runs
+  // table. The durable active lease is the only cross-replica record of that
+  // window; ignoring it over-admits past maxConcurrency into a checkout
+  // another replica's process is still writing.
   it('queues while a peer replica still holds an active durable lease', async () => {
-    // running-in-db: 0, durable active leases: 1, queued: 0
-    const tx = admissionTxSequenced([0, 1, 0], [{ id: 'run_3' }])
-    mockCountActiveExecutionLeases.mockReturnValue(0)
+    // running-in-db: none, durable active leases: one, queued: none
+    const tx = admissionTx([[], [{ id: 'run_peer' }], [{ value: 0 }]], [{ id: 'run_3' }])
     mockWithAdmission.mockImplementation(
       (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
         callback(tx, { leaseId: 'run:run_3' }),
@@ -238,6 +232,45 @@ describe('taskQueueDb queue admission', () => {
 
     await expect(taskQueueDb.admitRun?.('agt_1', 'run_3', 1)).resolves.toEqual({
       slot: 'queued',
+      hasScmLease: true,
+    })
+  })
+
+  // The three occupancy views overlap but none subsumes another, so they must
+  // be UNIONED by run id: a terminal run still holding its active cleanup
+  // lease plus a second run already `running` (lease still reserved) is two
+  // occupied slots. max(1, 0, 1) reported one and over-admitted a third run
+  // at maxConcurrency=2.
+  it('unions distinct occupants instead of taking the maximum of the counts', async () => {
+    const tx = admissionTx(
+      [
+        [{ id: 'run_running' }], // status = running (lease merely reserved)
+        [{ id: 'run_cleanup' }], // terminal, active cleanup lease
+        [{ value: 0 }], // queued count
+      ],
+      [{ id: 'run_third' }],
+    )
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_third' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_third', 2)).resolves.toEqual({
+      slot: 'queued',
+      hasScmLease: true,
+    })
+  })
+
+  it('counts one occupant once when every view reports the same run', async () => {
+    const tx = admissionTx([[{ id: 'run_same' }], [{ id: 'run_same' }]], [{ id: 'run_next' }])
+    mockListActiveExecutionLeases.mockReturnValue([{ runId: 'run_same', agentId: 'agt_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: string }) => unknown) =>
+        callback(tx, { leaseId: 'run:run_next' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_next', 2)).resolves.toEqual({
+      slot: 'acquired',
       hasScmLease: true,
     })
   })

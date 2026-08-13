@@ -34,7 +34,8 @@ export interface ScmSource {
   readonly wsRoot: string
 
   createWorkspace(name: string, options?: { branch?: string }): Promise<CreateWorkspaceResult>
-  removeWorkspace(name: string): Promise<void>
+  /** `beforeRemove` runs inside the workspace mutex; throw from it to abort. */
+  removeWorkspace(name: string, options?: { beforeRemove?: () => Promise<void> }): Promise<void>
   listWorkspaces(): Promise<WorkspaceInfo[]>
   writeWorkspaceState(name: string, state: WorkspaceState): Promise<void>
   cleanupStale(opts: CleanupOptions): Promise<string[]>
@@ -73,8 +74,8 @@ class GitScmSource implements ScmSource {
     return createGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 
-  removeWorkspace(name: string): Promise<void> {
-    return removeGitWorkspace(this.localPath, this.wsRoot, name, this.config)
+  removeWorkspace(name: string, options?: { beforeRemove?: () => Promise<void> }): Promise<void> {
+    return removeGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 
   listWorkspaces(): Promise<WorkspaceInfo[]> {

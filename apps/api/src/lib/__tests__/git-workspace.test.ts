@@ -606,6 +606,50 @@ describe('git-workspace', () => {
       // No error thrown
     })
 
+    // beforeRemove is the caller's authoritative occupancy re-check, executed
+    // inside the workspace mutex immediately before any filesystem work. A
+    // throw must abort the removal with the worktree untouched.
+    it('aborts with nothing removed when beforeRemove throws', async () => {
+      const result = await createGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig)
+      expect(existsSync(result.path)).toBe(true)
+
+      const beforeRemove = vi.fn().mockRejectedValue(new Error('workspace is occupied'))
+      await expect(
+        removeGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig, { beforeRemove }),
+      ).rejects.toThrow('workspace is occupied')
+
+      expect(beforeRemove).toHaveBeenCalledTimes(1)
+      expect(existsSync(result.path)).toBe(true)
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig)
+    })
+
+    // Creation and removal of the same worktree must never interleave: the
+    // shared mutex key makes a removal issued mid-create wait for the create
+    // to settle (and vice versa), instead of `git worktree remove --force`
+    // racing `git worktree add` on the same path.
+    it('serializes removal behind an in-flight create on the same worktree', async () => {
+      // Issued concurrently, with the removal queued while the create is
+      // mid-flight. If the mutex holds, beforeRemove observes a COMPLETE
+      // worktree (git registration finished), never a half-created one.
+      let worktreeCompleteAtRecheck: boolean | undefined
+      const createPromise = createGitWorkspace(REPO_DIR, WS_ROOT, 'serial', singleRepoConfig)
+      const removePromise = removeGitWorkspace(REPO_DIR, WS_ROOT, 'serial', singleRepoConfig, {
+        beforeRemove: async () => {
+          const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], {
+            cwd: REPO_DIR,
+          })
+          worktreeCompleteAtRecheck =
+            existsSync(join(WS_ROOT, 'serial')) && stdout.includes(join(WS_ROOT, 'serial'))
+        },
+      })
+
+      await Promise.all([createPromise, removePromise])
+
+      expect(worktreeCompleteAtRecheck).toBe(true)
+      expect(existsSync(join(WS_ROOT, 'serial'))).toBe(false)
+    })
+
     it('deletes the local branch when removing a worktree that checked out a branch', async () => {
       // 语义：workspace 是云端 Agent 的一次性环境，未 push 的提交随清理一并丢弃。
       // 这样同名 branch 下次复用不会拿到陈旧代码。

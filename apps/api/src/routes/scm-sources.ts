@@ -12,7 +12,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, runs, scmSources, scmWorkloadLeases } from '../db/schema.js'
-import { runExclusive } from '../db/transaction.js'
+import { type TransactionHandle, runExclusive } from '../db/transaction.js'
 import { scmSourceAuditDetails } from '../lib/audit-details.js'
 import { logAudit, writeAudit } from '../lib/audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from '../lib/codegraph-index.js'
@@ -1096,95 +1096,142 @@ app.delete('/:id/workspaces/:name', async (c) => {
   const conditions = ownerFilter
     ? and(eq(scmSources.id, id), ownerFilter, isNull(scmSources.deletionRequestedAt))
     : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
-  const source = (await db.select().from(scmSources).where(conditions).limit(1))[0]
-  if (!source) return c.json({ error: 'Source not found' }, 404)
 
-  const workspacesRootError = await validateStoredScmWorkspacesRoot(source)
-  if (workspacesRootError) return c.json({ error: workspacesRootError }, 400)
-
-  const scm = await createScmSource(source)
-  if (!scm) return c.json({ error: 'Source type does not support workspaces' }, 400)
-
+  // Read the source under the SCM mutation lock: a concurrent PATCH moving
+  // localPath/workspacesPath commits under this same lock, so the snapshot
+  // below reflects the row's final paths rather than a pre-lock stale read
+  // that would aim the removal at a directory the source no longer owns.
+  // Deliberately NO filesystem work in here — holding the shared SQLite
+  // connection's transaction across git I/O absorbs unrelated bare writes and
+  // rolls them back with a failed removal.
+  const prepared = await withScmPathMutation(async (tx) => {
+    const source = (await tx.select().from(scmSources).where(conditions).limit(1))[0]
+    if (!source) return { status: 404 as const, error: 'Source not found' }
+    const workspacesRootError = await validateStoredScmWorkspacesRoot(source)
+    if (workspacesRootError) return { status: 400 as const, error: workspacesRootError }
+    const scm = await createScmSource(source)
+    if (!scm) return { status: 400 as const, error: 'Source type does not support workspaces' }
+    return {
+      status: 200 as const,
+      scm,
+      snapshot: { localPath: source.localPath, workspacesPath: source.workspacesPath },
+    }
+  })
+  if (prepared.status !== 200) {
+    return c.json({ error: prepared.error }, prepared.status)
+  }
+  const { scm, snapshot } = prepared
   const { join } = await import('node:path')
   const wsPath = join(scm.wsRoot, name)
 
-  // Occupancy checks AND the removal share one SCM mutation critical section.
-  // Workload admission reserves its durable lease under this same lock, so an
-  // admission is strictly before this transaction (its lease is visible below
-  // and blocks the removal) or strictly after it (it starts once the worktree
-  // is already gone and resolves a fresh one). Checking first and removing
-  // outside the lock left a gap where a freshly admitted workload's worktree
-  // was deleted underneath it.
-  //
-  // The removal is filesystem/git work inside a DB critical section — a
-  // deliberate, bounded trade: it touches no database handle (no deadlock),
-  // each git call is capped by GIT_TIMEOUT_MS, and serializing SCM mutations
-  // behind an explicit admin deletion is precisely the semantics the lock
-  // exists to provide.
-  const removal = await withScmPathMutation(async (tx) => {
-    // Refuse while the workspace is occupied by a running job.
-    const occupied = (
-      await tx
-        .select({ id: runs.id })
-        .from(runs)
-        .where(
-          and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])),
+  // The occupancy decision runs as `beforeRemove` INSIDE the workspace mutex,
+  // immediately before any git/filesystem work. That ordering is what makes it
+  // authoritative: admission writes its durable lease before any worktree
+  // creation on every replica, so a workload admitted after the preparation
+  // transaction above is still observed here — while the DB transaction itself
+  // stays free of I/O.
+  try {
+    await scm.removeWorkspace(name, {
+      beforeRemove: async () => {
+        const blocked = await withScmPathMutation((tx) =>
+          findWorkspaceRemovalBlocker(tx, id, snapshot, wsPath, name),
         )
-        .limit(1)
-    )[0]
-    if (occupied) {
-      return { blocked: 'Workspace is occupied by a running or pending run' } as const
+        if (blocked) throw new WorkspaceRemovalBlockedError(blocked)
+      },
+    })
+  } catch (error) {
+    if (error instanceof WorkspaceRemovalBlockedError) {
+      return c.json({ error: error.message }, 409)
     }
-
-    // The run-status check above cannot see two occupants the durable lease
-    // can: an Evaluation (which writes no `runs` row at all — its
-    // `eval-<taskId>` worktree is a legal deletable name here) and a Run whose
-    // status is already terminal but whose process/cleanup still holds the
-    // directory. The lease is authoritative until released after cleanup.
-    const leases = await tx
-      .select({
-        workloadType: scmWorkloadLeases.workloadType,
-        workloadId: scmWorkloadLeases.workloadId,
-      })
-      .from(scmWorkloadLeases)
-      .where(eq(scmWorkloadLeases.scmSourceId, id))
-    const leasedEvaluation = leases.find(
-      (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
-    )
-    if (leasedEvaluation) {
-      return { blocked: 'Workspace is occupied by a running evaluation' } as const
-    }
-    const leasedRunIds = leases
-      .filter((lease) => lease.workloadType === 'run')
-      .map((lease) => lease.workloadId)
-    if (leasedRunIds.length > 0) {
-      const leasedRuns = await tx
-        .select({ id: runs.id, workDir: runs.workDir })
-        .from(runs)
-        .where(inArray(runs.id, leasedRunIds))
-      // A NULL workDir is the admission-to-resolveWorkDir window: the run is
-      // leased but has not chosen its worktree yet, so it may legally resolve
-      // to this very name. Refusing is the only safe answer until it commits
-      // to a directory. (A lease whose run row is gone entirely matches the
-      // stale-lease sweeper's release condition and does not block.)
-      const blockingRun = leasedRuns.find((run) => run.workDir === wsPath || run.workDir == null)
-      if (blockingRun) {
-        return {
-          blocked:
-            blockingRun.workDir == null
-              ? 'Workspace may be claimed by an admitted run that has not started yet'
-              : 'Workspace is occupied by a run that has not finished cleanup',
-        } as const
-      }
-    }
-
-    await scm.removeWorkspace(name)
-    return { blocked: null } as const
-  })
-  if (removal.blocked) {
-    return c.json({ error: removal.blocked }, 409)
+    throw error
   }
   return c.json({ data: { message: 'Workspace removed' } })
 })
+
+class WorkspaceRemovalBlockedError extends Error {}
+
+/**
+ * The single authoritative "may this worktree be removed" decision.
+ *
+ * Runs in a DB-only transaction under the SCM mutation lock, called from
+ * inside the workspace mutex. Returns the blocking reason, or null when the
+ * removal may proceed.
+ */
+async function findWorkspaceRemovalBlocker(
+  tx: TransactionHandle,
+  sourceId: string,
+  snapshot: { localPath: string; workspacesPath: string | null },
+  wsPath: string,
+  name: string,
+): Promise<string | null> {
+  // The row must still exist with the same paths the removal target was
+  // computed from. A deletion reservation or a concurrent path PATCH means
+  // this wsPath may no longer belong to the source — and a freed root could
+  // even have been claimed by another source, whose worktree this removal
+  // must not touch. (The registered-worktree assertion in removeGitWorkspace
+  // is the filesystem-level backstop for the same rule.)
+  const current = (
+    await tx
+      .select({ localPath: scmSources.localPath, workspacesPath: scmSources.workspacesPath })
+      .from(scmSources)
+      .where(and(eq(scmSources.id, sourceId), isNull(scmSources.deletionRequestedAt)))
+      .limit(1)
+  )[0]
+  if (!current) return 'SCM source is no longer available'
+  if (
+    current.localPath !== snapshot.localPath ||
+    current.workspacesPath !== snapshot.workspacesPath
+  ) {
+    return 'SCM source paths changed while removing the workspace; retry'
+  }
+
+  // Occupied by a run the status machine still tracks.
+  const occupied = (
+    await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.workDir, wsPath), inArray(runs.status, ['running', 'pending', 'queued'])))
+      .limit(1)
+  )[0]
+  if (occupied) return 'Workspace is occupied by a running or pending run'
+
+  // The run-status check above cannot see two occupants the durable lease
+  // can: an Evaluation (which writes no `runs` row at all — its
+  // `eval-<taskId>` worktree is a legal deletable name here) and a Run whose
+  // status is already terminal but whose process/cleanup still holds the
+  // directory. The lease is authoritative until released after cleanup.
+  const leases = await tx
+    .select({
+      workloadType: scmWorkloadLeases.workloadType,
+      workloadId: scmWorkloadLeases.workloadId,
+    })
+    .from(scmWorkloadLeases)
+    .where(eq(scmWorkloadLeases.scmSourceId, sourceId))
+  const leasedEvaluation = leases.find(
+    (lease) => lease.workloadType === 'evaluation' && name === `eval-${lease.workloadId}`,
+  )
+  if (leasedEvaluation) return 'Workspace is occupied by a running evaluation'
+  const leasedRunIds = leases
+    .filter((lease) => lease.workloadType === 'run')
+    .map((lease) => lease.workloadId)
+  if (leasedRunIds.length > 0) {
+    const leasedRuns = await tx
+      .select({ id: runs.id, workDir: runs.workDir })
+      .from(runs)
+      .where(inArray(runs.id, leasedRunIds))
+    // A NULL workDir is the admission-to-resolveWorkDir window: the run is
+    // leased but has not chosen its worktree yet, so it may legally resolve
+    // to this very name. Refusing is the only safe answer until it commits
+    // to a directory. (A lease whose run row is gone entirely matches the
+    // stale-lease sweeper's release condition and does not block.)
+    const blockingRun = leasedRuns.find((run) => run.workDir === wsPath || run.workDir == null)
+    if (blockingRun) {
+      return blockingRun.workDir == null
+        ? 'Workspace may be claimed by an admitted run that has not started yet'
+        : 'Workspace is occupied by a run that has not finished cleanup'
+    }
+  }
+  return null
+}
 
 export default app

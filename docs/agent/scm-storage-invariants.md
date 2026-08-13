@@ -63,13 +63,29 @@ below hold across every affected entry point.
   the lease in exactly the windows that matter — an Evaluation writes no `runs`
   row yet owns an `eval-<taskId>` worktree, and a Run's lease outlives its
   terminal status until cleanup.
-- Workspace DELETE runs its occupancy checks **and the worktree removal in one
-  SCM mutation critical section** — admission reserves its lease under the same
-  lock, so an admission is strictly before the removal transaction (lease
-  visible, removal refused) or strictly after it (worktree gone, resolved
-  fresh). A leased Run whose `workDir` is still NULL blocks every worktree of
-  the source: it has not chosen its directory yet and may resolve to the one
-  being deleted.
+- Workspace DELETE never holds a database transaction across git or filesystem
+  work — on the shared SQLite connection an unrelated bare write landing
+  mid-removal would join that transaction and be erased by its rollback. The
+  protocol instead: the source row is read fresh under the SCM mutation lock
+  (a pre-lock snapshot lets a concurrent path PATCH aim the removal at a
+  directory the source no longer owns), and the occupancy decision re-runs as
+  a `beforeRemove` re-check **inside the per-worktree mutex**, immediately
+  before the filesystem work. That re-check is authoritative because admission
+  writes its durable lease before any worktree creation on every replica; it
+  also re-verifies the row's paths against the snapshot, refusing when a PATCH
+  moved them in between. Creation and removal of one worktree serialize on the
+  same mutex, and cross-replica Git's own admin locks arbitrate the raw
+  operations while the registered-worktree assertion refuses to remove a
+  directory registered to another repository.
+- A leased Run whose `workDir` is still NULL blocks every worktree of the
+  source: it has not chosen its directory yet and may resolve to the one being
+  deleted.
+- Run admission's occupancy count is a **union by run id** across its three
+  views (`runs.status = 'running'`, in-process execution leases, durable
+  active leases). The views overlap but none subsumes another — a terminal run
+  still holding its active cleanup lease plus a `running` run whose lease is
+  merely reserved are two occupied slots, which a max() of the counts reports
+  as one.
 - Run admission counts durable **active** leases toward `maxConcurrency`
   alongside the runs table and the in-process registry. The in-process registry
   is empty on every other replica, and a run in its cleanup window is no longer
