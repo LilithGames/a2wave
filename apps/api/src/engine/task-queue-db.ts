@@ -9,6 +9,7 @@ import {
   releaseReservedScmWorkload,
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
+import { findPendingWorkspaceRemoval } from '../lib/scm-workspace-removal.js'
 import { listActiveExecutionLeases } from './execution-lease-registry.js'
 import type { RunRow, TaskQueueDb } from './task-queue.js'
 import { MAX_QUEUE_LENGTH } from './task-queue.js'
@@ -30,7 +31,60 @@ function parseRunStatus(s: string): RunStatus | null {
   return null
 }
 
+/**
+ * Occupied slots as a UNION of three views by run id — overlapping, but none
+ * subsumes another, so max() undercounts (a terminal run still in cleanup
+ * holds an active lease while another run is `running` with its lease merely
+ * reserved: max(1,0,1) = 1, true occupancy 2) and sum() double-counts:
+ *  - runs.status = 'running': the queue's own cross-replica state.
+ *  - in-process execution leases: this replica's runs between terminal
+ *    status and process exit.
+ *  - durable *active* SCM leases: the same cleanup window as seen from other
+ *    replicas (reserved-phase leases are queued work, not an occupied slot).
+ *    A lease whose run row was deleted outright is excluded: that is the
+ *    stale-lease sweeper's release condition, not occupancy, and counting it
+ *    would block admission on garbage until the next sweep.
+ *
+ * Shared by admission (inside its transaction) and queued-run promotion —
+ * the two decisions that must agree on what "at capacity" means.
+ */
+async function countOccupiedRunSlots(
+  executor: Pick<TransactionHandle, 'select'>,
+  agentId: string,
+): Promise<number> {
+  const occupyingRunIds = new Set<string>()
+  for (const row of await executor
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))) {
+    occupyingRunIds.add(row.id)
+  }
+  for (const lease of listActiveExecutionLeases()) {
+    if (lease.agentId === agentId) occupyingRunIds.add(lease.runId)
+  }
+  for (const row of await executor
+    .select({ id: scmWorkloadLeases.workloadId })
+    .from(scmWorkloadLeases)
+    .where(
+      and(
+        eq(scmWorkloadLeases.agentId, agentId),
+        eq(scmWorkloadLeases.workloadType, 'run'),
+        eq(scmWorkloadLeases.phase, 'active'),
+        exists(
+          db.select({ id: runs.id }).from(runs).where(eq(runs.id, scmWorkloadLeases.workloadId)),
+        ),
+      ),
+    )) {
+    occupyingRunIds.add(row.id)
+  }
+  return occupyingRunIds.size
+}
+
 export const taskQueueDb: TaskQueueDb = {
+  async countOccupiedSlots(agentId: string): Promise<number> {
+    return countOccupiedRunSlots(db, agentId)
+  },
+
   async countRunsByStatus(agentId: string, status: string): Promise<number> {
     const runStatus = parseRunStatus(status)
     if (runStatus === null) return 0
@@ -75,49 +129,34 @@ export const taskQueueDb: TaskQueueDb = {
         { type: 'run', workloadId: runId, agentId },
         async (tx, admission) => {
           const executor = tx as TransactionHandle
-          // Three views of "occupying a slot", unioned BY RUN ID — they are
-          // overlapping but none subsumes another, so max() undercounts (a
-          // terminal run still in cleanup holds an active lease while another
-          // run is `running` with its lease merely reserved: max(1,0,1) = 1,
-          // true occupancy 2) and sum() double-counts. The views:
-          //  - runs.status = 'running': the queue's own cross-replica state.
-          //  - in-process execution leases: this replica's runs between
-          //    terminal status and process exit.
-          //  - durable *active* SCM leases: the same cleanup window as seen
-          //    from other replicas (reserved-phase leases are queued work, not
-          //    an occupied slot). A lease whose run row was deleted outright
-          //    is excluded: that is the stale-lease sweeper's release
-          //    condition, not occupancy, and counting it would block
-          //    admission on garbage until the next sweep.
-          const occupyingRunIds = new Set<string>()
-          for (const row of await executor
-            .select({ id: runs.id })
-            .from(runs)
-            .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'running')))) {
-            occupyingRunIds.add(row.id)
+          // A run naming its worktree explicitly must not be admitted while
+          // that exact worktree has a pending removal reservation — a remover
+          // (possibly on another replica) committed the reservation before
+          // touching the filesystem, so the directory may be mid-deletion.
+          // Runs without an explicit name are gated later, at resolveWorkDir,
+          // where the name is actually chosen.
+          if (admission.scmSourceId) {
+            const worktree = (
+              await executor
+                .select({ worktreeConfig: runs.worktreeConfig })
+                .from(runs)
+                .where(eq(runs.id, runId))
+                .limit(1)
+            )[0]?.worktreeConfig
+            if (worktree?.name) {
+              const pendingRemoval = await findPendingWorkspaceRemoval(
+                executor,
+                admission.scmSourceId,
+                worktree.name,
+              )
+              if (pendingRemoval) {
+                throw new Error(
+                  `Worktree '${worktree.name}' is currently being removed; retry shortly`,
+                )
+              }
+            }
           }
-          for (const lease of listActiveExecutionLeases()) {
-            if (lease.agentId === agentId) occupyingRunIds.add(lease.runId)
-          }
-          for (const row of await executor
-            .select({ id: scmWorkloadLeases.workloadId })
-            .from(scmWorkloadLeases)
-            .where(
-              and(
-                eq(scmWorkloadLeases.agentId, agentId),
-                eq(scmWorkloadLeases.workloadType, 'run'),
-                eq(scmWorkloadLeases.phase, 'active'),
-                exists(
-                  db
-                    .select({ id: runs.id })
-                    .from(runs)
-                    .where(eq(runs.id, scmWorkloadLeases.workloadId)),
-                ),
-              ),
-            )) {
-            occupyingRunIds.add(row.id)
-          }
-          const running = occupyingRunIds.size
+          const running = await countOccupiedRunSlots(executor, agentId)
           let slot: 'acquired' | 'queued' = 'acquired'
           if (running >= maxConcurrency) {
             const queued =

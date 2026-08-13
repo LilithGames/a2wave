@@ -1059,6 +1059,36 @@ describe('git-workspace', () => {
       expect(existsSync(join(WS_ROOT, 'stale'))).toBe(false)
     })
 
+    // The caller-supplied removal executor is the guarded protocol (durable
+    // reservation + fresh occupancy re-check): activePaths is a snapshot, and
+    // a workload can claim a candidate AFTER it was taken. A throw from the
+    // guard means "occupied now" and must degrade to a skip, not a failure.
+    it('delegates removal to opts.removeWorkspace and records a thrown block as a skip', async () => {
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'guarded-stale', singleRepoConfig)
+      await writeWorkspaceState(join(WS_ROOT, 'guarded-stale'), { cleanup: 'ttl' })
+      const past = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      await utimes(join(WS_ROOT, 'guarded-stale', WORKSPACE_STATE_FILE), past, past)
+
+      const blockedRemove = vi.fn().mockRejectedValue(new Error('claimed after snapshot'))
+      const blockedRun = await cleanupStaleWorkspaces(REPO_DIR, WS_ROOT, singleRepoConfig, {
+        activePaths: new Set(),
+        removeWorkspace: blockedRemove,
+      })
+      expect(blockedRemove).toHaveBeenCalledWith('guarded-stale')
+      expect(blockedRun).toEqual([])
+      expect(existsSync(join(WS_ROOT, 'guarded-stale'))).toBe(true)
+
+      const allowedRemove = vi.fn((name: string) =>
+        removeGitWorkspace(REPO_DIR, WS_ROOT, name, singleRepoConfig),
+      )
+      const allowedRun = await cleanupStaleWorkspaces(REPO_DIR, WS_ROOT, singleRepoConfig, {
+        activePaths: new Set(),
+        removeWorkspace: allowedRemove,
+      })
+      expect(allowedRun).toContain('guarded-stale')
+      expect(existsSync(join(WS_ROOT, 'guarded-stale'))).toBe(false)
+    })
+
     it('persistent / 无状态文件 / 新 ttl 都不删', async () => {
       await createGitWorkspace(REPO_DIR, WS_ROOT, 'pinned', singleRepoConfig)
       await writeWorkspaceState(join(WS_ROOT, 'pinned'), { cleanup: 'persistent' })

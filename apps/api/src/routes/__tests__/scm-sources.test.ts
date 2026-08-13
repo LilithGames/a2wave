@@ -44,6 +44,13 @@ vi.mock('../../db/schema.js', () => ({
     agentId: 'scmWorkloadLeases.agentId',
     scmSourceId: 'scmWorkloadLeases.scmSourceId',
   },
+  scmWorkspaceRemovals: {
+    id: 'scmWorkspaceRemovals.id',
+    scmSourceId: 'scmWorkspaceRemovals.scmSourceId',
+    workspaceName: 'scmWorkspaceRemovals.workspaceName',
+    ownerInstanceId: 'scmWorkspaceRemovals.ownerInstanceId',
+    createdAt: 'scmWorkspaceRemovals.createdAt',
+  },
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
   auditLogs: { id: 'auditLogs.id' },
 }))
@@ -752,6 +759,7 @@ describe('SCM Sources routes', () => {
         .mockReturnValueOnce(makeDbChain(source))
         .mockReturnValueOnce(makeDbChain([]))
         .mockReturnValueOnce(makeDbChain([])) // no durable workload lease
+        .mockReturnValueOnce(makeDbChain([])) // no pending workspace removal
         .mockReturnValueOnce(makeDbChain([peer]))
       ;(db.delete as Mock).mockReturnValue(makeDeleteChain(source))
 
@@ -2267,6 +2275,18 @@ describe('SCM Sources routes', () => {
       })
     }
 
+    /**
+     * Row the protocol's occupancy decision re-reads. Its paths must agree
+     * with the scm mock, or the decision reports "paths changed".
+     */
+    const pathRow = { id: 'scm_1', workspacesPath: '/workspaces/scm_1' }
+
+    beforeEach(() => {
+      // The protocol writes and releases a durable removal reservation.
+      ;(db.insert as Mock).mockReturnValue(makeInsertChain({ id: 'scm_1:fix-bug' }))
+      ;(db.delete as Mock).mockReturnValue(makeDeleteChain({ id: 'scm_1:fix-bug' }))
+    })
+
     it('returns 404 when source does not exist', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(undefined))
 
@@ -2290,7 +2310,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' })) // beforeRemove row re-read
+        .mockReturnValueOnce(makeDbChain(pathRow)) // occupancy decision row re-read
         .mockReturnValueOnce(makeDbChain({ id: 'run_running' })) // occupied
       const removed = vi.fn()
       mockCreateScmSource.mockReturnValue({
@@ -2303,6 +2323,8 @@ describe('SCM Sources routes', () => {
       })
       expect(res.status).toBe(409)
       expect(removed).not.toHaveBeenCalled()
+      // Blocked before the reservation was ever written.
+      expect(db.insert).not.toHaveBeenCalled()
     })
 
     it.each([
@@ -2324,6 +2346,7 @@ describe('SCM Sources routes', () => {
     })
 
     it('rejects removing a workspace from a legacy non-admin custom root until migration', async () => {
+      // One select only: the validator rejects the root before any peer scan.
       ;(db.select as Mock).mockReturnValueOnce(
         makeDbChain({
           id: 'scm_1',
@@ -2352,8 +2375,8 @@ describe('SCM Sources routes', () => {
     it('returns 409 when the workspace belongs to an evaluation holding a durable lease', async () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
-        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' })) // beforeRemove row re-read
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', workspacesPath: '/workspaces/scm_1' }))
         .mockReturnValueOnce(makeDbChain(undefined)) // no active-status run
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'evaluation', workloadId: 'evt_7' }]))
       const removed = vi.fn()
@@ -2377,7 +2400,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined)) // status-based check sees nothing
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_9' }]))
         .mockReturnValueOnce(
@@ -2405,7 +2428,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_new' }]))
         .mockReturnValueOnce(makeDbChain({ id: 'run_new', workDir: null }))
@@ -2423,16 +2446,17 @@ describe('SCM Sources routes', () => {
       expect(removed).not.toHaveBeenCalled()
     })
 
-    // The wsPath snapshot is taken under the SCM lock, but a PATCH can move
-    // the source's paths between that transaction and the removal. The
-    // beforeRemove re-check compares the row's current paths against the
-    // snapshot — a mismatch means this wsPath may no longer belong to the
-    // source (its freed root could even have been claimed by another source).
-    it('returns 409 when the source paths changed between snapshot and removal', async () => {
+    // The occupancy decision re-reads the row inside the reservation
+    // transaction and compares its paths against the removal target; a PATCH
+    // that moved the source between the route's read and the reservation
+    // makes this wsPath potentially another source's directory.
+    it('returns 409 when the source paths changed before the reservation', async () => {
       ;(db.select as Mock)
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git', localPath: '/orig/checkout' }))
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', localPath: '/moved/checkout' }))
+        .mockReturnValueOnce(
+          makeDbChain({ id: 'scm_1', workspacesPath: '/moved/workspaces/scm_1' }),
+        )
       const removed = vi.fn()
       mockCreateScmSource.mockReturnValue({
         wsRoot: '/workspaces/scm_1',
@@ -2448,11 +2472,45 @@ describe('SCM Sources routes', () => {
       expect(removed).not.toHaveBeenCalled()
     })
 
-    it('removes a workspace no lease or run occupies', async () => {
+    // Two removers (a second admin, another replica, or TTL cleanup) must not
+    // interleave on one worktree. The durable reservation's primary-key
+    // conflict is the cross-replica arbiter.
+    it('returns 409 when a removal of the same workspace is already in progress', async () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(pathRow))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+      // onConflictDoNothing().returning() yields no row: someone else holds it.
+      ;(db.insert as Mock).mockReturnValue({
+        values: vi.fn().mockReturnValue(asyncQuery({ get: () => undefined })),
+      })
+      const removed = vi.fn()
+      mockCreateScmSource.mockReturnValue({
+        wsRoot: '/workspaces/scm_1',
+        removeWorkspace: makeRemoveWorkspace(removed),
+      })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/fix-bug', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: string }).error).toMatch(/already in progress/)
+      expect(removed).not.toHaveBeenCalled()
+    })
+
+    it('removes a workspace no lease or run occupies, then releases the reservation', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        // reservation-transaction decision
+        .mockReturnValueOnce(makeDbChain(pathRow))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+        // beforeRemove re-check inside the workspace mutex
+        .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([]))
       const removed = vi.fn()
@@ -2469,18 +2527,25 @@ describe('SCM Sources routes', () => {
         expect.objectContaining({ beforeRemove: expect.any(Function) }),
       )
       expect(removed).toHaveBeenCalled()
+      // Reservation written before the removal, released after it.
+      expect(db.insert).toHaveBeenCalled()
+      expect(db.delete).toHaveBeenCalled()
     })
 
     // The DB transaction must never span the git/filesystem removal: on the
     // shared SQLite connection an unrelated bare write landing mid-removal
     // would join the transaction and be erased if the removal failed and
-    // rolled back. The occupancy decision instead re-runs as `beforeRemove`
-    // inside the workspace mutex, immediately before the filesystem work.
-    it('removes the worktree outside the database transaction', async () => {
+    // rolled back. The occupancy decision instead commits the durable
+    // reservation first, and re-runs as `beforeRemove` inside the workspace
+    // mutex immediately before the filesystem work.
+    it('removes the worktree outside every database transaction', async () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
-        .mockReturnValueOnce(makeDbChain({ id: 'scm_1' }))
+        .mockReturnValueOnce(makeDbChain(pathRow))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([]))
       const removed = vi.fn()
@@ -2494,15 +2559,24 @@ describe('SCM Sources routes', () => {
       })
       expect(res.status).toBe(200)
 
-      // Every transaction this request opened has committed before the
-      // removal ran.
-      const commitOrders = sqliteExec.mock.calls
-        .map(([stmt], index) => ({ stmt, order: sqliteExec.mock.invocationCallOrder[index] }))
-        .filter(({ stmt }) => stmt === 'COMMIT')
-        .map(({ order }) => order)
-      expect(commitOrders.length).toBeGreaterThanOrEqual(1)
+      // The removal must sit outside every BEGIN..COMMIT window this request
+      // opened (reservation, re-check, release).
+      const windows: Array<{ begin: number; commit?: number }> = []
+      sqliteExec.mock.calls.forEach(([stmt], index) => {
+        const order = sqliteExec.mock.invocationCallOrder[index]
+        if (stmt === 'BEGIN') windows.push({ begin: order })
+        if (stmt === 'COMMIT') {
+          const open = [...windows].reverse().find((w) => w.commit === undefined)
+          if (open) open.commit = order
+        }
+      })
+      expect(windows.length).toBeGreaterThanOrEqual(2)
       const removeOrder = removed.mock.invocationCallOrder[0]
-      expect(removeOrder).toBeGreaterThan(Math.max(...commitOrders))
+      for (const window of windows) {
+        const insideWindow =
+          removeOrder > window.begin && window.commit !== undefined && removeOrder < window.commit
+        expect(insideWindow).toBe(false)
+      }
     })
   })
 })

@@ -7,6 +7,7 @@ const {
   scheduleNext,
   executeChatRun,
   sweepOrphanedScmWorkloadLeases,
+  sweepStaleWorkspaceRemovals,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
@@ -14,6 +15,7 @@ const {
   scheduleNext: vi.fn(),
   executeChatRun: vi.fn(),
   sweepOrphanedScmWorkloadLeases: vi.fn(),
+  sweepStaleWorkspaceRemovals: vi.fn(),
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
@@ -24,6 +26,7 @@ vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
 vi.mock('../../engine/task-queue.js', () => ({ sweepStaleLeases, scheduleNext }))
 vi.mock('../execute-chat-run.js', () => ({ executeChatRun }))
 vi.mock('../scm-lease-sweeper.js', () => ({ sweepOrphanedScmWorkloadLeases }))
+vi.mock('../scm-workspace-removal.js', () => ({ sweepStaleWorkspaceRemovals }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
@@ -37,6 +40,7 @@ describe('startStaleLeaseSweeper', () => {
     listActiveExecutionLeases.mockResolvedValue([])
     sweepStaleLeases.mockResolvedValue([])
     sweepOrphanedScmWorkloadLeases.mockResolvedValue([])
+    sweepStaleWorkspaceRemovals.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -69,6 +73,17 @@ describe('startStaleLeaseSweeper', () => {
 
     await vi.advanceTimersByTimeAsync(1000)
     expect(sweepOrphanedScmWorkloadLeases).toHaveBeenCalledTimes(2)
+
+    stop()
+  })
+
+  // A crashed removal leaks its reservation; without this sweep the row
+  // wedges the source's PATCH/DELETE and blocks recreating the worktree.
+  it('purges abandoned workspace removal reservations on every tick', async () => {
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sweepStaleWorkspaceRemovals).toHaveBeenCalledTimes(1)
 
     stop()
   })

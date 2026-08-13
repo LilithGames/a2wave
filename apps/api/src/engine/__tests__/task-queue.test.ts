@@ -244,6 +244,31 @@ describe('tryAcquireSlot', () => {
 })
 
 describe('scheduleNext', () => {
+  // Promotion must count the same occupancy union admission counts. The
+  // per-view max() misses a peer replica's cleanup-window lease when a
+  // different run is `running` here: 1 running + 1 terminal-but-leased is two
+  // occupied slots, and promoting a third at maxConcurrency=2 lands in a
+  // checkout another process still writes.
+  it('does not promote past the occupancy reported by countOccupiedSlots', async () => {
+    const executed: string[] = []
+    const db = createMockDb({
+      getAgentMaxConcurrency: vi.fn(async () => 2),
+      // The per-view counts a max() would see: one running row, no local lease.
+      countRunsByStatus: vi.fn(async (_agentId: string, status: string) =>
+        status === 'running' ? 1 : 0,
+      ),
+      // The union: the running run PLUS a peer's active cleanup lease.
+      countOccupiedSlots: vi.fn(async () => 2),
+      getOldestQueuedRun: vi.fn(async () => ({ id: 'r_third', initiatorAgentId: 'agt_1' })),
+    })
+
+    const promoted = await scheduleNext(db, 'agt_1', (rid) => executed.push(rid))
+
+    expect(promoted).toBe(0)
+    expect(executed).toEqual([])
+    expect(db.countOccupiedSlots).toHaveBeenCalledWith('agt_1')
+  })
+
   it('does not promote queued work after graceful shutdown begins', async () => {
     const db = createMockDb()
     pauseTaskQueuePromotions()

@@ -1246,6 +1246,40 @@ export const scmWorkloadLeases = sqliteTable(
 )
 
 // ============================================================
+// SCM Workspace Removals - durable worktree-removal reservations
+// ============================================================
+/**
+ * A committed row means "this worktree is being removed right now". It is the
+ * cross-replica counterpart of the workload lease: the lease says a workload
+ * may be using a directory, this says a remover is about to delete one. Every
+ * worktree creation path, run admission (for an explicitly named worktree),
+ * path PATCH, source DELETE, and env bootstrap consults it; the two marks are
+ * both written before their action under the SCM mutation lock, so any
+ * interleaving sees at least one of them. Rows are transient — bounded by the
+ * removal's own git timeouts — and are swept by age, plus cleared wholesale on
+ * single-process (SQLite) startup.
+ */
+export const scmWorkspaceRemovals = sqliteTable(
+  'scm_workspace_removals',
+  {
+    /** Stable identity: `<scmSourceId>:<workspaceName>`. */
+    id: text('id').primaryKey(),
+    scmSourceId: text('scm_source_id')
+      .notNull()
+      .references(() => scmSources.id),
+    workspaceName: text('workspace_name').notNull(),
+    /** Process instance performing the removal; observability, not authority. */
+    ownerInstanceId: text('owner_instance_id').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    scmSourceIdIdx: index('scm_workspace_removals_scm_source_id_idx').on(table.scmSourceId),
+  }),
+)
+
+// ============================================================
 // Evaluation Results - per-case execution result + manual review, isolated by cascade on taskId
 // ============================================================
 export const evaluationResults = sqliteTable(

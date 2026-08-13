@@ -9,6 +9,7 @@ import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
 import { resolveScmPathPlan, selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { scmConfigEquals } from './scm-secret-mask.js'
 import { findDurableScmSourceWorkload } from './scm-workload-lifecycle.js'
+import { findPendingWorkspaceRemoval } from './scm-workspace-removal.js'
 
 const ADMIN_USER_ID = 'usr_admin'
 
@@ -151,6 +152,17 @@ async function applyEnvScmSourceUpdate(
     logger.warn(
       { id: existing.id, workload: activeWorkload },
       `Deferred ${label} SCM source update from env: a durable workload lease pins the source`,
+    )
+    return
+  }
+  // Same deferral for an in-flight worktree removal: its re-check pinned the
+  // row's current paths when the reservation committed, and re-pointing them
+  // now would fail that removal or misdirect a retry.
+  const pendingRemoval = await findPendingWorkspaceRemoval(tx, existing.id)
+  if (pendingRemoval) {
+    logger.warn(
+      { id: existing.id, workspace: pendingRemoval.workspaceName },
+      `Deferred ${label} SCM source update from env: a workspace removal is in progress`,
     )
     return
   }

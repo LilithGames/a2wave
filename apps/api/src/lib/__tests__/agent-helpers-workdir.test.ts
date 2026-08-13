@@ -55,6 +55,11 @@ vi.mock('../../db/schema.js', () => ({
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
   auditLogs: {},
   runs: { id: 'runs.id', workDir: 'runs.workDir', status: 'runs.status' },
+  scmWorkspaceRemovals: {
+    id: 'scmWorkspaceRemovals.id',
+    scmSourceId: 'scmWorkspaceRemovals.scmSourceId',
+    workspaceName: 'scmWorkspaceRemovals.workspaceName',
+  },
   settings: {},
 }))
 
@@ -241,6 +246,28 @@ describe('resolveWorkDir', () => {
       ).rejects.toBeInstanceOf(WorktreeOccupiedError)
     })
 
+    // A remover commits its durable reservation BEFORE touching the
+    // filesystem — possibly on another replica. Creating or reusing the
+    // worktree in that window hands the run a directory about to disappear.
+    it('refuses to resolve a worktree with a pending removal reservation', async () => {
+      const source = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
+      const createWorkspace = vi.fn()
+      mockDbFrom
+        .mockReturnValueOnce(chainResult(source))
+        .mockReturnValueOnce(chainResult(undefined)) // not occupied
+        .mockReturnValueOnce(chainResult({ id: 'scm_1:fix-bug', workspaceName: 'fix-bug' }))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+      })
+
+      const agent = worktreeAgent()
+      await expect(resolveWorkDir(agent, { name: 'fix-bug', cleanup: 'ttl' })).rejects.toThrow(
+        /being removed/,
+      )
+      expect(createWorkspace).not.toHaveBeenCalled()
+    })
+
     it('creates a new worktree', async () => {
       const source = {
         id: 'scm_1',
@@ -251,6 +278,7 @@ describe('resolveWorkDir', () => {
       mockDbFrom
         .mockReturnValueOnce(chainResult(source))
         .mockReturnValueOnce(chainResult(undefined))
+        .mockReturnValueOnce(chainResult(undefined)) // no pending removal reservation
 
       const createWorkspace = vi.fn().mockResolvedValue({
         path: '/workspaces/scm_1/fix-bug',
@@ -277,6 +305,7 @@ describe('resolveWorkDir', () => {
         .mockReturnValueOnce(chainResult({ workspaceType: 'scm', scmSourceId: 'scm_1' }))
         .mockReturnValueOnce(chainResult(source))
         .mockReturnValueOnce(chainResult(undefined))
+        .mockReturnValueOnce(chainResult(undefined)) // no pending removal reservation
 
       const createWorkspace = vi.fn().mockRejectedValue(new Error('git clone failed'))
       mockCreateScmSource.mockReturnValueOnce({
@@ -311,10 +340,11 @@ describe('resolveWorkDir', () => {
           config: {},
           localPath: '/git',
         }
-        // 3 次 db 查询：source / occupied-check / active-runs
+        // 4 次 db 查询：source / occupied-check / pending-removal / active-runs
         mockDbFrom
           .mockReturnValueOnce(chainResult(source))
           .mockReturnValueOnce(chainResult(undefined))
+          .mockReturnValueOnce(chainResult(undefined)) // no pending removal reservation
           .mockReturnValueOnce(chainResult(activeRunsRows))
 
         const cleanupStale = vi.fn().mockResolvedValue([])
@@ -344,6 +374,9 @@ describe('resolveWorkDir', () => {
         ])
         expect(cleanupStale).toHaveBeenCalledTimes(1)
         const arg = cleanupStale.mock.calls[0][0]
+        // activePaths is only the prefilter; authority is the guarded removal
+        // protocol handed down here (fresh occupancy re-check per candidate).
+        expect(arg.removeWorkspace).toBeTypeOf('function')
         expect(arg.activePaths).toBeInstanceOf(Set)
         expect(Array.from(arg.activePaths).sort()).toEqual([
           '/workspaces/scm_a/busy',
@@ -355,7 +388,8 @@ describe('resolveWorkDir', () => {
         const r1 = await runResolve('scm_b', [])
         expect(r1.cleanupStale).toHaveBeenCalledTimes(1)
 
-        // 第二次调用：只消费 source + occupied（triggerTtlCleanup 命中 debounce 不查 activeRuns）
+        // 第二次调用：只消费 source + occupied + pending-removal
+        // （triggerTtlCleanup 命中 debounce 不查 activeRuns）
         const source = {
           id: 'scm_b',
           type: 'git',
@@ -364,6 +398,7 @@ describe('resolveWorkDir', () => {
         }
         mockDbFrom
           .mockReturnValueOnce(chainResult(source))
+          .mockReturnValueOnce(chainResult(undefined))
           .mockReturnValueOnce(chainResult(undefined))
         const cleanupStale2 = vi.fn().mockResolvedValue([])
         mockCreateScmSource.mockReturnValueOnce({

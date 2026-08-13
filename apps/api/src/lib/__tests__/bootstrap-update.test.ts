@@ -80,6 +80,12 @@ vi.mock('../../db/schema.js', () => ({
     agentId: 'scmWorkloadLeases.agentId',
     scmSourceId: 'scmWorkloadLeases.scmSourceId',
   },
+  scmWorkspaceRemovals: {
+    id: 'scmWorkspaceRemovals.id',
+    scmSourceId: 'scmWorkspaceRemovals.scmSourceId',
+    workspaceName: 'scmWorkspaceRemovals.workspaceName',
+  },
+  runs: { id: 'runs.id', workDir: 'runs.workDir', status: 'runs.status' },
   settings: { category: 'settings.category', key: 'settings.key' },
 }))
 

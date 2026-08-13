@@ -31,11 +31,12 @@ const { insertedValues, updatedValues, existingRows, storedRow, transactionEvent
 vi.mock('../../db/client.js', () => ({
   db: {
     select: () => ({
-      // The durable workload lease check reads scm_workload_leases before the
-      // path write; answering it with the stored source row would make every
-      // path PATCH here look lease-blocked. Only the sources table has a row.
-      from: (table?: { workloadType?: unknown }) =>
-        table && 'workloadType' in table
+      // The durable workload lease / pending-removal checks read their own
+      // tables before the path write; answering them with the stored source
+      // row would make every path PATCH here look blocked. Only the sources
+      // table has a row.
+      from: (table?: { workloadType?: unknown; workspaceName?: unknown }) =>
+        table && ('workloadType' in table || 'workspaceName' in table)
           ? asyncQuery({ where: () => asyncQuery({ all: () => [], get: () => undefined }) })
           : asyncQuery({
               where: () =>

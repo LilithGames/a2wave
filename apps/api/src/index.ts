@@ -48,6 +48,7 @@ import { sanitizeRequestLogPath } from './lib/request-log-path.js'
 import { cleanupLegacyRuntimeGroupConfigs } from './lib/runtime-group-config.js'
 import { scheduleTriggerManager } from './lib/schedule-trigger.js'
 import { releaseRecoveredScmWorkload, releaseScmWorkload } from './lib/scm-workload-lifecycle.js'
+import { clearWorkspaceRemovalsOnStartup } from './lib/scm-workspace-removal.js'
 import { seedBuiltinMcpServers } from './lib/seed-builtin-mcp.js'
 import { seedBuiltinSkills } from './lib/seed-builtin-skills.js'
 import { detectServerUrl } from './lib/server-url.js'
@@ -548,6 +549,21 @@ void ensureAdminExists()
     //  - running → failed (with structured SERVER_RESTART_DURING_EXEC reason)
     //  - pending orphans (older than PENDING_ORPHAN_TIMEOUT_MS) → failed
     //  - queued → scheduleNext
+    // Single-process backend: no previous workspace removal can still be
+    // running, so every reservation row is a leak from the dead process and
+    // would otherwise block that worktree's recreation plus the source's
+    // PATCH/DELETE until the age sweep. PostgreSQL replicas must NOT do this
+    // — a peer may be mid-removal — and rely on the sweeper instead.
+    if (!isPostgres) {
+      clearWorkspaceRemovalsOnStartup()
+        .then((cleared) => {
+          if (cleared > 0) {
+            logger.info({ cleared }, 'Cleared leaked workspace removal reservations')
+          }
+        })
+        .catch((err) => logger.error(err, 'clearWorkspaceRemovalsOnStartup failed'))
+    }
+
     // For A2A runs, also sync a2a_tasks state so `tasks/get` reports the failure.
     const recoveryA2aStore = new SqliteTaskStore()
     recoverOnStartup(

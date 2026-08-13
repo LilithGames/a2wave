@@ -37,6 +37,7 @@ vi.mock('../../db/schema.js', () => ({
     initiatorAgentId: 'runs.initiator_agent_id',
     status: 'runs.status',
     createdAt: 'runs.created_at',
+    worktreeConfig: 'runs.worktree_config',
   },
   agents: { id: 'agents.id', maxConcurrency: 'agents.max_concurrency' },
   runSteps: { runId: 'run_steps.run_id', status: 'run_steps.status' },
@@ -45,6 +46,11 @@ vi.mock('../../db/schema.js', () => ({
     agentId: 'scm_workload_leases.agent_id',
     workloadType: 'scm_workload_leases.workload_type',
     phase: 'scm_workload_leases.phase',
+  },
+  scmWorkspaceRemovals: {
+    id: 'scm_workspace_removals.id',
+    scmSourceId: 'scm_workspace_removals.scm_source_id',
+    workspaceName: 'scm_workspace_removals.workspace_name',
   },
 }))
 
@@ -259,6 +265,30 @@ describe('taskQueueDb queue admission', () => {
       slot: 'queued',
       hasScmLease: true,
     })
+  })
+
+  // A remover commits its durable reservation before touching the filesystem
+  // — possibly on another replica. A run that names that exact worktree must
+  // not be admitted into a directory that is mid-deletion.
+  it('rejects admission of a run whose named worktree is being removed', async () => {
+    const tx = admissionTx(
+      [
+        [{ worktreeConfig: { name: 'fix-bug' } }], // the run's explicit worktree
+        [{ id: 'scm_1:fix-bug', workspaceName: 'fix-bug' }], // pending removal
+      ],
+      [],
+    )
+    mockWithAdmission.mockImplementation(
+      (
+        _input,
+        callback: (
+          executor: typeof tx,
+          admission: { leaseId: string; scmSourceId: string },
+        ) => unknown,
+      ) => callback(tx, { leaseId: 'run:run_named', scmSourceId: 'scm_1' }),
+    )
+
+    await expect(taskQueueDb.admitRun?.('agt_1', 'run_named', 1)).rejects.toThrow(/being removed/)
   })
 
   it('counts one occupant once when every view reports the same run', async () => {

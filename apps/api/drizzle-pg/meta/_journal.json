@@ -50,6 +50,13 @@
       "when": 1786600953040,
       "tag": "0006_huge_rhodey",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786619781736,
+      "tag": "0007_soft_psylocke",
+      "breakpoints": true
     }
   ]
 }

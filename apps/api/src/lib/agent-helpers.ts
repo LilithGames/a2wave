@@ -49,6 +49,10 @@ import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
 import { cleanupLegacyRuntimeGroupConfig } from './runtime-group-config.js'
 import { type CreateWorkspaceResult, type ScmSource, createScmSource } from './scm-source.js'
 import {
+  findPendingWorkspaceRemoval,
+  removeSourceWorkspaceGuarded,
+} from './scm-workspace-removal.js'
+import {
   isControlPlaneOnlyBuiltinMcp,
   isOwnerSafeBuiltinMcp,
   resolveBuiltinMcpConfig,
@@ -1107,7 +1111,17 @@ async function triggerTtlCleanup(sourceId: string, scm: ScmSource): Promise<void
     .where(inArray(runs.status, ['running', 'pending', 'queued']))
   const activePaths = new Set(activeRuns.map((r) => r.workDir).filter((p): p is string => !!p))
 
-  const removed = await scm.cleanupStale({ activePaths })
+  // activePaths is only a prefilter — it is a snapshot, and a workload can
+  // claim a candidate after it was taken (or occupy it invisibly: an
+  // Evaluation writes no runs row, a terminal Run's cleanup outlives its
+  // status). Authority is the guarded protocol: durable removal reservation
+  // plus a fresh occupancy re-check inside the workspace mutex, the same one
+  // the manual DELETE route uses. A candidate that became occupied throws,
+  // which cleanupStale records as a skip.
+  const removed = await scm.cleanupStale({
+    activePaths,
+    removeWorkspace: (name) => removeSourceWorkspaceGuarded({ sourceId, name, scm }),
+  })
   if (removed.length > 0) {
     logger.info({ sourceId, removed }, 'TTL cleanup removed stale workspaces')
   }
@@ -1180,6 +1194,22 @@ export async function resolveWorkDir(
       )[0]
       if (occupied) {
         throw new WorktreeOccupiedError(wsPath)
+      }
+      // Cross-replica removal gate: a remover commits its durable reservation
+      // BEFORE touching the filesystem, so a reservation visible here means
+      // this exact worktree may be mid-deletion on another replica. Creating
+      // or reusing it now hands the run a directory about to disappear. This
+      // read and the workDir claim below are one transaction, mirroring how
+      // the removal protocol pairs its re-check with the reservation.
+      const pendingRemoval = await findPendingWorkspaceRemoval(
+        tx,
+        agent.scmSourceId as string,
+        worktreeParams.name,
+      )
+      if (pendingRemoval) {
+        throw new Error(
+          `Worktree '${worktreeParams.name}' is currently being removed; retry shortly`,
+        )
       }
       if (runId) {
         await tx.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId))

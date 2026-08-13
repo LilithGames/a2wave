@@ -46,6 +46,14 @@ export interface RunRow {
  */
 export interface TaskQueueDb {
   countRunsByStatus(agentId: string, status: string): Promise<number>
+  /**
+   * Occupied concurrency slots, unioned by run id across every occupancy view
+   * (`running` rows, in-process execution leases, durable active SCM leases).
+   * Promotion must use this rather than max()-ing the per-view counts: the
+   * views overlap but none subsumes another, so max() undercounts and
+   * over-promotes past maxConcurrency.
+   */
+  countOccupiedSlots?(agentId: string): Promise<number>
   /** Current status of a single run, or undefined if it no longer exists. */
   getRunStatus(runId: string): Promise<string | undefined>
   getAgentMaxConcurrency(agentId: string): Promise<number | undefined>
@@ -261,8 +269,17 @@ async function promoteQueuedRunsLocked(
       break
     }
 
-    const runningInDb = await db.countRunsByStatus(agentId, 'running')
-    const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
+    // Prefer the full occupancy union: max() of the per-view counts misses a
+    // peer replica's cleanup-window lease when a different run is `running`
+    // here, and promotes a run past maxConcurrency. The max() fallback exists
+    // only for TaskQueueDb fakes that predate countOccupiedSlots.
+    const running =
+      db.countOccupiedSlots !== undefined
+        ? await db.countOccupiedSlots(agentId)
+        : Math.max(
+            await db.countRunsByStatus(agentId, 'running'),
+            countActiveExecutionLeases(agentId),
+          )
     if (running >= maxConcurrency) break
     const next = await db.getOldestQueuedRun(agentId)
     if (!next) break

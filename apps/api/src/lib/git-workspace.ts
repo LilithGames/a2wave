@@ -924,6 +924,15 @@ export interface CleanupOptions {
   idleDays?: number
   lruCap?: number
   now?: number // 注入 now 便于测试
+  /**
+   * Removal executor. `activePaths` is a snapshot taken before the scan, so a
+   * workload can claim a candidate AFTER the snapshot — the caller supplies
+   * the guarded removal protocol (durable reservation + fresh occupancy
+   * re-check inside the workspace mutex) and this function treats a thrown
+   * block as "skip", not a failure. Falls back to a bare removeGitWorkspace
+   * only when absent (tests exercising pure fs behavior).
+   */
+  removeWorkspace?: (name: string) => Promise<void>
 }
 
 /**
@@ -939,6 +948,8 @@ export async function cleanupStaleWorkspaces(
   const idleDays = opts.idleDays ?? TTL_IDLE_DAYS
   const lruCap = opts.lruCap ?? TTL_LRU_CAP
   const now = opts.now ?? Date.now()
+  const removeWorkspaceImpl =
+    opts.removeWorkspace ?? ((name: string) => removeGitWorkspace(localPath, wsRoot, name, config))
   const idleThreshold = now - idleDays * 24 * 60 * 60 * 1000
 
   const all = await listGitWorkspaces(localPath, wsRoot, config)
@@ -960,7 +971,7 @@ export async function cleanupStaleWorkspaces(
     }
     if (ws.lastActivityAt != null && ws.lastActivityAt < idleThreshold) {
       try {
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config)
+        await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info(
           { wsPath: ws.path, lastActivityAt: ws.lastActivityAt },
@@ -983,7 +994,7 @@ export async function cleanupStaleWorkspaces(
       if (opts.activePaths.has(ws.path)) continue
       if (await isWorkspaceDirty(ws, config)) continue
       try {
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config)
+        await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info({ wsPath: ws.path }, 'TTL cleanup: removed LRU excess workspace')
       } catch (err) {
