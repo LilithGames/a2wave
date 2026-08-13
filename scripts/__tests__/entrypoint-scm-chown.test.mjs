@@ -146,6 +146,18 @@ describe('scm_chown_targets', () => {
     ])
   })
 
+  it('recovers an empty reclaim root left by a crash before marker creation', () => {
+    const root = makeRoot()
+    assert.equal(prepareManagedStorage(root).status, 0)
+    const reclaimRoot = join(root, RECLAIM_DIR)
+    mkdirSync(reclaimRoot)
+
+    const result = prepareReclaimRoot(root)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(join(reclaimRoot, RECLAIM_MARKER), 'utf8'), 'a2wave-scm-reclaim-v1\n')
+  })
+
   it('refuses an unmarked existing reclaim root without mutating its contents', () => {
     const root = makeRoot()
     const reclaimRoot = join(root, RECLAIM_DIR)

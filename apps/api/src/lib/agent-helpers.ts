@@ -1130,6 +1130,19 @@ export async function resolveWorkDir(
   worktreeParams?: WorktreeCallParams,
   runId?: string,
 ): Promise<string> {
+  if (runId && agent.workspaceType === 'scm' && agent.scmSourceId) {
+    const current = (
+      await db
+        .select({ workspaceType: agents.workspaceType, scmSourceId: agents.scmSourceId })
+        .from(agents)
+        .where(eq(agents.id, agent.id))
+        .limit(1)
+    )[0]
+    if (!current || current.workspaceType !== 'scm' || current.scmSourceId !== agent.scmSourceId) {
+      throw new Error('Agent SCM binding changed before workload admission')
+    }
+  }
+
   // SCM + worktree 模式
   if (worktreeParams) {
     if (agent.workspaceType !== 'scm' || !agent.scmSourceId) {

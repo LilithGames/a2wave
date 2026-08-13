@@ -1,5 +1,6 @@
 import type { FailureReason } from '../lib/run-failure-reasons.js'
 import { FAILURE_REASONS } from '../lib/run-failure-reasons.js'
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
 import { countActiveExecutionLeases, reserveExecutionLease } from './execution-lease-registry.js'
 
 export const MAX_QUEUE_LENGTH = 50
@@ -116,24 +117,19 @@ export async function tryAcquireSlot(
   runId: string,
   maxConcurrency: number,
 ): Promise<SlotResult> {
-  const runningInDb = await db.countRunsByStatus(agentId, 'running')
-  // Re-read the lease count AFTER the await: a caller that started during it
-  // may have taken a slot, and the pre-await value would miss that.
-  const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
-  if (running < maxConcurrency) {
-    // Lease first, then persist. The lease is the concurrency guard, and taking
-    // it before yielding to the DB write closes the window in which a
-    // concurrent caller could observe the slot as still free.
-    reserveExecutionLease(runId, agentId)
-    await db.updateRunStatus(runId, 'running')
-    return 'acquired'
-  }
-  const queued = await db.countRunsByStatus(agentId, 'queued')
-  if (queued >= MAX_QUEUE_LENGTH) {
-    return 'queue_full'
-  }
-  await db.updateRunStatus(runId, 'queued')
-  return 'queued'
+  return withAgentScmWorkloadLock(agentId, async () => {
+    const runningInDb = await db.countRunsByStatus(agentId, 'running')
+    const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
+    if (running < maxConcurrency) {
+      reserveExecutionLease(runId, agentId)
+      await db.updateRunStatus(runId, 'running')
+      return 'acquired'
+    }
+    const queued = await db.countRunsByStatus(agentId, 'queued')
+    if (queued >= MAX_QUEUE_LENGTH) return 'queue_full'
+    await db.updateRunStatus(runId, 'queued')
+    return 'queued'
+  })
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled'])
@@ -233,6 +229,14 @@ export async function scheduleNext(
 }
 
 async function promoteQueuedRuns(
+  db: TaskQueueDb,
+  agentId: string,
+  onExecute: (runId: string, agentId: string) => void,
+): Promise<number> {
+  return withAgentScmWorkloadLock(agentId, () => promoteQueuedRunsLocked(db, agentId, onExecute))
+}
+
+async function promoteQueuedRunsLocked(
   db: TaskQueueDb,
   agentId: string,
   onExecute: (runId: string, agentId: string) => void,

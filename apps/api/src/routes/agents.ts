@@ -119,6 +119,7 @@ import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { findActiveAgentScmWorkload } from '../lib/scm-workload-guard.js'
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
@@ -1429,9 +1430,6 @@ app.patch('/:id', async (c) => {
       if (memorySkill) {
         const currentSkills =
           (parsed.data.skills as string[] | null) || (existing.skills as string[] | null) || []
-        // Sync predicate on purpose: an `async` callback here returns a Promise,
-        // which is always truthy, so `filter` would keep the memory Skill it is
-        // meant to strip.
         parsed.data.skills = currentSkills.filter((sid: string) => sid !== memorySkill.id)
       }
       shouldRemoveMemoryOverrides = true
@@ -1453,12 +1451,6 @@ app.patch('/:id', async (c) => {
     updatedAt: new Date(),
   }
 
-  // A published Agent is already live, so PATCH is also an activation boundary:
-  // validate the effective candidate before replacing the configuration used by
-  // its active channels. Draft and stopped Agents remain freely editable. Match
-  // Drizzle's update semantics by ignoring undefined fields in the candidate.
-  // Keep this after masked Provider credentials are restored above: the resolver
-  // must never mistake the "********" transport placeholder for a real secret.
   if (existing.publishStatus === 'published') {
     const candidate = { ...existing }
     const candidateRecord = candidate as unknown as Record<string, unknown>
@@ -1468,9 +1460,6 @@ app.patch('/:id', async (c) => {
     await validateAgentProviderConfiguration(candidate)
   }
 
-  // Resolve before persistence so workspace lookup failures still reject the
-  // update, but defer file mutations until the database update succeeds. This
-  // keeps both provider-preflight and database-failure paths side-effect free.
   let disableWorkDir: string | undefined
   if (shouldRemoveMemoryOverrides) {
     disableWorkDir = await resolveWorkDir(existing)
@@ -1491,36 +1480,38 @@ app.patch('/:id', async (c) => {
     (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
   const changesScmBinding = releasesScmBinding || establishesScmBinding
   const bindingResult = changesScmBinding
-    ? await withScmPathMutation(async (tx) => {
-        if (releasesScmBinding) {
-          const active = await findActiveAgentScmWorkload(tx, id)
-          if (active) {
-            return { allowed: false as const, agent: undefined, active }
+    ? await withAgentScmWorkloadLock(id, () =>
+        withScmPathMutation(async (tx) => {
+          if (releasesScmBinding) {
+            const active = await findActiveAgentScmWorkload(tx, id)
+            if (active) {
+              return { allowed: false as const, agent: undefined, active }
+            }
           }
-        }
-        if (establishesScmBinding) {
-          const source = (
-            await tx
-              .select()
-              .from(scmSources)
-              .where(
-                and(
-                  eq(scmSources.id, effectiveScmSourceId),
-                  isNull(scmSources.deletionRequestedAt),
-                ),
-              )
-              .limit(1)
-          )[0]
-          if (!source || source.initialSyncCompletedAt == null) {
-            return { allowed: false as const, agent: undefined, active: undefined }
+          if (establishesScmBinding) {
+            const source = (
+              await tx
+                .select()
+                .from(scmSources)
+                .where(
+                  and(
+                    eq(scmSources.id, effectiveScmSourceId),
+                    isNull(scmSources.deletionRequestedAt),
+                  ),
+                )
+                .limit(1)
+            )[0]
+            if (!source || source.initialSyncCompletedAt == null) {
+              return { allowed: false as const, agent: undefined, active: undefined }
+            }
           }
-        }
-        return {
-          allowed: true as const,
-          agent: await updateAgent(tx as typeof db),
-          active: undefined,
-        }
-      })
+          return {
+            allowed: true as const,
+            agent: await updateAgent(tx as typeof db),
+            active: undefined,
+          }
+        }),
+      )
     : { allowed: true as const, agent: await updateAgent(db), active: undefined }
   if (!bindingResult.allowed) {
     if (bindingResult.active) {
@@ -2959,26 +2950,35 @@ app.delete('/:id', async (c) => {
   const { id } = c.req.param()
   const { agent } = await requireAgentOwner(c, id)
 
-  // A running (published) agent must be stopped before it can be deleted.
   if (agent.publishStatus === 'published') {
     return c.json({ error: 'Agent must be stopped before deletion' }, 409)
   }
 
-  if (agent.workspaceType === 'scm' && agent.scmSourceId) {
-    const active = await withScmPathMutation(async (tx) => findActiveAgentScmWorkload(tx, id))
-    if (active) {
-      const label = active.type === 'run' ? 'Run' : 'Evaluation'
-      return c.json({ error: `Cannot delete the Agent while ${label} ${active.id} is active` }, 409)
-    }
+  const deleteRows = async (executor: typeof db) => {
+    await executor.update(runSteps).set({ agentId: null }).where(eq(runSteps.agentId, id))
+    await executor
+      .update(runs)
+      .set({ initiatorAgentId: null, updatedAt: new Date() })
+      .where(eq(runs.initiatorAgentId, id))
+    return (await executor.delete(agents).where(eq(agents.id, id)).returning())[0]
   }
-
-  // Clean up foreign key references before deleting agent
-  await db.update(runSteps).set({ agentId: null }).where(eq(runSteps.agentId, id))
-
-  await db
-    .update(runs)
-    .set({ initiatorAgentId: null, updatedAt: new Date() })
-    .where(eq(runs.initiatorAgentId, id))
+  const deletion =
+    agent.workspaceType === 'scm' && agent.scmSourceId
+      ? await withAgentScmWorkloadLock(id, () =>
+          withScmPathMutation(async (tx) => {
+            const active = await findActiveAgentScmWorkload(tx, id)
+            if (active) return { active, deleted: undefined }
+            return { active: null, deleted: await deleteRows(tx as typeof db) }
+          }),
+        )
+      : { active: null, deleted: await deleteRows(db) }
+  if (deletion.active) {
+    const label = deletion.active.type === 'run' ? 'Run' : 'Evaluation'
+    return c.json(
+      { error: `Cannot delete the Agent while ${label} ${deletion.active.id} is active` },
+      409,
+    )
+  }
 
   feishuConnectionManager.stop(id)
   void slackConnectionManager.stop(id)
@@ -2990,11 +2990,9 @@ app.delete('/:id', async (c) => {
   removeAgentMemory(id)
   clearAgentIndex(id)
 
-  const deleted = (await db.delete(agents).where(eq(agents.id, id)).returning())[0]
-
   logAudit(c, { action: 'agent.delete', resource: 'agent', resourceId: id })
 
-  return c.json({ data: maskAgentSecrets(deleted) })
+  return c.json({ data: maskAgentSecrets(deletion.deleted) })
 })
 
 export default app

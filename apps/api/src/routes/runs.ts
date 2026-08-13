@@ -20,7 +20,7 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { reserveExecutionLease } from '../engine/execution-lease-registry.js'
+import { reserveExecutionLeaseForAgent } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
@@ -727,7 +727,7 @@ app.post('/:id/execute', async (c) => {
     input: { intent: run.intent, context: parsed.data.context },
     status: 'running',
   })
-  reserveExecutionLease(id, agentId)
+  await reserveExecutionLeaseForAgent(id, agentId)
 
   // 7. 构建 prompt 和 WorkerTaskPayload
   // Backward compat: if systemPrompt does NOT use {{context}} template var,
@@ -744,7 +744,7 @@ app.post('/:id/execute', async (c) => {
   const startTime = Date.now()
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent)
+    resolvedWorkDir = await resolveWorkDir(agent, undefined, id)
   } catch (error) {
     const publicError = await finishRunError(
       { taskId, runId: id, stepId, agentId, startTime, userId: run.userId ?? undefined },

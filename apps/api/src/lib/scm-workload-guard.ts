@@ -1,8 +1,21 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { db } from '../db/client.js'
-import { evaluationTasks, runs } from '../db/schema.js'
+import { evaluationTasks, runSteps, runs } from '../db/schema.js'
+import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
 
 type QueryExecutor = Pick<typeof db, 'select'>
+
+const activeEvaluations = new Map<string, { taskId: string; agentId: string }>()
+
+/** Keep cancelled evaluations protected until their workspace cleanup finishes. */
+export function registerScmEvaluationWorkload(taskId: string, agentId: string): () => void {
+  activeEvaluations.set(taskId, { taskId, agentId })
+  return () => activeEvaluations.delete(taskId)
+}
+
+export function _resetScmWorkloadLeasesForTests(): void {
+  activeEvaluations.clear()
+}
 
 export type ActiveAgentScmWorkload =
   | { type: 'run'; id: string }
@@ -21,6 +34,25 @@ export async function findActiveAgentScmWorkload(
   executor: QueryExecutor,
   agentId: string,
 ): Promise<ActiveAgentScmWorkload | null> {
+  const leasedRun = listActiveExecutionLeases().find((lease) => lease.agentId === agentId)
+  if (leasedRun) return { type: 'run', id: leasedRun.runId }
+
+  const leasedEvaluation = [...activeEvaluations.values()].find(
+    (workload) => workload.agentId === agentId,
+  )
+  if (leasedEvaluation) return { type: 'evaluation', id: leasedEvaluation.taskId }
+
+  // A run may execute with an Agent other than runs.initiatorAgentId. The step
+  // is the authoritative execution record, so protect that Agent as well.
+  const executingStep = (
+    await executor
+      .select({ id: runSteps.runId })
+      .from(runSteps)
+      .where(and(eq(runSteps.agentId, agentId), eq(runSteps.status, 'running')))
+      .limit(1)
+  )[0]
+  if (executingStep) return { type: 'run', id: executingStep.id }
+
   const activeRun = (
     await executor
       .select({ id: runs.id })

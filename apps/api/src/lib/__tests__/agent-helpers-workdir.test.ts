@@ -131,6 +131,25 @@ describe('resolveWorkDir', () => {
     expect(await resolveWorkDir(agent)).toBe('/data/repos/my-project')
   })
 
+  it('rejects a stale SCM snapshot after the Agent binding changed during admission', async () => {
+    mockDbFrom.mockReturnValueOnce(
+      asyncQuery({
+        where: () => asyncQuery({ get: () => ({ workspaceType: 'temp', scmSourceId: null }) }),
+      }),
+    )
+    const agent = {
+      id: 'agt_abc123',
+      name: 'Test Agent',
+      config: {},
+      workspaceType: 'scm',
+      scmSourceId: 'scm_1',
+    } as any
+
+    await expect(resolveWorkDir(agent, undefined, 'run_1')).rejects.toThrow(
+      'Agent SCM binding changed before workload admission',
+    )
+  })
+
   it('returns config.workDir when set within allowed workspace', async () => {
     mockDbFrom.mockReturnValue(chainResult(undefined))
 
@@ -255,6 +274,7 @@ describe('resolveWorkDir', () => {
     it('propagates original createWorkspace error even if workDir rollback throws', async () => {
       const source = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
       mockDbFrom
+        .mockReturnValueOnce(chainResult({ workspaceType: 'scm', scmSourceId: 'scm_1' }))
         .mockReturnValueOnce(chainResult(source))
         .mockReturnValueOnce(chainResult(undefined))
 

@@ -51,6 +51,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   bindExecutionLeaseTask: vi.fn(),
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
+  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
 }))
 
 const mockTryAcquireSlot = vi.hoisted(() => vi.fn().mockReturnValue('acquired'))

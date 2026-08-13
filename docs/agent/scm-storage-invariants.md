@@ -41,8 +41,12 @@ below hold across every affected entry point.
 - PATCH and DELETE may cancel an automatic initial checkout. Periodic sync and
   indexing keep the busy guard; weakening it risks concurrent checkout damage.
 - An Agent cannot release or replace its SCM binding while one of its Runs or
-  Evaluations is active. The Agent row is the durable lease that keeps source
-  deletion from reclaiming a checkout still used by a workload.
+  Evaluations is active. Admission and binding mutation share a per-Agent lock;
+  durable Run, RunStep, and Evaluation rows cover process/replica boundaries,
+  while in-memory execution leases cover the terminal-status-to-process-exit
+  cleanup window. RunSteps identify the actual executing Agent when it differs
+  from the Run initiator. A stale pre-admission Agent snapshot must never resolve
+  the checkout after its binding changes.
 - Cancellation is not a sync failure and must not emit a failure notification.
 - DELETE is a durable two-phase operation. Its first transaction writes
   `deletion_requested_at` plus `deletion_requested_by`, disables the source,
@@ -61,7 +65,10 @@ below hold across every affected entry point.
 - Startup recovery is database-directed: only rows with a durable deletion
   reservation authorize cleanup. Never sweep the reclaim directory by filename.
   A transaction rollback or an unmarked directory must preserve its contents.
-- Every reclaim root requires the a2wave ownership marker. The planner, runtime
+- Every reclaim root requires the a2wave ownership marker. An empty unmarked
+  reclaim root beneath a marker-owned storage root is the one recoverable state:
+  it is the crash boundary between `mkdir` and marker creation and may be marked
+  on the next boot. Any non-empty or invalid root remains operator-owned. The planner, runtime
   workspace validation, and sync backstop reject any source path overlapping
   that root. An existing non-empty operator directory is never adopted.
 - Reclaim only exact id-derived managed paths, including the exact legacy

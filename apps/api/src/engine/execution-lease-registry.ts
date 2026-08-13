@@ -58,6 +58,14 @@ export function reserveExecutionLease(runId: string, agentId?: string): Executio
   return toExecutionLease(getOrCreateExecutionLease(runId, agentId))
 }
 
+/** Reserve a lease without racing an SCM binding release for the same Agent. */
+export function reserveExecutionLeaseForAgent(
+  runId: string,
+  agentId: string,
+): Promise<ExecutionLease> {
+  return withAgentScmWorkloadLock(agentId, async () => reserveExecutionLease(runId, agentId))
+}
+
 /** Bind the eventual CLI task to a lease that may already have been cancelled. */
 export function bindExecutionLeaseTask(
   runId: string,
@@ -148,3 +156,4 @@ export function _resetExecutionLeasesForTests(): void {
   leasesByRunId.clear()
   leasesByTaskId.clear()
 }
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'

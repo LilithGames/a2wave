@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -51,6 +52,8 @@ export interface ReclaimOptions {
   /** Seam for tests; defaults to a non-following recursive remove. */
   removeDir?: (path: string) => Promise<void>
   legacyWorkspacesPath?: (sourceId: string) => string
+  /** Seam for filesystem error regressions; defaults to lstat. */
+  inspectPath?: (path: string) => Promise<Stats>
 }
 
 /** One directory a peer row occupies, as the overlap scan needs to see it. */
@@ -140,17 +143,23 @@ function isSamePath(a: string, b: string): boolean {
  * follow links, so a symlink planted at the allocated path is rejected rather
  * than renamed into the isolation area and recursively deleted through.
  */
-async function isReclaimableDir(path: string): Promise<boolean> {
+async function isReclaimableDir(
+  path: string,
+  inspectPath: (path: string) => Promise<Stats> = lstat,
+): Promise<boolean> {
   try {
-    const stats = await lstat(path)
+    const stats = await inspectPath(path)
     if (!stats.isDirectory()) {
       logger.warn({ path }, 'Refusing to reclaim managed SCM path: not a regular directory')
       return false
     }
     return true
-  } catch {
-    // Never created, or already gone. Nothing to reclaim, and not an error.
-    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      // Never created, or already gone. Nothing to reclaim, and not an error.
+      return false
+    }
+    throw error
   }
 }
 
@@ -244,8 +253,11 @@ export async function isolateManagedScmStorage(
     }
 
     const isolatedPath = join(isolationRoot, `${source.id}-${label}`)
-    if (!(await isReclaimableDir(path))) {
-      if ((await hasOwnedIsolationRoot(isolationRoot)) && (await isReclaimableDir(isolatedPath))) {
+    if (!(await isReclaimableDir(path, options.inspectPath))) {
+      if (
+        (await hasOwnedIsolationRoot(isolationRoot)) &&
+        (await isReclaimableDir(isolatedPath, options.inspectPath))
+      ) {
         isolated.push({ originalPath: path, isolatedPath })
       }
       continue
@@ -255,7 +267,7 @@ export async function isolateManagedScmStorage(
       throw new Error(`Refusing to use unowned SCM reclaim root: ${isolationRoot}`)
     }
     try {
-      if (await isReclaimableDir(isolatedPath)) {
+      if (await isReclaimableDir(isolatedPath, options.inspectPath)) {
         throw new Error(`Reclaim destination already exists: ${isolatedPath}`)
       }
       await rename(path, isolatedPath)

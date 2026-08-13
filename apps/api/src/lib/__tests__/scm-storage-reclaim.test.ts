@@ -86,6 +86,21 @@ describe('isolateManagedScmStorage', () => {
     expect(existsSync(isolated.isolated[0].isolatedPath)).toBe(false)
   })
 
+  it('propagates filesystem inspection errors instead of orphaning the checkout', async () => {
+    const root = await makeStorageRoot()
+    const checkout = join(root, 'sources', 'aBcD')
+    await mkdir(checkout, { recursive: true })
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+
+    await expect(
+      isolateManagedScmStorage(
+        { id: 'scm_aBcD', localPath: checkout, workspacesPath: null },
+        { inspectPath: async () => Promise.reject(denied) },
+      ),
+    ).rejects.toBe(denied)
+    expect(existsSync(checkout)).toBe(true)
+  })
+
   it('parks the directory where no source allocation can ever name it', async () => {
     const root = await makeStorageRoot()
     const checkout = join(root, 'sources', 'aBcD')

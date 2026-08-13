@@ -103,6 +103,18 @@ scm_prepare_reclaim_root() {
   scm_storage_is_owned "$scm_root" || return 1
   reclaim_root="$scm_root/$SCM_RECLAIM_SUBDIR"
   if [ -e "$reclaim_root" ] || [ -L "$reclaim_root" ]; then
+    if scm_reclaim_is_owned "$reclaim_root"; then
+      return 0
+    fi
+    # mkdir and marker creation cannot be one filesystem operation. The parent
+    # storage marker reserves this exact name, so an ordinary empty directory
+    # is the recoverable result of a crash between those two operations. Never
+    # adopt a symlink, non-directory, or a directory containing any data.
+    [ -L "$reclaim_root" ] && return 1
+    [ -d "$reclaim_root" ] || return 1
+    [ -z "$(find "$reclaim_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 1
+    (set -C; printf '%s\n' "$SCM_RECLAIM_MARKER_CONTENT" > "$reclaim_root/$SCM_RECLAIM_MARKER") 2>/dev/null ||
+      scm_reclaim_is_owned "$reclaim_root" || return 1
     scm_reclaim_is_owned "$reclaim_root"
     return
   fi

@@ -435,7 +435,7 @@ app.post('/:agentId/invoke', async (c) => {
   if (hasPendingContext) takePendingContext(runId)
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent)
+    resolvedWorkDir = await resolveWorkDir(agent, undefined, runId)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     await db

@@ -45,7 +45,10 @@ import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
 import { getCurrentUserId } from '../lib/owner-filter.js'
 import { buildDebugChannel } from '../lib/run-channel.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { createScmSource } from '../lib/scm-source.js'
+import { registerScmEvaluationWorkload } from '../lib/scm-workload-guard.js'
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
 
 const app = new Hono()
 
@@ -446,6 +449,9 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     casesRun: 0,
     turnsReplayed: 0,
   }
+  const releaseWorkload = await withAgentScmWorkloadLock(agentId, async () =>
+    registerScmEvaluationWorkload(taskId, agentId),
+  )
 
   try {
     const agent = (
@@ -557,15 +563,13 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     await settleUnfinishedResults(taskId, 'failed', message)
     await refreshTaskSummary(taskId)
   } finally {
-    await auditEvaluationExecution(taskId, agentId, execution)
-
-    // Per-task scratch directories would otherwise accumulate one per task
-    // forever, each holding a synced copy of the Agent's skills and MCP config.
-    await discardEvaluationWorkspace(workspace, taskId)
-
-    // The slot is only free now. Skipping this on any terminal path — including
-    // the error one — would leave the agent's queue stalled with work in it.
-    await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
+    try {
+      await auditEvaluationExecution(taskId, agentId, execution)
+      await discardEvaluationWorkspace(workspace, taskId)
+    } finally {
+      releaseWorkload()
+      await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
+    }
   }
 }
 
@@ -718,22 +722,45 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
   }
 
   const taskId = createId('evt')
-  const task = (
-    await db
-      .insert(evaluationTasks)
-      .values({
-        id: taskId,
-        agentId,
-        setId: set.id,
-        // Denormalized so the task stays readable after the set is deleted.
-        setName: set.name,
-        name: parsed.data.name ?? null,
-        status: 'pending',
-        configSnapshot: await buildStoredEvaluationSnapshot(agent),
-        userId: getCurrentUserId(c),
-      })
-      .returning()
-  )[0]
+  const configSnapshot = await buildStoredEvaluationSnapshot(agent)
+  const task = await withAgentScmWorkloadLock(agentId, () =>
+    withScmPathMutation(async (tx) => {
+      const current = (
+        await tx
+          .select({
+            workspaceType: agentsTable.workspaceType,
+            scmSourceId: agentsTable.scmSourceId,
+          })
+          .from(agentsTable)
+          .where(eq(agentsTable.id, agentId))
+          .limit(1)
+      )[0]
+      if (
+        !current ||
+        current.workspaceType !== agent.workspaceType ||
+        current.scmSourceId !== agent.scmSourceId
+      ) {
+        return null
+      }
+      return (
+        await tx
+          .insert(evaluationTasks)
+          .values({
+            id: taskId,
+            agentId,
+            setId: set.id,
+            // Denormalized so the task stays readable after the set is deleted.
+            setName: set.name,
+            name: parsed.data.name ?? null,
+            status: 'pending',
+            configSnapshot,
+            userId: getCurrentUserId(c),
+          })
+          .returning()
+      )[0]
+    }),
+  )
+  if (!task) return c.json({ error: 'Agent workspace changed; retry the evaluation' }, 409)
 
   for (const [index, evalCase] of cases.entries()) {
     await db.insert(evaluationResults).values({
