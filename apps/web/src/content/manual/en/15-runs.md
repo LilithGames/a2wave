@@ -86,7 +86,7 @@ The displayed total is the sum of five disjoint buckets: **input + output + reas
 
 To control database size, the execution log in run details **keeps the beginning and drops the end** once it exceeds the entry-count limit (a "log truncated" marker appears). Meanwhile, the **full process log** of each execution is written out-of-band to a server-side NDJSON file, so the latter half of long tasks isn't lost:
 
-- **View full log**: click "View full log" in the execution-log area; the in-app viewer loads the server-side log page by page, supporting filtering by All / Tool calls / Messages / Errors-retries, and paged browsing (defaults to the last page, prioritizing the failure scene).
+- **View full log**: click "View full log" in the execution-log area; the in-app viewer loads the server-side log page by page, supporting filtering by All / Tool calls / Messages / Errors-retries, and paged browsing (defaults to the last page, prioritizing the failure scene). A2A long-task polling retries, resubscription failures, and cancellation failures are also included under Errors-retries so remote recovery problems can be inspected together.
 - **Download full log**: the same area lets you download the raw NDJSON file (`GET /api/runs/:id/logs/download`), one JSON event per line, convenient for script analysis.
 
 > Full-log files are retained for 14 days by default (adjustable via the environment variable `A2WAVE_RUN_LOG_RETENTION_DAYS`) and cleaned up automatically after expiry; a single file defaults to a 256 MiB limit.

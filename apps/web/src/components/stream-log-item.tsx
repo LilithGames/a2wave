@@ -30,6 +30,17 @@ export function truncateText(text: string, maxLen = 200): string {
   return `${text.slice(0, maxLen)}…`
 }
 
+const A2A_TASK_EVENT_LABELS: Record<string, string> = {
+  'a2a.task.observed': 'runLog.a2aTaskObserved',
+  'a2a.task.state': 'runLog.a2aTaskState',
+  'a2a.task.poll_retry': 'runLog.a2aTaskPollRetry',
+  'a2a.task.reconnect': 'runLog.a2aTaskReconnect',
+  'a2a.task.resubscribe_failed': 'runLog.a2aTaskResubscribeFailed',
+  'a2a.task.cancel_requested': 'runLog.a2aTaskCancelRequested',
+  'a2a.task.cancel_result': 'runLog.a2aTaskCancelResult',
+  'a2a.task.cancel_failed': 'runLog.a2aTaskCancelFailed',
+}
+
 /** Assistant message entry with collapsible detail */
 function AssistantEntry({
   entry,
@@ -120,6 +131,35 @@ export function StreamLogItem({ entry, baseTs }: { entry: StreamLogEntry; baseTs
 
   switch (entry.type) {
     case 'system': {
+      if (entry.subtype.startsWith('a2a.task.')) {
+        const labelKey = A2A_TASK_EVENT_LABELS[entry.subtype]
+        const label = labelKey ? t(labelKey) : t('runLog.systemEvent', { subtype: entry.subtype })
+        const metadata = [
+          entry.metadata?.target,
+          entry.metadata?.taskId,
+          entry.metadata?.state,
+          entry.metadata?.attempt != null ? `#${entry.metadata.attempt}` : undefined,
+        ].filter((value): value is string => Boolean(value))
+        const failed =
+          entry.subtype === 'a2a.task.cancel_failed' ||
+          entry.subtype === 'a2a.task.resubscribe_failed'
+        return (
+          <div className="flex min-w-0 items-center gap-2 text-2xs">
+            {failed ? (
+              <AlertCircle className="h-3 w-3 shrink-0 text-warning" />
+            ) : (
+              <RefreshCw className="h-3 w-3 shrink-0 text-interactive-foreground" />
+            )}
+            <span className="text-muted-foreground font-mono shrink-0">{timeLabel}</span>
+            <span className="text-foreground/80 shrink-0">{label}</span>
+            {metadata.length > 0 && (
+              <span className="truncate font-mono text-muted-foreground">
+                {metadata.join(' · ')}
+              </span>
+            )}
+          </div>
+        )
+      }
       // 全量日志文件的写入护栏标记 —— 必须醒目展示，落入"系统初始化"兜底
       // 会恰好掩盖"日志被截断/丢弃"这个最该被看到的信息。
       if (
@@ -289,7 +329,13 @@ export function StreamLogsTimeline({
     'provider_fallback',
   ])
   const filtered = logs.filter((e) => {
-    if (e.type === 'system' && !visibleSystemSubtypes.has(e.subtype)) return false
+    if (
+      e.type === 'system' &&
+      !visibleSystemSubtypes.has(e.subtype) &&
+      !e.subtype.startsWith('a2a.task.')
+    ) {
+      return false
+    }
     if (e.type === 'assistant' && !e.text.trim()) return false
     return true
   })

@@ -1,6 +1,7 @@
 import { extractUsageFromError } from '../engine/cli-engine-base.js'
+import { registerExecutionProcessLogSink } from '../engine/execution-process-log.js'
 import { engineRegistry } from '../engine/index.js'
-import type { TokenUsage } from '../engine/types.js'
+import type { StreamLogEntry, TokenUsage } from '../engine/types.js'
 import { logger } from '../lib/logger.js'
 import {
   cleanupRuntimeGroupConfigs,
@@ -124,6 +125,11 @@ export async function executeInWorker(
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   let timeoutTriggered = false
   let emittedUsage: TokenUsage | undefined
+  const handleLogEntry = (entry: StreamLogEntry) => {
+    if (entry.type === 'result' && entry.usage) emittedUsage = entry.usage
+    onLogEntry?.(entry)
+  }
+  const unregisterProcessLogSink = registerExecutionProcessLogSink(taskId, handleLogEntry)
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
       timeoutTriggered = true
@@ -143,10 +149,7 @@ export async function executeInWorker(
       chatId: payload.chatId,
       branch: 'main',
       onUpdate,
-      onLogEntry: (entry) => {
-        if (entry.type === 'result' && entry.usage) emittedUsage = entry.usage
-        onLogEntry?.(entry)
-      },
+      onLogEntry: handleLogEntry,
       agentConfig: executionAgentConfig,
     })
 
@@ -203,6 +206,7 @@ export async function executeInWorker(
       usage: extractUsageFromError(err) ?? emittedUsage,
     }
   } finally {
+    unregisterProcessLogSink()
     cleanupRuntimeGroupConfigs(runtimeGroupLease)
   }
 }

@@ -4,12 +4,17 @@ import { fileURLToPath } from 'node:url'
 import {
   AgentCard,
   type Artifact,
+  CancelTaskRequest,
+  GetTaskRequest,
   type Message,
   Role,
   SendMessageRequest,
   type SendMessageResult,
   type StreamResponse,
+  SubscribeToTaskRequest,
+  type Task,
   TaskState,
+  taskStateToJSON,
 } from '@a2a-js/sdk'
 import {
   ClientFactory,
@@ -18,6 +23,7 @@ import {
   ServiceParameters,
   withA2AExtensions,
 } from '@a2a-js/sdk/client'
+import { A2A_ERROR_CODE, isJsonRpcError, isRestError } from '@a2a-js/sdk/errors'
 import { z } from 'zod'
 import {
   A2WAVE_CALLER_AGENT_ID_HEADER,
@@ -32,6 +38,11 @@ import {
 } from '../a2a/provenance.js'
 import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
 import { UnsafeUrlError, assertSafeHttpUrl } from '../lib/url-safety-core.js'
+import {
+  type RouterInvocationRegistry,
+  createRouterInvocationRegistry,
+  installRouterShutdownHooks,
+} from './agent-router-lifecycle.js'
 
 // Internal enterprise networks are the primary deployment target, so ordinary
 // private/CGNAT/ULA routes are enabled unless an operator explicitly selects
@@ -44,11 +55,41 @@ const safeRemoteRouteFetch = createStreamingSafeFetch({
   trustedHosts: parseTrustedHostnames(process.env.A2WAVE_TRUSTED_A2A_ROUTE_HOSTS),
 })
 
-const REMOTE_REQUEST_TIMEOUT_MS = 5 * 60 * 1000
 const AGENT_CARD_TIMEOUT_MS = 15 * 1000
+const TASK_RPC_TIMEOUT_MS = 15 * 1000
+// CLI process groups are force-killed five seconds after graceful termination
+// starts. Keep the independent CancelTask control request inside that window.
+const TASK_CANCEL_TIMEOUT_MS = 3 * 1000
+const TASK_POLL_INTERVAL_MS = 1000
+const MAX_TASK_POLL_RETRY_DELAY_MS = 30 * 1000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+const TERMINAL_TASK_HISTORY_LENGTH = 20
+const TASK_STREAM_IDLE_TIMEOUT_MS = 30 * 1000
 const MAX_AGENT_CARD_BYTES = 1024 * 1024
 const MAX_REMOTE_RESULT_BYTES = 16 * 1024 * 1024
 const MAX_REMOTE_RESULT_EVENTS = 10_000
+
+class RemoteResultLimitError extends Error {}
+
+class RemoteTaskIdentityError extends Error {}
+
+class RemoteTaskReadHttpError extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(`Remote Task read returned HTTP ${statusCode}`)
+    this.name = 'RemoteTaskReadHttpError'
+  }
+}
+
+interface InvocationResultBudget {
+  events: number
+}
+
+function createInvocationResultBudget(): InvocationResultBudget {
+  return { events: 0 }
+}
 
 function composeTimeoutSignal(signal: AbortSignal | null | undefined, timeoutMs: number) {
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
@@ -59,11 +100,54 @@ async function cancelBodyQuietly(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => {})
 }
 
+function isRetryableHttpStatus(statusCode: number): boolean {
+  return statusCode === 408 || statusCode === 429 || statusCode >= 500
+}
+
+function parseRetryAfterMs(value: string | undefined, nowMs = Date.now()): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const dateMs = Date.parse(value)
+  if (!Number.isFinite(dateMs)) return undefined
+  return Math.max(0, dateMs - nowMs)
+}
+
+function requestMethodFromBody(body: BodyInit | null | undefined): string | undefined {
+  if (typeof body !== 'string') return undefined
+  try {
+    const parsed = JSON.parse(body) as { method?: unknown }
+    return typeof parsed.method === 'string' ? parsed.method : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isTaskReadMethod(method: string | undefined): boolean {
+  return method === 'GetTask' || method === 'tasks/get'
+}
+
+async function throwForRetryableTaskReadResponse(
+  response: Response,
+  body: BodyInit | null | undefined,
+): Promise<void> {
+  if (
+    response.ok ||
+    !isRetryableHttpStatus(response.status) ||
+    !isTaskReadMethod(requestMethodFromBody(body))
+  ) {
+    return
+  }
+  const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after') ?? undefined)
+  await cancelBodyQuietly(response)
+  throw new RemoteTaskReadHttpError(response.status, retryAfterMs)
+}
+
 function withResponseByteLimit(response: Response, maxBytes: number, label: string): Response {
   const contentLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     void cancelBodyQuietly(response)
-    throw new Error(`${label} exceeds the ${maxBytes}-byte response limit`)
+    throw new RemoteResultLimitError(`${label} exceeds the ${maxBytes}-byte response limit`)
   }
   if (!response.body) return response
 
@@ -80,7 +164,9 @@ function withResponseByteLimit(response: Response, maxBytes: number, label: stri
         totalBytes += value.byteLength
         if (totalBytes > maxBytes) {
           await reader.cancel()
-          controller.error(new Error(`${label} exceeds the ${maxBytes}-byte response limit`))
+          controller.error(
+            new RemoteResultLimitError(`${label} exceeds the ${maxBytes}-byte response limit`),
+          )
           return
         }
         controller.enqueue(value)
@@ -115,7 +201,7 @@ async function readResponseTextWithLimit(
     totalBytes += value.byteLength
     if (totalBytes > maxBytes) {
       await reader.cancel()
-      throw new Error(`${label} exceeds the ${maxBytes}-byte response limit`)
+      throw new RemoteResultLimitError(`${label} exceeds the ${maxBytes}-byte response limit`)
     }
     text += decoder.decode(value, { stream: true })
   }
@@ -228,11 +314,15 @@ function createRemoteTargetFetch(target: RemoteRouteTarget): typeof fetch {
     const response = await safeRemoteRouteFetch(input instanceof URL ? input : input.toString(), {
       ...init,
       headers,
-      signal: composeTimeoutSignal(
-        init.signal,
-        isAgentCardRequest ? AGENT_CARD_TIMEOUT_MS : REMOTE_REQUEST_TIMEOUT_MS,
-      ),
+      // Agent Card discovery has a short connection deadline. A2A execution
+      // requests inherit the parent run signal and must not gain an unrelated
+      // absolute deadline: a Task can legitimately run longer than one HTTP
+      // connection, and is recovered by id below.
+      signal: isAgentCardRequest
+        ? composeTimeoutSignal(init.signal, AGENT_CARD_TIMEOUT_MS)
+        : init.signal,
     })
+    await throwForRetryableTaskReadResponse(response, init.body)
     return withResponseByteLimit(
       response,
       isAgentCardRequest ? MAX_AGENT_CARD_BYTES : MAX_REMOTE_RESULT_BYTES,
@@ -256,6 +346,9 @@ function createRemoteClientFactory(target: RemoteRouteTarget) {
     ],
     preferredTransports: ['JSONRPC'],
     cardResolver,
+    // Ask non-streaming peers to return the Task immediately. The router owns
+    // the lifecycle loop so it can reconnect and cancel by Task id.
+    clientConfig: { polling: true },
   })
   return { cardResolver, factory }
 }
@@ -352,8 +445,15 @@ async function createRemoteClient(target: RemoteRouteTarget): Promise<RemoteClie
   return { client: await factory.createFromAgentCard(card), card }
 }
 
-function buildStandardSendRequest(message: string, provenance?: A2ACallerProvenance) {
+function buildStandardSendRequest(
+  message: string,
+  provenance?: A2ACallerProvenance,
+  historyLength?: number,
+) {
   return SendMessageRequest.fromJSON({
+    ...(historyLength !== undefined && {
+      configuration: { historyLength, returnImmediately: true },
+    }),
     message: {
       messageId: randomUUID(),
       role: 'ROLE_USER',
@@ -423,10 +523,140 @@ interface ArtifactAccumulator {
   artifacts: Artifact[]
   positions: Map<string, number>
   finalized: Set<string>
+  byteSizes: Map<string, number>
+  partsByteSizes: Map<string, number>
+  totalBytes: number
+}
+
+interface CollectedResultAccumulator {
+  artifactAccumulator: ArtifactAccumulator
+  history: Message[]
+  finalResponseMessageIds: Set<string>
+  nonTerminalStatusMessageIds: Set<string>
+  messagePositions: Map<string, number>
+  messageByteSizes: Map<string, number>
+  messageBytes: number
+  failure?: string
+  task?: CollectedClientResult['result']['task']
 }
 
 function createArtifactAccumulator(): ArtifactAccumulator {
-  return { artifacts: [], positions: new Map(), finalized: new Set() }
+  return {
+    artifacts: [],
+    positions: new Map(),
+    finalized: new Set(),
+    byteSizes: new Map(),
+    partsByteSizes: new Map(),
+    totalBytes: 0,
+  }
+}
+
+function createCollectedResultAccumulator(): CollectedResultAccumulator {
+  return {
+    artifactAccumulator: createArtifactAccumulator(),
+    history: [],
+    finalResponseMessageIds: new Set(),
+    nonTerminalStatusMessageIds: new Set(),
+    messagePositions: new Map(),
+    messageByteSizes: new Map(),
+    messageBytes: 0,
+  }
+}
+
+function jsonByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength
+}
+
+function replaceCollectedArtifacts(
+  accumulator: CollectedResultAccumulator,
+  artifacts: Artifact[],
+): void {
+  accumulator.artifactAccumulator = createArtifactAccumulator()
+  for (const artifact of artifacts) mergeArtifact(accumulator.artifactAccumulator, artifact)
+}
+
+function mergeCollectedMessage(
+  accumulator: CollectedResultAccumulator,
+  message: Message | undefined,
+  onUpdate?: (content: string) => void,
+): void {
+  if (!message) return
+  const position = accumulator.messagePositions.get(message.messageId)
+  const previousBytes = accumulator.messageByteSizes.get(message.messageId) ?? 0
+  const nextBytes = jsonByteLength(message)
+  if (position === undefined) {
+    accumulator.messagePositions.set(message.messageId, accumulator.history.length)
+    accumulator.history.push(message)
+  } else {
+    accumulator.history[position] = message
+  }
+  accumulator.messageByteSizes.set(message.messageId, nextBytes)
+  accumulator.messageBytes += nextBytes - previousBytes
+  const text = message.parts
+    .map(textFromPart)
+    .filter((part): part is string => Boolean(part))
+    .join('')
+  if (text) onUpdate?.(text)
+}
+
+function markFinalResponseMessage(
+  accumulator: CollectedResultAccumulator,
+  message: Message | undefined,
+): void {
+  if (!message) return
+  accumulator.nonTerminalStatusMessageIds.delete(message.messageId)
+  accumulator.finalResponseMessageIds.add(message.messageId)
+}
+
+function markNonTerminalStatusMessage(
+  accumulator: CollectedResultAccumulator,
+  message: Message | undefined,
+): void {
+  if (message && !accumulator.finalResponseMessageIds.has(message.messageId)) {
+    accumulator.nonTerminalStatusMessageIds.add(message.messageId)
+  }
+}
+
+function markTerminalHistoryMessage(
+  accumulator: CollectedResultAccumulator,
+  message: Message,
+): void {
+  if (!accumulator.nonTerminalStatusMessageIds.has(message.messageId)) {
+    accumulator.finalResponseMessageIds.add(message.messageId)
+  }
+}
+
+function collectedResultFromAccumulator(
+  accumulator: CollectedResultAccumulator,
+): CollectedClientResult | null {
+  const { artifactAccumulator, failure, finalResponseMessageIds, history, task } = accumulator
+  const finalHistory = history.filter((message) => finalResponseMessageIds.has(message.messageId))
+  if (
+    artifactAccumulator.artifacts.length === 0 &&
+    finalHistory.length === 0 &&
+    !failure &&
+    !task
+  ) {
+    return null
+  }
+  return {
+    result: {
+      artifacts: artifactAccumulator.artifacts,
+      history: finalHistory,
+      ...(task && { task }),
+    },
+    ...(failure && { failure }),
+  }
+}
+
+function partsJsonByteLength(parts: Artifact['parts']): number {
+  return parts.reduce((total, part) => total + jsonByteLength(part), 0)
+}
+
+function artifactJsonByteLengthFromParts(artifact: Artifact, serializedPartsBytes: number): number {
+  const shellBytes = jsonByteLength({ ...artifact, parts: [] })
+  const separatorBytes = Math.max(0, artifact.parts.length - 1)
+  return shellBytes - 2 + serializedPartsBytes + separatorBytes
 }
 
 function mergeArtifact(
@@ -443,141 +673,767 @@ function mergeArtifact(
 
   if (options.append && position !== undefined) {
     const previous = accumulator.artifacts[position]
-    accumulator.artifacts[position] = {
-      ...previous,
-      ...artifact,
-      artifactId,
-      parts: [...previous.parts, ...artifact.parts],
-    }
+    const appendedParts = artifact.parts
+    const { parts: _parts, ...artifactFields } = artifact
+    Object.assign(previous, artifactFields, { artifactId })
+    for (const part of appendedParts) previous.parts.push(part)
+
+    const previousBytes = accumulator.byteSizes.get(artifactId) ?? 0
+    const nextPartsBytes =
+      (accumulator.partsByteSizes.get(artifactId) ?? 0) + partsJsonByteLength(appendedParts)
+    const nextBytes = artifactJsonByteLengthFromParts(previous, nextPartsBytes)
+    accumulator.partsByteSizes.set(artifactId, nextPartsBytes)
+    accumulator.byteSizes.set(artifactId, nextBytes)
+    accumulator.totalBytes += nextBytes - previousBytes
   } else if (position !== undefined) {
-    accumulator.artifacts[position] = { ...artifact, artifactId }
+    const storedArtifact = { ...artifact, artifactId, parts: [...artifact.parts] }
+    accumulator.artifacts[position] = storedArtifact
+    const previousBytes = accumulator.byteSizes.get(artifactId) ?? 0
+    const nextBytes = jsonByteLength(storedArtifact)
+    accumulator.partsByteSizes.set(artifactId, partsJsonByteLength(storedArtifact.parts))
+    accumulator.byteSizes.set(artifactId, nextBytes)
+    accumulator.totalBytes += nextBytes - previousBytes
   } else {
     accumulator.positions.set(artifactId, accumulator.artifacts.length)
-    accumulator.artifacts.push({ ...artifact, artifactId })
+    const storedArtifact = { ...artifact, artifactId, parts: [...artifact.parts] }
+    accumulator.artifacts.push(storedArtifact)
+    const nextBytes = jsonByteLength(storedArtifact)
+    accumulator.partsByteSizes.set(artifactId, partsJsonByteLength(storedArtifact.parts))
+    accumulator.byteSizes.set(artifactId, nextBytes)
+    accumulator.totalBytes += nextBytes
   }
 
   if (options.lastChunk) accumulator.finalized.add(artifactId)
   else accumulator.finalized.delete(artifactId)
 }
 
-function enforceResultBudget(payload: unknown, state: { events: number; bytes: number }): void {
+function enforceResultEventBudget(state: InvocationResultBudget): void {
   state.events += 1
   if (state.events > MAX_REMOTE_RESULT_EVENTS) {
-    throw new Error(`Remote A2A result exceeds the ${MAX_REMOTE_RESULT_EVENTS}-event limit`)
+    throw new RemoteResultLimitError(
+      `Remote A2A result exceeds the ${MAX_REMOTE_RESULT_EVENTS}-event limit`,
+    )
   }
-  state.bytes += new TextEncoder().encode(JSON.stringify(payload)).byteLength
-  if (state.bytes > MAX_REMOTE_RESULT_BYTES) {
-    throw new Error(`Remote A2A result exceeds the ${MAX_REMOTE_RESULT_BYTES}-byte limit`)
+}
+
+function enforceAccumulatedResultBudget(accumulator: CollectedResultAccumulator): void {
+  const structuralBytes = jsonByteLength({
+    result: {
+      artifacts: [],
+      history: [],
+      ...(accumulator.task && { task: accumulator.task }),
+    },
+    ...(accumulator.failure && { failure: accumulator.failure }),
+  })
+  const accumulatedBytes =
+    structuralBytes +
+    accumulator.artifactAccumulator.totalBytes +
+    accumulator.artifactAccumulator.artifacts.length +
+    accumulator.messageBytes +
+    accumulator.history.length
+  if (accumulatedBytes > MAX_REMOTE_RESULT_BYTES) {
+    throw new RemoteResultLimitError(
+      `Remote A2A result exceeds the ${MAX_REMOTE_RESULT_BYTES}-byte limit`,
+    )
   }
 }
 
 async function collectClientResult(
   stream: AsyncGenerator<StreamResponse, void, undefined>,
+  budget: InvocationResultBudget,
   onUpdate?: (content: string) => void,
+  onTask?: (task: NonNullable<CollectedClientResult['result']['task']>) => void,
+  onIdle?: () => void,
+  taskAlreadyKnown = false,
+  accumulator: CollectedResultAccumulator = createCollectedResultAccumulator(),
 ): Promise<CollectedClientResult | null> {
-  const artifactAccumulator = createArtifactAccumulator()
-  const history: Message[] = []
-  let failure: string | undefined
-  let task: CollectedClientResult['result']['task']
-  const budget = { events: 0, bytes: 0 }
+  let taskObserved = taskAlreadyKnown
 
-  const recordMessage = (message: Message | undefined) => {
-    if (!message) return
-    history.push(message)
-    const text = message.parts
-      .map(textFromPart)
-      .filter((part): part is string => Boolean(part))
-      .join('')
-    if (text) onUpdate?.(text)
-  }
-
-  for await (const response of stream) {
-    const payload = response.payload
-    if (!payload) continue
-    enforceResultBudget(payload, budget)
-    let shouldStop = false
-    switch (payload.$case) {
-      case 'artifactUpdate':
-        if (payload.value.artifact) {
-          mergeArtifact(artifactAccumulator, payload.value.artifact, {
-            append: payload.value.append,
-            lastChunk: payload.value.lastChunk,
+  const iterator = stream[Symbol.asyncIterator]()
+  let reachedEof = false
+  let hasIterationError = false
+  let iterationError: unknown
+  try {
+    while (true) {
+      const next = taskObserved
+        ? await new Promise<IteratorResult<StreamResponse, void>>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              onIdle?.()
+              reject(new Error(`A2A task stream was idle for ${TASK_STREAM_IDLE_TIMEOUT_MS}ms`))
+            }, TASK_STREAM_IDLE_TIMEOUT_MS)
+            iterator.next().then(
+              (value) => {
+                clearTimeout(timer)
+                resolve(value)
+              },
+              (error) => {
+                clearTimeout(timer)
+                reject(error)
+              },
+            )
           })
-        }
+        : await iterator.next()
+      if (next.done) {
+        reachedEof = true
         break
-      case 'statusUpdate':
-        recordMessage(payload.value.status?.message)
-        failure = taskFailure(payload.value.status?.state) ?? failure
-        task = {
-          taskId: payload.value.taskId,
-          contextId: payload.value.contextId,
-          state: payload.value.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
-        }
-        shouldStop = endsCurrentInvocation(payload.value.status?.state)
-        break
-      case 'task':
-        for (const artifact of payload.value.artifacts) mergeArtifact(artifactAccumulator, artifact)
-        history.push(...payload.value.history)
-        recordMessage(payload.value.status?.message)
-        failure = taskFailure(payload.value.status?.state) ?? failure
-        task = {
-          taskId: payload.value.id,
-          contextId: payload.value.contextId,
-          state: payload.value.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
-        }
-        shouldStop = endsCurrentInvocation(payload.value.status?.state)
-        break
-      case 'message':
-        recordMessage(payload.value)
-        break
+      }
+      const response = next.value
+      const payload = response.payload
+      if (!payload) continue
+      enforceResultEventBudget(budget)
+      let shouldStop = false
+      switch (payload.$case) {
+        case 'artifactUpdate':
+          taskObserved = true
+          accumulator.task = {
+            taskId: payload.value.taskId,
+            contextId: payload.value.contextId,
+            state: TaskState.TASK_STATE_UNSPECIFIED,
+          }
+          onTask?.(accumulator.task)
+          if (payload.value.artifact) {
+            mergeArtifact(accumulator.artifactAccumulator, payload.value.artifact, {
+              append: payload.value.append,
+              lastChunk: payload.value.lastChunk,
+            })
+          }
+          break
+        case 'statusUpdate':
+          taskObserved = true
+          mergeCollectedMessage(accumulator, payload.value.status?.message, onUpdate)
+          if (endsCurrentInvocation(payload.value.status?.state)) {
+            markFinalResponseMessage(accumulator, payload.value.status?.message)
+          } else {
+            markNonTerminalStatusMessage(accumulator, payload.value.status?.message)
+          }
+          accumulator.failure = taskFailure(payload.value.status?.state) ?? accumulator.failure
+          accumulator.task = {
+            taskId: payload.value.taskId,
+            contextId: payload.value.contextId,
+            state: payload.value.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
+          }
+          onTask?.(accumulator.task)
+          shouldStop = endsCurrentInvocation(payload.value.status?.state)
+          break
+        case 'task':
+          taskObserved = true
+          replaceCollectedArtifacts(accumulator, payload.value.artifacts)
+          for (const message of payload.value.history) {
+            mergeCollectedMessage(accumulator, message)
+            if (endsCurrentInvocation(payload.value.status?.state)) {
+              markTerminalHistoryMessage(accumulator, message)
+            }
+          }
+          mergeCollectedMessage(accumulator, payload.value.status?.message, onUpdate)
+          if (endsCurrentInvocation(payload.value.status?.state)) {
+            markFinalResponseMessage(accumulator, payload.value.status?.message)
+          } else {
+            markNonTerminalStatusMessage(accumulator, payload.value.status?.message)
+          }
+          accumulator.failure = taskFailure(payload.value.status?.state) ?? accumulator.failure
+          accumulator.task = {
+            taskId: payload.value.id,
+            contextId: payload.value.contextId,
+            state: payload.value.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
+          }
+          onTask?.(accumulator.task)
+          shouldStop = endsCurrentInvocation(payload.value.status?.state)
+          break
+        case 'message':
+          mergeCollectedMessage(accumulator, payload.value, onUpdate)
+          markFinalResponseMessage(accumulator, payload.value)
+          shouldStop = true
+          break
+      }
+      enforceAccumulatedResultBudget(accumulator)
+      // Interrupted states and message-only responses are final for this
+      // stateless router invocation. The reference SDK may intentionally keep
+      // an interrupted stream open for out-of-band continuation.
+      if (shouldStop) break
     }
-    // Interrupted states are final for this stateless router invocation. In
-    // particular, the reference SDK intentionally keeps AUTH_REQUIRED streams
-    // open for out-of-band credential injection; waiting for EOF would turn a
-    // useful protocol response into a five-minute timeout.
-    if (shouldStop) break
+  } catch (error) {
+    hasIterationError = true
+    iterationError = error
   }
 
-  if (artifactAccumulator.artifacts.length === 0 && history.length === 0 && !failure && !task) {
-    return null
+  if (!reachedEof) {
+    try {
+      await iterator.return?.()
+    } catch (error) {
+      if (!hasIterationError) {
+        hasIterationError = true
+        iterationError = error
+      }
+    }
   }
-  return {
-    result: { artifacts: artifactAccumulator.artifacts, history, ...(task && { task }) },
-    ...(failure && { failure }),
-  }
+  if (hasIterationError) throw iterationError
+
+  return collectedResultFromAccumulator(accumulator)
 }
 
 function collectSendMessageResult(
   response: SendMessageResult,
   onUpdate?: (content: string) => void,
+  accumulator: CollectedResultAccumulator = createCollectedResultAccumulator(),
 ): CollectedClientResult {
   if ('messageId' in response) {
-    const text = response.parts.map(textFromPart).filter(Boolean).join('')
-    if (text) onUpdate?.(text)
-    return { result: { artifacts: [], history: [response] } }
+    mergeCollectedMessage(accumulator, response, onUpdate)
+    markFinalResponseMessage(accumulator, response)
+    return collectedResultFromAccumulator(accumulator) as CollectedClientResult
   }
 
-  const statusText = response.status?.message?.parts.map(textFromPart).filter(Boolean).join('')
-  if (statusText) onUpdate?.(statusText)
-  const history = [...response.history]
-  if (
-    response.status?.message &&
-    !history.some((message) => message.messageId === response.status?.message?.messageId)
-  ) {
-    history.push(response.status.message)
+  replaceCollectedArtifacts(accumulator, response.artifacts)
+  for (const message of response.history) {
+    mergeCollectedMessage(accumulator, message)
+    if (endsCurrentInvocation(response.status?.state)) {
+      markTerminalHistoryMessage(accumulator, message)
+    }
   }
-  const failure = taskFailure(response.status?.state)
-  return {
-    result: {
-      artifacts: response.artifacts,
-      history,
-      task: {
-        taskId: response.id,
-        contextId: response.contextId,
-        state: response.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
-      },
+  mergeCollectedMessage(accumulator, response.status?.message, onUpdate)
+  if (endsCurrentInvocation(response.status?.state)) {
+    markFinalResponseMessage(accumulator, response.status?.message)
+  } else {
+    markNonTerminalStatusMessage(accumulator, response.status?.message)
+  }
+  accumulator.failure = taskFailure(response.status?.state) ?? accumulator.failure
+  accumulator.task = {
+    taskId: response.id,
+    contextId: response.contextId,
+    state: response.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED,
+  }
+  return collectedResultFromAccumulator(accumulator) as CollectedClientResult
+}
+
+type StandardA2AClient = RemoteClientContext['client']
+
+interface StandardInvocationOptions {
+  signal?: AbortSignal
+  serviceParameters?: ReturnType<typeof ServiceParameters.create>
+  onUpdate?: (content: string) => void
+  targetLabel: string
+}
+
+interface TaskLifecycleDetails {
+  contextId?: string
+  state?: string
+  attempt?: number
+}
+
+function logTaskLifecycle(
+  event: string,
+  targetLabel: string,
+  taskId?: string,
+  details: TaskLifecycleDetails = {},
+): void {
+  const safeDetails = {
+    ...(details.contextId && { contextId: details.contextId.slice(0, 128) }),
+    ...(details.state && { state: details.state.slice(0, 64) }),
+    ...(Number.isSafeInteger(details.attempt) && { attempt: details.attempt }),
+  }
+  console.error(
+    `[agent-router] ${JSON.stringify({
+      event,
+      target: targetLabel.slice(0, 256),
+      ...(taskId && { taskId: taskId.slice(0, 128) }),
+      ...safeDetails,
+    })}`,
+  )
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Parent invocation was canceled')
+}
+
+async function waitForPollInterval(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw abortError(signal)
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal ? abortError(signal) : new Error('Parent invocation was canceled'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function taskToCollectedResult(
+  task: Task,
+  accumulator: CollectedResultAccumulator,
+  onUpdate?: (content: string) => void,
+) {
+  return collectSendMessageResult(task, onUpdate, accumulator)
+}
+
+function hasDisplayableCollectedResponse(accumulator: CollectedResultAccumulator): boolean {
+  const hasArtifactText = accumulator.artifactAccumulator.artifacts.some((artifact) =>
+    artifact.parts.some((part) => Boolean(textFromPart(part))),
+  )
+  if (hasArtifactText) return true
+  return accumulator.history.some(
+    (message) =>
+      accumulator.finalResponseMessageIds.has(message.messageId) &&
+      isAgentMessage(message) &&
+      message.parts.some((part) => Boolean(textFromPart(part))),
+  )
+}
+
+async function hydrateTerminalTaskHistoryIfNeeded(
+  client: StandardA2AClient,
+  collected: CollectedClientResult,
+  options: StandardInvocationOptions,
+  budget: InvocationResultBudget,
+  accumulator: CollectedResultAccumulator,
+  onTask: (task: NonNullable<CollectedClientResult['result']['task']>) => void,
+): Promise<CollectedClientResult> {
+  const task = collected.result.task
+  if (!task || !endsCurrentInvocation(task.state) || hasDisplayableCollectedResponse(accumulator)) {
+    return collected
+  }
+
+  const hydratedTask = await client.getTask(
+    GetTaskRequest.fromJSON({ id: task.taskId, historyLength: TERMINAL_TASK_HISTORY_LENGTH }),
+    {
+      signal: composeTimeoutSignal(options.signal, TASK_RPC_TIMEOUT_MS),
+      serviceParameters: options.serviceParameters,
     },
-    ...(failure && { failure }),
+  )
+  enforceResultEventBudget(budget)
+  const hydrated = taskToCollectedResult(hydratedTask, accumulator, options.onUpdate)
+  if (hydrated.result.task) onTask(hydrated.result.task)
+  enforceAccumulatedResultBudget(accumulator)
+  return hydrated
+}
+
+function taskStateName(state: TaskState | undefined): string {
+  return taskStateToJSON(state ?? TaskState.TASK_STATE_UNSPECIFIED)
+}
+
+interface TaskReadRetry {
+  retryAfterMs?: number
+}
+
+function retryAfterFromHeaders(
+  headers: Record<string, string | string[]> | undefined,
+): number | undefined {
+  if (!headers) return undefined
+  const entry = Object.entries(headers).find(([name]) => name.toLowerCase() === 'retry-after')
+  const value = Array.isArray(entry?.[1]) ? entry[1][0] : entry?.[1]
+  return parseRetryAfterMs(value)
+}
+
+function retryableTaskReadError(error: unknown): TaskReadRetry | null {
+  if (error instanceof RemoteTaskReadHttpError) {
+    return isRetryableHttpStatus(error.statusCode) ? { retryAfterMs: error.retryAfterMs } : null
+  }
+  const transportError =
+    typeof error === 'object' && error !== null
+      ? (error as {
+          transport?: unknown
+          envelopeCode?: unknown
+          statusCode?: unknown
+          headers?: Record<string, string | string[]>
+        })
+      : undefined
+  const envelopeCode = isJsonRpcError(error)
+    ? error.envelopeCode
+    : transportError?.transport === 'jsonrpc'
+      ? transportError.envelopeCode
+      : undefined
+  if (typeof envelopeCode === 'number') {
+    return envelopeCode === A2A_ERROR_CODE.INTERNAL_ERROR ? {} : null
+  }
+  const restStatusCode = isRestError(error)
+    ? error.statusCode
+    : transportError?.transport === 'rest'
+      ? transportError.statusCode
+      : undefined
+  if (typeof restStatusCode === 'number') {
+    if (!isRetryableHttpStatus(restStatusCode)) return null
+    const headers = isRestError(error) ? error.headers : transportError?.headers
+    return { retryAfterMs: retryAfterFromHeaders(headers) }
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+  const statusMatch = /(?:Status:\s*|HTTP\s+)(\d{3})/i.exec(message)
+  if (statusMatch) {
+    const statusCode = Number(statusMatch[1])
+    return isRetryableHttpStatus(statusCode) ? {} : null
+  }
+
+  // The SDK reports network failures and per-request timeouts as ordinary
+  // errors. Retry only recognizable transport failures: malformed payloads and
+  // other deterministic client errors must escape to the one-shot recovery
+  // path instead of polling forever.
+  if (
+    error instanceof DOMException &&
+    (error.name === 'TimeoutError' || error.name === 'NetworkError')
+  ) {
+    return {}
+  }
+  const errorRecord =
+    typeof error === 'object' && error !== null
+      ? (error as { code?: unknown; cause?: { code?: unknown } })
+      : undefined
+  const code = errorRecord?.code ?? errorRecord?.cause?.code
+  if (code === 'dns_resolution_failed') return {}
+  if (
+    typeof code === 'string' &&
+    /^(ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|UND_ERR_)/.test(code)
+  ) {
+    return {}
+  }
+  return /\b(fetch failed|failed to fetch|network|socket|timed? ?out|connection (?:closed|reset))\b/i.test(
+    message,
+  )
+    ? {}
+    : null
+}
+
+function taskPollRetryDelayMs(consecutiveErrors: number, retryAfterMs?: number): number {
+  const exponentialDelay = Math.min(
+    MAX_TASK_POLL_RETRY_DELAY_MS,
+    TASK_POLL_INTERVAL_MS * 2 ** Math.min(Math.max(0, consecutiveErrors - 1), 5),
+  )
+  const jitteredDelay = Math.min(
+    MAX_TASK_POLL_RETRY_DELAY_MS,
+    Math.round(exponentialDelay * (1 + Math.random() * 0.25)),
+  )
+  const serverDelay = Math.min(retryAfterMs ?? 0, MAX_TIMER_DELAY_MS)
+  return Math.max(jitteredDelay, serverDelay)
+}
+
+async function pollTaskUntilTerminal(
+  client: StandardA2AClient,
+  taskId: string,
+  options: StandardInvocationOptions,
+  budget: InvocationResultBudget,
+  accumulator: CollectedResultAccumulator,
+  onTask: (task: NonNullable<CollectedClientResult['result']['task']>) => void,
+  initialRetry?: TaskReadRetry,
+): Promise<CollectedClientResult> {
+  let consecutiveErrors = initialRetry ? 1 : 0
+  let nextPollDelayMs = initialRetry
+    ? taskPollRetryDelayMs(consecutiveErrors, initialRetry.retryAfterMs)
+    : TASK_POLL_INTERVAL_MS
+  if (initialRetry) {
+    logTaskLifecycle('a2a.task.poll_retry', options.targetLabel, taskId, {
+      attempt: consecutiveErrors,
+    })
+    await waitForPollInterval(nextPollDelayMs, options.signal)
+  }
+  while (true) {
+    if (options.signal?.aborted) throw abortError(options.signal)
+    try {
+      const task = await client.getTask(GetTaskRequest.fromJSON({ id: taskId, historyLength: 0 }), {
+        signal: composeTimeoutSignal(options.signal, TASK_RPC_TIMEOUT_MS),
+        serviceParameters: options.serviceParameters,
+      })
+      enforceResultEventBudget(budget)
+      let collected = taskToCollectedResult(task, accumulator, options.onUpdate)
+      const state = collected.result.task?.state
+      if (collected.result.task) onTask(collected.result.task)
+      enforceAccumulatedResultBudget(accumulator)
+
+      if (endsCurrentInvocation(state)) {
+        collected = await hydrateTerminalTaskHistoryIfNeeded(
+          client,
+          collected,
+          options,
+          budget,
+          accumulator,
+          onTask,
+        )
+        if (endsCurrentInvocation(collected.result.task?.state)) return collected
+      }
+      consecutiveErrors = 0
+      nextPollDelayMs = TASK_POLL_INTERVAL_MS
+    } catch (error) {
+      if (options.signal?.aborted) throw abortError(options.signal)
+      const retry = retryableTaskReadError(error)
+      if (!retry) throw error
+      consecutiveErrors += 1
+      nextPollDelayMs = taskPollRetryDelayMs(consecutiveErrors, retry.retryAfterMs)
+      if (consecutiveErrors === 1 || consecutiveErrors % 10 === 0) {
+        logTaskLifecycle('a2a.task.poll_retry', options.targetLabel, taskId, {
+          attempt: consecutiveErrors,
+        })
+      }
+    }
+    await waitForPollInterval(nextPollDelayMs, options.signal)
+  }
+}
+
+async function cancelKnownTask(
+  client: StandardA2AClient,
+  taskId: string,
+  options: StandardInvocationOptions,
+): Promise<{ state?: TaskState; error?: string }> {
+  logTaskLifecycle('a2a.task.cancel_requested', options.targetLabel, taskId)
+  try {
+    // Cancellation must not reuse an already-aborted parent signal, otherwise
+    // the downstream CancelTask request can never leave this process.
+    const task = await client.cancelTask(CancelTaskRequest.fromJSON({ id: taskId }), {
+      signal: AbortSignal.timeout(TASK_CANCEL_TIMEOUT_MS),
+      serviceParameters: options.serviceParameters,
+    })
+    const state = task.status?.state
+    logTaskLifecycle('a2a.task.cancel_result', options.targetLabel, taskId, {
+      state: taskStateName(state),
+    })
+    return { state }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logTaskLifecycle('a2a.task.cancel_failed', options.targetLabel, taskId)
+    return { error: message }
+  }
+}
+
+async function canceledInvocationResult(
+  client: StandardA2AClient,
+  taskId: string,
+  options: StandardInvocationOptions,
+) {
+  const cancellation = await cancelKnownTask(client, taskId, options)
+  const detail = cancellation.error
+    ? `downstream cancellation could not be confirmed: ${cancellation.error}`
+    : `downstream state: ${taskStateName(cancellation.state)}`
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Parent invocation canceled; CancelTask was sent for taskId: ${taskId} (${detail})`,
+      },
+    ],
+    isError: true,
+  }
+}
+
+async function recoverKnownTask(
+  client: StandardA2AClient,
+  taskId: string,
+  options: StandardInvocationOptions,
+  budget: InvocationResultBudget,
+  accumulator: CollectedResultAccumulator,
+  onTask: (task: NonNullable<CollectedClientResult['result']['task']>) => void,
+): Promise<CollectedClientResult> {
+  logTaskLifecycle('a2a.task.reconnect', options.targetLabel, taskId)
+  let observedTaskId = taskId
+  let resubscribed: CollectedClientResult | null
+  try {
+    const streamController = new AbortController()
+    resubscribed = await collectClientResult(
+      client.resubscribeTask(SubscribeToTaskRequest.fromJSON({ id: taskId }), {
+        signal: options.signal
+          ? AbortSignal.any([options.signal, streamController.signal])
+          : streamController.signal,
+        serviceParameters: options.serviceParameters,
+      }),
+      budget,
+      options.onUpdate,
+      (task) => {
+        observedTaskId = task.taskId
+        onTask(task)
+      },
+      () => streamController.abort(new Error('A2A task stream idle')),
+      true,
+      accumulator,
+    )
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError(options.signal)
+    if (error instanceof RemoteResultLimitError) throw error
+    if (error instanceof RemoteTaskIdentityError) throw error
+    logTaskLifecycle('a2a.task.resubscribe_failed', options.targetLabel, taskId)
+    const terminal = await pollTaskUntilTerminal(
+      client,
+      taskId,
+      options,
+      budget,
+      accumulator,
+      onTask,
+    )
+    return terminal
+  }
+
+  const state = resubscribed?.result.task?.state
+  if (resubscribed && endsCurrentInvocation(state)) {
+    try {
+      const hydrated = await hydrateTerminalTaskHistoryIfNeeded(
+        client,
+        resubscribed,
+        options,
+        budget,
+        accumulator,
+        onTask,
+      )
+      if (endsCurrentInvocation(hydrated.result.task?.state)) return hydrated
+    } catch (error) {
+      if (options.signal?.aborted) throw abortError(options.signal)
+      const retry = retryableTaskReadError(error)
+      if (!retry) throw error
+      return pollTaskUntilTerminal(
+        client,
+        observedTaskId,
+        options,
+        budget,
+        accumulator,
+        onTask,
+        retry,
+      )
+    }
+  }
+  const terminal = await pollTaskUntilTerminal(
+    client,
+    observedTaskId,
+    options,
+    budget,
+    accumulator,
+    onTask,
+  )
+  return terminal
+}
+
+async function executeStandardInvocation(
+  client: StandardA2AClient,
+  card: AgentCard,
+  request: SendMessageRequest,
+  options: StandardInvocationOptions,
+): Promise<CollectedClientResult | null | Awaited<ReturnType<typeof canceledInvocationResult>>> {
+  let knownTaskId: string | undefined
+  let knownContextId: string | undefined
+  let lastLoggedTaskId: string | undefined
+  let lastLoggedTaskState: TaskState | undefined
+  const budget = createInvocationResultBudget()
+  const accumulator = createCollectedResultAccumulator()
+  const rememberTask = (task: NonNullable<CollectedClientResult['result']['task']>) => {
+    if (!knownTaskId) {
+      knownTaskId = task.taskId
+      knownContextId = task.contextId
+      logTaskLifecycle('a2a.task.observed', options.targetLabel, task.taskId, {
+        contextId: task.contextId,
+      })
+    } else if (task.taskId !== knownTaskId || task.contextId !== knownContextId) {
+      throw new RemoteTaskIdentityError(
+        `Remote A2A task changed identity from taskId ${knownTaskId}, contextId ${knownContextId} to taskId ${task.taskId}, contextId ${task.contextId}`,
+      )
+    }
+    if (lastLoggedTaskId !== task.taskId) {
+      lastLoggedTaskId = task.taskId
+      lastLoggedTaskState = undefined
+    }
+    if (
+      task.state !== undefined &&
+      task.state !== TaskState.TASK_STATE_UNSPECIFIED &&
+      task.state !== lastLoggedTaskState
+    ) {
+      logTaskLifecycle('a2a.task.state', options.targetLabel, task.taskId, {
+        state: taskStateName(task.state),
+      })
+      lastLoggedTaskState = task.state
+    }
+  }
+
+  try {
+    let result: CollectedClientResult | null
+    if (card.capabilities?.streaming) {
+      const streamController = new AbortController()
+      result = await collectClientResult(
+        client.sendMessageStream(request, {
+          signal: options.signal
+            ? AbortSignal.any([options.signal, streamController.signal])
+            : streamController.signal,
+          serviceParameters: options.serviceParameters,
+        }),
+        budget,
+        options.onUpdate,
+        rememberTask,
+        () => streamController.abort(new Error('A2A task stream idle')),
+        false,
+        accumulator,
+      )
+    } else {
+      const response = await client.sendMessage(request, {
+        signal: options.signal,
+        serviceParameters: options.serviceParameters,
+      })
+      enforceResultEventBudget(budget)
+      result = collectSendMessageResult(response, options.onUpdate, accumulator)
+      if (result.result.task) rememberTask(result.result.task)
+      enforceAccumulatedResultBudget(accumulator)
+    }
+
+    if (options.signal?.aborted && knownTaskId) {
+      return canceledInvocationResult(client, knownTaskId, options)
+    }
+    let task = result?.result.task
+    if (result && task && endsCurrentInvocation(task.state)) {
+      result = await hydrateTerminalTaskHistoryIfNeeded(
+        client,
+        result,
+        options,
+        budget,
+        accumulator,
+        rememberTask,
+      )
+      task = result.result.task
+    }
+    if (task && !endsCurrentInvocation(task.state)) {
+      const terminal = await pollTaskUntilTerminal(
+        client,
+        task.taskId,
+        options,
+        budget,
+        accumulator,
+        rememberTask,
+      )
+      return terminal
+    }
+    return result
+  } catch (error) {
+    if (error instanceof RemoteTaskIdentityError) {
+      if (knownTaskId) await cancelKnownTask(client, knownTaskId, options)
+      throw error
+    }
+    if (error instanceof RemoteResultLimitError) {
+      if (knownTaskId) await cancelKnownTask(client, knownTaskId, options)
+      throw error
+    }
+    if (!knownTaskId) throw error
+    if (options.signal?.aborted) {
+      return canceledInvocationResult(client, knownTaskId, options)
+    }
+    try {
+      const recovered = await recoverKnownTask(
+        client,
+        knownTaskId,
+        options,
+        budget,
+        accumulator,
+        rememberTask,
+      )
+      return recovered
+    } catch (recoveryError) {
+      if (recoveryError instanceof RemoteTaskIdentityError) {
+        await cancelKnownTask(client, knownTaskId, options)
+        throw recoveryError
+      }
+      if (recoveryError instanceof RemoteResultLimitError) {
+        await cancelKnownTask(client, knownTaskId, options)
+        throw recoveryError
+      }
+      if (options.signal?.aborted) {
+        return canceledInvocationResult(client, knownTaskId, options)
+      }
+      if (!endsCurrentInvocation(accumulator.task?.state)) {
+        await cancelKnownTask(client, knownTaskId, options)
+      }
+      const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+      throw new Error(`Failed to recover remote task ${knownTaskId}: ${message}`)
+    }
   }
 }
 
@@ -942,32 +1798,15 @@ async function sendA2ARequest(
   init?: {
     headers?: Record<string, string>
     enforcePublicRedirects?: boolean
-    forwardInternalContext?: boolean
+    signal?: AbortSignal
   },
 ) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers }
-  // These headers are private a2wave hop context. Never disclose them to a
-  // generic external A2A service; only the internal platform endpoint opts in.
-  if (init?.forwardInternalContext) {
-    const streamingCardId = process.env.A2WAVE_STREAMING_CARD_ID
-    if (streamingCardId) headers['X-Streaming-Card-Id'] = streamingCardId
-
-    const callerAgentId = process.env.A2WAVE_CALLER_AGENT_ID
-    if (callerAgentId) headers[A2WAVE_CALLER_AGENT_ID_HEADER] = callerAgentId
-
-    const callerAgentName = process.env.A2WAVE_CALLER_AGENT_NAME
-    if (callerAgentName) {
-      headers[A2WAVE_CALLER_AGENT_NAME_B64_HEADER] = encodeCallerAgentNameHeader(callerAgentName)
-    }
-
-    const channelB64 = process.env.A2WAVE_CHANNEL_B64
-    if (channelB64) headers[X_A2WAVE_CHANNEL_B64_HEADER] = channelB64
-  }
   const reqInit: RequestInit = {
     method: 'POST',
     headers,
     body: JSON.stringify(rpcBody),
-    signal: AbortSignal.timeout(5 * 60 * 1000),
+    signal: init?.signal,
   }
   // Remote owner-controlled targets use per-hop URL + DNS validation and
   // connection pinning while preserving long-lived SSE bodies. Local platform
@@ -976,6 +1815,55 @@ async function sendA2ARequest(
     return safeRemoteRouteFetch(url, reqInit)
   }
   return fetch(url, reqInit)
+}
+
+function withInternalContextHeaders(headers: Headers): Headers {
+  const streamingCardId = process.env.A2WAVE_STREAMING_CARD_ID
+  if (streamingCardId) headers.set('X-Streaming-Card-Id', streamingCardId)
+
+  const callerAgentId = process.env.A2WAVE_CALLER_AGENT_ID
+  if (callerAgentId) headers.set(A2WAVE_CALLER_AGENT_ID_HEADER, callerAgentId)
+
+  const callerAgentName = process.env.A2WAVE_CALLER_AGENT_NAME
+  if (callerAgentName) {
+    headers.set(A2WAVE_CALLER_AGENT_NAME_B64_HEADER, encodeCallerAgentNameHeader(callerAgentName))
+  }
+
+  const channelB64 = process.env.A2WAVE_CHANNEL_B64
+  if (channelB64) headers.set(X_A2WAVE_CHANNEL_B64_HEADER, channelB64)
+  return headers
+}
+
+async function createInternalClient(agentId: string): Promise<RemoteClientContext> {
+  const endpoint = `${apiUrl}/api/internal/a2a/${agentId}`
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const response = await fetch(input, {
+      ...init,
+      headers: withInternalContextHeaders(new Headers(init.headers)),
+    })
+    await throwForRetryableTaskReadResponse(response, init.body)
+    return withResponseByteLimit(response, MAX_REMOTE_RESULT_BYTES, 'Remote A2A result')
+  }
+  const card = AgentCard.fromJSON({
+    name: agentId,
+    description: 'Internal a2wave Agent',
+    supportedInterfaces: [
+      { url: endpoint, protocolBinding: 'JSONRPC', protocolVersion: '1.0', tenant: '' },
+    ],
+    version: '1.0.0',
+    // Internal calls use polling so the first request returns the durable Task
+    // id before a long execution can outlive its HTTP connection.
+    capabilities: { streaming: false, extensions: [] },
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+    skills: [],
+  })
+  const factory = new ClientFactory({
+    transports: [new JsonRpcTransportFactory({ fetchImpl })],
+    preferredTransports: ['JSONRPC'],
+    clientConfig: { polling: true },
+  })
+  return { client: await factory.createFromAgentCard(card), card }
 }
 
 function buildRpcBody(method: 'message/send' | 'message/stream', message: string) {
@@ -1025,32 +1913,26 @@ async function createRemoteUpdateCallback(
   }
 }
 
-async function invokeStandardRemoteAgent(target: RemoteRouteTarget, message: string) {
-  const { client, card } = await createRemoteClient(target)
-  const onUpdate = await createRemoteUpdateCallback(target.name)
-  const supportsProvenance =
-    client.protocolVersion === '1.0' &&
-    card.capabilities?.extensions.some(
-      (extension) => extension.uri === A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
-    )
-  const provenance = supportsProvenance ? buildOutboundA2AProvenance() : undefined
-  const request = buildStandardSendRequest(message, provenance)
-  const signal = AbortSignal.timeout(REMOTE_REQUEST_TIMEOUT_MS)
-  const serviceParameters = provenance
-    ? ServiceParameters.create(withA2AExtensions(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI))
-    : undefined
-  const result = card.capabilities?.streaming
-    ? await collectClientResult(
-        client.sendMessageStream(request, { signal, serviceParameters }),
-        onUpdate,
-      )
-    : collectSendMessageResult(
-        await client.sendMessage(request, { signal, serviceParameters }),
-        onUpdate,
-      )
+function deduplicateUpdateCallback(
+  onUpdate: ((content: string) => void) | undefined,
+): ((content: string) => void) | undefined {
+  if (!onUpdate) return undefined
+  let previousContent: string | undefined
+  return (content) => {
+    if (content === previousContent) return
+    previousContent = content
+    onUpdate(content)
+  }
+}
+
+function formatStandardInvocationResult(
+  result: CollectedClientResult | null | Awaited<ReturnType<typeof canceledInvocationResult>>,
+  emptyMessage: string,
+) {
+  if (result && 'content' in result) return result
   if (!result) {
     return {
-      content: [{ type: 'text' as const, text: 'No result received from remote agent' }],
+      content: [{ type: 'text' as const, text: emptyMessage }],
       isError: true,
     }
   }
@@ -1073,9 +1955,40 @@ async function invokeStandardRemoteAgent(target: RemoteRouteTarget, message: str
   }
 }
 
+async function invokeStandardRemoteAgent(
+  target: RemoteRouteTarget,
+  message: string,
+  signal?: AbortSignal,
+) {
+  const { client, card } = await createRemoteClient(target)
+  const onUpdate = deduplicateUpdateCallback(await createRemoteUpdateCallback(target.name))
+  const supportsProvenance =
+    client.protocolVersion === '1.0' &&
+    card.capabilities?.extensions.some(
+      (extension) => extension.uri === A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+    )
+  const provenance = supportsProvenance ? buildOutboundA2AProvenance() : undefined
+  const request = buildStandardSendRequest(
+    message,
+    provenance,
+    card.capabilities?.streaming ? undefined : 0,
+  )
+  const serviceParameters = provenance
+    ? ServiceParameters.create(withA2AExtensions(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI))
+    : undefined
+  const result = await executeStandardInvocation(client, card, request, {
+    signal,
+    serviceParameters,
+    onUpdate,
+    targetLabel: target.name,
+  })
+  return formatStandardInvocationResult(result, 'No result received from remote agent')
+}
+
 export async function invokeAgentHandler(
   { agentId, message }: { agentId: string; message: string },
   targets: RouteTarget[] | null = routeTargets,
+  options: { signal?: AbortSignal } = {},
 ) {
   if (agentId.startsWith('remote:')) {
     const remoteName = agentId.slice('remote:'.length)
@@ -1094,7 +2007,7 @@ export async function invokeAgentHandler(
 
     if (target.connectionMode === 'agent_card' || target.protocolVersion === '1.0') {
       try {
-        return await invokeStandardRemoteAgent(target, message)
+        return await invokeStandardRemoteAgent(target, message, options.signal)
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err)
         return {
@@ -1129,6 +2042,7 @@ export async function invokeAgentHandler(
       const res = await sendA2ARequest(target.url, rpcBody, {
         headers,
         enforcePublicRedirects: true,
+        signal: options.signal,
       })
       if (!res.ok) {
         const body = await readResponseTextWithLimit(
@@ -1174,40 +2088,28 @@ export async function invokeAgentHandler(
     }
   }
 
-  // 本地调用也使用 message/stream，保持 SSE 连接活跃避免超时
-  const rpcBody = buildRpcBody('message/stream', message)
-
-  const res = await sendA2ARequest(`${apiUrl}/api/internal/a2a/${agentId}`, rpcBody, {
-    forwardInternalContext: true,
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status}: ${body}`)
-  }
-
-  const contentType = res.headers.get('content-type') ?? ''
-  if (contentType.includes('text/event-stream')) {
-    const result = await collectSSEResult(res)
-    return result
-      ? extractProtocolResult(result)
-      : {
-          content: [{ type: 'text' as const, text: 'No result received from agent' }],
-          isError: true,
-        }
-  }
-
-  const result = await res.json()
-  return extractProtocolResult(result)
+  const { client, card } = await createInternalClient(agentId)
+  const result = await executeStandardInvocation(
+    client,
+    card,
+    buildStandardSendRequest(message, undefined, card.capabilities?.streaming ? undefined : 0),
+    {
+      signal: options.signal,
+      targetLabel: agentId,
+    },
+  )
+  return formatStandardInvocationResult(result, 'No result received from agent')
 }
 
 export async function invokeAgentsParallelHandler(
   { invocations }: { invocations: Array<{ agentId: string; message: string }> },
   targets: RouteTarget[] | null = routeTargets,
+  options: { signal?: AbortSignal } = {},
 ) {
   const results = await Promise.all(
     invocations.map(async ({ agentId, message }) => {
       try {
-        const result = await invokeAgentHandler({ agentId, message }, targets)
+        const result = await invokeAgentHandler({ agentId, message }, targets, options)
         const text = result.content?.[0]?.text ?? ''
         const isError = 'isError' in result ? result.isError : false
         return { agentId, success: !isError, text }
@@ -1223,6 +2125,25 @@ export async function invokeAgentsParallelHandler(
   return { content: [{ type: 'text' as const, text: summary }], ...(hasError && { isError: true }) }
 }
 
+export function createRouterInvocationHandlers(
+  targets: RouteTarget[] | null,
+  registry: RouterInvocationRegistry,
+) {
+  return {
+    invokeAgent(args: { agentId: string; message: string }, extra: { signal?: AbortSignal }) {
+      return registry.run(extra.signal, (signal) => invokeAgentHandler(args, targets, { signal }))
+    },
+    invokeAgentsParallel(
+      args: { invocations: Array<{ agentId: string; message: string }> },
+      extra: { signal?: AbortSignal },
+    ) {
+      return registry.run(extra.signal, (signal) =>
+        invokeAgentsParallelHandler(args, targets, { signal }),
+      )
+    },
+  }
+}
+
 export async function startServer(): Promise<void> {
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js')
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js')
@@ -1231,6 +2152,8 @@ export async function startServer(): Promise<void> {
     name: 'a2wave-agent-router',
     version: '1.0.0',
   })
+  const invocationRegistry = createRouterInvocationRegistry()
+  const invocationHandlers = createRouterInvocationHandlers(routeTargets, invocationRegistry)
 
   server.tool(
     'list_agents',
@@ -1250,7 +2173,7 @@ export async function startServer(): Promise<void> {
 
   server.tool(
     'invoke_agent',
-    'Send a message to an Agent over the A2A protocol and get its response. The Agent processes your request and returns a result; this can take a while (up to 5 minutes). Important: relay the complete returned result to the user — do not just reply "done".',
+    'Send a message to an Agent over the A2A protocol and get its response. Long-running Tasks inherit the calling Agent run timeout and can reconnect by Task ID. Important: relay the complete returned result to the user — do not just reply "done".',
     {
       agentId: z
         .string()
@@ -1259,7 +2182,7 @@ export async function startServer(): Promise<void> {
         .string()
         .describe('Natural-language message for the Agent, describing the task to complete'),
     },
-    ({ agentId, message }) => invokeAgentHandler({ agentId, message }),
+    ({ agentId, message }, extra) => invocationHandlers.invokeAgent({ agentId, message }, extra),
   )
 
   server.tool(
@@ -1276,11 +2199,12 @@ export async function startServer(): Promise<void> {
         .min(1)
         .describe('List of Agents to call in parallel'),
     },
-    ({ invocations }) => invokeAgentsParallelHandler({ invocations }),
+    ({ invocations }, extra) => invocationHandlers.invokeAgentsParallel({ invocations }, extra),
   )
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
+  installRouterShutdownHooks(invocationRegistry, () => server.close())
 }
 
 const currentFile =

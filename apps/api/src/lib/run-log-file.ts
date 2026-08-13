@@ -67,6 +67,12 @@ export interface RunLogPage {
   }
 }
 
+const PROBLEM_SYSTEM_SUBTYPES = new Set([
+  'a2a.task.poll_retry',
+  'a2a.task.resubscribe_failed',
+  'a2a.task.cancel_failed',
+])
+
 function matchesRunLogFilter(entry: StreamLogEntry, filter: RunLogFilter): boolean {
   switch (filter) {
     case 'tools':
@@ -77,7 +83,8 @@ function matchesRunLogFilter(entry: StreamLogEntry, filter: RunLogFilter): boole
       return (
         entry.type === 'error' ||
         entry.type === 'retry' ||
-        (entry.type === 'tool_call' && entry.subtype === 'failed')
+        (entry.type === 'tool_call' && entry.subtype === 'failed') ||
+        (entry.type === 'system' && PROBLEM_SYSTEM_SUBTYPES.has(entry.subtype))
       )
     default:
       return true

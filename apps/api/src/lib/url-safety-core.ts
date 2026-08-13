@@ -128,7 +128,10 @@ export function isBlockedHostStrict(hostname: string): boolean {
   return isPrivateOrReserved(hostname)
 }
 
-export type UnsafeUrlErrorCode = 'private_dns_address' | 'forbidden_dns_address'
+export type UnsafeUrlErrorCode =
+  | 'private_dns_address'
+  | 'forbidden_dns_address'
+  | 'dns_resolution_failed'
 
 export class UnsafeUrlError extends Error {
   constructor(
@@ -265,11 +268,19 @@ export async function resolvePublicUrl(
   try {
     addresses = await resolveHostname(normalizeHost(url.hostname))
   } catch {
-    throw new UnsafeUrlError('blocked', 'URL hostname could not be resolved safely')
+    throw new UnsafeUrlError(
+      'blocked',
+      'URL hostname could not be resolved safely',
+      'dns_resolution_failed',
+    )
   }
 
   if (addresses.length === 0) {
-    throw new UnsafeUrlError('blocked', 'URL hostname could not be resolved safely')
+    throw new UnsafeUrlError(
+      'blocked',
+      'URL hostname could not be resolved safely',
+      'dns_resolution_failed',
+    )
   }
   const hasForbiddenAddress = addresses.some(({ address }) => !isAllowedTrustedDnsAddress(address))
   const hasBlockedAddress =

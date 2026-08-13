@@ -22,7 +22,7 @@ class MockChildProcess extends EventEmitter {
   stdout = new PassThrough()
   stderr = new PassThrough()
   stdin = null
-  pid = 31000
+  pid: number | undefined = undefined
   kill = vi.fn()
 }
 

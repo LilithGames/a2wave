@@ -6,12 +6,14 @@ import {
   type CliProcessRunOptions,
   CliProcessRunner,
   type CliProcessRunnerOptions,
+  createLineDecoder,
 } from '../cli-process-runner.js'
 import {
   _resetExecutionLeasesForTests,
   beginExecutionLease,
   cancelExecutionLease,
 } from '../execution-lease-registry.js'
+import { registerExecutionProcessLogSink } from '../execution-process-log.js'
 
 vi.mock('../../lib/logger.js', () => ({
   logger: { debug: vi.fn(), warn: vi.fn() },
@@ -61,6 +63,43 @@ afterEach(() => {
 })
 
 describe('CliProcessRunner contract', () => {
+  it('drops an overlong unterminated line before retaining later process-log lines', () => {
+    const lines: string[] = []
+    const decoder = createLineDecoder((line) => lines.push(line), { maxLineChars: 64 })
+
+    decoder.write(Buffer.from('x'.repeat(65)))
+    decoder.write(Buffer.from('\nkept\n'))
+    decoder.flush()
+
+    expect(lines).toEqual(['kept'])
+  })
+
+  it('persists sanitized Agent Router lifecycle events from child stderr', async () => {
+    const sink = vi.fn()
+    const unregister = registerExecutionProcessLogSink('task_1', sink)
+    const { runner, children, options } = createHarness()
+    const execution = runner.run(options)
+
+    children[0].stderr.write(
+      '[agent-router] {"event":"a2a.task.cancel_result","target":"payment","taskId":"task-remote","state":"TASK_STATE_CANCELED","apiKey":"must-not-persist"}\n',
+    )
+    children[0].emit('close', 0)
+    await execution
+
+    expect(sink).toHaveBeenCalledWith({
+      type: 'system',
+      subtype: 'a2a.task.cancel_result',
+      metadata: {
+        target: 'payment',
+        taskId: 'task-remote',
+        state: 'TASK_STATE_CANCELED',
+      },
+      ts: expect.any(Number),
+    })
+    expect(JSON.stringify(sink.mock.calls)).not.toContain('must-not-persist')
+    unregister()
+  })
+
   it('does not spawn when its execution lease was cancelled during async preparation', async () => {
     const lease = beginExecutionLease('run_1', 'task_1', 'agt_1')
     cancelExecutionLease('run_1')
