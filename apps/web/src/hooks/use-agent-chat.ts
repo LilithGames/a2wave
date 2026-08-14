@@ -275,17 +275,13 @@ export function useAgentChat({
   // `isStreaming` directly re-created the callback on every stream transition,
   // re-firing the drawer's `useEffect([open, refreshHistory])` at the end of each
   // turn and force-resuming whatever conversation was newest.
-  const isStreamingRef = useRef(false)
+  const isTurnActiveRef = useRef(false)
   // Mirrors "a turn is in progress", which includes a queued run whose stream has
   // already closed — refusing on raw `isStreaming` alone would let a drawer reopen
   // replace the conversation the user is still waiting on.
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
-
-  useEffect(() => {
-    isStreamingRef.current = isStreaming || !!followedRunId
-  }, [isStreaming, followedRunId])
 
   /**
    * Re-read the session list and resume whatever is newest now.
@@ -302,7 +298,7 @@ export function useAgentChat({
    */
   const refreshHistory = useCallback(() => {
     if (!loadHistory) return
-    if (isStreamingRef.current || userStartedFreshRef.current) return
+    if (isTurnActiveRef.current || userStartedFreshRef.current) return
     // Re-arm the resume effect only AFTER the refetch lands. Releasing the latch
     // first would let the effect run synchronously against the still-cached list
     // and re-latch on the stale newest session — the exact staleness this exists
@@ -655,11 +651,11 @@ export function useAgentChat({
   const sendMessage = useCallback(
     async (rawMessage?: string) => {
       const trimmed = (rawMessage ?? chatInput).trim()
-      // `isStreamingRef` mirrors "a turn is in progress", which includes a queued
+      // `isTurnActiveRef` mirrors "a turn is in progress", which includes a queued
       // run whose stream already closed — raw `isStreaming` is false there. The UI
       // already blocks this via `canSend`, but a programmatic caller (the chat
       // page's suggested-question chips) reaches this directly.
-      if (!trimmed || !id || isStreamingRef.current) return
+      if (!trimmed || !id || isTurnActiveRef.current) return
 
       if (!canChat) {
         setChatError(disabledReason ?? null)
@@ -677,6 +673,10 @@ export function useAgentChat({
         setChatError(t('agentDetail.attachmentHasFailed'))
         return
       }
+
+      // Close the gap before React commits `isStreaming`: a rapid second click or
+      // programmatic call must not start another turn against the same chat.
+      isTurnActiveRef.current = true
 
       const readyAttachments = pendingAttachments.filter((a) => a.token)
       const attachmentRefs = readyAttachments.map((a) => ({
@@ -1008,6 +1008,13 @@ export function useAgentChat({
     !isRunPending &&
     !chatHistoryFetching
   const isTurnActive = isStreaming || (!!followedRunId && !followedRunSettled)
+
+  // Keep imperative guards aligned with the exact state exposed to the composer.
+  // A completed restored run still has a followed id briefly; treating that id by
+  // itself as active made the enabled Send button silently ignore clicks.
+  useEffect(() => {
+    isTurnActiveRef.current = isTurnActive
+  }, [isTurnActive])
 
   const canSend =
     chatInput.trim().length > 0 &&
