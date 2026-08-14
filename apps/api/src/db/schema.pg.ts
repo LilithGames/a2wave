@@ -7,6 +7,9 @@
 // ============================================================
 import {
   type A2ARouteTarget,
+  PROVIDER_KINDS,
+  type RemoteSkillSource,
+  SKILL_DEFAULTS,
   type artifactPolicySchema,
   type chatAppConfigSchema,
   type discordConfigSchema,
@@ -14,9 +17,6 @@ import {
   type ghTriggerConfigSchema,
   type gitTriggerRepoStateSchema,
   type glabTriggerConfigSchema,
-  PROVIDER_KINDS,
-  type RemoteSkillSource,
-  SKILL_DEFAULTS,
   type scheduleConfigSchema,
   type slackConfigSchema,
 } from '@a2wave/shared'
