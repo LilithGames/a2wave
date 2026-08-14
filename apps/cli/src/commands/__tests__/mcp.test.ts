@@ -47,7 +47,7 @@ describe('mcpCommand', () => {
         ],
       })
       await getSubCommand('list').run({ args: {} })
-      expect(mockGet).toHaveBeenCalledWith('/api/mcp-servers?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/mcp-servers?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('mcp_1  [stdio]  A  (enabled,admin-only)')
     })
 

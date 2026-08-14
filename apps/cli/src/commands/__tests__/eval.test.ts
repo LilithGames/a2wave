@@ -583,3 +583,73 @@ describe('waitForTask cadence propagation', () => {
     expect(sleep).toHaveBeenCalledWith(5000)
   })
 })
+
+// A 50-case x 3-turn task printed 750+ lines of full request/expected/actual
+// text. The bodies are the bulk, and the reason to run `eval tasks get` is
+// usually "which cases failed", not "replay every transcript".
+describe('eval tasks get — output bounding', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  const longBody = 'x'.repeat(500)
+
+  function taskWithTurns() {
+    return {
+      data: {
+        id: 'evt_1',
+        setName: 's',
+        status: 'completed',
+        results: [
+          {
+            id: 'evr_1',
+            caseName: 'c1',
+            status: 'completed',
+            actualTurns: [
+              { request: longBody, expectedResponse: longBody, actualResponse: longBody },
+            ],
+          },
+        ],
+      },
+    }
+  }
+
+  it('truncates long turn bodies and marks the cut', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce(taskWithTurns())
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1' } })
+
+    const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    // Still shows enough to identify the turn...
+    expect(out).toContain('xxxx')
+    // ...but not the whole 500-char body, and says it cut.
+    expect(out).not.toContain(longBody)
+    expect(out).toContain('…')
+  })
+
+  it('prints full bodies with --verbose', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce(taskWithTurns())
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1', verbose: true } })
+
+    const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    expect(out).toContain(longBody)
+  })
+
+  it('leaves --json untouched', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce(taskWithTurns())
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1', json: true } })
+
+    const parsed = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))
+    expect(parsed.data.results[0].actualTurns[0].request).toBe(longBody)
+  })
+})

@@ -29,6 +29,7 @@ src/
 │   ├── args.ts       # Shared flag utilities: toStringArray / parseKeyValues / confirmDestructive
 │   ├── fields.ts     # `--fields` dot-path projection (applied AFTER redaction — see below)
 │   ├── output.ts     # `--json` support: jsonArg flag fragment + emit() / wantsJson()
+│   ├── paginate.ts   # `--limit` / `--page`: pageArgs fragment + pageQuery()
 │   ├── prompt.ts     # readSecret(): echo-suppressed stdin read (login + setup password)
 │   ├── setup-plan.ts # docker-compose / .env generation for `a2wave setup`
 │   └── token-cache.ts# SSO OAuth token cache path resolution
@@ -411,6 +412,25 @@ a2wave agents list --fields 'data[].id,data[].name'     # >90% smaller than --js
 | `--json-pretty` | Same payload, indented for human reading. Implies `--json` |
 | `--fields <paths>` | Comma-separated dot paths, `[]` to map over an array (`data[].id,data[].name`). Implies `--json` |
 | `--show-secrets` | Print credentials verbatim instead of `********` |
+
+### Bounded output
+
+Anything that can grow without limit is capped in the **human** path and left
+whole under `--json` — silently dropping entries from a machine payload would
+corrupt it with no error, whereas a terminal or a context window genuinely
+wants the cap. Every cap names the way to get everything:
+
+| Command | Cap | Escape |
+|---|---|---|
+| `runs get` | 200 log entries per step, **tail kept** (a run's logs are read to find out how it ended, and the failure is at the bottom) | `--full`, `--max-log-lines N`, or `a2wave runs logs <id>` |
+| `eval tasks get` / `eval run --wait` | Turn transcripts clipped at 200 chars; turn *errors* never clipped | `--verbose` |
+| list commands | `--limit` / `--page`, clamped to the API's 1–100 window | `--limit 100` |
+
+`--limit` on the six resource lists (`agents`/`skills`/`mcp`/`scm`/`kb`/
+`providers`) defaults to the **100** they always fetched, not the 20 that
+`runs list` uses: lowering it would silently truncate output for anyone already
+relying on a bare `agents list` showing everything. The flag adds control
+without changing what an existing call returns.
 
 Rules:
 

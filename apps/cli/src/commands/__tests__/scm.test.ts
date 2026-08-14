@@ -37,7 +37,7 @@ describe('scmCommand', () => {
         data: [{ id: 'scm_1', name: 'repo', type: 'git', isEnabled: true, syncStatus: 'synced' }],
       })
       await getSubCommand('list').run({ args: {} })
-      expect(mockGet).toHaveBeenCalledWith('/api/scm-sources?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/scm-sources?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('scm_1  [git]  repo  enabled  sync=synced')
     })
   })

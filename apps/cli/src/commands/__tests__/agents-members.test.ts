@@ -86,6 +86,16 @@ describe('agents members commands', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith('No members yet')
     })
+
+    it('emits the raw payload with --json', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      const payload = { data: [{ userId: 'usr_1', username: 'a', role: 'editor' }] }
+      mockGet.mockResolvedValueOnce(payload)
+
+      await subs.list.run({ args: { agent: 'agt_1', json: true } })
+
+      expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual(payload)
+    })
   })
 
   describe('add', () => {

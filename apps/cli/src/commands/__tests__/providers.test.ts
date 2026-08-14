@@ -36,7 +36,7 @@ describe('providersCommand', () => {
         data: [{ id: 'prv_1', name: 'Claude Code', kind: 'claude-code' }],
       })
       await getSubCommand('list').run({ args: {} })
-      expect(mockGet).toHaveBeenCalledWith('/api/providers?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/providers?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('prv_1  Claude Code  (claude-code)')
     })
   })
@@ -95,6 +95,31 @@ describe('providersCommand', () => {
     // the CLI per credential, so there is no stored allowlist left to edit.
     it('is no longer registered', () => {
       expect(getSubCommand('set-models')).toBeUndefined()
+    })
+  })
+
+  // Both are pure reads an agent runs to decide what to do next — "is this CLI
+  // logged in?", "who breaks if I retire this Provider?" — and both forced it
+  // to scrape a column layout to find out.
+  describe('--json', () => {
+    it('login-status emits the raw payload', async () => {
+      const payload = { installed: true, loggedIn: false, method: 'oauth' }
+      mockGet.mockResolvedValueOnce({ data: payload })
+
+      await getSubCommand('login-status').run({ args: { engine: 'codex', json: true } })
+
+      expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual(payload)
+    })
+
+    it('dependents emits the raw payload, including the empty case', async () => {
+      mockResolveProviderId.mockResolvedValueOnce('prv_1')
+      mockGet.mockResolvedValueOnce({ data: { agents: [] } })
+
+      await getSubCommand('dependents').run({ args: { id: 'p', json: true } })
+
+      // The empty list must be a parseable `{agents: []}`, not the human
+      // sentence "No agents depend on this provider".
+      expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual({ agents: [] })
     })
   })
 })

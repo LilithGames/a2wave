@@ -46,7 +46,7 @@ describe('kbCommand', () => {
         data: [{ id: 'kbd_1', name: 'Doc', sourceType: 'feishu', syncStatus: 'synced' }],
       })
       await getSubCommand('list').run({ args: {} })
-      expect(mockGet).toHaveBeenCalledWith('/api/kb-documents?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/kb-documents?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('kbd_1  [feishu]  Doc  sync=synced')
     })
   })

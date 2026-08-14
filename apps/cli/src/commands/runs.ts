@@ -7,6 +7,7 @@ import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { parseIntFlag } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
+import { parsePage, parsePageSize } from '../lib/paginate.js'
 import { type PollOptions, pollUntilTerminal } from '../lib/poll.js'
 import { forEachSSELine } from '../lib/sse.js'
 
@@ -39,29 +40,27 @@ interface Pagination {
 const RUN_STATUSES = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'] as const
 
 /**
- * Parse a 1-based page number. Omitted means page 1; anything else must be
- * valid — silently coercing `--page abc` to 1 hides a typo behind results that
- * look right.
+ * Pagination moved to lib/paginate.ts when the other six list commands grew
+ * `--limit`; re-exported here so the extensive tests that already pin this
+ * behaviour keep importing it from where it used to live.
  */
-export function parsePage(raw: unknown): number {
-  if (raw === undefined || raw === '') return 1
-  return parseIntFlag(raw, 'page', { min: 1 })
-}
+export { parsePage, parsePageSize }
 
 /**
- * Parse --limit against the API's own 1..100 window (default 20).
+ * Log entries printed per step by `runs get` before truncation kicks in.
  *
- * Junk errors, but an out-of-range NUMBER still clamps, as it did before this
- * helper switched to parseIntFlag. `--limit 1000` as shorthand for "give me
- * everything" is an established habit, and turning it into a hard failure would
- * break scripts on upgrade for no safety gain — the API clamps to 100 anyway.
- * Rejecting `--limit abc` is the actual improvement: that one silently returned
- * a page the user never asked for.
+ * A long run's logs are the largest thing this CLI prints, and the usual reason
+ * to call `runs get` is "how did it end?", not "replay every tool call". The
+ * untruncated copy is one command away (`runs logs`), and the notice says so.
  */
-export function parsePageSize(raw: unknown): number {
-  if (raw === undefined || raw === '') return 20
-  const n = parseIntFlag(raw, 'limit')
-  return Math.min(100, Math.max(1, n))
+const DEFAULT_MAX_LOG_LINES = 200
+
+/** Resolve the per-step log cap; `0` (via --full) means unlimited. */
+export function resolveMaxLogLines(args: Record<string, unknown>): number {
+  if (args.full === true) return 0
+  const raw = args['max-log-lines']
+  if (raw === undefined || raw === '') return DEFAULT_MAX_LOG_LINES
+  return parseIntFlag(raw, 'max-log-lines', { min: 0 })
 }
 
 /** Order steps by `order` so multi-turn logs print chronologically. */
@@ -254,6 +253,11 @@ export const runsCommand = defineCommand({
       meta: { name: 'get', description: 'View run details and logs' },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
+        'max-log-lines': {
+          type: 'string',
+          description: `Log entries to print per step, newest kept (default ${DEFAULT_MAX_LOG_LINES}, 0 = all)`,
+        },
+        full: { type: 'boolean', description: 'Print every log entry (same as --max-log-lines 0)' },
         ...jsonArg,
         ...urlArg,
       },
@@ -276,12 +280,22 @@ export const runsCommand = defineCommand({
         // hid every later turn's logs and result, so walk them all in order.
         const steps = sortSteps(r.steps ?? [])
         const multi = steps.length > 1
+        const maxLogLines = resolveMaxLogLines(args)
         steps.forEach((step, i) => {
           const label = multi ? ` (step ${i + 1}/${steps.length})` : ''
           const logs = step.output?.logs ?? []
           if (logs.length > 0) {
             console.log(`\n--- Execution logs${label} ---`)
-            for (const entry of logs) {
+            // Keep the TAIL: a run's logs are read to find out how it ended,
+            // and the failure is at the bottom. Hiding the head is the lossy
+            // choice that costs the least.
+            const hidden = maxLogLines > 0 ? Math.max(0, logs.length - maxLogLines) : 0
+            if (hidden > 0) {
+              console.log(
+                `... ${hidden} earlier entries hidden (--full, --max-log-lines N, or a2wave runs logs ${r.id})`,
+              )
+            }
+            for (const entry of logs.slice(hidden)) {
               const formatted = formatLog(entry)
               if (formatted) console.log(formatted)
             }

@@ -99,9 +99,46 @@ describe('agentsCommand', () => {
 
       expect(process.exitCode).toBe(1)
     })
+
+    it('emits the raw payload with --json', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce({ data: sampleResult })
+
+      await getSubCommand('diagnose').run({ args: { id: 'agt_1', json: true } })
+
+      expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual({ data: sampleResult })
+    })
+
+    it('still sets process.exitCode=1 under --json', async () => {
+      // diagnose doubles as a CI gate. The exit code has to be set BEFORE the
+      // early --json return, or piping to jq silently turns a red check green —
+      // the same trap `runs rerun --wait` and `eval run --wait` document.
+      mockResolveAgentId.mockResolvedValueOnce('agt_2')
+      mockGet.mockResolvedValueOnce({ data: { ...sampleResult, ok: false } })
+
+      await getSubCommand('diagnose').run({ args: { id: 'agt_2', json: true } })
+
+      expect(process.exitCode).toBe(1)
+    })
   })
 
   describe('list', () => {
+    it('defaults to the historical 100-row window', async () => {
+      // The default deliberately stays 100 rather than dropping to the
+      // 20 that `runs list` uses: lowering it would silently truncate output
+      // for anyone already relying on `agents list` showing everything.
+      // `--limit` adds control without changing what a bare call returns.
+      mockGet.mockResolvedValueOnce({ data: [] })
+      await getSubCommand('list').run({ args: {} })
+      expect(mockGet).toHaveBeenCalledWith('/api/agents?page=1&pageSize=100')
+    })
+
+    it('honours --limit and --page', async () => {
+      mockGet.mockResolvedValueOnce({ data: [] })
+      await getSubCommand('list').run({ args: { limit: '5', page: '2' } })
+      expect(mockGet).toHaveBeenCalledWith('/api/agents?page=2&pageSize=5')
+    })
+
     it('prints agents with id, status, name, and description', async () => {
       mockGet.mockResolvedValueOnce({
         data: [
@@ -112,7 +149,7 @@ describe('agentsCommand', () => {
 
       await getSubCommand('list').run({ args: {} })
 
-      expect(mockGet).toHaveBeenCalledWith('/api/agents?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/agents?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('agt_1  [published]  Bot A  A bot')
       expect(consoleSpy).toHaveBeenCalledWith('agt_2  [draft]  Bot B')
     })
@@ -591,6 +628,16 @@ describe('agentsCommand', () => {
       expect(consoleSpy).toHaveBeenCalledWith('  completed: 9')
       expect(consoleSpy).toHaveBeenCalledWith('  failed: 1')
       expect(consoleSpy).toHaveBeenCalledWith('  feishu: 7')
+    })
+
+    it('emits the raw payload with --json', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      const payload = { total: 10, byStatus: { completed: 9 }, channelBreakdown: [] }
+      mockGet.mockResolvedValueOnce(payload)
+
+      await getSubCommand('stats').run({ args: { id: 'agt_1', json: true } })
+
+      expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual(payload)
     })
   })
 

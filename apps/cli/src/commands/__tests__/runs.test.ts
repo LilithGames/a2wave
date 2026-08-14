@@ -294,6 +294,92 @@ describe('runsCommand get', () => {
     expect(consoleSpy).toHaveBeenCalledWith('\n--- Execution result ---')
     expect(consoleSpy).toHaveBeenCalledWith('Final output')
   })
+
+  // A long run's logs are the single largest thing this CLI prints, and an
+  // agent calling `runs get` usually wants the status, not 4000 tool calls.
+  describe('log bounding', () => {
+    function runWithLogs(count: number) {
+      return {
+        data: {
+          id: 'run_1',
+          status: 'completed',
+          intent: 'test',
+          createdAt: '2025-01-01',
+          result: null,
+          steps: [
+            {
+              output: {
+                logs: Array.from({ length: count }, (_, i) => ({
+                  type: 'tool_call',
+                  toolName: `Tool${i}`,
+                  subtype: 'start',
+                  ts: i,
+                })),
+              },
+            },
+          ],
+        },
+      }
+    }
+
+    it('caps the printed log entries and says what it hid', async () => {
+      mockGet.mockResolvedValueOnce(runWithLogs(500))
+
+      await getSubCommand('get').run({ args: { id: 'run_1' } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      // The tail is kept, not the head: the end of a log is where the failure is.
+      expect(out).toContain('Tool499')
+      expect(out).not.toContain('Tool0]')
+      // Truncation is never silent, and the notice names the way to get it all.
+      expect(out).toMatch(/\d+ earlier entries hidden/)
+      expect(out).toContain('a2wave runs logs run_1')
+    })
+
+    it('prints everything with --full', async () => {
+      mockGet.mockResolvedValueOnce(runWithLogs(500))
+
+      await getSubCommand('get').run({ args: { id: 'run_1', full: true } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).toContain('Tool0')
+      expect(out).toContain('Tool499')
+      expect(out).not.toMatch(/entries hidden/)
+    })
+
+    it('honours an explicit --max-log-lines', async () => {
+      mockGet.mockResolvedValueOnce(runWithLogs(500))
+
+      await getSubCommand('get').run({ args: { id: 'run_1', 'max-log-lines': '10' } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).toContain('Tool499')
+      expect(out).toContain('Tool490')
+      expect(out).not.toContain('Tool489')
+    })
+
+    it('does not add a notice when the log fits', async () => {
+      mockGet.mockResolvedValueOnce(runWithLogs(3))
+
+      await getSubCommand('get').run({ args: { id: 'run_1' } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).toContain('Tool0')
+      expect(out).not.toMatch(/entries hidden/)
+    })
+
+    it('leaves --json untouched, since a parser is not a terminal', async () => {
+      // Truncation is a human/context-window affordance. Silently dropping
+      // entries from a machine payload would corrupt it with no error.
+      const payload = runWithLogs(500)
+      mockGet.mockResolvedValueOnce(payload)
+
+      await getSubCommand('get').run({ args: { id: 'run_1', json: true } })
+
+      const parsed = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))
+      expect(parsed.data.steps[0].output.logs).toHaveLength(500)
+    })
+  })
 })
 
 describe('runsCommand trigger', () => {

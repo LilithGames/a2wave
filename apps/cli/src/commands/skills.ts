@@ -5,6 +5,7 @@ import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { confirmDestructive } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
+import { pageArgs, pageQuery } from '../lib/paginate.js'
 
 interface Skill {
   id: string
@@ -277,6 +278,7 @@ export const skillsCommand = defineCommand({
       },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -286,6 +288,7 @@ export const skillsCommand = defineCommand({
           `/api/skills/${skillId}/remote/check`,
           {},
         )
+        if (emit(args, result)) return
         const check = result.data
         console.log(
           check.updateAvailable
@@ -350,10 +353,10 @@ export const skillsCommand = defineCommand({
 
     list: defineCommand({
       meta: { name: 'list', description: 'List all Skills' },
-      args: { ...jsonArg, ...urlArg },
+      args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
-        const result = await client.get<{ data: Skill[] }>('/api/skills?pageSize=100')
+        const result = await client.get<{ data: Skill[] }>(`/api/skills?${pageQuery(args, 100)}`)
         if (emit(args, result)) return
         if (result.data.length === 0) {
           console.log('No Skills yet')

@@ -435,6 +435,10 @@ export const evalCommand = defineCommand({
           description:
             'With --wait, exit 1 if any case has a "fail" verdict OR errored during replay (for CI)',
         },
+        verbose: {
+          type: 'boolean',
+          description: 'With --wait, print full turn transcripts instead of clipping them',
+        },
         ...jsonArg,
         ...urlArg,
       },
@@ -461,7 +465,7 @@ export const evalCommand = defineCommand({
         // this would make a failed task exit 0 and silently pass a CI gate.
         applyEvalExitCode(task, args['fail-on-fail'] === true)
         if (emit(args, { data: task })) return
-        printTask(task)
+        printTask(task, args.verbose === true)
       },
     }),
 
@@ -496,6 +500,10 @@ export const evalCommand = defineCommand({
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
+            verbose: {
+              type: 'boolean',
+              description: 'Print full turn transcripts instead of clipping them',
+            },
             ...jsonArg,
             ...urlArg,
           },
@@ -506,7 +514,7 @@ export const evalCommand = defineCommand({
               `/api/agents/${agentId}/evaluation-tasks/${args.task}`,
             )
             if (emit(args, result)) return
-            printTask(result.data)
+            printTask(result.data, args.verbose === true)
           },
         }),
 
@@ -592,7 +600,22 @@ export const evalCommand = defineCommand({
   },
 })
 
-function printTask(t: EvaluationTask): void {
+/**
+ * Characters of a turn body printed before truncation.
+ *
+ * The transcripts are the bulk of a task's output — a 50-case, 3-turn task
+ * printed 750+ lines of full request/expected/actual text — and the usual
+ * reason to run `eval tasks get` is "which cases failed", not "replay every
+ * transcript". `--verbose` prints them whole; `--json` is never truncated.
+ */
+const MAX_TURN_BODY_CHARS = 200
+
+function clipBody(text: string, verbose: boolean): string {
+  if (verbose || text.length <= MAX_TURN_BODY_CHARS) return text
+  return `${text.slice(0, MAX_TURN_BODY_CHARS)}… (${text.length - MAX_TURN_BODY_CHARS} more chars, --verbose for all)`
+}
+
+function printTask(t: EvaluationTask, verbose = false): void {
   console.log(`ID:       ${t.id}`)
   console.log(`Set:      ${t.setName}`)
   console.log(`Status:   ${t.status}`)
@@ -621,10 +644,14 @@ function printTask(t: EvaluationTask): void {
     // expectations so the row still shows what it would have asked.
     const turns = r.actualTurns ?? r.turnsSnapshot ?? []
     for (const turn of turns) {
-      console.log(`    request:  ${turn.request}`)
-      if (turn.expectedResponse) console.log(`    expected: ${turn.expectedResponse}`)
+      console.log(`    request:  ${clipBody(turn.request, verbose)}`)
+      if (turn.expectedResponse) {
+        console.log(`    expected: ${clipBody(turn.expectedResponse, verbose)}`)
+      }
       const actual = (turn as { actualResponse?: string | null }).actualResponse
-      if (actual) console.log(`    actual:   ${actual}`)
+      if (actual) console.log(`    actual:   ${clipBody(actual, verbose)}`)
+      // Errors are never clipped: they are short, and they are the reason
+      // someone opened this output.
       const turnError = (turn as { error?: string | null }).error
       if (turnError) console.log(`    turn error: ${turnError}`)
     }

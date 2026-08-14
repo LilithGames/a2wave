@@ -60,7 +60,7 @@ describe('skillsCommand', () => {
 
       await getSubCommand('list').run({ args: {} })
 
-      expect(mockGet).toHaveBeenCalledWith('/api/skills?pageSize=100')
+      expect(mockGet).toHaveBeenCalledWith('/api/skills?page=1&pageSize=100')
       expect(consoleSpy).toHaveBeenCalledWith('skl_1  Skill A  [private]  Does A')
       expect(consoleSpy).toHaveBeenCalledWith('skl_2  Skill B  [all-users]')
     })

@@ -2,6 +2,7 @@ import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { emit, jsonArg } from '../lib/output.js'
+import { pageArgs, pageQuery } from '../lib/paginate.js'
 
 interface Provider {
   id: string
@@ -41,10 +42,12 @@ export const providersCommand = defineCommand({
   subCommands: {
     list: defineCommand({
       meta: { name: 'list', description: 'List all Providers' },
-      args: { ...jsonArg, ...urlArg },
+      args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
-        const result = await client.get<{ data: Provider[] }>('/api/providers?pageSize=100')
+        const result = await client.get<{ data: Provider[] }>(
+          `/api/providers?${pageQuery(args, 100)}`,
+        )
         if (emit(args, result)) return
         if (result.data.length === 0) {
           console.log('No providers found')
@@ -88,6 +91,7 @@ export const providersCommand = defineCommand({
           description: `Engine type: ${ENGINE_TYPES.join(' | ')}`,
           required: true,
         },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -101,6 +105,7 @@ export const providersCommand = defineCommand({
         const { data } = await client.get<{ data: LoginStatus }>(
           `/api/providers/login-status/${engine}`,
         )
+        if (emit(args, data)) return
         console.log(`Installed:  ${data.installed}`)
         console.log(`LoggedIn:   ${data.loggedIn}`)
         if (data.method) console.log(`Method:     ${data.method}`)
@@ -119,6 +124,7 @@ export const providersCommand = defineCommand({
       meta: { name: 'dependents', description: 'List Agents that depend on this Provider' },
       args: {
         id: { type: 'positional', description: 'Provider ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -127,6 +133,7 @@ export const providersCommand = defineCommand({
         const { data } = await client.get<{
           data: { agents: Array<{ id: string; name: string }> }
         }>(`/api/providers/${id}/dependents`)
+        if (emit(args, data)) return
         if (data.agents.length === 0) {
           console.log('No agents depend on this provider')
           return

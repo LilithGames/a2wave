@@ -3,6 +3,7 @@ import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { parseKeyValues, readJsonFile, toStringArray } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
+import { pageArgs, pageQuery } from '../lib/paginate.js'
 
 interface McpServer {
   id: string
@@ -93,10 +94,12 @@ export const mcpCommand = defineCommand({
   subCommands: {
     list: defineCommand({
       meta: { name: 'list', description: 'List all MCP Servers' },
-      args: { ...jsonArg, ...urlArg },
+      args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
-        const result = await client.get<{ data: McpServer[] }>('/api/mcp-servers?pageSize=100')
+        const result = await client.get<{ data: McpServer[] }>(
+          `/api/mcp-servers?${pageQuery(args, 100)}`,
+        )
         if (emit(args, result)) return
         if (result.data.length === 0) {
           console.log('No MCP Servers')
@@ -200,6 +203,7 @@ export const mcpCommand = defineCommand({
       },
       args: {
         id: { type: 'positional', description: 'MCP Server ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -208,6 +212,7 @@ export const mcpCommand = defineCommand({
         const { data } = await client.get<{
           data: { tools: Array<{ name: string; description?: string }> }
         }>(`/api/mcp-servers/${id}/tools`)
+        if (emit(args, data)) return
         const tools = data.tools ?? []
         if (tools.length === 0) {
           console.log('This MCP Server exposes no tools')

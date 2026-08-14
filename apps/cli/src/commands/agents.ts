@@ -13,6 +13,7 @@ import {
 } from '../lib/agent-yaml.js'
 import { confirmDestructive } from '../lib/args.js'
 import { emit, jsonArg, redactSecrets } from '../lib/output.js'
+import { pageArgs, pageQuery } from '../lib/paginate.js'
 
 interface Agent {
   id: string
@@ -151,10 +152,10 @@ export const agentsCommand = defineCommand({
   subCommands: {
     list: defineCommand({
       meta: { name: 'list', description: 'List all Agents' },
-      args: { ...jsonArg, ...urlArg },
+      args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
-        const result = await client.get<{ data: Agent[] }>('/api/agents?pageSize=100')
+        const result = await client.get<{ data: Agent[] }>(`/api/agents?${pageQuery(args, 100)}`)
         if (emit(args, result)) return
         if (result.data.length === 0) {
           console.log('No Agents yet')
@@ -352,6 +353,7 @@ export const agentsCommand = defineCommand({
       },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -359,6 +361,12 @@ export const agentsCommand = defineCommand({
         const agentId = await client.resolveAgentId(args.id as string)
         const result = await client.get<{ data: DiagnoseResult }>(`/api/agents/${agentId}/diagnose`)
         const d = result.data
+        // Set the CI-gate exit code BEFORE any early return: emit() bails out
+        // straight after printing, so deciding this afterwards would make
+        // `diagnose --json | jq` exit 0 on a red diagnosis. Same trap that
+        // `runs rerun --wait` and `eval run --wait` already guard against.
+        if (!d.ok) process.exitCode = 1
+        if (emit(args, result)) return
         const sym = { error: '✗', warn: '!', info: '·' } as const
         console.log(
           `${d.ok ? '✓ ok' : '✗ has errors'}  scope=${d.meta.scope}  at ${d.meta.checkedAt}`,
@@ -371,7 +379,6 @@ export const agentsCommand = defineCommand({
         for (const c of d.checks) {
           console.log(`${sym[c.severity]} [${c.severity}] ${c.id}: ${c.message}`)
         }
-        if (!d.ok) process.exitCode = 1
       },
     }),
 
@@ -669,12 +676,14 @@ export const agentsCommand = defineCommand({
           meta: { name: 'list', description: 'List all Agent members (including owner)' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
+            ...jsonArg,
             ...urlArg,
           },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
             const agentId = await client.resolveAgentId(args.agent as string)
             const result = await client.get<{ data: MemberRow[] }>(`/api/agents/${agentId}/members`)
+            if (emit(args, result)) return
             const rows = result.data
             if (rows.length === 0) {
               console.log('No members yet')
@@ -795,6 +804,7 @@ export const agentsCommand = defineCommand({
       },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -802,6 +812,7 @@ export const agentsCommand = defineCommand({
         const agentId = await client.resolveAgentId(args.id as string)
         // Note: /stats returns the stats object directly, not wrapped in { data }
         const s = await client.get<AgentStats>(`/api/agents/${agentId}/stats`)
+        if (emit(args, s)) return
         console.log(`Total runs:    ${s.total}`)
         console.log(`Success rate:  ${s.successRate}`)
         console.log(`Avg duration:  ${s.avgDuration}`)
@@ -826,6 +837,7 @@ export const agentsCommand = defineCommand({
           meta: { name: 'list', description: 'List Agent artifacts' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
+            ...jsonArg,
             ...urlArg,
           },
           run: async ({ args }) => {
@@ -834,6 +846,7 @@ export const agentsCommand = defineCommand({
             const { data } = await client.get<{ data: ArtifactRow[] }>(
               `/api/artifacts?agentId=${agentId}`,
             )
+            if (emit(args, { data })) return
             if (data.length === 0) {
               console.log('No artifacts yet')
               return

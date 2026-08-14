@@ -3,6 +3,7 @@ import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { confirmDestructive, parseIntFlag, readJsonFile } from '../lib/args.js'
 import { emit, jsonArg, redactSecrets } from '../lib/output.js'
+import { pageArgs, pageQuery } from '../lib/paginate.js'
 
 interface Workspace {
   name: string
@@ -117,10 +118,12 @@ export const scmCommand = defineCommand({
   subCommands: {
     list: defineCommand({
       meta: { name: 'list', description: 'List all SCM sources' },
-      args: { ...jsonArg, ...urlArg },
+      args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
-        const result = await client.get<{ data: ScmSource[] }>('/api/scm-sources?pageSize=100')
+        const result = await client.get<{ data: ScmSource[] }>(
+          `/api/scm-sources?${pageQuery(args, 100)}`,
+        )
         if (emit(args, result)) return
         if (result.data.length === 0) {
           console.log('No SCM sources')
