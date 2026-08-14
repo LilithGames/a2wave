@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 
 const MEMORY_KEY = ['memories'] as const
 
@@ -158,7 +158,11 @@ export function useUpdateMemoryFile() {
       agentId,
       filename,
       content,
-    }: { agentId: string; filename: string; content: string }) =>
+    }: {
+      agentId: string
+      filename: string
+      content: string
+    }) =>
       api.put<{ filename: string; size: number }>(`/memories/${agentId}/files/${filename}`, {
         content,
       }),

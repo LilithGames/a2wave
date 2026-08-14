@@ -83,7 +83,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/traverse | 7.29.0 | MIT |
 | @babel/types | 7.29.0, 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 1.9.4 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.5.7 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.0 | MIT |
 | @codemirror/commands | 6.10.2 | MIT |
 | @codemirror/language | 6.12.2 | MIT |

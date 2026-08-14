@@ -1,3 +1,7 @@
+import { type EvaluationTaskStatus, REVIEWABLE_RESULT_STATUSES } from '@a2wave/shared'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Clock, Loader2, X } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -7,12 +11,8 @@ import {
   useEvaluationTask,
   useReviewEvaluationResult,
 } from '@/hooks/use-evaluation'
-import { type EvaluationTaskStatus, REVIEWABLE_RESULT_STATUSES } from '@a2wave/shared'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Clock, Loader2, X } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import { CopyButton } from '../copy-button'
-import { TaskStatusBadge, isTaskPending } from './task-status-badge'
+import { isTaskPending, TaskStatusBadge } from './task-status-badge'
 
 interface TaskDetailProps {
   agentId: string
@@ -283,15 +283,7 @@ function passRateTone(rate: number | null): string {
 }
 
 /** Secondary counter: label above, figure below, aligned to the pass-rate baseline. */
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string | number
-  tone?: string
-}) {
+function Stat({ label, value, tone }: { label: string; value: string | number; tone?: string }) {
   return (
     <div>
       <p className="text-xs text-muted-foreground">{label}</p>

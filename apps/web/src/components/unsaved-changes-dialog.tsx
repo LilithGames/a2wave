@@ -1,3 +1,6 @@
+import { AlertTriangle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import type { Blocker } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -7,14 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { AlertTriangle } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import type { Blocker } from 'react-router-dom'
 
 export function UnsavedChangesDialog({
   blocker,
   onDiscard,
-}: { blocker: Blocker; onDiscard?: () => void }) {
+}: {
+  blocker: Blocker
+  onDiscard?: () => void
+}) {
   const { t } = useTranslation()
   const isBlocked = blocker.state === 'blocked'
 

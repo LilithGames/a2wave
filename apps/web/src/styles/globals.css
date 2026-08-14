@@ -229,11 +229,11 @@
    head bootstrap sets data-theme before CSS is painted; ThemeProvider then
    applies the same registry values inline and owns live preview/system updates. */
 html:is(
-    [data-theme="wave-dark"],
-    [data-theme="midnight"],
-    [data-theme="forest"],
-    [data-theme="graphite"]
-  ) {
+  [data-theme="wave-dark"],
+  [data-theme="midnight"],
+  [data-theme="forest"],
+  [data-theme="graphite"]
+) {
   --color-warm-50: #1b1e25;
   --color-warm-100: #232730;
   --color-warm-200: #303641;
@@ -568,8 +568,8 @@ html {
 }
 
 body {
-  font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    sans-serif;
+  font-family:
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background-color: var(--color-background);
   color: var(--color-foreground);
   -webkit-font-smoothing: antialiased;
@@ -670,7 +670,8 @@ body {
 
 .login-brand-panel {
   background-color: var(--color-brand-panel);
-  background-image: radial-gradient(
+  background-image:
+    radial-gradient(
       110% 90% at 12% 8%,
       color-mix(in srgb, var(--color-primary) 16%, transparent),
       transparent 58%
@@ -686,7 +687,8 @@ body {
    wider cell, faded out toward the panel edges so no single line reads as an
    edge. The mask is what keeps it from looking like graph paper. */
 .brand-wave-grid {
-  background-image: linear-gradient(
+  background-image:
+    linear-gradient(
       to right,
       color-mix(in srgb, var(--color-gradient-accent) 5%, transparent) 1px,
       transparent 1px
@@ -854,11 +856,15 @@ body {
 
 /* Card hover glow */
 .card-glow {
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  transition:
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
 }
 .card-glow:hover {
-  box-shadow: 0 4px 6px -1px rgb(28 25 23 / 0.05), 0 2px 4px -2px rgb(28 25 23 / 0.03), 0 0 0 1px
-    rgb(99 102 241 / 0.06);
+  box-shadow:
+    0 4px 6px -1px rgb(28 25 23 / 0.05),
+    0 2px 4px -2px rgb(28 25 23 / 0.03),
+    0 0 0 1px rgb(99 102 241 / 0.06);
 }
 
 /* Agent detail tabs — nav typography (font-size via antd token, font-weight via CSS) */
@@ -917,8 +923,9 @@ body {
    The selected pill is a solid primary fill, so the lift is tinted with the brand
    color; a neutral warm shadow reads as grime against the saturated fill. */
 .ant-segmented .ant-segmented-item-selected {
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-primary) 28%, transparent), 0 1px 2px
-    color-mix(in srgb, var(--color-primary) 16%, transparent);
+  box-shadow:
+    0 1px 3px color-mix(in srgb, var(--color-primary) 28%, transparent),
+    0 1px 2px color-mix(in srgb, var(--color-primary) 16%, transparent);
 }
 
 /* Force the selected item's label + icon to the on-primary color. Our options

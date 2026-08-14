@@ -7,9 +7,6 @@
 // ============================================================
 import {
   type A2ARouteTarget,
-  PROVIDER_KINDS,
-  type RemoteSkillSource,
-  SKILL_DEFAULTS,
   type artifactPolicySchema,
   type chatAppConfigSchema,
   type discordConfigSchema,
@@ -17,6 +14,9 @@ import {
   type ghTriggerConfigSchema,
   type gitTriggerRepoStateSchema,
   type glabTriggerConfigSchema,
+  PROVIDER_KINDS,
+  type RemoteSkillSource,
+  SKILL_DEFAULTS,
   type scheduleConfigSchema,
   type slackConfigSchema,
 } from '@a2wave/shared'
@@ -473,7 +473,7 @@ export const agents = pgTable(
      * otherwise. Changing a SQLite column default requires a full table rebuild, which for this
      * table is unsafe under the live foreign keys `db/client.ts` enables (see 0100's header).
      *
-     * ! **This default is not inert.** Drizzle binds it into every INSERT as a parameter, so
+     * ⚠️ **This default is not inert.** Drizzle binds it into every INSERT as a parameter, so
      * omitting the column from an insert writes `'feishu_scope'` — it does not fall through to
      * SQLite. Reads normalize that to the *open* mode, so an insert path that forgets this
      * column silently downgrades an Agent's access tier to "all enterprise users". The clone

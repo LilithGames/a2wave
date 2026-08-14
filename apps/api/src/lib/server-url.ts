@@ -20,9 +20,7 @@ export function __resetDetectedForTesting(): void {
 }
 
 /** 从 HTTP 请求头推断 public URL 并缓存（由中间件调用） */
-export function detectServerUrl(headers: {
-  get(name: string): string | null
-}): void {
+export function detectServerUrl(headers: { get(name: string): string | null }): void {
   if (detectedServerUrl) return
 
   const proto = headers.get('x-forwarded-proto') ?? headers.get('x-scheme') ?? 'http'

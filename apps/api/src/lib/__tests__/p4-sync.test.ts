@@ -396,7 +396,10 @@ function mockDbSelectAll(rows: unknown[]) {
 function mockDbUpdate({
   acquired = true,
   acquiredRow,
-}: { acquired?: boolean; acquiredRow?: unknown } = {}) {
+}: {
+  acquired?: boolean
+  acquiredRow?: unknown
+} = {}) {
   const runFn = vi.fn()
   // The atomic acquire ends in .returning().get() and its result is taken as the
   // authoritative source snapshot; the terminal status write is awaited directly.

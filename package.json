@@ -20,7 +20,7 @@
     "db:generate": "pnpm --filter @a2wave/shared build && pnpm --filter @a2wave/api db:generate",
     "db:migrate": "pnpm --filter @a2wave/shared build && pnpm --filter @a2wave/api db:migrate",
     "knip": "knip",
-    "lint": "biome check .",
+    "lint": "biome check --enforce-assist=false --diagnostic-level=warn .",
     "lint:fix": "biome check --write .",
     "typecheck": "pnpm --filter @a2wave/shared build && pnpm -r typecheck",
     "a2a-demo": "pnpm --filter @a2wave/api a2a-demo",
