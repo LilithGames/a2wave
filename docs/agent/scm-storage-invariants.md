@@ -37,6 +37,36 @@ deadline margin is the fencing mechanism; it avoids spreading an ownership
 epoch through every filesystem call while still ordering owner exit before peer
 recovery.
 
+The margin is a budget, and every term in it is a constant in a different file:
+detection can take one beat interval, shutdown has a hard deadline, and each
+Agent CLI gets a SIGTERM→SIGKILL grace. Their sum must stay below the margin, so
+`__tests__/fail-stop-timing.test.ts` asserts it — raising the shutdown timeout
+without it would silently let a fenced owner outlive its own eviction. The
+deadline timer is deliberately **not** `unref`'d on this path: fail-stop is
+self-initiated, and its usual cause (an unreachable database) is also what can
+wedge a drain, so nothing else guarantees the exit.
+
+Fail-stop is a **floor, not a door check**. Admission alone is not enough: SCM
+sync and CodeGraph indexing spawn their own child processes — invisible to the
+engine registry's reaper — and hold the checkout for minutes; an evaluation
+replays case after case long past its single admission check; and workspace
+removal would force-delete a worktree a peer may already own. Each of those
+consults the fence itself, and shutdown also stops the auto-sync timers, which
+is what actually aborts those child processes.
+
+Two consequences worth stating plainly, because both are load-bearing tradeoffs
+rather than oversights:
+
+- **The first heartbeat is awaited and fatal.** A database blip during boot
+  refuses startup rather than serving; there is no retry, so the orchestrator's
+  restart backoff owns it. Serving first would mean admitting a Run and
+  activating a lease while no peer can see this instance is alive, and a peer
+  past its grace window would then reap that live workload.
+- **A shutdown that hits its hard deadline leaves the heartbeat row behind.**
+  Peers then wait out the full staleness threshold instead of reclaiming
+  immediately. That is the safe direction — late reclamation, never early — but
+  it means a wedged shutdown costs five minutes of that source's availability.
+
 Recovery of *peers* therefore stays disabled for one staleness window after
 boot: immediately after an upgrade the table is empty, so every peer would read
 as dead and this replica would reclaim checkouts out from under processes that

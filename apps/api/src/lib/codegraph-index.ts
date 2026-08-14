@@ -8,6 +8,7 @@ import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
 import { runExclusive } from '../db/transaction.js'
 import { sanitizeCredentials } from './git-sync.js'
+import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 
 const execFileAsync = promisify(execFile)
@@ -81,6 +82,15 @@ export async function runCodegraphIndex(
   sourceId: string,
   options: { alreadyAcquired?: boolean } = {},
 ): Promise<CodegraphIndexResult> {
+  // Indexing reads the shared checkout for up to its full timeout, which is
+  // well past the point where peers may reclaim a fenced instance's workspace.
+  // Same gate as sync, for the same reason.
+  if (hasLostHeartbeatOwnership()) {
+    if (options.alreadyAcquired) {
+      await finalizePreAcquiredIndex(sourceId, 'idle', null)
+    }
+    return { ok: false, message: 'This instance lost its liveness lease', skipped: true }
+  }
   const source = await (
     await db.select().from(scmSources).where(eq(scmSources.id, sourceId)).limit(1)
   )[0]

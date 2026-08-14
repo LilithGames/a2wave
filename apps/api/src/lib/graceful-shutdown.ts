@@ -1,6 +1,16 @@
 import { logger } from './logger.js'
 
 /**
+ * Hard deadline for the whole shutdown sequence.
+ *
+ * Part of the fail-stop timing budget: a fenced owner must be gone before the
+ * peer-death threshold lets another replica reclaim its checkout. See the
+ * assertion in `__tests__/fail-stop-timing.test.ts`, which fails if raising
+ * this silently eats the margin.
+ */
+export const SHUTDOWN_HARD_TIMEOUT_MS = 10_000
+
+/**
  * Side effects the graceful-shutdown sequence orchestrates, injected so the
  * ordering can be unit-tested without the real server/DB/process.
  */

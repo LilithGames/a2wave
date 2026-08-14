@@ -12,6 +12,7 @@ import { scmSourceAuditDetails } from './audit-details.js'
 import { writeBackgroundAudit } from './audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from './codegraph-index.js'
 import { executeGitSync, sanitizeCredentials } from './git-sync.js'
+import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { verifyP4ClientRootCoverage } from './p4-client-root.js'
 import { selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
@@ -459,6 +460,16 @@ export async function syncScmSource(
   // acquire under its ownership filter before this fire-and-forget call) passes
   // checkoutAlreadyAcquired so we do not double-acquire — but we still own the
   // release from here on.
+  // Liveness gate, checked here because this is the one authoritative entry
+  // every writer passes through. A fenced instance is one whose peers are
+  // entitled to reclaim its checkouts, and sync writes to the shared checkout
+  // for as long as a full clone takes — far past the point where a peer may
+  // have taken over. Refusing here is what makes the fail-stop promise
+  // ("an expired owner has stopped touching the workspace") true for sync.
+  if (hasLostHeartbeatOwnership()) {
+    logger.warn({ sourceId }, 'Skipping SCM sync: this instance lost its liveness lease')
+    return { ok: false, message: 'This instance is shutting down after losing its liveness lease' }
+  }
   if (!options.checkoutAlreadyAcquired && !tryAcquireCheckout(sourceId)) {
     logger.info({ sourceId }, 'Skipping SCM sync: checkout already in use')
     return { ok: false, message: 'Sync already in progress', alreadyRunning: true }

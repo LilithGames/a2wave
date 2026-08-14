@@ -50,8 +50,33 @@ function sweepTx(leases: Row[], statusRows: Row[][]) {
         }),
       })),
     })),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([{ id: 'reservation' }])),
+        })),
+      })),
+    })),
   }
   return { tx, deleted }
+}
+
+function depsWithReservations(
+  tx: unknown,
+  overrides: Parameters<typeof deps>[1] = {},
+): { deps: never; reserved: unknown[] } {
+  const reserved: unknown[] = []
+  const base = deps(tx, overrides) as Record<string, unknown>
+  return {
+    reserved,
+    deps: {
+      ...base,
+      reserveEphemeralWorktreeRemoval: vi.fn(async (input: unknown) => {
+        reserved.push(input)
+        return true
+      }),
+    } as never,
+  }
 }
 
 function deps(
@@ -69,6 +94,7 @@ function deps(
     ownerInstanceId: overrides.ownerInstanceId ?? 'instance-a',
     loadLiveness: overrides.loadLiveness ?? (async () => alivePeerLiveness()),
     canJudgePeers: overrides.canJudgePeers ?? (() => true),
+    reserveEphemeralWorktreeRemoval: async () => true,
     now: () => NOW,
   } as never
 }
@@ -97,6 +123,67 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
 
     expect(released).toEqual([{ type: 'run', workloadId: 'run_done', agentId: 'agt_1' }])
     expect(deleted).toHaveLength(1)
+  })
+
+  it('reserves the removal of an orphaned ephemeral worktree before releasing its lease', async () => {
+    // The leak this closes: when a replica dies mid-evaluation, its
+    // `eval-<taskId>` worktree has no owner left to delete it. The finally
+    // block never ran, no reservation was ever written for the reconciler to
+    // adopt, TTL cleanup only looks at `cleanup: 'ttl'`, and startup recovery
+    // only drops the lease row. Task ids are unique, so every crash left one
+    // more worktree — plus a stale git worktree admin entry — forever.
+    const { tx, deleted } = sweepTx(
+      [
+        {
+          id: 'evaluation:evt_dead',
+          workloadType: 'evaluation',
+          workloadId: 'evt_dead',
+          agentId: 'agt_1',
+          scmSourceId: 'scm_1',
+          phase: 'active',
+          ownerInstanceId: 'instance-b',
+          updatedAt: RECENT,
+        },
+      ],
+      [[{ status: 'failed' }]],
+    )
+    const { deps: sweepDeps, reserved } = depsWithReservations(tx, {
+      loadLiveness: async () => deadPeerLiveness(),
+    })
+
+    await sweepOrphanedScmWorkloadLeases(sweepDeps)
+
+    // Handing the worktree to the reconciler reuses the existing convergence
+    // path instead of deleting from inside the lease transaction.
+    expect(reserved).toEqual([
+      { scmSourceId: 'scm_1', workspaceName: 'eval-evt_dead', tx: expect.anything() },
+    ])
+    expect(deleted).toHaveLength(1)
+  })
+
+  it('does not reserve a removal when this instance released its own lease', async () => {
+    // The owner's own cleanup path already handles its worktree; reserving
+    // here would race that cleanup and block the source for no reason.
+    const { tx } = sweepTx(
+      [
+        {
+          id: 'evaluation:evt_mine',
+          workloadType: 'evaluation',
+          workloadId: 'evt_mine',
+          agentId: 'agt_1',
+          scmSourceId: 'scm_1',
+          phase: 'active',
+          ownerInstanceId: 'instance-a',
+          updatedAt: RECENT,
+        },
+      ],
+      [[{ status: 'completed' }]],
+    )
+    const { deps: sweepDeps, reserved } = depsWithReservations(tx)
+
+    await sweepOrphanedScmWorkloadLeases(sweepDeps)
+
+    expect(reserved).toEqual([])
   })
 
   it('never touches an active lease owned by another live instance', async () => {
@@ -473,6 +560,22 @@ describe('failScmWorkloadsOfDeadInstances', () => {
     })
 
     expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
+    expect(afterRunSettled).not.toHaveBeenCalled()
+  })
+
+  it('reaps nothing during the post-boot grace window', async () => {
+    // The counterpart of the sweep's grace-window rule, and the more
+    // destructive of the two: right after an upgrade the heartbeat table is
+    // empty, so every peer reads as dead. Sweeping a lease then is recoverable,
+    // but failing a live peer's `running` Run is not.
+    const { deps, claimRun, afterRunSettled } = reaperDeps(
+      [activePeerLease()],
+      [[{ status: 'running' }]],
+      { canJudgePeers: () => false, loadLiveness: async () => new Map() },
+    )
+
+    expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
+    expect(claimRun).not.toHaveBeenCalled()
     expect(afterRunSettled).not.toHaveBeenCalled()
   })
 

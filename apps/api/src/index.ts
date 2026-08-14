@@ -38,7 +38,7 @@ import { executeChatRun } from './lib/execute-chat-run.js'
 import { listPendingMessages } from './lib/feishu-pending-store.js'
 import { feishuConnectionManager } from './lib/feishu-service.js'
 import { gitTriggerManager } from './lib/git-trigger-manager.js'
-import { runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
+import { SHUTDOWN_HARD_TIMEOUT_MS, runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
 import {
   beatInstanceHeartbeat,
   deleteInstanceHeartbeat,
@@ -46,7 +46,7 @@ import {
 } from './lib/instance-heartbeat.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
-import { initAutoSyncSchedulers } from './lib/p4-sync.js'
+import { initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
 import { processInstanceId } from './lib/process-instance.js'
 import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
@@ -416,10 +416,31 @@ function startListening(): ReturnType<typeof serve> {
 }
 
 // --- Graceful shutdown ---
+let shuttingDown = false
+
 function gracefulShutdown(signal: string) {
+  // Reentrancy matters more than it looks: fail-stop calls this on its own,
+  // and Kubernetes will usually follow with a SIGTERM once probes fail. A
+  // second pass would close an already-closing server and re-run every drain.
+  if (shuttingDown) {
+    logger.info(`Shutdown already in progress; ignoring ${signal}`)
+    return
+  }
+  shuttingDown = true
   logger.info(`Received ${signal}, shutting down gracefully...`)
   pauseTaskQueuePromotions()
   pauseEvaluationQueuePromotions()
+  // Not unref'd, deliberately. On the signal path an unref'd timer is
+  // harmless because the process is exiting anyway; on the fail-stop path the
+  // process decided to stop *itself*, and the very condition that triggered it
+  // — an unreachable database — is also what can wedge a drain. This deadline
+  // is the only thing guaranteeing the owner is gone before the peer-death
+  // threshold lets another replica reclaim its checkout, so it must keep the
+  // event loop alive until it fires.
+  const forceExit = setTimeout(() => {
+    logger.error('Graceful shutdown timed out, forcing exit')
+    process.exit(1)
+  }, SHUTDOWN_HARD_TIMEOUT_MS)
   // The server may not be listening yet if a signal arrives during the pre-listen
   // admin bootstrap; run the teardown sequence directly in that case.
   if (!server) {
@@ -431,6 +452,9 @@ function gracefulShutdown(signal: string) {
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
+        // Also aborts in-flight sync/index child processes, which run their own
+        // execFile and are therefore invisible to engineRegistry.shutdown().
+        stopAllAutoSync()
       },
       drainExecutionLeases: async () => {
         await Promise.all([drainActiveExecutionLeases(), drainActiveEvaluationTasks()])
@@ -443,7 +467,10 @@ function gracefulShutdown(signal: string) {
         await deleteInstanceHeartbeat()
       },
       closeDatabase: () => closeDatabaseConnection(),
-    }).finally(() => process.exit(0))
+    }).finally(() => {
+      clearTimeout(forceExit)
+      process.exit(0)
+    })
     return
   }
   server.close(async () => {
@@ -460,6 +487,9 @@ function gracefulShutdown(signal: string) {
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
+        // Also aborts in-flight sync/index child processes, which run their own
+        // execFile and are therefore invisible to engineRegistry.shutdown().
+        stopAllAutoSync()
       },
       drainExecutionLeases: async () => {
         await Promise.all([drainActiveExecutionLeases(), drainActiveEvaluationTasks()])
@@ -474,13 +504,20 @@ function gracefulShutdown(signal: string) {
       closeDatabase: () => closeDatabaseConnection(),
     })
     logger.info('Database connection closed')
+    clearTimeout(forceExit)
     process.exit(0)
   })
-  // Force exit after 10 seconds if graceful shutdown fails
-  setTimeout(() => {
-    logger.error('Graceful shutdown timed out, forcing exit')
-    process.exit(1)
-  }, 10_000).unref()
+  // `server.close()` stops accepting new connections but waits for existing
+  // ones to end, and an idle keep-alive connection never does. Without this
+  // the callback above may not run at all — on the fail-stop path that would
+  // leave the deadline as the only exit, discarding every drain.
+  //
+  // Present on http/https servers since Node 18.2; the HTTP/2 arm of the union
+  // does not declare it, hence the guard rather than a cast.
+  const closeAllConnections = (
+    server as { closeAllConnections?: () => void }
+  ).closeAllConnections?.bind(server)
+  closeAllConnections?.()
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
@@ -532,9 +569,8 @@ void ensureAdminExists()
     // reap that live workload and reclaim its checkout. Refusing to start is
     // the safe end of that trade: an instance that cannot record liveness
     // cannot safely own a shared workspace.
-    const initialHeartbeatAt = await beatInstanceHeartbeat()
+    await beatInstanceHeartbeat()
     stopInstanceHeartbeat = startInstanceHeartbeat(undefined, {
-      initialSuccessAt: initialHeartbeatAt,
       onOwnershipLost: () => gracefulShutdown('SCM heartbeat lease lost'),
     })
     // Single-process backend: no previous workspace removal can still be

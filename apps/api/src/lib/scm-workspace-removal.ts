@@ -5,6 +5,7 @@ import type { db } from '../db/client.js'
 import { runs, scmSources, scmWorkloadLeases, scmWorkspaceRemovals } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { defaultWorkspacesPath } from './git-workspace.js'
+import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { processInstanceId } from './process-instance.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -242,6 +243,15 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
   // Keep target identity stable across migrated rows. Mixed-version writers
   // are unsupported because a pre-token finalizer can still delete by id alone;
   // the independent attempt token fences current-version ABA replacement.
+  // A fenced instance must not delete a worktree: peers are already entitled
+  // to reclaim its workspaces, and `--force` removing one they may have taken
+  // over is the most destructive thing this module can do. Checked before the
+  // reservation so a fenced process leaves no mark behind either.
+  if (hasLostHeartbeatOwnership()) {
+    throw new WorkspaceRemovalBlockedError(
+      'This instance lost its liveness lease and is no longer removing workspaces',
+    )
+  }
   const reservationId = workspaceRemovalId(sourceId, name)
   const attemptToken = randomUUID()
   // Set when inline cleanup gave up and the reservation was left for the
@@ -309,12 +319,10 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         // prevents — and if the handoff write itself failed, the row simply
         // keeps naming this instance and the reconciler adopts it once this
         // instance stops beating.
-        if (!(await handOffWorkspaceRemoval({ reservationId, attemptToken }))) {
-          throw new Error(
-            `Workspace removal reservation disappeared before handoff: ${reservationId}`,
-          )
-        }
+        // Set before attempting the write: the worktree is on disk either way,
+        // so the `finally` must not release regardless of how the handoff goes.
         handedOff = true
+        await disownOrQueueRetry({ reservationId, attemptToken })
         // Raised only here, past the committed reservation, so callers can
         // distinguish "a durable mark now guards this worktree" from any
         // earlier failure that left no mark at all.
@@ -330,12 +338,8 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         await remove()
       } catch (error) {
         if (error instanceof WorkspaceRemovalBlockedError) throw error
-        if (!(await handOffWorkspaceRemoval({ reservationId, attemptToken }))) {
-          throw new Error(
-            `Workspace removal reservation disappeared before handoff: ${reservationId}`,
-          )
-        }
         handedOff = true
+        await disownOrQueueRetry({ reservationId, attemptToken })
         throw error
       }
     }
@@ -371,23 +375,51 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
 export async function handOffWorkspaceRemoval(
   pending: PendingReservationRelease,
 ): Promise<boolean> {
+  return withScmPathMutation(async (tx) => {
+    const updated = await tx
+      .update(scmWorkspaceRemovals)
+      .set({ ownerInstanceId: null })
+      .where(
+        and(
+          eq(scmWorkspaceRemovals.id, pending.reservationId),
+          eq(scmWorkspaceRemovals.attemptToken, pending.attemptToken),
+        ),
+      )
+      .returning({ id: scmWorkspaceRemovals.id })
+    return updated.length > 0
+  })
+}
+
+/**
+ * Queue a failed handoff for the sweeper to retry.
+ *
+ * Deliberately the caller's decision rather than something
+ * `handOffWorkspaceRemoval` does for itself. A caller that falls back to
+ * releasing the reservation has already resolved the row, and queueing a
+ * retry there would leave the protocol saying two contradictory things about
+ * one failed attempt: "disown this later" and "already deleted".
+ */
+function queueWorkspaceRemovalHandoff(pending: PendingReservationRelease): void {
+  pendingReservationHandoffs.set(pending.reservationId, pending)
+}
+
+/**
+ * Disown a reservation, queueing a retry if the write fails.
+ *
+ * Never throws: the caller has already decided to hand this worktree over and
+ * is about to report the original removal failure. A failed disown only means
+ * the row still names this instance — the reconciler adopts it anyway once
+ * this instance stops beating, and the sweeper retries the disown before then.
+ */
+async function disownOrQueueRetry(pending: PendingReservationRelease): Promise<void> {
   try {
-    return await withScmPathMutation(async (tx) => {
-      const updated = await tx
-        .update(scmWorkspaceRemovals)
-        .set({ ownerInstanceId: null })
-        .where(
-          and(
-            eq(scmWorkspaceRemovals.id, pending.reservationId),
-            eq(scmWorkspaceRemovals.attemptToken, pending.attemptToken),
-          ),
-        )
-        .returning({ id: scmWorkspaceRemovals.id })
-      return updated.length > 0
-    })
+    await handOffWorkspaceRemoval(pending)
   } catch (error) {
-    pendingReservationHandoffs.set(pending.reservationId, pending)
-    throw error
+    queueWorkspaceRemovalHandoff(pending)
+    logger.error(
+      { error, reservationId: pending.reservationId },
+      'Failed to hand off a workspace removal reservation; queued an exact-attempt retry',
+    )
   }
 }
 

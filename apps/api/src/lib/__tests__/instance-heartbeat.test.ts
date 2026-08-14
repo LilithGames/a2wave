@@ -108,6 +108,7 @@ function deps(dbMock: unknown, overrides: Record<string, unknown> = {}) {
     instanceId: 'inst-self',
     bootTime: new Date('2026-08-14T09:00:00Z'),
     now: () => NOW,
+    monotonicMs: () => 0,
     ...overrides,
   } as never
 }
@@ -170,19 +171,28 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
   it('does not overlap beats when a write outlives its interval', async () => {
     // Two concurrent upserts of the same row race to write heartbeatAt, and a
     // slow one landing after a fast one would move liveness backwards.
+    //
+    // Count `write` entries, NOT the upserts the mock records: a write that is
+    // still in flight has not reached the DB layer yet, so asserting on upserts
+    // would read zero whether or not the single-flight guard exists — the shape
+    // of an earlier version of this test, which passed with the guard deleted.
     const { dbMock, upserts } = mockHeartbeatDb()
+    let started = 0
     let release: (() => void) | undefined
-    const slowWrite = <T>(fn: () => Promise<T>): Promise<T> =>
-      new Promise<T>((resolve) => {
+    const slowWrite = <T>(fn: () => Promise<T>): Promise<T> => {
+      started++
+      return new Promise<T>((resolve) => {
         release = () => resolve(fn())
       })
+    }
 
     const stop = startInstanceHeartbeat(deps(dbMock, { write: slowWrite }))
     await vi.advanceTimersByTimeAsync(0)
     await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS * 3)
 
     // Three intervals elapsed while the first write was still in flight; none
-    // of them may have started a second write.
+    // of them may have started a second one.
+    expect(started).toBe(1)
     expect(upserts).toHaveLength(0)
     release?.()
     await vi.advanceTimersByTimeAsync(0)
@@ -203,6 +213,7 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
       write: failingWrite,
       bootTime: NOW,
       now: () => new Date(clock),
+      monotonicMs: () => clock - NOW.getTime(),
     })
 
     const stop = startInstanceHeartbeat(state)
@@ -227,6 +238,7 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
       write: flakyWrite,
       bootTime: NOW,
       now: () => new Date(clock),
+      monotonicMs: () => clock - NOW.getTime(),
     })
 
     const stop = startInstanceHeartbeat(state, { onOwnershipLost })
@@ -245,23 +257,47 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
     stop()
   })
 
-  it('counts the initial database write from its recorded timestamp, not its return time', async () => {
-    const { dbMock, upserts } = mockHeartbeatDb()
-    const onOwnershipLost = vi.fn()
-    let clock = NOW.getTime() + INSTANCE_SELF_FENCE_AFTER_MS + 1
-    const state = deps(dbMock, { now: () => new Date(clock) })
+  it('credits a slow write from when it was issued, not when it returned', async () => {
+    // A write that took 30s only proves liveness as of when it was sent, so
+    // crediting its return time would extend the lease by its own latency —
+    // exactly the wrong direction when the DB is degraded.
+    const { dbMock } = mockHeartbeatDb()
+    let elapsed = 0
+    const slowWrite = async <T>(fn: () => Promise<T>): Promise<T> => {
+      elapsed += INSTANCE_SELF_FENCE_AFTER_MS + 1
+      return fn()
+    }
+    const state = deps(dbMock, { write: slowWrite, monotonicMs: () => elapsed })
 
-    const stop = startInstanceHeartbeat(state, {
-      initialSuccessAt: NOW,
-      onOwnershipLost,
-    })
+    const stop = startInstanceHeartbeat(state)
     await vi.advanceTimersByTimeAsync(0)
 
+    // The write succeeded, but by the time it returned the deadline had passed.
     expect(hasLostHeartbeatOwnership(state)).toBe(true)
-    expect(onOwnershipLost).toHaveBeenCalledTimes(1)
-    expect(upserts).toHaveLength(0)
     stop()
-    clock += 1
+  })
+
+  // The dangerous direction: a backwards step must not make a stale owner look
+  // healthy, because peers judge it by their own clocks regardless.
+  it('is unaffected by a wall-clock step backwards', async () => {
+    const { dbMock } = mockHeartbeatDb()
+    let elapsed = 0
+    const state = deps(dbMock, {
+      write: async <T>(_fn: () => Promise<T>): Promise<T> => {
+        throw new Error('db unreachable')
+      },
+      // Wall clock jumps a day into the past; monotonic keeps counting.
+      now: () => new Date(NOW.getTime() - 86_400_000),
+      monotonicMs: () => elapsed,
+    })
+
+    const stop = startInstanceHeartbeat(state)
+    await vi.advanceTimersByTimeAsync(0)
+    elapsed = INSTANCE_SELF_FENCE_AFTER_MS + 1
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
+
+    expect(hasLostHeartbeatOwnership(state)).toBe(true)
+    stop()
   })
 })
 
@@ -309,6 +345,7 @@ describe('canJudgePeerLiveness', () => {
       write: <T>(_fn: () => Promise<T>): Promise<T> => Promise.reject(new Error('db unreachable')),
       bootTime: new Date(NOW.getTime() - INSTANCE_DEAD_AFTER_MS * 2),
       now: () => new Date(clock),
+      monotonicMs: () => clock - NOW.getTime(),
     })
     const stop = startInstanceHeartbeat(state)
     await vi.advanceTimersByTimeAsync(0)

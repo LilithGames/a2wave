@@ -7,7 +7,8 @@ import { getExecutionAbortSignal } from './execution-lease-registry.js'
 import { emitExecutionProcessLogLine } from './execution-process-log.js'
 
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024
-const FORCE_KILL_DELAY_MS = 5_000
+/** SIGTERM → SIGKILL grace for one agent CLI. Part of the fail-stop budget. */
+export const FORCE_KILL_DELAY_MS = 5_000
 
 export type CliProcessExitReason = 'completed' | 'timeout' | 'cancelled' | 'spawn-error'
 

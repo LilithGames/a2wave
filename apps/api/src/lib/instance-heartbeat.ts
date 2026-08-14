@@ -65,6 +65,20 @@ export interface InstanceHeartbeatDeps {
   instanceId: string
   bootTime: Date
   now: () => Date
+  /**
+   * Elapsed milliseconds from a source that never steps — used **only** for
+   * this process's own fail-stop deadline.
+   *
+   * The wall clock is wrong for that decision in the dangerous direction: an
+   * NTP step backwards shrinks the measured gap, so an owner that has not
+   * renewed in ten minutes reads as healthy and keeps writing to a checkout
+   * its peers are already entitled to reclaim. A step forwards (or a container
+   * suspend/resume) only trips a spurious, conservative fail-stop.
+   *
+   * The persisted `started_at` / `heartbeat_at` columns stay wall-clock: those
+   * are compared *across* processes, where a monotonic reading is meaningless.
+   */
+  monotonicMs: () => number
 }
 
 const defaultDeps: InstanceHeartbeatDeps = {
@@ -73,6 +87,7 @@ const defaultDeps: InstanceHeartbeatDeps = {
   instanceId: processInstanceId,
   bootTime,
   now: () => new Date(),
+  monotonicMs: () => Number(process.hrtime.bigint() / 1_000_000n),
 }
 
 export async function beatInstanceHeartbeat(
@@ -101,22 +116,23 @@ interface RenewalState {
   lostOwnership: boolean
   onOwnershipLost?: () => void
   /**
-   * Last successful renewal, seeded when the loop starts rather than from
-   * `bootTime`: liveness is about *renewal* health, and a long-lived process
-   * that has beaten happily for hours must not read as instantly fenced.
+   * Last successful renewal on the **monotonic** timeline, seeded when the loop
+   * starts rather than from `bootTime`: liveness is about *renewal* health, and
+   * a long-lived process that has beaten happily for hours must not read as
+   * instantly fenced.
    */
   lastSuccessAt: number
 }
 
 const renewalStates = new WeakMap<InstanceHeartbeatDeps, RenewalState>()
 
-function renewalState(deps: InstanceHeartbeatDeps, initialSuccessAt?: Date): RenewalState {
+function renewalState(deps: InstanceHeartbeatDeps): RenewalState {
   let state = renewalStates.get(deps)
   if (!state) {
     state = {
       inFlight: false,
       lostOwnership: false,
-      lastSuccessAt: (initialSuccessAt ?? deps.now()).getTime(),
+      lastSuccessAt: deps.monotonicMs(),
     }
     renewalStates.set(deps, state)
   }
@@ -125,7 +141,7 @@ function renewalState(deps: InstanceHeartbeatDeps, initialSuccessAt?: Date): Ren
 
 function fenceIfExpired(deps: InstanceHeartbeatDeps, state: RenewalState): boolean {
   if (state.lostOwnership) return true
-  if (deps.now().getTime() - state.lastSuccessAt <= INSTANCE_SELF_FENCE_AFTER_MS) return false
+  if (deps.monotonicMs() - state.lastSuccessAt <= INSTANCE_SELF_FENCE_AFTER_MS) return false
   state.lostOwnership = true
   logger.error(
     { instanceId: deps.instanceId },
@@ -155,8 +171,6 @@ export function hasLostHeartbeatOwnership(deps: InstanceHeartbeatDeps = defaultD
 }
 
 export interface StartInstanceHeartbeatOptions {
-  /** Timestamp actually written by the awaited boot heartbeat. */
-  initialSuccessAt?: Date
   /** Fail-stop hook; production begins graceful shutdown and terminates every CLI. */
   onOwnershipLost?: () => void
 }
@@ -174,18 +188,23 @@ export function startInstanceHeartbeat(
   deps: InstanceHeartbeatDeps = defaultDeps,
   options: StartInstanceHeartbeatOptions = {},
 ): () => void {
-  const state = renewalState(deps, options.initialSuccessAt)
+  // Seeded from the monotonic clock here: the caller has just awaited the boot
+  // heartbeat, so "now" is the last known-good renewal.
+  const state = renewalState(deps)
   state.onOwnershipLost = options.onOwnershipLost
   const beat = async () => {
     if (fenceIfExpired(deps, state)) return
     if (state.inFlight) return
     state.inFlight = true
     try {
-      const heartbeatAt = await beatInstanceHeartbeat(deps)
+      const startedAt = deps.monotonicMs()
+      await beatInstanceHeartbeat(deps)
       // A write that returned after the lease deadline is too late. A peer may
       // already be preparing to reclaim, so never revive this process's epoch.
       if (fenceIfExpired(deps, state)) return
-      state.lastSuccessAt = heartbeatAt.getTime()
+      // Credit the instant the write STARTED, not when it returned: a write
+      // that took 30s only proves liveness as of when it was issued.
+      state.lastSuccessAt = startedAt
     } catch (error) {
       logger.warn({ error }, 'Instance heartbeat write failed; next interval retries')
     } finally {

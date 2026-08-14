@@ -217,8 +217,13 @@ describe('removeSourceWorkspaceGuarded', () => {
     expect(updated).toEqual([{ ownerInstanceId: null }])
   })
 
-  it('does not report handoff when the reservation ownership update failed', async () => {
-    const { tx, deleted, updated } = protocolTx({
+  it('keeps the reservation and queues a retry when the disown write fails', async () => {
+    // The worktree is still on disk, so the row must survive regardless of
+    // whether the disown landed. An earlier version released it here while
+    // also queueing a retry — the protocol then said two contradictory things
+    // about one failed attempt ("disown this later" and "already deleted"),
+    // and the sweeper logged a settled reservation that no longer existed.
+    const { tx, deleted } = protocolTx({
       selects: [...cleanDecisionSelects(), ...cleanDecisionSelects()],
       updateFailures: 1,
     })
@@ -230,13 +235,11 @@ describe('removeSourceWorkspaceGuarded', () => {
         name: 'ws-a',
         scm: scmOf(vi.fn().mockRejectedValue(new Error('EBUSY'))),
       }),
-    ).rejects.toThrow('handoff db unavailable')
+      // The caller still learns the removal failed, not that a disown failed.
+    ).rejects.toThrow('EBUSY')
 
-    // The attempt is over and no handoff was persisted, so release our mark;
-    // the caller sees failure and may retry rather than believing convergence
-    // now owns it.
-    expect(updated).toEqual([{ ownerInstanceId: null }])
-    expect(deleted).toHaveLength(1)
+    expect(deleted).toHaveLength(0)
+    // Retried on the next sweeper tick, fenced to this exact attempt.
     await expect(retryPendingWorkspaceRemovalReleases()).resolves.toContain('scm_1:ws-a')
   })
 

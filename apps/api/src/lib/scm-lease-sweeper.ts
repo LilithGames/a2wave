@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
@@ -7,6 +8,7 @@ import {
   runSteps,
   runs,
   scmWorkloadLeases,
+  scmWorkspaceRemovals,
 } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
@@ -23,6 +25,7 @@ import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 import { isScmEvaluationWorkloadRegistered } from './scm-workload-guard.js'
 import type { ScmWorkloadIdentity } from './scm-workload-lifecycle.js'
+import { workspaceRemovalId } from './scm-workspace-removal.js'
 
 /**
  * Reclaim durable SCM workload leases whose workload is provably finished.
@@ -73,7 +76,18 @@ export interface ScmLeaseSweepDeps {
   loadLiveness: (executor: WorkloadStatusExecutor) => Promise<InstanceLivenessMap>
   /** False during the post-boot grace window, when an empty table means nothing. */
   canJudgePeers: () => boolean
+  /**
+   * Hand an orphaned ephemeral worktree to the reconciler before its lease
+   * disappears. Returns false when there is nothing to reclaim.
+   */
+  reserveEphemeralWorktreeRemoval: (input: OrphanedWorktree) => Promise<boolean>
   now: () => Date
+}
+
+export interface OrphanedWorktree {
+  scmSourceId: string
+  workspaceName: string
+  tx: TransactionHandle
 }
 
 export interface ReleasedScmWorkload extends ScmWorkloadIdentity {
@@ -87,12 +101,42 @@ function isWorkloadLocallyActive(identity: ScmWorkloadIdentity): boolean {
   return isScmEvaluationWorkloadRegistered(identity.workloadId)
 }
 
+/**
+ * Write an unowned removal reservation for an orphaned worktree.
+ *
+ * `ownerInstanceId: null` is the "nobody is working on this" signal the
+ * reconciler adopts on its next tick — the same handoff an owner performs when
+ * its inline retries run out. Writing it on the sweep's transaction keeps the
+ * mark and the lease deletion atomic: the worktree is never unprotected, since
+ * the reservation lands before the lease that was protecting it disappears.
+ *
+ * A conflict means a removal of this worktree is already reserved, which is
+ * just as good — something is already tracking it.
+ */
+async function reserveEphemeralWorktreeRemoval(input: OrphanedWorktree): Promise<boolean> {
+  const reserved = await input.tx
+    .insert(scmWorkspaceRemovals)
+    .values({
+      id: workspaceRemovalId(input.scmSourceId, input.workspaceName),
+      scmSourceId: input.scmSourceId,
+      workspaceName: input.workspaceName,
+      ownerInstanceId: null,
+      attemptToken: randomUUID(),
+      createdAt: new Date(),
+      attemptStartedAt: new Date(),
+    })
+    .onConflictDoNothing()
+    .returning({ id: scmWorkspaceRemovals.id })
+  return reserved.length > 0
+}
+
 const defaultDeps: ScmLeaseSweepDeps = {
   withMutation: withScmPathMutation,
   isWorkloadLocallyActive,
   ownerInstanceId: processInstanceId,
   loadLiveness: (executor) => loadInstanceLiveness(executor),
   canJudgePeers: () => canJudgePeerLiveness(),
+  reserveEphemeralWorktreeRemoval,
   now: () => new Date(),
 }
 
@@ -151,6 +195,23 @@ export async function sweepOrphanedScmWorkloadLeases(
       }
       if (deps.isWorkloadLocallyActive(identity)) continue
       if (!(await isWorkloadTerminal(tx, identity))) continue
+      // Before the lease disappears, leave a durable mark for the worktree it
+      // was protecting. Only for a workload this instance did NOT own: our own
+      // cleanup path already handles its worktree, and reserving here would
+      // race it. A dead owner's worktree has nobody else — its finally never
+      // ran, so no reservation exists for the reconciler to adopt, and neither
+      // TTL cleanup (which only looks at `cleanup: 'ttl'`) nor startup
+      // recovery (which only drops the row) would ever reclaim it.
+      if (lease.ownerInstanceId !== deps.ownerInstanceId) {
+        const workspaceName = await ephemeralWorktreeName(tx, identity)
+        if (workspaceName) {
+          await deps.reserveEphemeralWorktreeRemoval({
+            scmSourceId: lease.scmSourceId,
+            workspaceName,
+            tx,
+          })
+        }
+      }
       await tx
         .delete(scmWorkloadLeases)
         .where(eq(scmWorkloadLeases.id, lease.id))
@@ -159,6 +220,34 @@ export async function sweepOrphanedScmWorkloadLeases(
     }
     return released
   })
+}
+
+/**
+ * The worktree an abandoned workload was using, when it is ephemeral.
+ *
+ * Evaluations derive it from the task id — `eval-<taskId>` is fixed by
+ * `routes/evaluation.ts` and unique per task, which is exactly why leaking one
+ * is unrecoverable rather than merely wasteful. Runs record their own name and
+ * cleanup policy on the row; a `persistent` or `ttl` worktree is deliberately
+ * left alone, since those are meant to outlive the workload.
+ *
+ * @returns the worktree name, or null when there is nothing to reclaim.
+ */
+async function ephemeralWorktreeName(
+  tx: WorkloadStatusExecutor,
+  identity: ScmWorkloadIdentity,
+): Promise<string | null> {
+  if (identity.type === 'evaluation') return `eval-${identity.workloadId}`
+  const run = (
+    await tx
+      .select({ worktreeConfig: runs.worktreeConfig })
+      .from(runs)
+      .where(eq(runs.id, identity.workloadId))
+      .limit(1)
+  )[0]
+  const config = run?.worktreeConfig
+  if (!config || config.cleanup !== 'ephemeral') return null
+  return config.name
 }
 
 interface LeaseOwnership {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { runGracefulShutdownSequence } from '../graceful-shutdown.js'
+import { SHUTDOWN_HARD_TIMEOUT_MS, runGracefulShutdownSequence } from '../graceful-shutdown.js'
 
 describe('runGracefulShutdownSequence', () => {
   function makeDeps() {
@@ -162,5 +162,13 @@ describe('runGracefulShutdownSequence', () => {
 
     // A failure reaping children must not strand the DB open / skip cleanup.
     expect(calls).toContain('closeDatabase')
+  })
+})
+
+describe('SHUTDOWN_HARD_TIMEOUT_MS', () => {
+  it('is exported so the fail-stop timing budget can assert against it', () => {
+    // The budget lives in fail-stop-timing.test.ts; this only guards the export
+    // that makes it checkable rather than a comment-only claim.
+    expect(SHUTDOWN_HARD_TIMEOUT_MS).toBeGreaterThan(0)
   })
 })

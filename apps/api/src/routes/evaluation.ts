@@ -44,6 +44,7 @@ import {
   buildStoredEvaluationSnapshot,
 } from '../lib/evaluation-snapshot.js'
 import { createId } from '../lib/id.js'
+import { hasLostHeartbeatOwnership } from '../lib/instance-heartbeat.js'
 import { logger } from '../lib/logger.js'
 import { getCurrentUserId } from '../lib/owner-filter.js'
 import { processInstanceId } from '../lib/process-instance.js'
@@ -269,6 +270,11 @@ app.delete('/:agentId/evaluation-sets/:setId/cases/:caseId', async (c) => {
  * the replacement the delete already promoted into its slot.
  */
 async function shouldStopTask(taskId: string): Promise<boolean> {
+  // Losing the liveness lease stops the loop too. A replay can span many cases
+  // and thus many minutes, so an admission-time check alone would let a fenced
+  // instance keep spawning CLIs against a worktree peers may already have
+  // reclaimed. This is the per-iteration floor the fail-stop promise needs.
+  if (hasLostHeartbeatOwnership()) return true
   const row = (
     await db
       .select({ cancelRequestedAt: evaluationTasks.cancelRequestedAt })
