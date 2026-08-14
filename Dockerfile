@@ -63,11 +63,19 @@ ARG TARGETARCH
 # bubblewrap: Claude Code native sandbox on Linux; ripgrep: fast repository search
 # gosu: drop privileges from root to appuser in docker-entrypoint.sh (UID remap pattern, see docker-entrypoint.sh)
 RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates sqlite3 procps tini bubblewrap ripgrep socat gosu && rm -rf /var/lib/apt/lists/* && \
-    # Perforce republishes r24.2 in place, so these move without the URL
-    # changing — which is exactly what the checksum below is here to notice.
-    # Both values were re-read from the vendor's own SHA256SUMS beside each
-    # binary (bin.linux26x86_64/SHA256SUMS, bin.linux26aarch64/SHA256SUMS) on
-    # 2026-08-14, not computed from whatever the build happened to download.
+    # `r24.2` is a release SERIES, not a version. Perforce ships patches into
+    # the same path — the binary served here identifies itself as
+    # `P4/LINUX26X86_64/2024.2/<changelist>`, and that changelist moves while
+    # the URL does not. Their CDN has no per-changelist directory to pin
+    # instead (only rNN.N series), so a fixed checksum against a moving target
+    # WILL fail again, by design rather than by accident.
+    #
+    # That is the intended trade: an unannounced upstream swap stops the build
+    # instead of silently shipping an unreviewed binary. When it fires, re-read
+    # both values from the vendor's own SHA256SUMS next to each binary
+    # (bin.linux26x86_64/SHA256SUMS, bin.linux26aarch64/SHA256SUMS) and update
+    # them here — never from `sha256sum` of whatever the build just downloaded,
+    # which would make the check a formality. Last re-read 2026-08-14.
     case "${TARGETARCH}" in \
       amd64) P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
       arm64) P4_ARCH="aarch64"; P4_SHA256="2b4df86bab5a72950fdd93d92ef865c0e2d6b378a6bc8bde62b86511cfc6d669" ;; \
