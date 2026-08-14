@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "croner": "^10.0.1",
-    "zod": "^3.24.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
