@@ -11,6 +11,8 @@ const mockDnsLookup = vi.hoisted(() => vi.fn())
 const mockUndiciAgentConstructor = vi.hoisted(() => vi.fn())
 const mockUndiciAgentClose = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   execFileSync: mockExecFileSync,

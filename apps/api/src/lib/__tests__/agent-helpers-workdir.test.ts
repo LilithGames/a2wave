@@ -68,6 +68,12 @@ vi.mock('../scm-source.js', () => ({
   createScmSource: mockCreateScmSource,
 }))
 
+const mockExistsSync = vi.hoisted(() => vi.fn())
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, existsSync: mockExistsSync }
+})
+
 vi.mock('../../engine/mcp-sync.js', () => ({}))
 
 vi.mock('../seed-builtin-mcp.js', () => ({
@@ -89,10 +95,13 @@ vi.mock('../slug.js', () => ({
 }))
 
 import {
+  WorkspaceOccupancyRecordError,
   WorktreeOccupiedError,
   _resetTtlCleanupDebounce,
   buildAgentConfig,
   injectScmEnv,
+  removePerAgentWorkspace,
+  resolveCleanupWorkDirs,
   resolveWorkDir,
   validateAgentProviderConfiguration,
 } from '../agent-helpers.js'
@@ -120,8 +129,8 @@ describe('resolveWorkDir', () => {
     vi.clearAllMocks()
   })
 
-  it('returns SCM source localPath when workspaceType is scm', async () => {
-    const source = { localPath: '/data/repos/my-project' }
+  it('returns SCM source localPath for non-git sources', async () => {
+    const source = { id: 'scm_1', type: 'p4', localPath: '/data/repos/my-project' }
     // resolveWorkDir calls db.select().from(scmSources).where(...).get()
     mockDbFrom.mockReturnValueOnce(asyncQuery({ where: () => asyncQuery({ get: () => source }) }))
 
@@ -134,6 +143,215 @@ describe('resolveWorkDir', () => {
     } as any
 
     expect(await resolveWorkDir(agent)).toBe('/data/repos/my-project')
+    expect(mockCreateScmSource).not.toHaveBeenCalled()
+  })
+
+  describe('per-agent default worktree (git SCM, no explicit worktree)', () => {
+    beforeEach(() => {
+      _resetTtlCleanupDebounce()
+    })
+
+    function gitAgent(): any {
+      return {
+        id: 'agt_abc123',
+        name: 'Test Agent',
+        config: {},
+        workspaceType: 'scm',
+        scmSourceId: 'scm_1',
+      }
+    }
+
+    const gitSource = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
+
+    /**
+     * A run-scoped resolve re-reads the Agent binding before anything else —
+     * the check that stops a stale pre-admission snapshot from mounting another
+     * source's checkout after a rebind. Tests that pass a runId must queue that
+     * row ahead of the source lookup.
+     */
+    const expectBindingRecheck = () =>
+      mockDbFrom.mockReturnValueOnce(chainResult({ workspaceType: 'scm', scmSourceId: 'scm_1' }))
+
+    it('resolves to a followSource worktree with persistent state', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([])) // no sibling run → advance allowed
+      const createWorkspace = vi
+        .fn()
+        .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: true })
+      const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+        writeWorkspaceState,
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/workspaces/scm_1/agent-abc123')
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123', {
+        followSource: true,
+        advance: true,
+      })
+      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'persistent' })
+    })
+
+    it('suppresses the advance while a sibling run of the agent is executing', async () => {
+      // reset --hard is not a read-only share: advancing under a sibling run
+      // would swap the files it is executing. Sharing stays lock-free, but
+      // freshness waits for the next solo run.
+      expectBindingRecheck()
+      mockDbFrom
+        .mockReturnValueOnce(chainResult(gitSource))
+        .mockReturnValueOnce(chainResult([{ id: 'run_other' }]))
+      const createWorkspace = vi
+        .fn()
+        .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false })
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      await resolveWorkDir(gitAgent(), undefined, 'run_1')
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123', {
+        followSource: true,
+        advance: false,
+      })
+    })
+
+    it('records workDir for the run without an occupancy check', async () => {
+      // Same-agent runs share the worktree by design: no occupancy error is
+      // raised — an occupancy gate would serialize concurrent chat messages.
+      expectBindingRecheck()
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      expect(await resolveWorkDir(gitAgent(), undefined, 'run_1')).toBe(
+        '/workspaces/scm_1/agent-abc123',
+      )
+      expect(mockDbUpdateSet).toHaveBeenCalledWith({ workDir: '/workspaces/scm_1/agent-abc123' })
+    })
+
+    it('falls back to the shared checkout when worktree creation fails', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi.fn().mockRejectedValue(new Error('worktree add failed')),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+      })
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/git')
+    })
+
+    it('falls back to the shared checkout when the source does not support workspaces', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+      mockCreateScmSource.mockReturnValueOnce(null)
+
+      expect(await resolveWorkDir(gitAgent())).toBe('/git')
+    })
+
+    it('publishes A2WAVE_WORKSPACE_BRANCH only when the run lands in its worktree', async () => {
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      const env: Record<string, string> = {}
+      await resolveWorkDir(gitAgent(), undefined, undefined, env)
+      expect(env.A2WAVE_WORKSPACE_BRANCH).toBe('agent-abc123')
+    })
+
+    it('fails the run when the occupancy marker cannot be persisted', async () => {
+      // runs.workDir is the only thing that says "this worktree is busy" — the
+      // delete route's 409, removePerAgentWorkspace and the sibling probe all
+      // read it. Swallowing the write would let an admin delete a running
+      // Agent's worktree; falling back would run it in the shared checkout.
+      expectBindingRecheck()
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      // Once per attempt — scoped with `Once` so the rejection does not leak
+      // into the next test (clearAllMocks keeps implementations).
+      for (let i = 0; i < 3; i++) {
+        mockDbUpdateWhere.mockImplementationOnce(() => Promise.reject(new Error('SQLITE_BUSY')))
+      }
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi
+          .fn()
+          .mockResolvedValue({ path: '/workspaces/scm_1/agent-abc123', created: false }),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      await expect(resolveWorkDir(gitAgent(), undefined, 'run_1')).rejects.toBeInstanceOf(
+        WorkspaceOccupancyRecordError,
+      )
+      // Retried before giving up — SQLITE_BUSY is usually transient.
+      expect(mockDbUpdateWhere).toHaveBeenCalledTimes(3)
+    })
+
+    // Grandfathered sticky configs are normalized away in ONE place, so both a
+    // config naming this Agent's own worktree and one naming another Agent's
+    // land in the Agent's own per-agent worktree — never on the explicit path,
+    // which would write the state file, switch the branch, and expose the
+    // workspace to run-end cleanup.
+    it.each([
+      ['its own worktree', 'agent-abc123def456ghi7'],
+      ["another Agent's worktree", 'agent-zzz999yyy888xxx7'],
+    ])('normalizes a sticky worktree config naming %s', async (_label, stickyName) => {
+      const agent = { ...gitAgent(), id: 'agt_abc123def456ghi7' }
+      const wsPath = '/workspaces/scm_1/agent-abc123def456ghi7'
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      const createWorkspace = vi.fn().mockResolvedValue({ path: wsPath, created: false })
+      const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace,
+        writeWorkspaceState,
+        cleanupStale: vi.fn().mockResolvedValue([]),
+      })
+
+      const workDir = await resolveWorkDir(agent, {
+        name: stickyName,
+        cleanup: 'ephemeral',
+        branch: 'feature/x',
+      } as any)
+
+      expect(workDir).toBe(wsPath)
+      expect(createWorkspace).toHaveBeenCalledWith('agent-abc123def456ghi7', {
+        followSource: true,
+        advance: true,
+      })
+      expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123def456ghi7', {
+        cleanup: 'persistent',
+      })
+    })
+
+    it('clears the branch env when degrading to the shared checkout', async () => {
+      // A stale value would send the agent off to move the shared checkout
+      // onto the per-agent branch — the cross-agent interference this feature
+      // exists to prevent.
+      mockDbFrom.mockReturnValueOnce(chainResult(gitSource)).mockReturnValueOnce(chainResult([]))
+      mockCreateScmSource.mockReturnValueOnce({
+        wsRoot: '/workspaces/scm_1',
+        createWorkspace: vi.fn().mockRejectedValue(new Error('worktree add failed')),
+        writeWorkspaceState: vi.fn().mockResolvedValue(undefined),
+      })
+
+      const env: Record<string, string> = { A2WAVE_WORKSPACE_BRANCH: 'agent-abc123' }
+      expect(await resolveWorkDir(gitAgent(), undefined, undefined, env)).toBe('/git')
+      expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
+    })
   })
 
   it('rejects a stale SCM snapshot after the Agent binding changed during admission', async () => {
@@ -209,6 +427,20 @@ describe('resolveWorkDir', () => {
       await expect(
         resolveWorkDir(agent, { name: 'invalid name!', cleanup: 'ttl' }),
       ).rejects.toThrow(/Invalid worktree name/)
+    })
+
+    it('grandfathers legacy sticky agent-* names instead of rejecting them', async () => {
+      // The reserved-prefix rejection lives at the request entry points; a
+      // persisted worktreeConfig from before the rule must keep replaying —
+      // this call proceeds past the name gate and fails only on the missing
+      // source, proving no reservation error fired.
+      mockDbFrom.mockReturnValueOnce(chainResult(undefined))
+      const agent = worktreeAgent()
+      const env: Record<string, string> = { A2WAVE_WORKSPACE_BRANCH: 'stale' }
+      await expect(
+        resolveWorkDir(agent, { name: 'agent-legacy1', cleanup: 'ttl' }, undefined, env),
+      ).rejects.toThrow(/SCM source .* not found/)
+      expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
     })
 
     it('throws when SCM source not found', async () => {
@@ -427,6 +659,130 @@ describe('resolveWorkDir', () => {
   })
 })
 
+describe('resolveCleanupWorkDirs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const gitAgent = {
+    id: 'agt_abc123',
+    name: 'Test Agent',
+    config: {},
+    workspaceType: 'scm',
+    scmSourceId: 'scm_1',
+  } as any
+  const gitSource = { id: 'scm_1', type: 'git', config: {}, localPath: '/git' }
+
+  it('returns worktree + shared checkout when the worktree exists on disk', async () => {
+    mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+    mockCreateScmSource.mockReturnValueOnce({ wsRoot: '/workspaces/scm_1' })
+    mockExistsSync.mockReturnValue(true)
+
+    expect(await resolveCleanupWorkDirs(gitAgent)).toEqual([
+      '/workspaces/scm_1/agent-abc123',
+      '/git',
+    ])
+  })
+
+  it('returns only the shared checkout when no worktree exists', async () => {
+    mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+    mockCreateScmSource.mockReturnValueOnce({ wsRoot: '/workspaces/scm_1' })
+    mockExistsSync.mockReturnValue(false)
+
+    expect(await resolveCleanupWorkDirs(gitAgent)).toEqual(['/git'])
+  })
+
+  it('returns only localPath for p4 sources', async () => {
+    mockDbFrom.mockReturnValueOnce(
+      chainResult({ id: 'scm_1', type: 'p4', config: {}, localPath: '/p4root' }),
+    )
+
+    expect(await resolveCleanupWorkDirs(gitAgent)).toEqual(['/p4root'])
+    expect(mockCreateScmSource).not.toHaveBeenCalled()
+  })
+
+  it('degrades to localPath when createScmSource fails', async () => {
+    mockDbFrom.mockReturnValueOnce(chainResult(gitSource))
+    mockCreateScmSource.mockRejectedValueOnce(new Error('invalid workspaces root'))
+
+    expect(await resolveCleanupWorkDirs(gitAgent)).toEqual(['/git'])
+  })
+
+  it('falls back to the default workspace dir when the source row is dangling', async () => {
+    // Runs of such an agent execute in resolveWorkDir's non-SCM fallback dir —
+    // that is where memory-override files live and must be cleaned from.
+    mockDbFrom.mockReturnValueOnce(chainResult(undefined)) // cleanup's source lookup
+    mockDbFrom.mockReturnValueOnce(chainResult(undefined)) // resolveWorkDir's source lookup
+    const dirs = await resolveCleanupWorkDirs(gitAgent)
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0]).toContain('/workspace/')
+  })
+})
+
+describe('removePerAgentWorkspace', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const gitAgent = {
+    id: 'agt_abc123',
+    name: 'Test Agent',
+    config: {},
+    workspaceType: 'scm',
+    scmSourceId: 'scm_1',
+  } as any
+
+  it('removes the per-agent worktree when it exists and is idle', async () => {
+    mockDbFrom
+      .mockReturnValueOnce(chainResult({ id: 'scm_1', type: 'git', config: {}, localPath: '/git' }))
+      .mockReturnValueOnce(chainResult([])) // no run occupies the worktree
+    const removeWorkspace = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValueOnce({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+    mockExistsSync.mockReturnValue(true)
+
+    await removePerAgentWorkspace(gitAgent)
+    expect(removeWorkspace).toHaveBeenCalledWith('agent-abc123', { keepBranches: true })
+  })
+
+  it('leaves an occupied worktree in place but hands it to the TTL sweeper', async () => {
+    // Yanking the cwd from under an in-flight run (e.g. a chat debug on a
+    // draft agent) loses its unpushed work. Leaving it as `persistent` leaked
+    // it forever though: the Agent row is gone, so no run resolves it again and
+    // the sweeper skips persistent workspaces. Demote it to ttl instead.
+    mockDbFrom
+      .mockReturnValueOnce(chainResult({ id: 'scm_1', type: 'git', config: {}, localPath: '/git' }))
+      .mockReturnValueOnce(chainResult([{ id: 'run_active' }]))
+    const removeWorkspace = vi.fn().mockResolvedValue(undefined)
+    const writeWorkspaceState = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValueOnce({
+      wsRoot: '/workspaces/scm_1',
+      removeWorkspace,
+      writeWorkspaceState,
+    })
+    mockExistsSync.mockReturnValue(true)
+
+    await removePerAgentWorkspace(gitAgent)
+    expect(removeWorkspace).not.toHaveBeenCalled()
+    expect(writeWorkspaceState).toHaveBeenCalledWith('agent-abc123', { cleanup: 'ttl' })
+  })
+
+  it('does nothing for non-scm agents and never throws on removal failure', async () => {
+    await removePerAgentWorkspace({ id: 'agt_x', workspaceType: 'temp', scmSourceId: null } as any)
+    expect(mockCreateScmSource).not.toHaveBeenCalled()
+
+    mockDbFrom
+      .mockReturnValueOnce(chainResult({ id: 'scm_1', type: 'git', config: {}, localPath: '/git' }))
+      .mockReturnValueOnce(chainResult([]))
+    mockCreateScmSource.mockReturnValueOnce({
+      wsRoot: '/workspaces/scm_1',
+      removeWorkspace: vi.fn().mockRejectedValue(new Error('worktree dirty')),
+    })
+    mockExistsSync.mockReturnValue(true)
+
+    await expect(removePerAgentWorkspace(gitAgent)).resolves.toBeUndefined()
+  })
+})
+
 describe('injectScmEnv', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -454,7 +810,7 @@ describe('injectScmEnv', () => {
     mockDbFrom.mockReturnValue(chainResult(source))
 
     const env: Record<string, string> = {}
-    const agent = { workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+    const agent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
 
     await injectScmEnv(env, agent)
     expect(env.P4PORT).toBe('ssl:perforce:1666')
@@ -473,10 +829,25 @@ describe('injectScmEnv', () => {
     mockDbFrom.mockReturnValue(chainResult(source))
 
     const env: Record<string, string> = {}
-    const agent = { workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+    const agent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
 
     await injectScmEnv(env, agent)
     expect(env.GIT_BRANCH).toBe('develop')
+  })
+
+  it('does not set A2WAVE_WORKSPACE_BRANCH (resolveWorkDir owns that variable)', async () => {
+    const source = {
+      type: 'git',
+      config: { branch: 'develop' },
+      localPath: '/data/git',
+    }
+    mockDbFrom.mockReturnValue(chainResult(source))
+
+    const env: Record<string, string> = {}
+    const agent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+
+    await injectScmEnv(env, agent)
+    expect(env).not.toHaveProperty('A2WAVE_WORKSPACE_BRANCH')
   })
 
   it('defaults GIT_BRANCH to main when not specified', async () => {
@@ -488,7 +859,7 @@ describe('injectScmEnv', () => {
     mockDbFrom.mockReturnValue(chainResult(source))
 
     const env: Record<string, string> = {}
-    const agent = { workspaceType: 'scm', scmSourceId: 'scm_1' } as any
+    const agent = { id: 'agt_abc123', workspaceType: 'scm', scmSourceId: 'scm_1' } as any
 
     await injectScmEnv(env, agent)
     expect(env.GIT_BRANCH).toBe('main')

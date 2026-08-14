@@ -22,6 +22,7 @@ import { buildArtifactLinkLines } from './artifact-links.js'
 import { type RegisteredArtifact, scanAndRegisterArtifacts } from './artifact-storage.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { buildFeishuFallbackText } from './feishu-fallback.js'
+import { isPerAgentWorkspaceName } from './git-workspace.js'
 import { createId } from './id.js'
 import { jsonPathIsAbsent, jsonSet } from './json-sql.js'
 import { logger } from './logger.js'
@@ -795,6 +796,19 @@ export async function cleanupWorktreeIfEphemeral(runId: string, agentId: string)
 
   const wtConfig = run.worktreeConfig as { name: string; cleanup: string }
   if (wtConfig.cleanup !== 'ephemeral') return
+
+  // A grandfathered sticky config may name a per-agent worktree. Run-end
+  // cleanup must not touch it at all: keeping the branch is not enough,
+  // deleting the directory would discard uncommitted work. The shape test, not
+  // just this Agent's own name — a config naming *another* Agent's worktree
+  // would otherwise hand that Agent's branch to `git branch -D`.
+  if (isPerAgentWorkspaceName(wtConfig.name)) {
+    logger.info(
+      { runId, agentId, workspace: wtConfig.name },
+      'Skipping ephemeral cleanup for the per-agent worktree',
+    )
+    return
+  }
 
   // 检查是否有其他 run 还在使用同一 workDir
   const occupied = (

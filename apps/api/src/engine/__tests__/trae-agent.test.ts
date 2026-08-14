@@ -6,6 +6,8 @@ const mockSpawn = vi.hoisted(() => vi.fn())
 const mockRunStatusProbe = vi.hoisted(() => vi.fn())
 const mockDnsLookup = vi.hoisted(() => vi.fn())
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   spawn: mockSpawn,

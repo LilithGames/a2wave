@@ -8,11 +8,27 @@
 
 import { access, cp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { PRESET_PROVIDERS } from '@a2wave/shared'
 import matter from 'gray-matter'
 import { getSkillStoragePath } from '../lib/skill-storage.js'
 import { slugify } from '../lib/slug.js'
 
 const SKILL_MANAGED_MARKER = '.a2wave-managed'
+
+/**
+ * Workspace paths this writer owns: every Provider's skillsDir, at full depth
+ * (".claude/skills", not ".claude"). Registered with
+ * `platformWorkspacePaths()`, which derives the root-entry set from these.
+ *
+ * Depth matters: the dirty check excludes these paths from "is this agent
+ * work?", and excluding all of `.claude` would let `reset --hard` silently
+ * discard a repo-tracked `.claude/settings.json` the agent edited.
+ */
+export function skillSyncWorkspacePaths(): string[] {
+  return PRESET_PROVIDERS.filter((preset) => preset.skillsDir).map(
+    (preset) => preset.skillsDir as string,
+  )
+}
 
 function resolveSkillsRoot(workDir: string, skillsDir: string): string {
   return join(workDir, skillsDir)

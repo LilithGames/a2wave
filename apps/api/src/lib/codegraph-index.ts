@@ -1,17 +1,15 @@
-import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { lstat, readlink, symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 import type { ScmSourceConfig } from '@a2wave/shared'
 import { and, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
 import { runExclusive } from '../db/transaction.js'
+import { execCli } from '../engine/cli-spawn.js'
 import { sanitizeCredentials } from './git-sync.js'
 import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
-
-const execFileAsync = promisify(execFile)
 
 const CODEGRAPH_TIMEOUT_MS = 10 * 60 * 1000
 const CODEGRAPH_MAX_BUFFER = 20 * 1024 * 1024
@@ -25,8 +23,54 @@ export interface CodegraphIndexResult {
   conflict?: boolean
 }
 
+/** Workspace-root entry this module writes (the index symlink). */
+const CODEGRAPH_WORKSPACE_ENTRY = '.codegraph'
+
+/**
+ * Workspace paths this writer owns. Registered with `platformWorkspacePaths()`.
+ */
+export function codegraphWorkspacePaths(): string[] {
+  return [CODEGRAPH_WORKSPACE_ENTRY]
+}
+
 export function isCodegraphEnabled(config: unknown): boolean {
   return Boolean((config as Partial<ScmSourceConfig> | null | undefined)?.codegraphEnabled)
+}
+
+/**
+ * Make the source's CodeGraph index reachable from a workspace (worktree).
+ *
+ * The index is generated once per SCM source at `<localPath>/.codegraph`, and
+ * the query CLI resolves it relative to cwd — so a run whose cwd is a per-agent
+ * worktree would silently degrade to grep without this link. A symlink keeps
+ * the cwd-relative contract true with zero assumptions about CLI flags.
+ *
+ * Idempotent and non-destructive: an existing correct link is kept, a dangling
+ * link (source relocated) is repaired, and a real file/directory is never
+ * overwritten. Failures only log — index reachability is never worth failing
+ * a run over.
+ */
+export async function ensureCodegraphLink(workspacePath: string, localPath: string): Promise<void> {
+  const target = join(localPath, CODEGRAPH_WORKSPACE_ENTRY)
+  const linkPath = join(workspacePath, CODEGRAPH_WORKSPACE_ENTRY)
+  if (!existsSync(target)) return
+
+  try {
+    const existing = await lstat(linkPath).catch(() => null)
+    if (existing) {
+      if (!existing.isSymbolicLink()) return
+      // Repair when the link no longer resolves OR points somewhere other than
+      // the current source checkout — after a localPath edit the old directory
+      // may still exist, and a resolving-but-stale link would silently serve an
+      // index of code the workspace no longer contains.
+      const currentTarget = await readlink(linkPath).catch(() => null)
+      if (currentTarget === target && existsSync(linkPath)) return
+      await unlink(linkPath)
+    }
+    await symlink(target, linkPath, 'dir')
+  } catch (err) {
+    logger.warn({ err, linkPath, target }, 'Failed to link CodeGraph index into workspace')
+  }
 }
 
 function trimMessage(message: string): string {
@@ -65,7 +109,7 @@ export async function runCodegraphForPath(localPath: string): Promise<CodegraphI
   const mode = hasIndex ? 'sync' : 'init'
 
   try {
-    const { stdout, stderr } = await execFileAsync('codegraph', [mode, localPath], {
+    const { stdout, stderr } = await execCli('codegraph', [mode, localPath], {
       timeout: CODEGRAPH_TIMEOUT_MS,
       maxBuffer: CODEGRAPH_MAX_BUFFER,
       env: { ...process.env, NO_COLOR: '1' },

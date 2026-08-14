@@ -53,6 +53,8 @@ vi.mock('../../worker/index.js', () => ({
 }))
 
 vi.mock('../../lib/agent-helpers.js', () => ({
+  resolveCleanupWorkDirs: vi.fn().mockResolvedValue(['/tmp/work']),
+  removePerAgentWorkspace: vi.fn().mockResolvedValue(undefined),
   resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
   WorktreeOccupiedError: class extends Error {},
   injectScmEnv: vi.fn(),

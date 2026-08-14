@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { PROVIDER_CHAIN_MAX, providerKindSchema } from '@a2wave/shared'
 import type {
@@ -23,14 +24,14 @@ import {
   skills,
   users,
 } from '../db/schema.js'
-import { withTransaction } from '../db/transaction.js'
+import { runExclusive, withTransaction } from '../db/transaction.js'
 import { kbDocFilename } from '../engine/kb-sync.js'
 import type { ResolvedMcpServer } from '../engine/mcp-sync.js'
 import { providerCatalog } from '../engine/provider-catalog.js'
 import { env } from '../env.js'
 import { RUNTIME_MEMORY_READ_ACTIONS, registerAgentToken } from './agent-memory-token.js'
 import { logBackgroundAudit } from './audit.js'
-import { isCodegraphEnabled } from './codegraph-index.js'
+import { ensureCodegraphLink, isCodegraphEnabled } from './codegraph-index.js'
 import {
   ProviderBindingInvalidError,
   ProviderChainTooLongError,
@@ -42,8 +43,12 @@ import {
   WORKTREE_NAME_REGEX,
   WorktreeBranchLockedError,
   WorktreeDirtyError,
+  isPerAgentWorkspaceName,
+  perAgentWorkspaceName,
+  readWorkspaceState,
 } from './git-workspace.js'
 import { INTERNAL_ADMIN_TOKEN_ENV, getInternalAdminToken } from './internal-admin-auth.js'
+import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
 import { cleanupLegacyRuntimeGroupConfig } from './runtime-group-config.js'
@@ -1132,6 +1137,301 @@ export function _resetTtlCleanupDebounce(): void {
   lastCleanupAt.clear()
 }
 
+/** In-flight run statuses: rows whose workDir may still be in use. */
+export const IN_FLIGHT_RUN_STATUSES = ['running', 'pending', 'queued'] as const
+
+/**
+ * `runs.workDir` failed to persist, so nothing marks the worktree as occupied.
+ *
+ * Distinct from every other resolve failure because it must NOT degrade to the
+ * shared checkout: the worktree is fine, only its occupancy marker is missing.
+ */
+export class WorkspaceOccupancyRecordError extends Error {
+  constructor(runId: string, workDir: string, cause: unknown) {
+    super(`Failed to record workDir '${workDir}' for run '${runId}'`, { cause })
+    this.name = 'WorkspaceOccupancyRecordError'
+  }
+}
+
+const WORKDIR_RECORD_ATTEMPTS = 3
+const WORKDIR_RECORD_RETRY_MS = 25
+
+/**
+ * Persist `runs.workDir` — the only marker that says "this worktree is busy".
+ *
+ * The workspace-delete route's 409, `removePerAgentWorkspace`'s occupancy probe
+ * and the sibling-advance check all read it, so a swallowed write leaves an
+ * administrator free to delete the worktree of a running Agent. A transient
+ * failure is retried; a persistent one fails the run instead of executing
+ * unprotected.
+ *
+ * `runExclusive` is what makes the retry meaningful. On SQLite the process
+ * shares one connection, so a bare write landing inside another request's
+ * transaction is erased by that transaction's ROLLBACK — silently, with no
+ * error for the retry to catch. Serialising against transactions removes the
+ * failure mode instead of reacting to it.
+ */
+async function recordRunWorkDir(runId: string, wsPath: string): Promise<void> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= WORKDIR_RECORD_ATTEMPTS; attempt++) {
+    try {
+      await runExclusive(() => db.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId)))
+      return
+    } catch (err) {
+      lastErr = err
+      logger.warn({ err, runId, wsPath, attempt }, 'Failed to record runs.workDir, retrying')
+      if (attempt < WORKDIR_RECORD_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, WORKDIR_RECORD_RETRY_MS * attempt))
+      }
+    }
+  }
+  throw new WorkspaceOccupancyRecordError(runId, wsPath, lastErr)
+}
+
+/**
+ * Locate an Agent's per-agent worktree without side effects. Returns null when
+ * the source is not git or the SCM layer is unavailable — callers degrade.
+ */
+async function locatePerAgentWorktree(
+  agent: typeof agents.$inferSelect,
+  source: typeof scmSources.$inferSelect,
+): Promise<{ scm: ScmSource; wsPath: string; name: string } | null> {
+  if (source.type !== 'git') return null
+  let scm: Awaited<ReturnType<typeof createScmSource>> = null
+  try {
+    scm = await createScmSource(source)
+  } catch {
+    scm = null
+  }
+  if (!scm) return null
+  const name = perAgentWorkspaceName(agent.id)
+  return { scm, wsPath: join(scm.wsRoot, name), name }
+}
+
+/**
+ * Keep agentEnv's A2WAVE_WORKSPACE_BRANCH truthful for the resolved workspace:
+ * set only when the run actually executes in its per-agent worktree; removed on
+ * explicit-worktree, fallback and non-git paths, where the per-agent branch is
+ * a ref the run is not on. Deciding this at resolution time is what makes it
+ * impossible for a channel to advertise a branch it did not get.
+ */
+function recordWorkspaceBranchEnv(
+  agentEnv: Record<string, string> | undefined,
+  branch: string | null,
+): void {
+  if (!agentEnv) return
+  if (branch) agentEnv.A2WAVE_WORKSPACE_BRANCH = branch
+  else delete agentEnv.A2WAVE_WORKSPACE_BRANCH
+}
+
+/**
+ * Resolve the per-Agent default worktree for a git SCM Agent.
+ *
+ * Deliberately no occupancy check: runs of the same Agent share this worktree
+ * by design (their mounted skill set is identical), and probing occupancy here
+ * would serialize every concurrent chat message. `runs.workDir` is still
+ * recorded as bookkeeping for recovery and cleanup display — it is not a lock.
+ */
+async function resolvePerAgentWorkspace(
+  source: typeof scmSources.$inferSelect,
+  agent: typeof agents.$inferSelect,
+  runId?: string,
+): Promise<string> {
+  const located = await locatePerAgentWorktree(agent, source)
+  if (!located) {
+    return source.localPath
+  }
+  const { scm, wsPath, name } = located
+
+  // Serialize workspace-mutating git operations per worktree within this
+  // process: two runs resolving concurrently must not interleave
+  // `worktree add` / `reset --hard` / `checkout` on one tree.
+  //
+  // Probe, create and occupancy write all live INSIDE the lock. Probing
+  // outside it left a window where a sibling started executing between the
+  // probe and the `reset --hard`, which is the one thing the probe exists to
+  // prevent; recording workDir inside it means the next run to take the lock
+  // sees this one, instead of both reading an empty table and both advancing.
+  const result = await withKeyedLock(`workspace:${wsPath}`, async () => {
+    // Advancing runs `reset --hard`, which is not a read-only share — while a
+    // sibling run is EXECUTING here (workDir recorded, status running), skip
+    // the advance; freshness resumes on the next solo run. pending/queued rows
+    // are deliberately excluded: Feishu reserves its row at message receipt and
+    // a backlog would otherwise suppress the advance forever on a busy agent.
+    const sibling = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.workDir, wsPath),
+            eq(runs.status, 'running'),
+            ...(runId ? [ne(runs.id, runId)] : []),
+          ),
+        )
+        .limit(1)
+    )[0]
+
+    const created = await scm.createWorkspace(name, { followSource: true, advance: !sibling })
+    if (runId) await recordRunWorkDir(runId, created.path)
+    return created
+  })
+
+  const ensureState = async () => {
+    try {
+      // persistent: never TTL-swept, never removed after a run — the worktree
+      // is the Agent's long-lived workspace, carrying cross-run state. Skip
+      // the rewrite when the file already says so (the common case); a missing
+      // or divergent file (fresh create, legacy v1, manual edit) is healed.
+      if (!result.created) {
+        const { state } = await readWorkspaceState(result.path)
+        if (state?.cleanup === 'persistent') return
+      }
+      await scm.writeWorkspaceState(name, { cleanup: 'persistent' })
+    } catch (err) {
+      logger.warn({ err, wsPath: result.path }, 'Failed to write workspace state file')
+    }
+  }
+
+  await Promise.all([
+    ensureState(),
+    // The index lives in the shared checkout and the query CLI is cwd-relative;
+    // without this link a worktree run silently degrades to grep.
+    isCodegraphEnabled(source.config)
+      ? ensureCodegraphLink(result.path, source.localPath)
+      : Promise.resolve(),
+  ])
+
+  triggerTtlCleanup(source.id, scm).catch((err) =>
+    logger.warn({ err, sourceId: source.id }, 'TTL cleanup trigger failed'),
+  )
+
+  return result.path
+}
+
+/**
+ * Directories where an Agent's workspace files (e.g. memory-override files) may
+ * live, resolved WITHOUT side effects — a config PATCH must never create a
+ * worktree or move a HEAD. For git SCM Agents this covers the per-agent
+ * worktree (only if it already exists on disk) plus the shared checkout, where
+ * pre-worktree deployments left the same files.
+ */
+export async function resolveCleanupWorkDirs(agent: typeof agents.$inferSelect): Promise<string[]> {
+  if (agent.workspaceType === 'scm' && agent.scmSourceId) {
+    const source = (
+      await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
+    )[0]
+    if (source) {
+      const dirs: string[] = []
+      const located = await locatePerAgentWorktree(agent, source)
+      if (located && existsSync(located.wsPath)) dirs.push(located.wsPath)
+      dirs.push(source.localPath)
+      return dirs
+    }
+    // Dangling scmSourceId: runs execute in the non-SCM fallback directory
+    // (resolveWorkDir's tail), so that is where override files live.
+  }
+
+  // Non-SCM resolution never touches git — safe to reuse as-is.
+  return [await resolveWorkDir(agent)]
+}
+
+/**
+ * Best-effort reclaim of an Agent's per-agent worktree on Agent deletion.
+ * Removal goes through scm.removeWorkspace (registry-checked, never a raw
+ * recursive delete) with keepBranches: the branch is a few refs while the
+ * commits on it may be the only copy of unpushed work — reclaim the disk,
+ * keep the history recoverable. Failures only log: a stuck worktree must not
+ * block the deletion.
+ */
+export async function removePerAgentWorkspace(agent: typeof agents.$inferSelect): Promise<void> {
+  if (agent.workspaceType !== 'scm' || !agent.scmSourceId) return
+  const source = (
+    await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
+  )[0]
+  if (!source) return
+
+  const located = await locatePerAgentWorktree(agent, source)
+  if (!located) return
+  const { scm, wsPath, name } = located
+  if (!existsSync(wsPath)) return
+
+  // Probe and removal share the workspace lock so a run resolving this
+  // worktree concurrently (A2A resolves before its run row exists) cannot
+  // slip between the occupancy check and the removal.
+  await withKeyedLock(`workspace:${wsPath}`, async () => {
+    // A chat-debug run can be in flight even though only stopped agents are
+    // deletable — yanking its cwd would lose unpushed work. Leave the worktree
+    // behind instead; the workspace-delete route can reclaim it once idle.
+    const occupant = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.workDir, wsPath), inArray(runs.status, [...IN_FLIGHT_RUN_STATUSES])))
+        .limit(1)
+    )[0]
+    if (occupant) {
+      // Leaving it behind used to mean leaking it forever: the Agent row is
+      // gone, so no run will ever resolve this worktree again, and `persistent`
+      // excludes it from the TTL sweeper. Demote the state file so the sweeper
+      // reclaims it once it goes idle — with keepBranches, since it is still
+      // shaped like a per-agent worktree.
+      try {
+        await scm.writeWorkspaceState(name, { cleanup: 'ttl' })
+      } catch (err) {
+        logger.warn(
+          { err, agentId: agent.id, workspace: name },
+          'Failed to demote an occupied per-agent worktree to ttl; it will need manual cleanup',
+        )
+      }
+      logger.warn(
+        { agentId: agent.id, workspace: name, runId: occupant.id },
+        'Per-agent worktree occupied by an in-flight run; left for TTL cleanup',
+      )
+      return
+    }
+
+    try {
+      await scm.removeWorkspace(name, { keepBranches: true })
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id, workspace: name },
+        'Failed to remove per-agent worktree during agent deletion',
+      )
+    }
+  })
+}
+
+/**
+ * The single place a per-agent worktree is protected from explicit addressing.
+ *
+ * Per-agent worktrees are platform-owned: only `resolvePerAgentWorkspace` may
+ * touch one. Request entry points reject the reserved `agent-` prefix with 400,
+ * but a worktree config persisted before that rule keeps replaying, and
+ * honouring it sends the run down the explicit path — which writes the
+ * workspace's state file, switches its branch, and hands it to run-end cleanup.
+ * Those were three separately-guarded ways to lose an Agent's work; dropping
+ * the params here removes the whole branch instead of guarding each end of it.
+ *
+ * The run then lands in the Agent's own per-agent worktree, which is where the
+ * same request would have gone without the stale config.
+ */
+function normalizeWorktreeParams(
+  agent: typeof agents.$inferSelect,
+  params?: WorktreeCallParams,
+): WorktreeCallParams | undefined {
+  if (!params || !isPerAgentWorkspaceName(params.name)) return params
+  logger.warn(
+    {
+      agentId: agent.id,
+      workspace: params.name,
+      own: params.name === perAgentWorkspaceName(agent.id),
+    },
+    'Ignoring a worktree config that addresses a per-agent worktree',
+  )
+  return undefined
+}
+
 export class WorktreeOccupiedError extends Error {
   constructor(public readonly worktreePath: string) {
     super(`Worktree '${worktreePath}' is occupied by a running or pending run`)
@@ -1143,7 +1443,11 @@ export async function resolveWorkDir(
   agent: typeof agents.$inferSelect,
   worktreeParams?: WorktreeCallParams,
   runId?: string,
+  agentEnv?: Record<string, string>,
 ): Promise<string> {
+  // Re-read the binding before resolving anything: the snapshot this call was
+  // given predates admission, and a PATCH may have rebound the Agent since.
+  // Resolving against the stale snapshot would mount another source's checkout.
   if (runId && agent.workspaceType === 'scm' && agent.scmSourceId) {
     const current = (
       await db
@@ -1157,8 +1461,12 @@ export async function resolveWorkDir(
     }
   }
 
+  const explicitWorktree = normalizeWorktreeParams(agent, worktreeParams)
+
   // SCM + worktree 模式
-  if (worktreeParams) {
+  if (explicitWorktree) {
+    const worktreeParams = explicitWorktree
+    recordWorkspaceBranchEnv(agentEnv, null)
     if (agent.workspaceType !== 'scm' || !agent.scmSourceId) {
       throw new Error('Worktree requires SCM workspace type with a linked code source')
     }
@@ -1235,7 +1543,10 @@ export async function resolveWorkDir(
       throw err
     }
 
-    // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）
+    // 写状态文件（last-run-wins + 更新 mtime = lastActivityAt）。
+    // A per-agent worktree can no longer reach this line — normalizeWorktreeParams
+    // drops those params — so the caller's cleanup mode is always this
+    // workspace's own.
     try {
       await scm.writeWorkspaceState(worktreeParams.name, { cleanup: worktreeParams.cleanup })
     } catch (err) {
@@ -1250,12 +1561,45 @@ export async function resolveWorkDir(
     return result.path
   }
 
-  // 原有逻辑：SCM 直接使用 localPath
+  // Default (no explicit worktree): git SCM Agents run in a per-Agent worktree.
+  // Agents sharing one SCM source used to share its checkout directly, so a run
+  // starting on Agent B re-mounted skills/config mid-run of Agent A and deleted
+  // the files A was executing. A stable per-Agent worktree makes that physically
+  // impossible while keeping cross-run state (the worktree is persistent) and
+  // freshness (followSource advances it to the synced HEAD on every reuse).
   if (agent.workspaceType === 'scm' && agent.scmSourceId) {
     const source = (
       await db.select().from(scmSources).where(eq(scmSources.id, agent.scmSourceId)).limit(1)
     )[0]
     if (source) {
+      if (source.type === 'git') {
+        try {
+          const wsPath = await resolvePerAgentWorkspace(source, agent, runId)
+          recordWorkspaceBranchEnv(
+            agentEnv,
+            wsPath === source.localPath ? null : perAgentWorkspaceName(agent.id),
+          )
+          return wsPath
+        } catch (err) {
+          // Exception: the worktree resolved fine, only its occupancy marker
+          // did not persist. Falling back would run the Agent in the shared
+          // checkout *and* leave the worktree deletable mid-run — fail loudly.
+          if (err instanceof WorkspaceOccupancyRecordError) throw err
+          // A broken worktree must not take the Agent down — degrade to the
+          // shared checkout, which is exactly the pre-worktree behavior. The
+          // env must not keep naming the per-agent branch here: an agent
+          // following it would move the shared checkout off the source branch.
+          logger.warn(
+            { err, agentId: agent.id, sourceId: source.id },
+            'Per-agent worktree unavailable, falling back to the shared checkout',
+          )
+          recordWorkspaceBranchEnv(agentEnv, null)
+          return source.localPath
+        }
+      }
+      // P4 has no isolation mechanism (client spec is server-side state bound to
+      // a single Root) — the shared checkout remains the only option.
+      recordWorkspaceBranchEnv(agentEnv, null)
       return source.localPath
     }
   }
@@ -1301,6 +1645,9 @@ export async function injectScmEnv(
   } else if (source.type === 'git') {
     const config = source.config as unknown as GitConfig
     agentEnv.GIT_BRANCH = config.branch || 'main'
+    // A2WAVE_WORKSPACE_BRANCH is deliberately NOT set here: only resolveWorkDir
+    // knows whether the run really lands in its per-agent worktree, so it owns
+    // that variable (recordWorkspaceBranchEnv) — absence beats a wrong value.
   }
   if (isCodegraphEnabled(source.config)) {
     agentEnv.A2WAVE_CODEGRAPH_ENABLED = 'true'

@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const mockSpawn = vi.hoisted(() => vi.fn())
 const mockRunStatusProbe = vi.hoisted(() => vi.fn())
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({ execFile: vi.fn(), spawn: mockSpawn }))
 vi.mock('../login-status-helper.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../login-status-helper.js')>()

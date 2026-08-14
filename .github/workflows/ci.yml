@@ -1,9 +1,24 @@
-# a2wave CI — lint / typecheck / unit-test gates.
+# a2wave CI — orchestrated lanes behind a single aggregate gate.
 #
-# Pipeline overview:
-# - lint / typecheck / test / test-api run on push to main and on pull requests.
-# - Playwright E2E is intentionally NOT in CI: it needs web+api running together,
-#   and still runs locally via `pnpm test:all`.
+# Shape (borrowed from hermes-agent's orchestrator + ollama's changes job):
+# - `detect` classifies the diff once (scripts/ci/detect-changes.mjs); expensive
+#   lanes are skipped when the diff cannot affect them. Cheap gates — lint,
+#   typecheck, secret-scan — run unconditionally: they are the quality floor,
+#   not lanes.
+# - On push to main, detect runs `--all` (fail open): post-merge validation is
+#   never weakened by lane skipping. A misclassified PR is caught one merge
+#   later, not never.
+# - `all-checks-pass` aggregates every job with `if: always()` — skipped counts
+#   as success, failure/cancellation fails. Branch protection requires ONLY
+#   this check, so adding or gating a lane never needs a protection edit (and a
+#   new job can never silently land unprotected).
+# - Lane skipping happens INSIDE the workflow, never via `on.paths`: a required
+#   check on a workflow that does not trigger stays pending forever and blocks
+#   the merge.
+# - `labeled`/`unlabeled` retrigger the run so the review-labels gate re-reads
+#   the PR's labels; the whole pipeline is ~2 minutes, so the re-run is cheap.
+# - Playwright E2E is intentionally NOT in CI: it needs web+api running
+#   together, and still runs locally via `pnpm test:all`.
 
 name: CI
 
@@ -11,95 +26,98 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
-# Least privilege: these jobs only read the checkout. Declared explicitly so the
-# gates keep a read-only token even if the repository default is ever widened —
-# `pull_request` runs from forks, so this is the workflow untrusted code reaches.
+# Least privilege: the gates only read the checkout. `actions: read` exists
+# solely for the timing report step in all-checks-pass (it lists this run's
+# jobs). Declared explicitly so the gates keep a minimal token even if the
+# repository default is ever widened.
 permissions:
   contents: read
+  actions: read
+
+# A new push supersedes the previous run of the same ref — PR iterations never
+# queue behind their own stale runs. Pushes to main are never cancelled: every
+# merge must get its full fail-open validation.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ───────────────────────────────────────────────────────────────────────
+  # detect: classify the diff once; every skippable lane reads its outputs.
+  # ───────────────────────────────────────────────────────────────────────
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      api: ${{ steps.classify.outputs.api }}
+      web: ${{ steps.classify.outputs.web }}
+      cli: ${{ steps.classify.outputs.cli }}
+      licenses: ${{ steps.classify.outputs.licenses }}
+      pgschema: ${{ steps.classify.outputs.pgschema }}
+      ci_review: ${{ steps.classify.outputs.ci_review }}
+      ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
+    steps:
+      # fetch-depth: 0 — the classifier diffs against the merge base, which a
+      # shallow clone does not contain.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: classify
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            node scripts/ci/detect-changes.mjs \
+              --base "${{ github.event.pull_request.base.sha }}" \
+              --head "${{ github.event.pull_request.head.sha }}"
+          else
+            node scripts/ci/detect-changes.mjs --all
+          fi
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Always-on gates: the quality floor. Never gated on detect.
+  # ───────────────────────────────────────────────────────────────────────
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: ./.github/actions/setup
       - run: pnpm lint
       - run: node --test scripts/gates/__tests__/check-docker-context.test.mjs
+      # Architecture rules R1–R8 ran only in the pre-commit hook before, but a
+      # `--no-verify` push skips every hook and CLAUDE.md names CI as R6's
+      # backstop — so the repo-wide sweeps must actually run here.
+      - run: node scripts/gates/check-arch-rules.mjs --all
+      - run: node scripts/gates/check-forbidden-tokens.mjs --all
+      - run: node scripts/gates/check-file-lines.mjs --all
+      # Workflow expressions have no type checking — a 178k-star repo ships a
+      # concurrency group that evaluates to a constant and cancels across PRs.
+      # Pinned + checksum-verified, like the gitleaks install below.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" actionlint
+          ./actionlint
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      # The shared package exports dist/index.d.ts; api/web/cli need dist to
+      # exist before `tsc --noEmit` can resolve @a2wave/shared.
+      - uses: ./.github/actions/setup
         with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      # The shared package exports dist/index.d.ts; api/web/cli need dist to exist
-      # before `tsc --noEmit` can resolve @a2wave/shared.
-      - run: pnpm --filter @a2wave/shared build
+          build-shared: 'true'
       - run: pnpm typecheck
-
-  # Unit-test gate: shared / cli / web must all be green; a red test blocks the pipeline.
-  # apps/api runs separately in test-api (real SQLite, needs the build toolchain).
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      # scripts/deploy tests re-run the remote docker commands under dash to prove
-      # they don't rely on bash extensions and parse correctly under POSIX sh.
-      - name: Install dash
-        run: sudo apt-get update && sudo apt-get install -y dash
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      # cli/web tests import @a2wave/shared types and runtime values — dist must exist first.
-      - run: pnpm --filter @a2wave/shared build
-      - run: pnpm --filter @a2wave/shared test
-      - run: pnpm --filter a2wave test
-      - run: pnpm --filter @a2wave/web test
-      # These node --test groups are part of the root `pnpm test`, but the steps above
-      # run per-package and would not pick them up — skipping them would mean the
-      # scripts/ tests never run in CI.
-      - run: pnpm provider-clis:test
-      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs
-      # The api gate's own regression tests — they guard the "a suite that fails to
-      # load reports zero failing assertions" hole, which is invisible to the gate
-      # it protects. Cheap (synthetic reports, no real suite run), so keep them in
-      # the fast blocking job rather than behind the api build toolchain.
-      - run: node --test scripts/gates/__tests__/check-api-tests.test.mjs
-      # Pure helpers of the minVersion verifier. The verifier itself installs real
-      # CLIs from npm and is deliberately NOT run here; these tests inject the
-      # exec boundary, so they neither hit the network nor spawn a CLI.
-      - run: node --test scripts/__tests__/verify-provider-min-versions.test.mjs
-      # AUTH_SECRET generation for `pnpm dev` and for the container entrypoint. Both are
-      # first-run onboarding paths, so a regression here breaks the documented quickstart
-      # rather than a feature — exactly the failure nobody notices until a new user hits it.
-      - run: node --test scripts/__tests__/ensure-auth-secret.test.mjs
-      - run: node --test scripts/__tests__/container-auth-secret.test.mjs
-      # Pure helpers of the license-inventory gate (rendering, drift diffing, forbidden-license
-      # detection). No pnpm store access — the store-dependent half runs in `license-inventory`.
-      - run: node --test scripts/gates/__tests__/check-license-inventory.test.mjs
-      # Guards .gitleaks.toml against the silent failure where an allowlist loses its
-      # `condition = "AND"` and starts suppressing an entire file instead of one placeholder.
-      # Pure text assertions — no gitleaks binary needed, unlike the `secret-scan` job.
-      - run: node --test scripts/gates/__tests__/gitleaks-config.test.mjs
 
   # Full-history secret scan. Must stay at zero findings: the allowlists in .gitleaks.toml are
   # scoped to specific placeholder strings, so anything reported here is genuinely new.
@@ -137,6 +155,7 @@ jobs:
 
   secret-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -157,27 +176,106 @@ jobs:
       - name: Scan full history
         run: ./gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
 
-  # Compliance gate: docs/dependency-license-inventory.md must still match the installed tree,
-  # and no GPL/AGPL/LGPL/SSPL or unknown-licensed dependency may enter it. Kept out of `lint`
-  # because `pnpm licenses list` reads the pnpm store, which needs a real (non --ignore-scripts
-  # is fine, but populated) install rather than just a resolved lockfile.
-  license-inventory:
+  # Known-vulnerability floor for the dependency tree (the one check hermes,
+  # vllm and dify all carry that we lacked). `critical` only, deliberately:
+  # the tree currently holds a handful of high-severity advisories in dev
+  # tooling, and a gate that is born red gets `continue-on-error`d into
+  # decoration. Dependabot's PRs are the fix path for those; tighten the
+  # level to `high` once they land.
+  audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: ./.github/actions/setup
+      - run: pnpm audit --audit-level critical
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Lane-gated jobs: skipped when the diff cannot affect them.
+  # ───────────────────────────────────────────────────────────────────────
+
+  # Compliance gate: docs/dependency-license-inventory.md must still match the installed tree,
+  # and no GPL/AGPL/LGPL/SSPL or unknown-licensed dependency may enter it. Gated on the
+  # licenses lane (a package.json or lockfile change) — a source-only diff cannot
+  # change the dependency tree.
+  license-inventory:
+    needs: detect
+    if: needs.detect.outputs.licenses == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
       - run: pnpm licenses:check
 
-  # apps/api unit tests — blocking, but compared against baselines via
-  # scripts/gates/check-api-tests.mjs: only failures NOT in the baseline turn the
-  # pipeline red. Baseline entries shrink, never grow.
+  # Web unit tests. Shared is a dependency, so shared changes turn this lane on.
+  test-web:
+    needs: detect
+    if: needs.detect.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          build-shared: 'true'
+      - run: pnpm --filter @a2wave/shared test
+      - run: pnpm --filter @a2wave/web test
+
+  # CLI + scripts/ tests. The scripts/ node --test groups are part of the root
+  # `pnpm test`; running per-package here would silently drop them, so they are
+  # listed explicitly (same reasoning as the old combined test job).
+  test-cli:
+    needs: detect
+    if: needs.detect.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # scripts/deploy tests re-run the remote docker commands under dash to prove
+      # they don't rely on bash extensions and parse correctly under POSIX sh.
+      - name: Install dash
+        run: sudo apt-get update && sudo apt-get install -y dash
+      - uses: ./.github/actions/setup
+        with:
+          build-shared: 'true'
+      - run: pnpm --filter @a2wave/shared test
+      - run: pnpm --filter a2wave test
+      - run: pnpm provider-clis:test
+      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs
+      # The api gate's own regression tests — they guard the "a suite that fails to
+      # load reports zero failing assertions" hole, which is invisible to the gate
+      # it protects. Cheap (synthetic reports, no real suite run), so they live in
+      # this fast lane rather than behind the api build toolchain.
+      - run: node --test scripts/gates/__tests__/check-api-tests.test.mjs
+      # The lane classifier's own tests: a wrong lane mapping is a suite that
+      # silently never runs, so the classifier is under the same regression
+      # protection as the gates.
+      - run: node --test scripts/ci/__tests__/detect-changes.test.mjs
+      - run: node --test scripts/ci/__tests__/merge-latency.test.mjs
+      # Pure helpers of the minVersion verifier. The verifier itself installs real
+      # CLIs from npm and is deliberately NOT run here; these tests inject the
+      # exec boundary, so they neither hit the network nor spawn a CLI.
+      - run: node --test scripts/__tests__/verify-provider-min-versions.test.mjs
+      # AUTH_SECRET generation for `pnpm dev` and for the container entrypoint. Both are
+      # first-run onboarding paths, so a regression here breaks the documented quickstart
+      # rather than a feature — exactly the failure nobody notices until a new user hits it.
+      - run: node --test scripts/__tests__/ensure-auth-secret.test.mjs
+      - run: node --test scripts/__tests__/container-auth-secret.test.mjs
+      # Pure helpers of the license-inventory gate (rendering, drift diffing, forbidden-license
+      # detection). No pnpm store access — the store-dependent half runs in `license-inventory`.
+      - run: node --test scripts/gates/__tests__/check-license-inventory.test.mjs
+      # Guards .gitleaks.toml against the silent failure where an allowlist loses its
+      # `condition = "AND"` and starts suppressing an entire file instead of one placeholder.
+      # Pure text assertions — no gitleaks binary needed, unlike the `secret-scan` job.
+      - run: node --test scripts/gates/__tests__/gitleaks-config.test.mjs
+
+  # apps/api unit tests — blocking, split into 4 parallel shards (the whole-suite
+  # run is the pipeline's critical path). Each shard goes through
+  # scripts/gates/check-api-tests.mjs, which compares failures against baselines:
+  # only failures NOT in the baseline turn the pipeline red, a shard that fails
+  # to LOAD a file is always red, and the collection floor scales per shard.
+  # Baseline entries shrink, never grow.
   #
   # NOTE: this job must NOT use --ignore-scripts. The api tests hit a real SQLite,
   # and better-sqlite3 may need to build its native addon from source via node-gyp
@@ -186,24 +284,144 @@ jobs:
   # test fail with "native addon is missing" — an environment problem, not a
   # regression signal.
   test-api:
+    needs: detect
+    if: needs.detect.outputs.api == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: ./.github/actions/setup
         with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @a2wave/shared build
-      - run: node scripts/gates/check-api-tests.mjs
+          install-scripts: 'true'
+          build-shared: 'true'
+      - run: node scripts/gates/check-api-tests.mjs --shard=${{ matrix.shard }}/4
 
-  # Cross-boundary SCM storage gate. Unit mocks cannot prove transaction-lock
-  # behavior across real drivers or Linux bind-mount ownership semantics.
-  scm-storage-integration:
+  # Generated-file freshness (the ollama `go mod tidy --diff` pattern):
+  # schema.pg.ts is generated from the SQLite schema and never hand-edited —
+  # this lane is what makes that a CI fact instead of a docs promise.
+  pgschema:
+    needs: detect
+    if: needs.detect.outputs.pgschema == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          build-shared: 'true'
+      - run: pnpm --filter @a2wave/api db:generate:pg
+      - name: schema.pg.ts must regenerate clean
+        run: |
+          git diff --exit-code -- apps/api/src/db/schema.pg.ts || {
+            echo "::error::schema.pg.ts is stale or hand-edited. Run 'pnpm --filter @a2wave/api db:generate:pg' and commit the result."
+            exit 1
+          }
+
+  # ───────────────────────────────────────────────────────────────────────
+  # review-labels: pipeline-touching paths need a human sign-off.
+  #
+  # The trust model gives every invited colleague merge-on-green; this gate is
+  # the counterweight — the CI definition, gate scripts, waiver lists, the
+  # pinned CLI lock, coverage thresholds and DB migrations cannot change
+  # without a second person adding the `ci-reviewed` label. Adding the label
+  # retriggers this run (`labeled` is in the trigger list).
+  # ───────────────────────────────────────────────────────────────────────
+  review-labels:
+    needs: detect
+    if: github.event_name == 'pull_request' && needs.detect.outputs.ci_review == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-reviewed') }}
+      REVIEW_FILES: ${{ needs.detect.outputs.ci_review_files }}
+    steps:
+      - name: Require the ci-reviewed label
+        run: |
+          if [ "$HAS_LABEL" = "true" ]; then
+            echo "ci-reviewed label present — sign-off recorded."
+            exit 0
+          fi
+          echo "::error::This PR touches CI-sensitive paths and needs a maintainer to add the 'ci-reviewed' label."
+          echo "Files requiring sign-off:"
+          echo "$REVIEW_FILES" | tr ',' '\n' | sed 's/^/  - /'
+          exit 1
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Gate: aggregates every job. `if: always()` ensures it reports even when
+  # deps were skipped; only failure/cancellation fails it.
+  #
+  # Branch protection must require ONLY this check.
+  # ───────────────────────────────────────────────────────────────────────
+  all-checks-pass:
+    name: all-checks-pass
+    needs:
+      - detect
+      - lint
+      - typecheck
+      - secret-scan
+      - audit
+      - license-inventory
+      - test-web
+      - test-cli
+      - test-api
+      - pgschema
+      - scm-storage-integration
+      - review-labels
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          # shellcheck disable=SC2016  # the ${} below are JS template literals inside a single-quoted node -e script, not shell expansions
+          node -e '
+            const needs = JSON.parse(process.env.NEEDS)
+            const bad = []
+            for (const [name, info] of Object.entries(needs).sort()) {
+              const ok = info.result === "success" || info.result === "skipped"
+              console.log(`${ok ? "✅" : "❌"} ${name}: ${info.result}`)
+              if (!ok) bad.push(name)
+            }
+            if (bad.length) {
+              console.error(`::error::${bad.length} job(s) did not pass: ${bad.join(", ")}`)
+              process.exit(1)
+            }
+            console.log("All checks passed (or were skipped)")
+          '
+      # Lightweight timing report: per-job durations into the run summary, so a
+      # slowing pipeline is visible on every run instead of discovered by feel.
+      # Advisory only — an API blip must not fail the gate.
+      - name: CI timing summary
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## CI timings"
+            echo ""
+            echo "| Job | Duration | Result |"
+            echo "|---|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              --jq '.jobs[] | select(.conclusion != null) | [.name, (((.completed_at | fromdate) - (.started_at | fromdate)) | tostring + "s"), .conclusion] | "| \(.[0]) | \(.[1]) | \(.[2]) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────
+  # scm-storage: cross-boundary gate. Unit mocks cannot prove transaction-lock
+  # behavior across real drivers, nor Linux bind-mount ownership semantics.
+  # Gated on the api lane because every SCM storage path lives under apps/api.
+  # ───────────────────────────────────────────────────────────────────────
+  scm-storage-integration:
+    needs: detect
+    if: needs.detect.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -222,13 +440,7 @@ jobs:
       SCM_STORAGE_POSTGRES_URL: postgres://a2wave:a2wave@127.0.0.1:5432/a2wave_scm_test
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: ./.github/actions/setup
         with:
-          version: 9.15.4
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @a2wave/shared build
+          build-shared: 'true'
       - run: pnpm test:scm-storage

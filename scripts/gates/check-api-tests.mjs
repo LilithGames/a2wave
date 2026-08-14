@@ -93,6 +93,28 @@ function parseSuiteBaselineFlag(argv) {
   return parsed
 }
 
+/**
+ * Optional `--shard=<i>/<N>` — forwarded verbatim to vitest so CI can split the
+ * api suite into N parallel jobs (the whole-suite wall clock is the pipeline's
+ * critical path). Validated here, before vitest spawns: vitest's own error for
+ * a bad shard is an unexplained non-zero exit, which this gate refuses to
+ * classify — better to name the actual mistake.
+ */
+function parseShardFlag(argv) {
+  const flag = '--shard='
+  const arg = argv.find((a) => a.startsWith(flag))
+  if (!arg) return null
+  const m = arg.slice(flag.length).match(/^([1-9]\d*)\/([1-9]\d*)$/)
+  if (!m) fail(`[api-tests] ✗ --shard must look like <index>/<count> (1-based), got: ${arg}`)
+  const [index, count] = [Number(m[1]), Number(m[2])]
+  if (index > count) {
+    fail(`[api-tests] ✗ --shard index ${index} exceeds shard count ${count}.`)
+  }
+  return { index, count }
+}
+
+const shard = parseShardFlag(process.argv.slice(2))
+
 const suiteBaselineOverride = parseSuiteBaselineFlag(process.argv.slice(2))
 const suiteBaseline = suiteBaselineOverride ?? SUITE_BASELINE
 if (suiteBaselineOverride) {
@@ -153,6 +175,7 @@ const res = spawnSync(
     'run',
     '--reporter=json',
     `--outputFile=${REPORT_PATH}`,
+    ...(shard ? [`--shard=${shard.index}/${shard.count}`] : []),
   ],
   { stdio: ['ignore', 'inherit', 'inherit'], encoding: 'utf-8' },
 )
@@ -196,7 +219,8 @@ const unexpected = failedAssertions.filter((name) => !isWaived(name))
 const expected = failedAssertions.filter(isWaived)
 
 console.log(
-  `[api-tests] suites=${report.numTotalTestSuites ?? '?'} tests=${report.numTotalTests ?? '?'} ` +
+  `[api-tests]${shard ? ` shard=${shard.index}/${shard.count}` : ''} ` +
+    `suites=${report.numTotalTestSuites ?? '?'} tests=${report.numTotalTests ?? '?'} ` +
     `failedAssertions=${failedAssertions.length} baseline=${expected.length} new=${unexpected.length}`,
 )
 for (const name of expected) console.log(`  · known: ${name}`)
@@ -259,9 +283,17 @@ if (unexplainedExit) {
   )
 }
 
-if ((report.numTotalTests ?? 0) < MIN_TESTS) {
+/**
+ * A shard legitimately collects ~1/N of the suite, so the floor scales down
+ * with it. Halved on top of the split because vitest shards by FILE count, not
+ * test count — an unlucky shard of small files can sit well under totals/N
+ * without anything being wrong. The floor's job survives the slack: a broken
+ * include glob or bad --filter yields near-zero, not merely below-average.
+ */
+const minTests = shard ? Math.floor(MIN_TESTS / shard.count / 2) : MIN_TESTS
+if ((report.numTotalTests ?? 0) < minTests) {
   fail(
-    `\n[api-tests] ✗ only ${report.numTotalTests ?? 0} tests ran (expected at least ${MIN_TESTS}).`,
+    `\n[api-tests] ✗ only ${report.numTotalTests ?? 0} tests ran (expected at least ${minTests}).`,
     '  A run that collects almost nothing reports no failures — that is not a pass.',
     '  Check the vitest include globs and the --filter before lowering MIN_TESTS.',
   )

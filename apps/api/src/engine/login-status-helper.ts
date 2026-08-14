@@ -7,9 +7,10 @@
  * - stdout / stderr / exitCode 的统一聚合
  */
 
-import { spawn } from 'node:child_process'
 import { logger } from '../lib/logger.js'
+import { spawnCli } from './cli-spawn.js'
 import { buildSafeAgentProcessEnv } from './runtime-context.js'
+import { terminateCliProcess } from './windows-process-tree.js'
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequence stripping requires \x1B/\x07 control chars
 const ANSI_PATTERN = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*\x07|[PX^_][^\x1B]*\x1B\\|.)/g
@@ -63,10 +64,38 @@ export function runStatusProbe(
   const tag = options.logTag ?? command
   return new Promise((resolve) => {
     logger.info({ tag, cmd: command, args, timeoutMs }, '[login-status] probing')
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: options.completeEnv ?? { ...buildSafeAgentProcessEnv(), ...options.env },
-    })
+    let child: ReturnType<typeof spawnCli>
+    try {
+      child = spawnCli(command, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: options.completeEnv ?? { ...buildSafeAgentProcessEnv(), ...options.env },
+      })
+    } catch (err) {
+      // Windows can throw synchronously when a bare command resolves to a .cmd
+      // shim (EPERM). Version discovery is best-effort: one unusable CLI must
+      // not reject Promise.all() and turn the complete Provider CLI list into a
+      // 500 response.
+      const error = err as NodeJS.ErrnoException
+      const notFound = true
+      logger.warn(
+        {
+          tag,
+          cmd: command,
+          notFound,
+          err: error.message,
+          stderrSample: truncateForRaw(error.message, 300),
+        },
+        '[login-status] probe failed to spawn',
+      )
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: error.message,
+        timedOut: false,
+        notFound,
+      })
+      return
+    }
 
     let stdout = ''
     let stderr = ''
@@ -81,8 +110,16 @@ export function runStatusProbe(
 
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), 2000)
+      settle({
+        exitCode: null,
+        stdout: stripAnsi(stdout),
+        stderr: stripAnsi(stderr),
+        timedOut: true,
+        notFound: false,
+      })
+      void terminateCliProcess(child, 'SIGTERM')
+      const killTimer = setTimeout(() => terminateCliProcess(child, 'SIGKILL'), 2000)
+      killTimer.unref()
       child.once('exit', () => clearTimeout(killTimer))
     }, timeoutMs)
 
@@ -95,7 +132,7 @@ export function runStatusProbe(
 
     child.on('error', (err) => {
       clearTimeout(timer)
-      const isNotFound = (err as NodeJS.ErrnoException).code === 'ENOENT'
+      const isNotFound = true
       const cleanStdout = stripAnsi(stdout)
       const cleanStderr = stripAnsi(stderr) || err.message
       logger.warn(

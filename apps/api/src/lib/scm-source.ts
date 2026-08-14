@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type { GitConfig } from '@a2wave/shared'
 import {
   type CleanupOptions,
+  type RemoveGitWorkspaceOptions,
   type WorkspaceInfo,
   type WorkspaceState,
   cleanupStaleWorkspaces,
@@ -33,9 +34,16 @@ export interface ScmSource {
   readonly localPath: string
   readonly wsRoot: string
 
-  createWorkspace(name: string, options?: { branch?: string }): Promise<CreateWorkspaceResult>
-  /** `beforeRemove` runs inside the workspace mutex; throw from it to abort. */
-  removeWorkspace(name: string, options?: { beforeRemove?: () => Promise<void> }): Promise<void>
+  createWorkspace(
+    name: string,
+    options?: { branch?: string; followSource?: boolean; advance?: boolean },
+  ): Promise<CreateWorkspaceResult>
+  /**
+   * `beforeRemove` runs inside the workspace mutex; throw from it to abort.
+   * `keepBranches` preserves the worktree's branch — mandatory for a per-Agent
+   * worktree, whose branch can hold unpushed commits.
+   */
+  removeWorkspace(name: string, options?: RemoveGitWorkspaceOptions): Promise<void>
   listWorkspaces(): Promise<WorkspaceInfo[]>
   writeWorkspaceState(name: string, state: WorkspaceState): Promise<void>
   cleanupStale(opts: CleanupOptions): Promise<string[]>
@@ -70,11 +78,14 @@ class GitScmSource implements ScmSource {
     this.wsRoot = source.workspacesPath || defaultWorkspacesPath(source.id)
   }
 
-  createWorkspace(name: string, options?: { branch?: string }): Promise<CreateWorkspaceResult> {
+  createWorkspace(
+    name: string,
+    options?: { branch?: string; followSource?: boolean; advance?: boolean },
+  ): Promise<CreateWorkspaceResult> {
     return createGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 
-  removeWorkspace(name: string, options?: { beforeRemove?: () => Promise<void> }): Promise<void> {
+  removeWorkspace(name: string, options?: RemoveGitWorkspaceOptions): Promise<void> {
     return removeGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 

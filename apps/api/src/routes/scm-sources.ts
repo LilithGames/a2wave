@@ -17,7 +17,12 @@ import { scmSourceAuditDetails } from '../lib/audit-details.js'
 import { logAudit, writeAudit } from '../lib/audit.js'
 import { isCodegraphEnabled, runCodegraphIndex } from '../lib/codegraph-index.js'
 import { checkGitConnection } from '../lib/git-sync.js'
-import { WORKTREE_NAME_REGEX, defaultWorkspacesPath } from '../lib/git-workspace.js'
+import {
+  WORKTREE_NAME_REGEX,
+  defaultWorkspacesPath,
+  isPerAgentWorkspaceName,
+  perAgentWorkspaceName,
+} from '../lib/git-workspace.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
 import { getCurrentUserId, getOwnerFilter } from '../lib/owner-filter.js'
@@ -1162,8 +1167,24 @@ app.delete('/:id/workspaces/:name', async (c) => {
   const scm = await createScmSource(source)
   if (!scm) return c.json({ error: 'Source type does not support workspaces' }, 400)
 
+  // Per-agent worktrees carry a long-lived branch that may hold unmerged agent
+  // commits; deleting the directory reclaims disk, but the branch must survive
+  // (the next run re-attaches it). Two tests, because each covers a case the
+  // other misses: the exact match against a bound Agent keeps a legacy explicit
+  // workspace named e.g. `agent-refactor` on ordinary delete-branch semantics,
+  // and the shape test still recognizes an orphan whose Agent row is already
+  // gone (Agent deletion leaves an occupied worktree behind on purpose).
+  const boundAgents = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.scmSourceId, id))
+  const keepBranches =
+    boundAgents.some((a) => perAgentWorkspaceName(a.id) === name) || isPerAgentWorkspaceName(name)
+
   try {
-    await removeSourceWorkspaceGuarded({ sourceId: id, name, scm })
+    // One removal, through the guarded protocol — the branch-preserving flag
+    // rides along rather than becoming a second, unreserved delete.
+    await removeSourceWorkspaceGuarded({ sourceId: id, name, scm, keepBranches })
   } catch (error) {
     if (error instanceof WorkspaceRemovalBlockedError) {
       return c.json({ error: error.message }, 409)

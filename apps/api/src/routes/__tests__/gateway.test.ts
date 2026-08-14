@@ -329,6 +329,24 @@ describe('Gateway routes', () => {
     )
   }
 
+  describe('POST /:agentId/invoke — reserved worktree namespace', () => {
+    it("rejects an explicit worktree using the reserved 'agent-' prefix (400)", async () => {
+      // Without this gate a caller could address an Agent's long-lived
+      // workspace and hand its branch to run-end removal.
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+
+      const res = await invokeRequest({
+        message: 'hi',
+        worktree: { name: 'agent-abc123def456ghi7', cleanup: 'ephemeral' },
+      })
+
+      expect(res.status).toBe(400)
+      const json = (await res.json()) as Json
+      expect(JSON.stringify(json.error)).toContain('agent-')
+      expect(executeInWorker as Mock).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /:agentId/invoke — sync mode', () => {
     it('returns durationMs in sync response', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
@@ -959,6 +977,24 @@ describe('Gateway routes', () => {
         'step insert failed',
         null,
       )
+    })
+
+    it('reclaims the run row on an untyped resolveWorkDir failure', async () => {
+      // The run already counts against maxConcurrency. Leaving it behind on the
+      // rethrow path pins the Agent at its concurrency limit permanently —
+      // recoverable only by editing the database.
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(resolveWorkDir as Mock).mockRejectedValueOnce(new Error('workDir bookkeeping failed'))
+
+      await invokeRequest({
+        message: 'hi',
+        async: false,
+        worktree: { name: 'wt-a', cleanup: 'ephemeral' },
+      })
+
+      expect(db.delete).toHaveBeenCalled()
+      expect(scheduleNext).toHaveBeenCalled()
+      expect(executeInWorker).not.toHaveBeenCalled()
     })
   })
 

@@ -638,6 +638,7 @@ describe('Agents POST /:id/chat — worktree lifecycle', () => {
       expect.objectContaining({ id: 'agt_test1' }),
       { name: 'chat-feat', cleanup: 'ephemeral' },
       expect.any(String),
+      undefined,
     )
 
     const runInsert = insertCalls.find(
@@ -645,6 +646,22 @@ describe('Agents POST /:id/chat — worktree lifecycle', () => {
     )
     expect(runInsert).toBeDefined()
     expect((runInsert as any).worktreeConfig).toEqual({ name: 'chat-feat', cleanup: 'ephemeral' })
+  })
+
+  it("rejects new explicit worktrees using the reserved 'agent-' prefix (400)", async () => {
+    mockDb.select.mockReturnValue(
+      selectChainForChat({ agent: publishedAgent, source: scmSyncedSource }),
+    )
+
+    const res = await chat({
+      message: 'hi',
+      worktree: { name: 'agent-abc123', cleanup: 'ephemeral' },
+    })
+
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('agent-')
+    expect(mockResolveWorkDir).not.toHaveBeenCalled()
   })
 
   it('WorktreeOccupiedError → 409', async () => {

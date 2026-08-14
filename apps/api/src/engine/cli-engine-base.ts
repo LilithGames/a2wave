@@ -17,12 +17,11 @@
  * All built-in engines stay thin: buildArgs + a stream parser + a settle verdict.
  */
 
-import { execFile } from 'node:child_process'
 import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
 import { BaseAgentEngine } from './base-engine.js'
 import { cliProcessRunner } from './cli-process-runner.js'
-import { probeCliVersion } from './login-status-helper.js'
+import { probeCliVersion, runStatusProbe } from './login-status-helper.js'
 import {
   PROCESS_INJECTION_ENV_NAMES,
   buildSafeAgentProcessEnv,
@@ -92,19 +91,18 @@ export abstract class BaseCliAgentEngine extends BaseAgentEngine {
   // ----------------------------------------------------------
 
   async healthCheck(): Promise<boolean> {
-    return new Promise((resolve) => {
-      execFile(this.cliConfig.path, ['--version'], { timeout: 10_000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { err: err.message, path: this.cliConfig.path },
-            `${this.cliName} CLI not found or not executable`,
-          )
-          resolve(false)
-          return
-        }
-        resolve(true)
-      })
+    const result = await runStatusProbe(this.cliConfig.path, ['--version'], {
+      timeoutMs: 10_000,
+      logTag: `${this.cliName}-health`,
     })
+    if (result.notFound || result.timedOut || result.exitCode !== 0) {
+      logger.warn(
+        { path: this.cliConfig.path, stderr: result.stderr },
+        `${this.cliName} CLI not found or not executable`,
+      )
+      return false
+    }
+    return true
   }
 
   async getVersion(): Promise<string | null> {

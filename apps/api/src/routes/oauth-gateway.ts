@@ -435,7 +435,10 @@ app.post('/:agentId/invoke', async (c) => {
   if (hasPendingContext) takePendingContext(runId)
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent, undefined, runId)
+    // runId in: the run row was inserted above (immediate path only — queued
+    // runs re-resolve inside executeChatRun), so runs.workDir is recorded and
+    // the workspace-delete occupancy check sees this run.
+    resolvedWorkDir = await resolveWorkDir(agent, undefined, runId, agentConfig.agentEnv)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     await db

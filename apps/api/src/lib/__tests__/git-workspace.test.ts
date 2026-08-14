@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { stat, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +19,7 @@ import {
   removeGitWorkspace,
   writeWorkspaceState,
 } from '../git-workspace.js'
+import { logger } from '../logger.js'
 import { createScmSource } from '../scm-source.js'
 
 vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
@@ -289,6 +290,313 @@ describe('git-workspace', () => {
         cwd: first.path,
       })
       expect(stdout.trim()).toBe('feature-a')
+    })
+  })
+
+  describe('createGitWorkspace — followSource reuse (single repo)', () => {
+    beforeEach(async () => {
+      await initGitRepo(REPO_DIR)
+    })
+
+    async function currentCommit(cwd: string): Promise<string> {
+      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })
+      return stdout.trim()
+    }
+
+    async function commitNewFile(name: string): Promise<void> {
+      await writeFile(join(REPO_DIR, name), name)
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', `add ${name}`], { cwd: REPO_DIR })
+    }
+
+    async function currentBranch(cwd: string): Promise<string> {
+      const { stdout } = await execFileAsync('git', ['symbolic-ref', '--short', '-q', 'HEAD'], {
+        cwd,
+      }).catch(() => ({ stdout: '' }))
+      return stdout.trim()
+    }
+
+    it('creates the workspace on a branch named after it, at the source HEAD', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(first.created).toBe(true)
+      expect(await currentBranch(first.path)).toBe('agent-1')
+      expect(await currentCommit(first.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('advances a clean workspace to the source HEAD on reuse', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(first.created).toBe(true)
+
+      // Untracked content (the platform mounts skills/config as untracked files)
+      // must survive the advance.
+      await writeFile(join(first.path, 'untracked.txt'), 'keep me')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(second.created).toBe(false)
+      expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+      expect(await currentBranch(second.path)).toBe('agent-1')
+      expect(existsSync(join(second.path, 'new-file.txt'))).toBe(true)
+      expect(await readFile(join(second.path, 'untracked.txt'), 'utf8')).toBe('keep me')
+    })
+
+    it('pins a workspace whose branch carries unmerged commits, and unpins once they merge', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      // The agent commits work on its branch — the normal way an agent finishes a task.
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      await commitNewFile('upstream-moves.txt')
+
+      const pinned = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(pinned.path)).toBe(agentCommit)
+      expect(await readFile(join(pinned.path, 'agent-work.txt'), 'utf8')).toBe('committed by agent')
+
+      // Once the agent's commit is merged into the source branch, the ancestor
+      // guard passes again and the workspace follows the source once more.
+      await execFileAsync('git', ['merge', 'agent-1'], { cwd: REPO_DIR })
+      const unpinned = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(unpinned.path)).toBe(await currentCommit(REPO_DIR))
+      expect(await currentBranch(unpinned.path)).toBe('agent-1')
+    })
+
+    it('migrates a legacy detached workspace onto the branch when clean', async () => {
+      // v1 of this feature created followSource workspaces with --detach.
+      await mkdir(WS_ROOT, { recursive: true })
+      const wsPath = join(WS_ROOT, 'agent-1')
+      await execFileAsync('git', ['worktree', 'add', wsPath, '--detach'], { cwd: REPO_DIR })
+      await commitNewFile('new-file.txt')
+
+      const reused = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(reused.created).toBe(false)
+      expect(await currentBranch(reused.path)).toBe('agent-1')
+      expect(await currentCommit(reused.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('skips the advance when asked (concurrent run of the same agent)', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const pinned = await currentCommit(first.path)
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+        advance: false,
+      })
+      expect(await currentCommit(second.path)).toBe(pinned)
+    })
+
+    it('adopts a legacy detached workspace without force-moving an existing branch', async () => {
+      // v1 detached workspace + a pre-existing branch of the same name carrying
+      // an unmerged commit — adoption must not orphan that commit via checkout -B.
+      const scratch = join(TEST_DIR, 'scratch')
+      await execFileAsync('git', ['worktree', 'add', '-b', 'agent-1', scratch, 'main'], {
+        cwd: REPO_DIR,
+      })
+      await writeFile(join(scratch, 'branch-work.txt'), 'unmerged')
+      await execFileAsync('git', ['add', '.'], { cwd: scratch })
+      await execFileAsync('git', ['commit', '-m', 'branch work'], { cwd: scratch })
+      const { stdout: branchTipBefore } = await execFileAsync('git', ['rev-parse', 'agent-1'], {
+        cwd: scratch,
+      })
+      await execFileAsync('git', ['worktree', 'remove', scratch], { cwd: REPO_DIR })
+
+      await mkdir(WS_ROOT, { recursive: true })
+      const wsPath = join(WS_ROOT, 'agent-1')
+      await execFileAsync('git', ['worktree', 'add', wsPath, '--detach'], { cwd: REPO_DIR })
+
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+
+      const { stdout: branchTipAfter } = await execFileAsync(
+        'git',
+        ['rev-parse', 'refs/heads/agent-1'],
+        { cwd: REPO_DIR },
+      )
+      expect(branchTipAfter.trim()).toBe(branchTipBefore.trim())
+    })
+
+    it('surfaces a branch lock instead of a generic create failure', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      // Free the directory but keep the branch, then occupy the branch elsewhere.
+      await execFileAsync('git', ['worktree', 'remove', first.path], { cwd: REPO_DIR })
+      await execFileAsync('git', ['worktree', 'add', join(TEST_DIR, 'other'), 'agent-1'], {
+        cwd: REPO_DIR,
+      })
+
+      await expect(
+        createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+          followSource: true,
+        }),
+      ).rejects.toBeInstanceOf(WorktreeBranchLockedError)
+    })
+
+    it('still advances when a non-default provider skills dir is modified', async () => {
+      // The exemption list is derived from the provider definitions — a repo
+      // tracking .kimi-code/skills content must not pin the workspace either.
+      await mkdir(join(REPO_DIR, '.kimi-code', 'skills', 'seeded'), { recursive: true })
+      await writeFile(join(REPO_DIR, '.kimi-code', 'skills', 'seeded', 'SKILL.md'), 'v1')
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'seed kimi skill'], { cwd: REPO_DIR })
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(
+        join(first.path, '.kimi-code', 'skills', 'seeded', 'SKILL.md'),
+        'platform-mounted',
+      )
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('still advances when only platform-managed paths differ from the index', async () => {
+      // Repos may track .claude/skills content; the platform re-mounts it every
+      // run, so those modifications must not pin the workspace forever.
+      await mkdir(join(REPO_DIR, '.claude', 'skills', 'seeded'), { recursive: true })
+      await writeFile(join(REPO_DIR, '.claude', 'skills', 'seeded', 'SKILL.md'), 'v1')
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'seed tracked skill'], { cwd: REPO_DIR })
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(
+        join(first.path, '.claude', 'skills', 'seeded', 'SKILL.md'),
+        'platform-mounted',
+      )
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(await currentCommit(REPO_DIR))
+    })
+
+    it('pins on a tracked .claude file the platform does not write', async () => {
+      // The skill mount lives at .claude/skills, but repos commonly track
+      // .claude/settings.json and .claude/hooks/* too. Exempting the whole
+      // .claude root would let the reset below revert an agent's edit to them
+      // with no error and no log — the exemption is per path, not per root.
+      await mkdir(join(REPO_DIR, '.claude', 'skills', 'seeded'), { recursive: true })
+      await writeFile(join(REPO_DIR, '.claude', 'skills', 'seeded', 'SKILL.md'), 'v1')
+      await writeFile(join(REPO_DIR, '.claude', 'settings.json'), '{"hooks":[]}')
+      await execFileAsync('git', ['add', '.'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'seed tracked claude config'], { cwd: REPO_DIR })
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const pinned = await currentCommit(first.path)
+      await writeFile(join(first.path, '.claude', 'settings.json'), '{"hooks":["agent-edit"]}')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(pinned)
+      expect(await readFile(join(second.path, '.claude', 'settings.json'), 'utf8')).toBe(
+        '{"hooks":["agent-edit"]}',
+      )
+    })
+
+    it('re-attaches an orphaned branch instead of resetting it', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      // Ops removed the worktree directory; the branch (and its commit) survive.
+      await execFileAsync('git', ['worktree', 'remove', first.path], { cwd: REPO_DIR })
+
+      const resurrected = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(resurrected.created).toBe(true)
+      expect(await currentBranch(resurrected.path)).toBe('agent-1')
+      expect(await currentCommit(resurrected.path)).toBe(agentCommit)
+    })
+
+    it('keeps the branch when an incomplete followSource workspace is rebuilt', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await writeFile(join(first.path, 'agent-work.txt'), 'committed by agent')
+      await execFileAsync('git', ['add', '.'], { cwd: first.path })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: first.path })
+      const agentCommit = await currentCommit(first.path)
+
+      // Multi-repo shape: simulate a half-destroyed workspace so the rebuild
+      // path (remove + fresh create) runs. Single-repo dirs cannot go
+      // incomplete, so drive the rebuild via a multi-repo config over the
+      // same name — the point is that removeGitWorkspace is invoked with
+      // keepBranches for followSource and the branch survives to re-attach.
+      await execFileAsync('git', ['worktree', 'remove', '--force', first.path], { cwd: REPO_DIR })
+      const again = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentBranch(again.path)).toBe('agent-1')
+      expect(await currentCommit(again.path)).toBe(agentCommit)
+    })
+
+    it('keeps the previous commit when the workspace has tracked modifications', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const pinned = await currentCommit(first.path)
+      await writeFile(join(first.path, 'README.md'), 'locally modified')
+      await commitNewFile('new-file.txt')
+
+      const second = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      expect(await currentCommit(second.path)).toBe(pinned)
+      expect(await readFile(join(second.path, 'README.md'), 'utf8')).toBe('locally modified')
+    })
+
+    it('leaves a workspace that was switched onto a branch untouched', async () => {
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      await execFileAsync('git', ['checkout', '-b', 'my-work'], { cwd: first.path })
+      const pinned = await currentCommit(first.path)
+      await commitNewFile('new-file.txt')
+
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', singleRepoConfig, {
+        followSource: true,
+      })
+      const { stdout } = await execFileAsync('git', ['symbolic-ref', '--short', 'HEAD'], {
+        cwd: first.path,
+      })
+      expect(stdout.trim()).toBe('my-work')
+      expect(await currentCommit(first.path)).toBe(pinned)
     })
   })
 
@@ -727,6 +1035,144 @@ describe('git-workspace', () => {
       expect(b.trim()).toBe('')
     })
 
+    it('removes a multi-repo workspace carrying the platform CodeGraph link', async () => {
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-codegraph', multiRepoConfig)
+      // The platform links the source's CodeGraph index into every workspace.
+      const indexDir = join(TEST_DIR, 'source-codegraph')
+      await mkdir(indexDir, { recursive: true })
+      await symlink(indexDir, join(created.path, '.codegraph'), 'dir')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-codegraph', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
+      // Removing the link must never follow it into the shared index.
+      expect(existsSync(indexDir)).toBe(true)
+    })
+
+    it('removes a multi-repo workspace carrying skill mounts and MCP configs', async () => {
+      // Every run writes provider-specific entries at the workspace root
+      // (.claude skill mounts, .mcp.json, .cursor, ...). Removal must treat
+      // all of them as platform output — hardcoding one name at a time is how
+      // .codegraph wedged removal before.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-mounts', multiRepoConfig)
+      await mkdir(join(created.path, '.claude', 'skills', 'my-skill'), { recursive: true })
+      await writeFile(join(created.path, '.claude', 'skills', 'my-skill', 'SKILL.md'), 'x')
+      await writeFile(join(created.path, '.mcp.json'), '{}')
+      await writeFile(join(created.path, '.mcp.json.a2wave-managed'), '{}')
+      await mkdir(join(created.path, '.cursor'), { recursive: true })
+      await writeFile(join(created.path, '.cursor', 'mcp.json'), '{}')
+      await mkdir(join(created.path, '.kb'), { recursive: true })
+      await writeFile(join(created.path, '.kb', 'doc.md'), '# kb')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-mounts', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
+    })
+
+    it('names content the platform did not write before removing it', async () => {
+      // The platform writes .claude/skills; a repo or the CLI itself may put
+      // settings.json / hooks in the same root. The workspace is going away
+      // either way — refusing would wedge every TTL sweep — but the removal
+      // must not be silent about deleting something it never wrote.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-user-files', multiRepoConfig)
+      await mkdir(join(created.path, '.claude', 'skills', 'mounted'), { recursive: true })
+      await writeFile(join(created.path, '.claude', 'skills', 'mounted', 'SKILL.md'), 'platform')
+      await writeFile(join(created.path, '.claude', 'settings.local.json'), '{}')
+
+      const warn = vi.spyOn(logger, 'warn')
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-user-files', multiRepoConfig)
+
+      expect(existsSync(created.path)).toBe(false)
+      const named = warn.mock.calls.some(
+        (call) =>
+          (call[0] as { leftovers?: string[] })?.leftovers?.includes('settings.local.json') ??
+          false,
+      )
+      expect(named).toBe(true)
+      warn.mockRestore()
+    })
+
+    it('removes a workspace where a shared root exists as a plain file', async () => {
+      // The leftover-naming pass reads each shared root with readdir, which
+      // throws ENOTDIR on a plain file. Skipping it on that error leaves the
+      // file behind and the final rmdir fails ENOTEMPTY — wedging every later
+      // TTL sweep of this workspace.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-file-root', multiRepoConfig)
+      await writeFile(join(created.path, '.claude'), 'not a directory')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-file-root', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
+    })
+
+    it('removes a multi-repo workspace where .codegraph is a real directory', async () => {
+      // A cwd-relative CodeGraph CLI can materialize a real index directory in
+      // the workspace when the link was absent — a disposable cache that must
+      // not wedge removal (plain rm throws EISDIR on directories).
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, 'ws-cg-dir', multiRepoConfig)
+      await mkdir(join(created.path, '.codegraph'), { recursive: true })
+      await writeFile(join(created.path, '.codegraph', 'index.db'), 'cache')
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'ws-cg-dir', multiRepoConfig)
+      expect(existsSync(created.path)).toBe(false)
+    })
+
     it('removes platform-created artifacts and interrupted state writes in multi-repo mode', async () => {
       const frontendDir = join(REPO_DIR, 'frontend')
       const backendDir = join(REPO_DIR, 'backend')
@@ -783,6 +1229,139 @@ describe('git-workspace', () => {
       expect(rebuilt.created).toBe(true)
       expect(existsSync(join(rebuilt.path, 'frontend', 'README.md'))).toBe(true)
       expect(existsSync(join(rebuilt.path, 'backend', 'README.md'))).toBe(true)
+    })
+
+    it('advances multi-repo workspaces all-or-nothing', async () => {
+      // Advancing one sub-repo while another pins leaves the agent with repos at
+      // commits that never coexisted upstream, and nothing downstream can see
+      // it. One pinned repo therefore pins the whole workspace.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+      })
+      const headOf = async (cwd: string) =>
+        (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })).stdout.trim()
+      const pinnedFrontendHead = await headOf(join(first.path, 'frontend'))
+
+      // backend pins (tracked modification); both source repos move on.
+      await writeFile(join(first.path, 'backend', 'README.md'), 'agent edit')
+      for (const dir of [frontendDir, backendDir]) {
+        await writeFile(join(dir, 'upstream.txt'), 'moved')
+        await execFileAsync('git', ['add', '.'], { cwd: dir })
+        await execFileAsync('git', ['commit', '-m', 'upstream'], { cwd: dir })
+      }
+
+      const reused = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+      })
+
+      // frontend could have advanced on its own — it must not have.
+      expect(await headOf(join(reused.path, 'frontend'))).toBe(pinnedFrontendHead)
+      expect(existsSync(join(reused.path, 'frontend', 'upstream.txt'))).toBe(false)
+      expect(await readFile(join(reused.path, 'backend', 'README.md'), 'utf8')).toBe('agent edit')
+    })
+
+    it('keeps a per-agent branch when a multi-repo create rolls back', async () => {
+      // Rollback is the third removal call in this function; rebuild and the
+      // route were fixed first. It runs on the explicit path too, where
+      // followSource is never set, so the flag alone cannot decide.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const wsName = 'agent-abcdefghij123456'
+
+      // The branch pre-exists with an unmerged commit — an earlier run's work.
+      const scratch = join(TEST_DIR, 'scratch-rollback')
+      await execFileAsync('git', ['worktree', 'add', '-b', wsName, scratch, 'main'], {
+        cwd: frontendDir,
+      })
+      await writeFile(join(scratch, 'unpushed.txt'), 'agent work')
+      await execFileAsync('git', ['add', '.'], { cwd: scratch })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: scratch })
+      const { stdout: branchTipBefore } = await execFileAsync('git', ['rev-parse', wsName], {
+        cwd: scratch,
+      })
+      await execFileAsync('git', ['worktree', 'remove', scratch], { cwd: frontendDir })
+
+      // Break the second repo so its `worktree add` fails and create rolls back.
+      await rm(join(backendDir, '.git'), { recursive: true, force: true })
+
+      await expect(
+        createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig, { branch: wsName }),
+      ).rejects.toThrow()
+
+      const { stdout: branchTipAfter } = await execFileAsync(
+        'git',
+        ['rev-parse', `refs/heads/${wsName}`],
+        { cwd: frontendDir },
+      )
+      expect(branchTipAfter.trim()).toBe(branchTipBefore.trim())
+    })
+
+    it('keeps a per-agent branch when an incomplete workspace is rebuilt without followSource', async () => {
+      // The rebuild's keepBranches came from the followSource flag alone, but a
+      // grandfathered sticky config reaches the very same worktree through the
+      // explicit path, which never sets it — and the branch may hold the only
+      // copy of the agent's unpushed commits.
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(REPO_DIR, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+      const wsName = 'agent-abcdefghij123456'
+      const created = await createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig, {
+        followSource: true,
+      })
+      const wsFrontend = join(created.path, 'frontend')
+      await writeFile(join(wsFrontend, 'agent-work.txt'), 'unpushed')
+      await execFileAsync('git', ['add', '.'], { cwd: wsFrontend })
+      await execFileAsync('git', ['commit', '-m', 'agent work'], { cwd: wsFrontend })
+      const { stdout: agentCommit } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: wsFrontend,
+      })
+
+      // Half-destroyed workspace → the reuse branch takes the rebuild path.
+      await execFileAsync('git', ['worktree', 'remove', '--force', join(created.path, 'backend')], {
+        cwd: backendDir,
+      })
+      await createGitWorkspace(REPO_DIR, WS_ROOT, wsName, multiRepoConfig)
+
+      const { stdout: branchTip } = await execFileAsync(
+        'git',
+        ['rev-parse', `refs/heads/${wsName}`],
+        { cwd: frontendDir },
+      )
+      expect(branchTip.trim()).toBe(agentCommit.trim())
     })
 
     it('refuses multi-repo deletion when the parent contains an unexpected entry', async () => {

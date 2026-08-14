@@ -162,6 +162,19 @@ app.post('/:agentId/invoke', async (c) => {
       400,
     )
   }
+  // Reserved namespace, rejected only for NEW requests: an explicit worktree
+  // addressing a per-agent workspace would downgrade its persistent state and
+  // hand its long-lived branch to run-end removal. Sticky configs persisted
+  // before this rule keep replaying (grandfathered in resolveWorkDir).
+  if (parsed.data.worktree?.name.startsWith('agent-')) {
+    return c.json(
+      gatewayError(
+        GatewayErrorCode.INVALID_REQUEST,
+        "Worktree names with the 'agent-' prefix are reserved for per-agent workspaces",
+      ),
+      400,
+    )
+  }
 
   let agentConfig: Awaited<ReturnType<typeof buildAgentConfig>>
   try {
@@ -311,16 +324,20 @@ app.post('/:agentId/invoke', async (c) => {
   // 防止并发请求在 createWorkspace 的 await 窗口里都通过占用检查。
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId)
+    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId, agentConfig.agentEnv)
   } catch (err) {
+    // The run row already exists and the queue counts it as occupying a
+    // concurrency slot, so it must be reclaimed on EVERY failure path — not
+    // just the three typed ones. Leaving it behind wedges the Agent at
+    // maxConcurrency forever, recoverable only by editing the database.
+    await db.delete(runs).where(eq(runs.id, runId))
+    completeExecutionLease(runId)
+    void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
       err instanceof WorktreeDirtyError
     ) {
-      await db.delete(runs).where(eq(runs.id, runId))
-      completeExecutionLease(runId)
-      void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
       return c.json(gatewayError(GatewayErrorCode.EXECUTION_ERROR, err.message), 409)
     }
     await failRunBeforeLifecycle(runId, agentId, err instanceof Error ? err.message : String(err))

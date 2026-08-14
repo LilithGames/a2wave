@@ -5,6 +5,18 @@ import { access, cp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getKbDocStoragePath } from '../lib/kb-storage.js'
 
+/** Workspace-root directory this module writes into. */
+const KB_WORKSPACE_DIR = '.kb'
+
+/**
+ * Workspace paths this writer owns. Registered with `platformWorkspacePaths()`
+ * so removal and the followSource pinning check learn about them from the
+ * writer itself — a new writer cannot be forgotten.
+ */
+export function kbSyncWorkspacePaths(): string[] {
+  return [KB_WORKSPACE_DIR]
+}
+
 const KB_MANAGED_MARKER = '.a2wave-kb-managed'
 
 /**
@@ -79,7 +91,7 @@ export async function syncKbDocsToWorkspaceAsync(
   workDir: string,
   docs: KbDocFile[],
 ): Promise<void> {
-  const kbRoot = join(workDir, '.kb')
+  const kbRoot = join(workDir, KB_WORKSPACE_DIR)
 
   // Clean up previous managed KB directory
   if (await pathExists(kbRoot)) {

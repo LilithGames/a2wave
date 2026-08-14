@@ -14,6 +14,7 @@
 
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { BUILTIN_PROVIDER_MANIFESTS } from './provider-catalog.js'
 
 export interface ResolvedMcpServer {
   name: string
@@ -35,6 +36,21 @@ export interface ResolvedMcpServer {
 }
 
 const MCP_MANAGED_MARKER_SUFFIX = '.a2wave-managed'
+
+/**
+ * Workspace paths this writer owns: every Provider's MCP config file plus the
+ * sidecar marker written beside it. Registered with `platformWorkspacePaths()`,
+ * which derives the root-entry set from these.
+ */
+export function mcpSyncWorkspacePaths(): string[] {
+  const paths: string[] = []
+  for (const manifest of Object.values(BUILTIN_PROVIDER_MANIFESTS)) {
+    const delivery = manifest.capabilities?.mcpDelivery
+    if (delivery?.mode !== 'workspace-file' || !delivery.defaultPath) continue
+    paths.push(delivery.defaultPath, `${delivery.defaultPath}${MCP_MANAGED_MARKER_SUFFIX}`)
+  }
+  return paths
+}
 
 interface ManagedMcpMarker {
   managedServers: Record<string, string>

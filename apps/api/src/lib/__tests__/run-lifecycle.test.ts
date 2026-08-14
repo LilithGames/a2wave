@@ -1267,6 +1267,37 @@ describe('cleanupWorktreeIfEphemeral', () => {
     expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
+  it('never removes the per-agent worktree, even with a legacy ephemeral config', async () => {
+    // A worktreeConfig persisted before the reserved-prefix rule can name the
+    // Agent's own long-lived workspace with cleanup: 'ephemeral'. Run-end
+    // cleanup must skip it entirely — keeping the branch is not enough, the
+    // directory holds uncommitted work.
+    mockDbGet.mockReturnValueOnce({
+      workDir: '/ws/agent-abc123def456ghi7',
+      worktreeConfig: { name: 'agent-abc123def456ghi7', cleanup: 'ephemeral' },
+    })
+    const removeWorkspace = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValue({ removeWorkspace, wsRoot: '/ws' })
+
+    await cleanupWorktreeIfEphemeral('run_1', 'agt_abc123def456ghi7')
+    expect(removeWorkspace).not.toHaveBeenCalled()
+  })
+
+  it("never removes another agent's per-agent worktree either", async () => {
+    // The guard is on the workspace shape, not on "is it mine": a config
+    // pointing at a different Agent's worktree would otherwise delete that
+    // Agent's directory and `git branch -D` its unmerged commits.
+    mockDbGet.mockReturnValueOnce({
+      workDir: '/ws/agent-zzz999yyy888xxx7',
+      worktreeConfig: { name: 'agent-zzz999yyy888xxx7', cleanup: 'ephemeral' },
+    })
+    const removeWorkspace = vi.fn().mockResolvedValue(undefined)
+    mockCreateScmSource.mockReturnValue({ removeWorkspace, wsRoot: '/ws' })
+
+    await cleanupWorktreeIfEphemeral('run_1', 'agt_abc123def456ghi7')
+    expect(removeWorkspace).not.toHaveBeenCalled()
+  })
+
   it('skips removeWorkspace when resolved path differs from run.workDir (scmSourceId rebind)', async () => {
     // 回归 #2：run 启动时 agent 用的是 S1，workDir=/old/ws/fix；
     // 期间管理员把 agent 切到 S2（wsRoot=/new/ws），cleanup 若按当前 scmSourceId

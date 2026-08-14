@@ -2354,6 +2354,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain(pathRow)) // occupancy decision row re-read
         .mockReturnValueOnce(makeDbChain({ id: 'run_running' })) // occupied
       const removed = vi.fn()
@@ -2366,9 +2367,91 @@ describe('SCM Sources routes', () => {
         method: 'DELETE',
       })
       expect(res.status).toBe(409)
+      // Pin the reason: a drifted mock queue also yields 409 (via "paths
+      // changed"), which would let this assertion pass without ever exercising
+      // the occupancy branch it exists to cover.
+      expect(((await res.json()) as { error: string }).error).toMatch(/occupied/)
       expect(removed).not.toHaveBeenCalled()
       // Blocked before the reservation was ever written.
       expect(db.insert).not.toHaveBeenCalled()
+    })
+
+    it('keeps the branch when deleting a per-agent worktree, drops it otherwise', async () => {
+      // The entry an operator actually clicks: an idle `agent-*` row must not
+      // take the Agent's accumulated unmerged commits with it. The judgement is
+      // an exact match against an Agent bound to this source, so a legacy
+      // explicit workspace named `agent-refactor` keeps delete-branch semantics.
+      const removed = vi.fn()
+      const removeWorkspace = makeRemoveWorkspace(removed)
+      const runWithName = async (name: string) => {
+        removeWorkspace.mockClear()
+        // One full pass of the removal protocol per invocation. The queue is
+        // primed inside the helper — `mockReturnValueOnce` entries survive
+        // `clearAllMocks`, so leaving any unconsumed here would poison the
+        // second call and every later test.
+        ;(db.select as Mock)
+          .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' })) // source
+          .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+          .mockReturnValueOnce(makeDbChain([{ id: 'agt_abc123def456ghi7' }])) // bound agents
+          // reservation-transaction decision
+          .mockReturnValueOnce(makeDbChain(pathRow))
+          .mockReturnValueOnce(makeDbChain(undefined))
+          .mockReturnValueOnce(makeDbChain([]))
+          // beforeRemove re-check inside the workspace mutex
+          .mockReturnValueOnce(makeDbChain(pathRow))
+          .mockReturnValueOnce(makeDbChain(undefined))
+          .mockReturnValueOnce(makeDbChain([]))
+        mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+        const res = await app.request(`/api/scm-sources/scm_1/workspaces/${name}`, {
+          method: 'DELETE',
+        })
+        expect(res.status).toBe(200)
+        return removeWorkspace.mock.calls[0]
+      }
+
+      // `beforeRemove` rides along on the same options object, so the branch
+      // decision is asserted on its own key rather than by whole-object equality.
+      expect(await runWithName('agent-abc123def456ghi7')).toEqual([
+        'agent-abc123def456ghi7',
+        expect.objectContaining({ keepBranches: true }),
+      ])
+      expect(await runWithName('agent-refactor')).toEqual([
+        'agent-refactor',
+        expect.objectContaining({ keepBranches: false }),
+      ])
+    })
+
+    it('keeps the branch of an orphaned per-agent worktree whose agent row is gone', async () => {
+      // Agent deletion leaves an occupied worktree behind on purpose, so the
+      // operator reclaims it here — after the row it would have matched against
+      // is already deleted. Falling back to the shape test is what stops that
+      // click from taking the unpushed commits with it.
+      const removed = vi.fn()
+      const removeWorkspace = makeRemoveWorkspace(removed)
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' })) // source
+        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents left
+        // reservation-transaction decision
+        .mockReturnValueOnce(makeDbChain(pathRow))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+        // beforeRemove re-check inside the workspace mutex
+        .mockReturnValueOnce(makeDbChain(pathRow))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(makeDbChain([]))
+      mockCreateScmSource.mockReturnValue({ wsRoot: '/workspaces/scm_1', removeWorkspace })
+
+      const res = await app.request('/api/scm-sources/scm_1/workspaces/agent-abc123def456ghi7', {
+        method: 'DELETE',
+      })
+
+      expect(res.status).toBe(200)
+      expect(removeWorkspace).toHaveBeenCalledWith(
+        'agent-abc123def456ghi7',
+        expect.objectContaining({ keepBranches: true }),
+      )
+      expect(removed).toHaveBeenCalled()
     })
 
     it.each([
@@ -2420,6 +2503,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', workspacesPath: '/workspaces/scm_1' }))
         .mockReturnValueOnce(makeDbChain(undefined)) // no active-status run
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'evaluation', workloadId: 'evt_7' }]))
@@ -2444,6 +2528,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined)) // status-based check sees nothing
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_9' }]))
@@ -2472,6 +2557,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([{ workloadType: 'run', workloadId: 'run_new' }]))
@@ -2498,6 +2584,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(
           makeDbChain({ id: 'scm_1', workspacesPath: '/moved/workspaces/scm_1' }),
         )
@@ -2523,6 +2610,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([]))
@@ -2550,6 +2638,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         // reservation-transaction decision
         .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
@@ -2593,6 +2682,7 @@ describe('SCM Sources routes', () => {
       ;(db.select as Mock)
         .mockReturnValueOnce(makeDbChain({ id: 'scm_1', type: 'git' }))
         .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain([])) // no bound agents
         .mockReturnValueOnce(makeDbChain(pathRow))
         .mockReturnValueOnce(makeDbChain(undefined))
         .mockReturnValueOnce(makeDbChain([]))

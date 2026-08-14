@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mockSpawn = vi.hoisted(() => vi.fn())
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   spawn: mockSpawn,
@@ -209,6 +211,40 @@ User Email          Not logged in
 })
 
 describe('runStatusProbe completeEnv', () => {
+  it('resolves a synchronous Windows spawn failure instead of rejecting the whole CLI list', async () => {
+    const err = new Error('spawn EPERM') as NodeJS.ErrnoException
+    err.code = 'EPERM'
+    mockSpawn.mockImplementationOnce(() => {
+      throw err
+    })
+
+    await expect(runStatusProbe('codex', ['--version'])).resolves.toMatchObject({
+      exitCode: null,
+      notFound: true,
+      timedOut: false,
+      stderr: 'spawn EPERM',
+    })
+  })
+
+  it('settles when timeout cleanup cannot produce a close event', async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new MockChildProcess()
+      mockSpawn.mockReturnValue(child)
+
+      const resultPromise = runStatusProbe('codex', ['login', 'status'], { timeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(100)
+
+      await expect(resultPromise).resolves.toMatchObject({
+        exitCode: null,
+        timedOut: true,
+        notFound: false,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not inherit unknown API-process secrets by default', async () => {
     const previous = process.env.LOGIN_PROBE_UNKNOWN_SECRET
     process.env.LOGIN_PROBE_UNKNOWN_SECRET = 'must-not-leak'

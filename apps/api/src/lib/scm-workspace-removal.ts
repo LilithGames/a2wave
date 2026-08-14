@@ -74,7 +74,10 @@ export { WorkspaceRemovalHandedOffError } from './workspace-removal-outcome.js'
 export interface RemovableScmWorkspace {
   localPath: string
   wsRoot: string
-  removeWorkspace(name: string, options?: { beforeRemove?: () => Promise<void> }): Promise<void>
+  removeWorkspace(
+    name: string,
+    options?: { beforeRemove?: () => Promise<void>; keepBranches?: boolean },
+  ): Promise<void>
 }
 
 export function workspaceRemovalId(sourceId: string, name: string): string {
@@ -208,6 +211,13 @@ interface GuardedRemovalInput {
   name: string
   scm: RemovableScmWorkspace
   ownedWorkload?: OwnedScmWorkload
+  /**
+   * Preserve the worktree's branch. Required for a per-Agent worktree: it is
+   * long-lived and runs on its own branch, so that branch can be the only copy
+   * of commits an earlier run never pushed. Reclaiming the directory is fine;
+   * deleting the ref is data loss.
+   */
+  keepBranches?: boolean
 }
 
 async function validateOwnedCleanup(
@@ -239,7 +249,7 @@ async function validateOwnedCleanup(
 }
 
 async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Promise<void> {
-  const { sourceId, name, scm, ownedWorkload } = input
+  const { sourceId, name, scm, ownedWorkload, keepBranches } = input
   // Keep target identity stable across migrated rows. Mixed-version writers
   // are unsupported because a pre-token finalizer can still delete by id alone;
   // the independent attempt token fences current-version ABA replacement.
@@ -285,6 +295,7 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
   try {
     const remove = () =>
       scm.removeWorkspace(name, {
+        keepBranches,
         beforeRemove: async () => {
           const blocked = await withScmPathMutation(async (tx) => {
             const excludingWorkload = ownedWorkload

@@ -1,0 +1,40 @@
+# Shared toolchain setup for every CI job: pnpm + node (with the pnpm store
+# cache) + install. Extracted so adding a lane costs one `uses:` line instead
+# of a copied four-step block that can drift per job.
+#
+# `install-scripts` exists because the api lane is the ONE place that must run
+# install scripts: better-sqlite3 may build its native addon from source, and
+# skipping scripts there fails every test on a missing addon instead of a real
+# regression (see the test-api job comment in ci.yml).
+name: Setup pnpm workspace
+description: pnpm + node + cached install (+ optional shared build)
+
+inputs:
+  install-scripts:
+    description: Run dependency install scripts (needed only by lanes that hit native addons)
+    required: false
+    default: 'false'
+  build-shared:
+    description: Build @a2wave/shared (needed by anything importing it, incl. tsc and tests)
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+      with:
+        version: 9.15.4
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: pnpm
+    - if: inputs.install-scripts == 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - if: inputs.install-scripts != 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile --ignore-scripts
+    - if: inputs.build-shared == 'true'
+      shell: bash
+      run: pnpm --filter @a2wave/shared build

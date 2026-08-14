@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-10 · `node scripts/gates/check-license-inventory.mjs --write` · 826 packages
+Generated: 2026-08-13 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -14,7 +14,7 @@ checked for forbidden licenses, and each carries the same license as its parent 
 
 | License | Packages |
 |---|---|
-| MIT | 704 |
+| MIT | 705 |
 | ISC | 41 |
 | Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
@@ -237,6 +237,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/babel__traverse | 7.28.0 | MIT |
 | @types/better-sqlite3 | 7.6.13 | MIT |
 | @types/chai | 5.2.3 | MIT |
+| @types/cross-spawn | 6.0.6 | MIT |
 | @types/d3-array | 3.2.2 | MIT |
 | @types/d3-color | 3.1.3 | MIT |
 | @types/d3-ease | 3.0.2 | MIT |

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -26,22 +26,26 @@ const BASELINE_NAME = 'rolls back already-switched sub-repos when a later checko
  * `exitCode`, so the script's real control flow — including its handling of
  * res.status/res.error — is exercised end to end.
  */
-function runGate(report, exitCode = 0, suiteBaseline = null, extraEnv = {}) {
+function runGate(report, exitCode = 0, suiteBaseline = null, extraEnv = {}, gateArgs = []) {
   const dir = mkdtempSync(join(tmpdir(), 'api-gate-'))
   const reportPath = join(dir, 'report.json')
   const binDir = join(dir, 'bin')
+  const vitestArgsPath = join(dir, 'vitest-args.txt')
   spawnSync('mkdir', ['-p', binDir])
 
   writeFileSync(reportPath, JSON.stringify(report))
+  // The fake also records its argv, so tests can assert what the gate passed
+  // down to vitest (e.g. that a --shard flag is forwarded verbatim).
   writeFileSync(
     join(binDir, 'pnpm'),
-    `#!/bin/sh\ncat "${reportPath}" > "${reportPath}.copy"\nexit ${exitCode}\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > "${vitestArgsPath}"\ncat "${reportPath}" > "${reportPath}.copy"\nexit ${exitCode}\n`,
     { mode: 0o755 },
   )
 
   const args = [SCRIPT]
   // The waiver override is an explicit flag, never an env var — see the gate.
   if (suiteBaseline) args.push(`--suite-baseline=${suiteBaseline}`)
+  args.push(...gateArgs)
   const res = spawnSync('node', args, {
     encoding: 'utf-8',
     env: {
@@ -51,7 +55,13 @@ function runGate(report, exitCode = 0, suiteBaseline = null, extraEnv = {}) {
       ...extraEnv,
     },
   })
-  return { status: res.status, out: `${res.stdout}${res.stderr}` }
+  let vitestArgs = ''
+  try {
+    vitestArgs = readFileSync(vitestArgsPath, 'utf-8')
+  } catch {
+    // The gate may fail before spawning vitest (e.g. flag validation).
+  }
+  return { status: res.status, out: `${res.stdout}${res.stderr}`, vitestArgs }
 }
 
 /**
@@ -379,4 +389,59 @@ describe('check-api-tests gate — the `/` anchor is what prevents over-matching
     assert.equal(status, 1)
     assert.match(out, /a real regression/)
   })
+})
+
+describe('check-api-tests gate — sharding', () => {
+  /**
+   * CI splits the api suite into N parallel jobs via vitest's --shard. The gate
+   * must forward the flag, and must scale its collection floor: a single shard
+   * legitimately collects ~1/N of the suite, so holding it to the full-run
+   * MIN_TESTS would reject every sharded run.
+   */
+  const shardedReport = { ...passingReport, numTotalTests: 700 }
+
+  it('forwards --shard to the vitest invocation verbatim', () => {
+    const { status, vitestArgs } = runGate(shardedReport, 0, null, {}, ['--shard=2/4'])
+    assert.equal(status, 0)
+    assert.match(vitestArgs, /--shard=2\/4/)
+  })
+
+  it('does not pass a --shard flag when none was given', () => {
+    const { status, vitestArgs } = runGate(passingReport, 0)
+    assert.equal(status, 0)
+    assert.doesNotMatch(vitestArgs, /--shard/)
+  })
+
+  it('scales the collection floor by shard count', () => {
+    // 700 tests: fine for one shard of four (floor scales down), but a full
+    // unsharded run collecting only 700 is a broken include glob.
+    const sharded = runGate(shardedReport, 0, null, {}, ['--shard=1/4'])
+    assert.equal(sharded.status, 0)
+    const full = runGate(shardedReport, 0)
+    assert.equal(full.status, 1)
+    assert.match(full.out, /only 700 tests ran/)
+  })
+
+  it('still rejects a sharded run that collected almost nothing', () => {
+    const { status, out } = runGate({ ...passingReport, numTotalTests: 3 }, 0, null, {}, [
+      '--shard=1/4',
+    ])
+    assert.equal(status, 1)
+    assert.match(out, /only 3 tests ran/)
+  })
+
+  it('names the shard in the summary line', () => {
+    const { out } = runGate(shardedReport, 0, null, {}, ['--shard=3/4'])
+    assert.match(out, /shard=3\/4/)
+  })
+
+  for (const bad of ['--shard=0/4', '--shard=5/4', '--shard=abc', '--shard=2', '--shard=1/0']) {
+    it(`rejects a malformed shard flag: ${bad}`, () => {
+      const { status, out, vitestArgs } = runGate(passingReport, 0, null, {}, [bad])
+      assert.equal(status, 1)
+      assert.match(out, /--shard/)
+      // Validation must happen before vitest is spawned.
+      assert.equal(vitestArgs, '')
+    })
+  }
 })

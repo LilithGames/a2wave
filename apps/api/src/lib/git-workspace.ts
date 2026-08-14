@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import {
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -19,6 +20,7 @@ import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
 import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { defaultScmWorkspacesPath } from './scm-storage.js'
+import { platformWorkspaceEntries, platformWorkspacePaths } from './workspace-platform-entries.js'
 
 const execFileAsyncRaw = promisify(execFile)
 
@@ -126,13 +128,48 @@ export class WorktreeDirtyError extends Error {
  * includes underscores, so pop would discard entropy and could make wsRoot
  * collide across sources.
  */
+export function idSuffix(id: string): string {
+  const underscoreIdx = id.indexOf('_')
+  const suffix = underscoreIdx >= 0 ? id.slice(underscoreIdx + 1) : id
+  return suffix || id
+}
+
+/**
+ * Managed storage decides this, with one exception: a source whose legacy
+ * `~/.a2wave/workspaces/<suffix>` directory still exists keeps it, so an
+ * upgrade never strands worktrees the previous release created.
+ */
 export function defaultWorkspacesPath(
   sourceId: string,
   pathExists: (path: string) => boolean = existsSync,
 ): string {
-  const suffix = sourceId.includes('_') ? sourceId.slice(sourceId.indexOf('_') + 1) : sourceId
-  const legacyPath = join(homedir(), '.a2wave', 'workspaces', suffix || sourceId)
+  const legacyPath = join(homedir(), '.a2wave', 'workspaces', idSuffix(sourceId))
   return pathExists(legacyPath) ? legacyPath : defaultScmWorkspacesPath(sourceId)
+}
+
+/**
+ * Workspace name of an Agent's own long-lived worktree. Callers compare against
+ * this exact value rather than an `agent-` prefix test: a workspace explicitly
+ * named e.g. `agent-refactor` predates the reservation and must keep the
+ * ordinary explicit-worktree semantics (its branch is disposable).
+ */
+export function perAgentWorkspaceName(agentId: string): string {
+  return `agent-${idSuffix(agentId)}`
+}
+
+/**
+ * Whether a workspace name looks like a per-Agent worktree. Used only where the
+ * Agent id is not available (the TTL sweeper walks the filesystem); call sites
+ * that know the Agent compare against `perAgentWorkspaceName` exactly, because
+ * a legacy explicit workspace such as `agent-refactor` is NOT one of these.
+ */
+export function isPerAgentWorkspaceName(name: string): boolean {
+  // `createId` is randomBytes(12).toString('base64url') — EXACTLY 16 base64url
+  // chars. Matching `{16,}` instead let a legacy hand-typed workspace such as
+  // `agent-payments-refactor` (17) read as per-agent, which leaks its branch on
+  // every removal. Anchored at 16, only a hand-typed name of exactly that
+  // length still collides.
+  return /^agent-[A-Za-z0-9_-]{16}$/.test(name)
 }
 
 // ============================================================
@@ -165,7 +202,7 @@ export async function createGitWorkspace(
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { branch?: string },
+  options?: { branch?: string; followSource?: boolean; advance?: boolean },
 ): Promise<{ path: string; created: boolean }> {
   return withKeyedLock(workspaceMutexKey(wsRoot, name), () =>
     createGitWorkspaceUnlocked(localPath, wsRoot, name, config, options),
@@ -177,7 +214,7 @@ async function createGitWorkspaceUnlocked(
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { branch?: string },
+  options?: { branch?: string; followSource?: boolean; advance?: boolean },
 ): Promise<{ path: string; created: boolean }> {
   const wsPath = join(wsRoot, name)
 
@@ -195,11 +232,28 @@ async function createGitWorkspaceUnlocked(
         'Workspace is incomplete (missing sub-repo dirs), rebuilding',
       )
       // Unlocked variant: this call site already holds the workspace mutex.
-      await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
+      //
+      // followSource branches are long-lived and may carry unmerged agent
+      // commits — a rebuild must never destroy them; the fresh create below
+      // re-attaches them via buildFollowSourceAddArgs. The name test covers the
+      // other caller: a legacy sticky config reaches a per-agent worktree
+      // through the explicit path, which never sets followSource.
+      await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, {
+        keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
+      })
       // fall through to fresh create below
     } else {
       logger.info({ wsPath }, 'Workspace already exists, reusing')
-      await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
+      if (options?.followSource && !options?.branch) {
+        // advance === false: a sibling run of the same agent is executing in
+        // this workspace right now — reset --hard is not a read-only share, so
+        // freshness waits for the next solo run.
+        if (options.advance !== false) {
+          await followSourceHeadOnReuse(wsPath, localPath, config, name)
+        }
+      } else {
+        await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
+      }
       return { path: wsPath, created: false }
     }
   }
@@ -218,17 +272,22 @@ async function createGitWorkspaceUnlocked(
       const repoWsPath = join(wsPath, repo.directory)
 
       try {
-        const args = await buildWorktreeAddArgs(
-          repoWsPath,
-          repoLocalPath,
-          options?.branch,
-          repo.branch || 'main',
-        )
+        const args =
+          options?.followSource && !options?.branch
+            ? await buildFollowSourceAddArgs(repoWsPath, repoLocalPath, name, repo.branch || 'main')
+            : await buildWorktreeAddArgs(
+                repoWsPath,
+                repoLocalPath,
+                options?.branch,
+                repo.branch || 'main',
+              )
         await execFileAsync('git', args, { cwd: repoLocalPath, timeout: GIT_TIMEOUT_MS })
         logger.info({ repoWsPath, directory: repo.directory }, 'Created workspace for sub-repo')
       } catch (err) {
         try {
-          rethrowIfBranchLocked(err, options?.branch)
+          // followSource attaches the workspace's own branch, so a lock on it
+          // must surface as a typed error, not a generic create failure.
+          rethrowIfBranchLocked(err, options?.branch ?? (options?.followSource ? name : undefined))
         } catch (lockErr) {
           if (lockErr instanceof WorktreeBranchLockedError) {
             lockedError = lockErr
@@ -243,10 +302,15 @@ async function createGitWorkspaceUnlocked(
     }
 
     if (lockedError || errors.length > 0) {
-      // 回滚已创建的 worktree
+      // 回滚已创建的 worktree。keepBranches follows the same two-sided rule as
+      // the rebuild above: a per-agent branch may hold unpushed commits from an
+      // earlier run, and the explicit path that a legacy sticky config takes
+      // never sets followSource.
       try {
         // Unlocked variant: this call site already holds the workspace mutex.
-        await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
+        await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, {
+          keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
+        })
       } catch (rollbackErr) {
         // If the first `git worktree add` failed, there is no Git registration
         // to prove. The parent directory was created by this invocation and is
@@ -266,16 +330,14 @@ async function createGitWorkspaceUnlocked(
     }
   } else {
     try {
-      const args = await buildWorktreeAddArgs(
-        wsPath,
-        localPath,
-        options?.branch,
-        config.branch || 'main',
-      )
+      const args =
+        options?.followSource && !options?.branch
+          ? await buildFollowSourceAddArgs(wsPath, localPath, name, config.branch || 'main')
+          : await buildWorktreeAddArgs(wsPath, localPath, options?.branch, config.branch || 'main')
       await execFileAsync('git', args, { cwd: localPath, timeout: GIT_TIMEOUT_MS })
       logger.info({ wsPath }, 'Created workspace')
     } catch (err) {
-      rethrowIfBranchLocked(err, options?.branch)
+      rethrowIfBranchLocked(err, options?.branch ?? (options?.followSource ? name : undefined))
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Failed to create workspace: ${msg}`)
     }
@@ -422,6 +484,205 @@ async function findBranchLockHolder(
  * 多 repo 先 pre-validate（收集脏/锁状态）再统一切换，以保证原子性：
  * 任何 sub-repo 不满足条件时不触碰任何 sub-repo。
  */
+/** True when refs/heads/<name> exists. Any git failure reads as "missing". */
+async function localBranchExists(cwd: string, name: string): Promise<boolean> {
+  return execFileAsync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], {
+    cwd,
+    timeout: 5_000,
+  })
+    .then(() => true)
+    .catch(() => false)
+}
+
+/**
+ * True when `ref` is an ancestor of `target` — advancing from ref to target is
+ * then a fast-forward that cannot orphan any commit. Any git failure reads as
+ * "not an ancestor": the caller pins the workspace, which is the safe side.
+ */
+async function isAncestor(cwd: string, ref: string, target: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['merge-base', '--is-ancestor', ref, target], {
+      cwd,
+      timeout: 5_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Advance a followSource workspace to the source checkout's current commit.
+ *
+ * The workspace lives on its own branch (named after the workspace), so agent
+ * commits land on a real branch and `git branch --show-current` answers — the
+ * contract git-sync keeps for the shared checkout. Freshness is best-effort; a
+ * stale checkout is strictly better than a failed run or a lost commit, so
+ * every skip path degrades to "keep the previous commit":
+ * - sub-repo sits on a different named branch (someone switched it
+ *   deliberately) → keep it
+ * - sub-repo has tracked modifications → keep it (untracked files never block:
+ *   the platform itself mounts skills/config as untracked content)
+ * - HEAD is not an ancestor of the source HEAD (the agent committed work that
+ *   is not merged yet) → keep it; once those commits reach the source branch
+ *   the guard passes again and the workspace follows the source once more
+ * - a legacy detached workspace (created before the branch strategy) is
+ *   adopted onto the branch when the same guards pass
+ */
+/** What the advance should do to one sub-repo, decided before anything moves. */
+type FollowSourcePlan =
+  | { kind: 'skip'; wsRepoPath: string }
+  | { kind: 'pin'; wsRepoPath: string; reason: string }
+  | { kind: 'advance'; wsRepoPath: string; target: string }
+  | { kind: 'adopt'; wsRepoPath: string; target: string; branchExists: boolean }
+
+async function followSourceHeadOnReuse(
+  wsPath: string,
+  localPath: string,
+  config: GitConfig,
+  name: string,
+): Promise<void> {
+  const repoDirs = config.repos?.length ? config.repos.map((r) => r.directory) : ['']
+
+  // Two passes. Deciding every sub-repo before moving any of them is what makes
+  // a multi-repo advance all-or-nothing: advancing repo A while repo B pins on
+  // an unmerged commit hands the agent a tree whose repos sit at commits that
+  // never coexisted upstream — a mismatch nothing downstream can detect.
+  // `switchBranchOnReuse` already pre-validates for the same reason.
+  const plans: FollowSourcePlan[] = []
+  for (const dir of repoDirs) {
+    const wsRepoPath = dir ? join(wsPath, dir) : wsPath
+    const localRepoPath = dir ? join(localPath, dir) : localPath
+
+    try {
+      const { stdout: onBranchRaw } = await execFileAsync(
+        'git',
+        ['symbolic-ref', '--short', '-q', 'HEAD'],
+        { cwd: wsRepoPath, timeout: 5_000 },
+      ).catch(() => ({ stdout: '' }))
+      const onBranch = onBranchRaw.trim()
+      if (onBranch && onBranch !== name) {
+        plans.push({ kind: 'skip', wsRepoPath })
+        continue
+      }
+
+      const { stdout: sourceHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: localRepoPath,
+        timeout: 5_000,
+      })
+      const target = sourceHead.trim()
+      const { stdout: wsHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: wsRepoPath,
+        timeout: 5_000,
+      })
+      const upToDate = wsHead.trim() === target
+      if (upToDate && onBranch) {
+        plans.push({ kind: 'skip', wsRepoPath })
+        continue
+      }
+
+      // The platform rewrites these on every run (skill/MCP mounts, artifacts),
+      // so changes there are not agent work and must not pin the workspace —
+      // repos that track e.g. .claude/skills would otherwise never advance.
+      // reset --hard reverts them to repo state; the engine re-mounts before
+      // spawning the CLI.
+      //
+      // Excluded at FULL DEPTH, never by root entry: a repo that tracks
+      // `.claude/settings.json` or `.claude/hooks/*` (a common layout) shares a
+      // root with the skill mount, and excluding `.claude` wholesale would let
+      // the reset below discard those edits with no error and no log.
+      const { stdout: dirty } = await execFileAsync(
+        'git',
+        [
+          'status',
+          '--porcelain',
+          '-uno',
+          '--',
+          '.',
+          `:(exclude)${WORKSPACE_ARTIFACTS_DIRECTORY}`,
+          ...[...platformWorkspacePaths()].map((path) => `:(exclude)${path}`),
+        ],
+        { cwd: wsRepoPath, timeout: 5_000 },
+      )
+      if (dirty.trim()) {
+        plans.push({ kind: 'pin', wsRepoPath, reason: 'tracked modifications' })
+        continue
+      }
+
+      if (!upToDate && !(await isAncestor(wsRepoPath, 'HEAD', target))) {
+        plans.push({ kind: 'pin', wsRepoPath, reason: 'unmerged local commits' })
+        continue
+      }
+
+      if (onBranch) {
+        plans.push({ kind: 'advance', wsRepoPath, target })
+      } else {
+        // Legacy detached workspace: adopt it onto the branch. Attach to an
+        // existing branch as-is — it may carry unmerged commits, and forcing
+        // it to the source HEAD would orphan them; the next reuse advances it
+        // through the ancestor guard. Only a missing branch is created here.
+        const branchExists = await localBranchExists(wsRepoPath, name)
+        if (branchExists) {
+          const { stdout: branchTip } = await execFileAsync(
+            'git',
+            ['rev-parse', `refs/heads/${name}`],
+            { cwd: wsRepoPath, timeout: 5_000 },
+          )
+          if (branchTip.trim() !== wsHead.trim()) {
+            // Attaching moves the working tree to the branch tip — surface it
+            // like the other non-advancing paths instead of moving silently.
+            logger.warn(
+              { wsRepoPath, from: wsHead.trim(), to: branchTip.trim() },
+              'followSource: adopting existing branch moves the workspace off its detached commit',
+            )
+          }
+        }
+        plans.push({ kind: 'adopt', wsRepoPath, target, branchExists })
+      }
+    } catch (err) {
+      plans.push({
+        kind: 'pin',
+        wsRepoPath,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  const pinned = plans.filter((plan) => plan.kind === 'pin')
+  if (pinned.length > 0) {
+    logger.warn(
+      { wsPath, pinned: pinned.map((plan) => ({ repo: plan.wsRepoPath, reason: plan.reason })) },
+      'followSource: workspace pinned behind source HEAD',
+    )
+    return
+  }
+
+  for (const plan of plans) {
+    try {
+      if (plan.kind === 'advance') {
+        await execFileAsync('git', ['reset', '--hard', plan.target], {
+          cwd: plan.wsRepoPath,
+          timeout: GIT_TIMEOUT_MS,
+        })
+      } else if (plan.kind === 'adopt') {
+        await execFileAsync(
+          'git',
+          plan.branchExists ? ['checkout', name] : ['checkout', '-b', name, plan.target],
+          { cwd: plan.wsRepoPath, timeout: GIT_TIMEOUT_MS },
+        )
+      }
+    } catch (err) {
+      // Nothing to roll back to: `reset --hard` on an earlier repo already
+      // discarded the state it would revert to. Freshness is best-effort, so a
+      // partial advance is logged and the run proceeds.
+      logger.warn(
+        { err, wsRepoPath: plan.wsRepoPath },
+        'followSource: failed to advance workspace to source HEAD, keeping previous commit',
+      )
+    }
+  }
+}
+
 async function switchBranchOnReuse(
   wsPath: string,
   localPath: string,
@@ -567,6 +828,28 @@ async function buildWorktreeAddArgs(
 }
 
 /**
+ * Build `git worktree add` args for a followSource workspace: the worktree
+ * lives on its own branch, named after the workspace.
+ * - branch already exists (workspace was removed but its branch survived, e.g.
+ *   carrying unmerged agent commits) → re-attach it as-is; resetting it here
+ *   could orphan those commits, and the reuse path will advance it later once
+ *   the ancestor guard passes
+ * - otherwise → create the branch at the source's configured base branch
+ */
+async function buildFollowSourceAddArgs(
+  wsPath: string,
+  cwd: string,
+  name: string,
+  baseBranch: string,
+): Promise<string[]> {
+  if (await localBranchExists(cwd, name)) {
+    return ['worktree', 'add', wsPath, name]
+  }
+  const baseRef = await resolveBaseRef(cwd, baseBranch)
+  return ['worktree', 'add', '-b', name, wsPath, baseRef]
+}
+
+/**
  * 检测 git 错误是否为 branch 锁定（同一 branch 不能被两个 worktree checkout），
  * 如果是则抛出 WorktreeBranchLockedError。
  */
@@ -690,16 +973,31 @@ async function assertWorkspaceWithinRoot(wsRoot: string, workspacePath: string):
  * worktree creation on every replica), so a re-check here observes it. Throw
  * from the callback to abort the removal with nothing touched.
  */
+export interface RemoveGitWorkspaceOptions {
+  /**
+   * Re-check the removal decision immediately before touching the filesystem,
+   * inside the per-worktree mutex. Throw to abort with nothing touched.
+   */
+  beforeRemove?: () => Promise<void>
+  /**
+   * Keep the worktree's local branch. Required for a per-Agent worktree: it is
+   * long-lived and runs on its own branch, so that branch can hold unpushed
+   * commits from an earlier run. Deleting it reclaims the directory *and*
+   * discards that work.
+   */
+  keepBranches?: boolean
+}
+
 export async function removeGitWorkspace(
   localPath: string,
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { beforeRemove?: () => Promise<void> },
+  options?: RemoveGitWorkspaceOptions,
 ): Promise<void> {
   return withKeyedLock(workspaceMutexKey(wsRoot, name), async () => {
     await options?.beforeRemove?.()
-    return removeGitWorkspaceUnlocked(localPath, wsRoot, name, config)
+    return removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, options)
   })
 }
 
@@ -708,6 +1006,7 @@ async function removeGitWorkspaceUnlocked(
   wsRoot: string,
   name: string,
   config: GitConfig,
+  options?: Pick<RemoveGitWorkspaceOptions, 'keepBranches'>,
 ): Promise<void> {
   if (!WORKTREE_NAME_REGEX.test(name)) {
     throw new Error(`Invalid workspace name: ${name}`)
@@ -730,9 +1029,14 @@ async function removeGitWorkspaceUnlocked(
   // a final non-recursive rmdir.
   if (multiRepos) {
     await assertWorkspaceWithinRoot(wsRoot, wsPath)
+    // Every entry the platform itself writes (skill mounts, MCP configs, the
+    // CodeGraph link) is expected at the workspace root — deriving the list
+    // from the Provider definitions keeps the next Provider from wedging
+    // removal the way .codegraph once did.
     const allowedEntries = new Set([
       WORKSPACE_STATE_FILE,
       WORKSPACE_ARTIFACTS_DIRECTORY,
+      ...platformWorkspaceEntries(),
       ...multiRepos.map((repo) => repo.directory),
     ])
     const unexpectedEntries = (await readdir(wsPath)).filter(
@@ -773,7 +1077,7 @@ async function removeGitWorkspaceUnlocked(
         })
       }
 
-      if (branch) {
+      if (branch && !options?.keepBranches) {
         await deleteLocalBranch(repoLocalPath, branch)
       }
     }
@@ -789,7 +1093,7 @@ async function removeGitWorkspaceUnlocked(
       throw new Error(`Failed to remove registered Git worktree '${wsPath}'`, { cause: err })
     }
 
-    if (branch) {
+    if (branch && !options?.keepBranches) {
       await deleteLocalBranch(localPath, branch)
     }
   }
@@ -802,6 +1106,52 @@ async function removeGitWorkspaceUnlocked(
   if (existsSync(wsPath)) {
     await rm(join(wsPath, WORKSPACE_ARTIFACTS_DIRECTORY), { recursive: true, force: true })
     await rm(join(wsPath, WORKSPACE_STATE_FILE), { force: true })
+    // Remove the platform's own paths first, at full depth, type-aware:
+    // symlinks are unlinked without following (the .codegraph link points into
+    // the shared index), directories removed recursively (skill mounts, MCP
+    // config dirs), plain files force-removed. fs.rm without recursive throws
+    // EISDIR on a real directory, which once wedged removal permanently.
+    for (const path of platformWorkspacePaths()) {
+      const entryPath = join(wsPath, path)
+      const entryStat = await lstat(entryPath).catch(() => null)
+      if (entryStat) {
+        await rm(entryPath, { force: true, recursive: entryStat.isDirectory() })
+      }
+    }
+    // A shared root (.claude, .cursor) may hold content the platform never
+    // wrote — a repo-tracked settings.json, or settings.local.json the CLI
+    // wrote itself. The workspace directory is going away either way (the repo
+    // checkouts were just removed with --force), so refusing here would only
+    // wedge TTL sweeps and Agent-deletion reclaims. Name what is being removed
+    // instead of deleting it silently, which is what the top-level
+    // unexpected-entries check does for the level above.
+    for (const entry of platformWorkspaceEntries()) {
+      const entryPath = join(wsPath, entry)
+      const leftovers = await readdir(entryPath).catch(() => null)
+      if (!leftovers) {
+        // Unreadable as a directory: absent, or something non-directory sits
+        // where the shared root belongs (a plain file, a dangling symlink).
+        // The platform never writes that shape, so treat it as one more
+        // leftover to name — skipping it leaves the final rmdir failing
+        // ENOTEMPTY on every later sweep of this workspace.
+        const entryStat = await lstat(entryPath).catch(() => null)
+        if (entryStat) {
+          logger.warn(
+            { wsPath, entry },
+            'Removing a non-directory entry in place of a platform workspace root',
+          )
+          await rm(entryPath, { force: true, recursive: entryStat.isDirectory() })
+        }
+        continue
+      }
+      if (leftovers.length > 0) {
+        logger.warn(
+          { wsPath, entry, leftovers },
+          'Removing workspace entries the platform did not write',
+        )
+      }
+      await rm(entryPath, { force: true, recursive: true })
+    }
     for (const entry of await readdir(wsPath)) {
       if (WORKSPACE_STATE_TEMP_FILE_PATTERN.test(entry)) {
         await rm(join(wsPath, entry), { recursive: true, force: true })
@@ -950,7 +1300,14 @@ export async function cleanupStaleWorkspaces(
   const lruCap = opts.lruCap ?? TTL_LRU_CAP
   const now = opts.now ?? Date.now()
   const removeWorkspaceImpl =
-    opts.removeWorkspace ?? ((name: string) => removeGitWorkspace(localPath, wsRoot, name, config))
+    opts.removeWorkspace ??
+    ((name: string) =>
+      removeGitWorkspace(localPath, wsRoot, name, config, {
+        // Defense in depth: a per-agent workspace should never carry `ttl`, but
+        // if a legacy state file says so, its branch may still hold the only
+        // copy of unpushed work — reclaim the directory, keep the refs.
+        keepBranches: isPerAgentWorkspaceName(name),
+      }))
   const idleThreshold = now - idleDays * 24 * 60 * 60 * 1000
 
   const all = await listGitWorkspaces(localPath, wsRoot, config)
@@ -972,6 +1329,9 @@ export async function cleanupStaleWorkspaces(
     }
     if (ws.lastActivityAt != null && ws.lastActivityAt < idleThreshold) {
       try {
+        // Goes through the guarded protocol the caller injected (durable
+        // reservation + fresh occupancy re-check); its fallback carries the
+        // same keepBranches rule.
         await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info(
@@ -995,6 +1355,9 @@ export async function cleanupStaleWorkspaces(
       if (opts.activePaths.has(ws.path)) continue
       if (await isWorkspaceDirty(ws, config)) continue
       try {
+        // Goes through the guarded protocol the caller injected (durable
+        // reservation + fresh occupancy re-check); its fallback carries the
+        // same keepBranches rule.
         await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info({ wsPath: ws.path }, 'TTL cleanup: removed LRU excess workspace')

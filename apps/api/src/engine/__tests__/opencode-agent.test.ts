@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mockSpawn = vi.hoisted(() => vi.fn())
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   spawn: mockSpawn,
@@ -677,31 +679,19 @@ describe('OpencodeAgentEngine spawn 失败与 healthCheck', () => {
   })
 
   it('healthCheck：--version 成功 → true，失败 → false', async () => {
-    const { execFile } = await import('node:child_process')
-    const mockExecFile = vi.mocked(execFile)
     const engine = new OpencodeAgentEngine(baseConfig)
 
-    mockExecFile.mockImplementationOnce(((
-      _cmd: string,
-      _args: unknown,
-      _opts: unknown,
-      cb: (err: Error | null) => void,
-    ) => {
-      cb(null)
-      return new MockChildProcess()
-    }) as never)
-    await expect(engine.healthCheck()).resolves.toBe(true)
+    const successChild = new MockChildProcess()
+    mockSpawn.mockReturnValueOnce(successChild)
+    const success = engine.healthCheck()
+    successChild.emit('close', 0)
+    await expect(success).resolves.toBe(true)
 
-    mockExecFile.mockImplementationOnce(((
-      _cmd: string,
-      _args: unknown,
-      _opts: unknown,
-      cb: (err: Error | null) => void,
-    ) => {
-      cb(new Error('ENOENT'))
-      return new MockChildProcess()
-    }) as never)
-    await expect(engine.healthCheck()).resolves.toBe(false)
+    const failureChild = new MockChildProcess()
+    mockSpawn.mockReturnValueOnce(failureChild)
+    const failure = engine.healthCheck()
+    failureChild.emit('close', 1)
+    await expect(failure).resolves.toBe(false)
   })
 })
 

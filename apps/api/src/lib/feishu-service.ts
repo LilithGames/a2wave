@@ -2187,9 +2187,10 @@ class FeishuConnectionManager {
           await db.select().from(agents).where(eq(agents.id, agentId)).limit(1)
         )[0]
         if (!currentAgent) throw new Error(`Agent '${agentId}' not found after workload admission`)
-
-        // Resolve from the current binding after the execution slot is held.
-        const resolvedWorkDir = await resolveWorkDir(currentAgent, undefined, runId)
+        // Resolve from the binding re-read above, once the slot is held. agentEnv
+        // in: resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH.
+        const env = agentConfig.agentEnv
+        const resolvedWorkDir = await resolveWorkDir(currentAgent, undefined, runId, env)
 
         let rootText = ''
         let rootImagePaths: string[] = []

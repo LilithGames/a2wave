@@ -1008,8 +1008,37 @@ describe('executeChatRun', () => {
       baseAgent,
       expect.objectContaining({ name: 'feature-x', cleanup: 'ttl' }),
       'run_1',
+      undefined,
     )
     expect(mockExecuteWithRetry).toHaveBeenCalled()
+  })
+
+  it('threads agentEnv into resolveWorkDir so the workspace-branch env stays truthful', async () => {
+    // resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH — it sets/clears the variable
+    // for whichever path the run actually lands on, so every channel must hand
+    // it the env object.
+    const runWithWorktree = {
+      ...baseRun,
+      worktreeConfig: { name: 'feature-x', cleanup: 'ttl' },
+    }
+    const agentConfig = {
+      model: 'claude-3',
+      agentEnv: { GIT_BRANCH: 'main' },
+    }
+    mockBuildAgentConfig.mockReturnValueOnce(agentConfig)
+    mockResolveWorkDir.mockResolvedValue('/ws/feature-x')
+
+    setupSelectSequence(baseAgent, runWithWorktree, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(
+      baseAgent,
+      expect.objectContaining({ name: 'feature-x' }),
+      'run_1',
+      agentConfig.agentEnv,
+    )
   })
 
   it('passes worktreeConfig.branch through to resolveWorkDir (queued path preserves branch)', async () => {
@@ -1035,6 +1064,7 @@ describe('executeChatRun', () => {
         cleanup: 'ephemeral',
       }),
       'run_1',
+      undefined,
     )
   })
 
@@ -1062,6 +1092,7 @@ describe('executeChatRun', () => {
       baseAgent,
       expect.objectContaining({ name: 'feature-x', cleanup: 'ephemeral' }),
       'run_1',
+      undefined,
     )
   })
 
@@ -1160,7 +1191,7 @@ describe('executeChatRun', () => {
     const { executeChatRun } = await import('../execute-chat-run.js')
     await executeChatRun('agt_1', 'run_1')
 
-    expect(mockResolveWorkDir).toHaveBeenCalledWith(baseAgent, undefined, 'run_1')
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(baseAgent, undefined, 'run_1', undefined)
     expect(mockExecuteWithRetry).toHaveBeenCalled()
   })
 

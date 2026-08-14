@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mockSpawn = vi.hoisted(() => vi.fn())
 
+vi.mock('../cli-spawn.js', () => ({ spawnCli: mockSpawn }))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
   spawn: mockSpawn,

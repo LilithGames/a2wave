@@ -2346,7 +2346,9 @@ describe('handleMessage via dispatcher', () => {
 
     await dispatch(makeData({ chat_type: 'p2p', message_id: 'om_fresh_workspace' }))
 
-    expect(mockResolveWorkDir).toHaveBeenCalledWith(currentAgent, undefined, 'run_test')
+    // The 4th argument is the agentEnv resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH
+    // in; buildAgentConfig is mocked here, so it arrives undefined.
+    expect(mockResolveWorkDir).toHaveBeenCalledWith(currentAgent, undefined, 'run_test', undefined)
     expect(mockResolveWorkDir.mock.invocationCallOrder[0]).toBeGreaterThan(
       mockTryAcquireSlot.mock.invocationCallOrder[0],
     )

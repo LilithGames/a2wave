@@ -69,6 +69,8 @@ import { buildExportZip } from '../lib/agent-export.js'
 import {
   WorktreeOccupiedError,
   buildAgentConfig,
+  removePerAgentWorkspace,
+  resolveCleanupWorkDirs,
   resolveEngineType,
   resolveWorkDir,
   validateAgentProviderConfiguration,
@@ -1462,9 +1464,14 @@ app.patch('/:id', async (c) => {
     await validateAgentProviderConfiguration(candidate)
   }
 
-  let disableWorkDir: string | undefined
+  // Resolve before persistence so workspace lookup failures still reject the
+  // update, but defer file mutations until the database update succeeds. This
+  // keeps both provider-preflight and database-failure paths side-effect free.
+  let disableWorkDirs: string[] | undefined
   if (shouldRemoveMemoryOverrides) {
-    disableWorkDir = await resolveWorkDir(existing)
+    // Side-effect-free resolution: a config PATCH must never create a worktree
+    // or move a HEAD under a possibly-running run's feet.
+    disableWorkDirs = await resolveCleanupWorkDirs(existing)
   }
 
   const updateAgent = async (executor: typeof db) =>
@@ -1491,18 +1498,20 @@ app.patch('/:id', async (c) => {
 
   resyncGitTriggerAfterUpdate(id, parsed.data, updated)
 
-  if (disableWorkDir !== undefined) {
-    for (const file of ['CLAUDE.md', 'AGENTS.md', '.cursorrules']) {
-      try {
-        removeMemoryOverride(join(disableWorkDir, file))
-      } catch (err) {
-        // The committed DB row is authoritative. Do not roll it back after earlier
-        // files may already be clean; execution engines retry the relevant legacy
-        // override cleanup before spawning their CLI, so a later Run can self-heal.
-        logger.warn(
-          { agentId: existing.id, file, err },
-          `Failed to remove memory override from ${file}`,
-        )
+  if (disableWorkDirs !== undefined) {
+    for (const dir of disableWorkDirs) {
+      for (const file of ['CLAUDE.md', 'AGENTS.md', '.cursorrules']) {
+        try {
+          removeMemoryOverride(join(dir, file))
+        } catch (err) {
+          // The committed DB row is authoritative. Do not roll it back after earlier
+          // files may already be clean; execution engines retry the relevant legacy
+          // override cleanup before spawning their CLI, so a later Run can self-heal.
+          logger.warn(
+            { agentId: existing.id, file, err },
+            `Failed to remove memory override from ${file}`,
+          )
+        }
       }
     }
   }
@@ -2437,6 +2446,17 @@ app.post('/:id/chat', async (c) => {
     }
   }
 
+  // Reserved namespace, rejected only for NEW requests: an explicit worktree
+  // addressing a per-agent workspace would downgrade its persistent state and
+  // hand its long-lived branch to run-end removal. Sticky configs persisted
+  // before this rule keep replaying (grandfathered in resolveWorkDir).
+  if (parsed.data.worktree?.name.startsWith('agent-')) {
+    return c.json(
+      { error: "Worktree names with the 'agent-' prefix are reserved for per-agent workspaces" },
+      400,
+    )
+  }
+
   // Persist worktree parameters with the Run so queued execution can recover them.
   const worktreeCfg = parsed.data.worktree
     ? {
@@ -2655,21 +2675,31 @@ app.post('/:id/chat', async (c) => {
   // 在同步事务内完成占用检查 + workDir 原子写回，防止并发竞态。
   let resolvedWorkDir: string
   try {
-    resolvedWorkDir = await resolveWorkDir(agent, parsed.data.worktree, runId)
+    resolvedWorkDir = await resolveWorkDir(
+      agent,
+      parsed.data.worktree,
+      runId,
+      (await agentConfig).agentEnv,
+    )
   } catch (err) {
+    // 释放已占用的 slot。新建的 run 直接删除；复用的 run 还原 intent/executionMetadata/status
+    // 到覆盖前的原值（不留 pending）——留 pending 会被 409 guard 永久挡死且 scheduleNext 不恢复
+    // pending（review [P1]）；不还原 intent 则历史被污染成一条从未执行的新消息（review [P2]）。
+    // Awaited: the restore must land before scheduleNext runs, which is the
+    // ordering the comment above depends on.
+    //
+    // Unconditional: any failure leaves a run the queue counts as running, so
+    // an untyped error (a workspace bookkeeping failure, a broken SCM config)
+    // would otherwise pin the Agent at maxConcurrency until someone edits the
+    // database.
+    await abandonRun()
+    completeExecutionLease(runId)
+    scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
       err instanceof WorktreeDirtyError
     ) {
-      // 释放已占用的 slot。新建的 run 直接删除；复用的 run 还原 intent/executionMetadata/status
-      // 到覆盖前的原值（不留 pending）——留 pending 会被 409 guard 永久挡死且 scheduleNext 不恢复
-      // pending（review [P1]）；不还原 intent 则历史被污染成一条从未执行的新消息（review [P2]）。
-      // Awaited: the restore must land before scheduleNext runs, which is the
-      // ordering the comment above depends on.
-      await abandonRun()
-      completeExecutionLease(runId)
-      scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
       return c.json({ error: err.message }, 409)
     }
     await failRunBeforeLifecycle(runId, id, err instanceof Error ? err.message : String(err))
@@ -2944,6 +2974,17 @@ app.delete('/:id', async (c) => {
 
   removeAgentMemory(id)
   clearAgentIndex(id)
+
+  // Reclaim the per-agent worktree in the background: serial `git worktree
+  // remove --force` on a large or multi-repo checkout is seconds of latency,
+  // and nothing downstream reads its outcome (failures only log).
+  //
+  // The row is already gone — `deleteAgentWithBindingGuard` deleted it under
+  // the binding guard, which is also what proves no Run or Evaluation still
+  // holds this Agent's checkout.
+  void removePerAgentWorkspace(agent).catch((err) =>
+    logger.warn({ err, agentId: id }, 'Per-agent worktree reclaim failed'),
+  )
 
   logAudit(c, { action: 'agent.delete', resource: 'agent', resourceId: id })
 

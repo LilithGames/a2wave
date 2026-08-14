@@ -1,8 +1,8 @@
-import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
+const mockExecCli = vi.hoisted(() => vi.fn())
+vi.mock('../../engine/cli-spawn.js', () => ({ execCli: mockExecCli }))
 vi.mock('node:fs', () => ({ existsSync: vi.fn() }))
 vi.mock('../../db/client.js', () => ({
   db: { select: vi.fn(), update: vi.fn() },
@@ -19,21 +19,10 @@ import { runCodegraphForPath, runCodegraphIndex } from '../codegraph-index.js'
 
 import { asyncQuery } from '../../test/async-query.js'
 
-const mockExecFile = vi.mocked(execFile) as unknown as {
-  mockImplementation: (fn: (...args: unknown[]) => void) => void
-  mockReset: () => void
-  mock: { calls: unknown[][] }
-}
 const mockExistsSync = vi.mocked(existsSync)
 
 function mockCodegraphSuccess(stdout = 'ok') {
-  mockExecFile.mockImplementation((...args: unknown[]) => {
-    const cb = args[args.length - 1] as (
-      err: null,
-      result: { stdout: string; stderr: string },
-    ) => void
-    cb(null, { stdout, stderr: '' })
-  })
+  mockExecCli.mockResolvedValue({ stdout, stderr: '' })
 }
 
 function mockSource(source: unknown) {
@@ -78,7 +67,7 @@ function mockUpdates(results: unknown[]) {
 describe('runCodegraphForPath', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockExecFile.mockReset()
+    mockExecCli.mockReset()
   })
 
   it('initializes CodeGraph when the index directory is missing', async () => {
@@ -88,8 +77,8 @@ describe('runCodegraphForPath', () => {
     const result = await runCodegraphForPath('/repo')
 
     expect(result).toEqual({ ok: true, message: 'initialized', mode: 'init' })
-    expect(mockExecFile.mock.calls[0][0]).toBe('codegraph')
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['init', '/repo'])
+    expect(mockExecCli.mock.calls[0][0]).toBe('codegraph')
+    expect(mockExecCli.mock.calls[0][1]).toEqual(['init', '/repo'])
   })
 
   it('syncs CodeGraph when an index already exists', async () => {
@@ -99,7 +88,7 @@ describe('runCodegraphForPath', () => {
     const result = await runCodegraphForPath('/repo')
 
     expect(result).toEqual({ ok: true, message: 'synced', mode: 'sync' })
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['sync', '/repo'])
+    expect(mockExecCli.mock.calls[0][1]).toEqual(['sync', '/repo'])
   })
 
   it('sanitizes successful CodeGraph output before returning it', async () => {
@@ -120,14 +109,11 @@ describe('runCodegraphForPath', () => {
 
   it('returns a sanitized failure without throwing', async () => {
     mockExistsSync.mockReturnValue(true)
-    mockExecFile.mockImplementation((...args: unknown[]) => {
-      const cb = args[args.length - 1] as (err: Error & { stderr?: string }) => void
-      cb(
-        Object.assign(new Error('Command failed: codegraph sync /repo'), {
-          stderr: 'bad token https://user:secret@example.com/repo.git?token=abc P4PASSWD=hunter2',
-        }),
-      )
-    })
+    mockExecCli.mockRejectedValue(
+      Object.assign(new Error('Command failed: codegraph sync /repo'), {
+        stderr: 'bad token https://user:secret@example.com/repo.git?token=abc P4PASSWD=hunter2',
+      }),
+    )
 
     const result = await runCodegraphForPath('/repo')
 
@@ -143,10 +129,7 @@ describe('runCodegraphForPath', () => {
 
   it('returns a default failure message when CodeGraph produces no diagnostic output', async () => {
     mockExistsSync.mockReturnValue(false)
-    mockExecFile.mockImplementation((...args: unknown[]) => {
-      const cb = args[args.length - 1] as (err: Error) => void
-      cb(new Error(''))
-    })
+    mockExecCli.mockRejectedValue(new Error(''))
 
     const result = await runCodegraphForPath('/repo')
 
@@ -157,7 +140,7 @@ describe('runCodegraphForPath', () => {
 describe('runCodegraphIndex', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockExecFile.mockReset()
+    mockExecCli.mockReset()
   })
 
   it('returns not found without updating state', async () => {
@@ -229,7 +212,7 @@ describe('runCodegraphIndex', () => {
       skipped: true,
       conflict: true,
     })
-    expect(mockExecFile.mock.calls).toHaveLength(0)
+    expect(mockExecCli.mock.calls).toHaveLength(0)
   })
 
   it('marks a successful index idle, clears the last error, and stores last indexed time', async () => {
@@ -263,14 +246,11 @@ describe('runCodegraphIndex', () => {
     })
     const { setCalls } = mockUpdates([{ id: 'scm_1' }, { id: 'scm_1' }])
     mockExistsSync.mockReturnValue(true)
-    mockExecFile.mockImplementation((...args: unknown[]) => {
-      const cb = args[args.length - 1] as (err: Error & { stderr?: string }) => void
-      cb(
-        Object.assign(new Error('Command failed'), {
-          stderr: 'fatal: https://user:secret@example.com/org/repo.git failed',
-        }),
-      )
-    })
+    mockExecCli.mockRejectedValue(
+      Object.assign(new Error('Command failed'), {
+        stderr: 'fatal: https://user:secret@example.com/org/repo.git failed',
+      }),
+    )
 
     const result = await runCodegraphIndex('scm_1')
 
