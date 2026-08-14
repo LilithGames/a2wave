@@ -222,15 +222,6 @@ describe('listOpenRequests — wide scopes', () => {
     expect(argv[1]).toContain('groups/acme%2Fplatform/merge_requests')
   })
 
-  it('asks for the instance-wide collection under the all scope', async () => {
-    runStatusProbe.mockResolvedValue(probeResult({ stdout: '[]' }))
-
-    await listOpenRequests('glab', '', undefined, 'all')
-    const [, argv] = runStatusProbe.mock.calls[0] as [string, string[]]
-    expect(argv[1]).toMatch(/^merge_requests\?/)
-    expect(argv[1]).toContain('scope=all')
-  })
-
   it('leaves the project unset under the project scope, even though GitLab sends it', async () => {
     // GitLab returns `references` on the PROJECT listing too, not only the group
     // one. Attaching it unconditionally re-keyed every single-repository entry

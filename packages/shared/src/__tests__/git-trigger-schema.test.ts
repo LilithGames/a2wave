@@ -127,18 +127,18 @@ describe('watch scope', () => {
     expect(parsed.repos[0].project).toBe('acme/platform/sdk')
   })
 
-  it('accepts an all scope with no project path', () => {
-    // `all` means "every repository this credential can see", so demanding a
-    // path would make the scope impossible to express.
-    const parsed = gitTriggerConfigSchema.parse({
-      ...validConfig,
-      repos: [{ scope: 'all' }],
-    })
-    expect(parsed.repos[0].scope).toBe('all')
-    expect(parsed.repos[0].project).toBe('')
+  it('rejects the retired instance-wide scope', () => {
+    // Measured against a real deployment, `scope=all` returned 402 open merge
+    // requests across nine unrelated top-level namespaces — enough to exhaust
+    // the whole tick page budget, so the open set could never be paged to the
+    // end and `closed` inference would be permanently suspended. It is not a
+    // scope a poll can serve correctly, so it is not offered.
+    expect(
+      gitTriggerConfigSchema.safeParse({ ...validConfig, repos: [{ scope: 'all' }] }).success,
+    ).toBe(false)
   })
 
-  it('still requires a project path for the project and group scopes', () => {
+  it('requires a project path for every scope', () => {
     // Without this an empty path silently degrades to the whole instance —
     // the widest possible scope reached by leaving a field blank.
     for (const scope of ['project', 'group'] as const) {
@@ -149,19 +149,17 @@ describe('watch scope', () => {
     }
   })
 
-  it('rejects a group or all scope on GitHub', () => {
+  it('rejects the group scope on GitHub', () => {
     // The GitHub listing is a per-repository GraphQL query with no org-wide
     // equivalent carrying the same fields. Accepting the scope here would
     // validate a config the poller cannot honour.
-    for (const scope of ['group', 'all'] as const) {
-      expect(
-        ghTriggerConfigSchema.safeParse({
-          ...validConfig,
-          provider: 'gh',
-          repos: [{ scope, project: 'acme' }],
-        }).success,
-      ).toBe(false)
-    }
+    expect(
+      ghTriggerConfigSchema.safeParse({
+        ...validConfig,
+        provider: 'gh',
+        repos: [{ scope: 'group', project: 'acme' }],
+      }).success,
+    ).toBe(false)
     expect(
       ghTriggerConfigSchema.safeParse({
         ...validConfig,
@@ -183,8 +181,8 @@ describe('watch scope', () => {
     }
   })
 
-  it('exposes the three scopes', () => {
-    expect(gitTriggerScopeEnum.options).toEqual(['project', 'group', 'all'])
+  it('exposes only the scopes a poll can serve', () => {
+    expect(gitTriggerScopeEnum.options).toEqual(['project', 'group'])
   })
 
   it('bounds the pages one scope may fetch per tick', () => {

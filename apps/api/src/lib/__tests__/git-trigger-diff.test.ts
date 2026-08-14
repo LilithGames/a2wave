@@ -547,14 +547,6 @@ describe('repoStateKey', () => {
       repoStateKey({ project: 'acme', scope: 'project' }),
     )
   })
-
-  it('gives the instance-wide scope a stable key of its own', () => {
-    // `all` names no path, so without an explicit key it would collapse to the
-    // empty string and collide with any other pathless entry.
-    const key = repoStateKey({ project: '', scope: 'all' })
-    expect(key).toBeTruthy()
-    expect(key).not.toBe(repoStateKey({ project: '', scope: 'project' }))
-  })
 })
 
 describe('cross-repository identity under a wide scope', () => {

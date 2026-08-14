@@ -113,13 +113,23 @@ export const GIT_TRIGGER_MAX_REPOS = 5
  * its org-wide search returns neither — so widening there would mean an N+1
  * sweep, which is precisely what this channel exists to avoid.
  */
+/**
+ * There is deliberately no instance-wide scope.
+ *
+ * `merge_requests?scope=all` exists and was implemented, but measuring it
+ * against a real deployment showed it cannot work here: that instance returned
+ * 402 open merge requests spanning nine unrelated top-level namespaces, which
+ * exhausts the tick's entire page budget on its own. A scope that can never
+ * page to the end can never prove the open set was seen, so `closed` inference
+ * would be permanently suspended — and the Agent would be woken by hundreds of
+ * repositories nobody configured it for. A group is the widest scope that stays
+ * both bounded and intentional.
+ */
 export const gitTriggerScopeEnum = z.enum([
   /** One repository, addressed by its full path. */
   'project',
   /** A namespace and everything beneath it, subgroups included. */
   'group',
-  /** Every repository the CLI's credential can see. */
-  'all',
 ])
 export type GitTriggerScope = z.infer<typeof gitTriggerScopeEnum>
 
@@ -184,11 +194,11 @@ export const gitTriggerRepoSchema = z
      */
     host: z.string().trim().max(300).optional(),
   })
-  .refine((repo) => repo.scope === 'all' || repo.project.length > 0, {
-    // Only `all` has nothing to name. Letting the others through blank would
-    // resolve to the widest possible scope by way of an empty field — the
-    // opposite of what leaving a box empty should ever mean.
-    message: 'A project or group path is required for the project and group scopes',
+  .refine((repo) => repo.project.length > 0, {
+    // Every scope names something. A blank path used to mean "the whole
+    // instance", which made the widest possible scope reachable by leaving a
+    // box empty — the opposite of what an empty field should ever mean.
+    message: 'A project or group path is required',
     path: ['project'],
   })
 export type GitTriggerRepo = z.infer<typeof gitTriggerRepoSchema>

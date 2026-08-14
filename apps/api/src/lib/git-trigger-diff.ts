@@ -524,8 +524,6 @@ export function repoStateKey(repo: {
   scope?: GitTriggerScope
 }): string {
   const scope = repo.scope ?? 'project'
-  // `all` names no path at all, so it needs a key that does not collapse to the
-  // empty string and collide with every other pathless entry.
-  const path = scope === 'all' ? 'all:' : scope === 'group' ? `group:${repo.project}` : repo.project
+  const path = scope === 'group' ? `group:${repo.project}` : repo.project
   return repo.host ? `${repo.host}/${path}` : path
 }

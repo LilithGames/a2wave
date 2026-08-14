@@ -147,14 +147,6 @@ describe('buildGitLabListPath', () => {
     expect(path).toContain('groups/acme%2Fplatform%2Fsdk/merge_requests')
   })
 
-  it('addresses the whole instance under the all scope', () => {
-    const path = buildGitLabListPath({ scope: 'all', project: '' }, 1)
-    // Neither a project nor a group prefix — the bare collection with
-    // `scope=all`, which is every request the credential can see.
-    expect(path).toMatch(/^merge_requests\?/)
-    expect(path).toContain('scope=all')
-  })
-
   it('orders by recent activity so the first page holds what changed', () => {
     // Paging is capped, so the cap must fall on the least recently touched
     // requests rather than an arbitrary slice.

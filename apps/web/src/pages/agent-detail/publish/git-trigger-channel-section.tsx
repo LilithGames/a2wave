@@ -31,7 +31,6 @@ import {
   CheckCircle2,
   FolderTree,
   GitBranch,
-  Globe,
   Loader2,
   Plus,
   RefreshCw,
@@ -84,20 +83,7 @@ export function toGitTriggerRepoDraft(
   url: string,
   provider: GitTriggerProvider,
   scope: GitTriggerScope = 'project',
-  previousHost = '',
 ): GitTriggerRepoDraft {
-  if (scope === 'all') {
-    /**
-     * `all` names no path, but it still names a *forge*.
-     *
-     * Dropping the host sends the poll at the CLI's default host — a different
-     * instance entirely — so a user watching a self-hosted group who switches
-     * the row to "everything visible" would silently start watching the wrong
-     * server with no error shown. The URL is kept as typed so switching back is
-     * not destructive; it is simply not displayed while `all` is selected.
-     */
-    return { url, project: '', host: previousHost, scope }
-  }
   const parsed = scope === 'group' ? parseGitNamespaceUrl(url) : parseGitRepoUrl(url, provider)
   return { url, ...parsed, scope }
 }
@@ -276,9 +262,7 @@ export function GitTriggerChannelSection({
         <div className="space-y-3">
           {repos.map((repo, index) => {
             const scope = repo.scope ?? 'project'
-            // The instance-wide scope names nothing, so an empty field is
-            // correct there rather than incomplete.
-            const invalid = scope !== 'all' && repo.url.trim().length > 0 && !repo.project
+            const invalid = repo.url.trim().length > 0 && !repo.project
             return (
               // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional and reorderable only by add/remove
               <div key={index} className="space-y-2 rounded-md border border-border p-3">
@@ -300,10 +284,7 @@ export function GitTriggerChannelSection({
                           // string means different things under the two parsers,
                           // so keeping the old parse would leave the row showing
                           // a project path while claiming to watch a group.
-                          updateRepo(
-                            index,
-                            toGitTriggerRepoDraft(repo.url, provider, value, repo.host),
-                          )
+                          updateRepo(index, toGitTriggerRepoDraft(repo.url, provider, value))
                         }
                         options={[
                           {
@@ -315,11 +296,6 @@ export function GitTriggerChannelSection({
                             value: 'group',
                             label: t('agentPublish.gitTriggerScopeGroup'),
                             icon: FolderTree,
-                          },
-                          {
-                            value: 'all',
-                            label: t('agentPublish.gitTriggerScopeAll'),
-                            icon: Globe,
                           },
                         ]}
                       />
@@ -336,28 +312,22 @@ export function GitTriggerChannelSection({
                     aria-label={t('agentPublish.gitTriggerRemoveRepo')}
                   />
                 </div>
-                {scope === 'all' ? (
-                  <p className="text-xs text-muted-foreground">
-                    {t('agentPublish.gitTriggerScopeAllHint')}
-                  </p>
-                ) : (
-                  <input
-                    value={repo.url}
-                    onChange={(event) =>
-                      updateRepo(index, toGitTriggerRepoDraft(event.target.value, provider, scope))
-                    }
-                    placeholder={t(
-                      scope === 'group'
-                        ? 'agentPublish.gitTriggerGroupPlaceholder'
-                        : isGitlab
-                          ? 'agentPublish.glabRepoPlaceholder'
-                          : 'agentPublish.ghRepoPlaceholder',
-                    )}
-                    className={`w-full min-w-0 rounded-md border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary ${
-                      invalid ? 'border-destructive' : 'border-border'
-                    }`}
-                  />
-                )}
+                <input
+                  value={repo.url}
+                  onChange={(event) =>
+                    updateRepo(index, toGitTriggerRepoDraft(event.target.value, provider, scope))
+                  }
+                  placeholder={t(
+                    scope === 'group'
+                      ? 'agentPublish.gitTriggerGroupPlaceholder'
+                      : isGitlab
+                        ? 'agentPublish.glabRepoPlaceholder'
+                        : 'agentPublish.ghRepoPlaceholder',
+                  )}
+                  className={`w-full min-w-0 rounded-md border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary ${
+                    invalid ? 'border-destructive' : 'border-border'
+                  }`}
+                />
                 {/* Echo the split back: the config stores host and project
                     separately and the poll uses them separately, so the user
                     can see what their URL actually resolved to. */}
@@ -370,7 +340,7 @@ export function GitTriggerChannelSection({
                     )}
                   </p>
                 )}
-                {!invalid && scope !== 'all' && repo.project && (
+                {!invalid && repo.project && (
                   <p className="text-xs text-muted-foreground">
                     {repo.host
                       ? t(

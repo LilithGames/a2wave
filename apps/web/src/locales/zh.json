@@ -1777,8 +1777,6 @@
     "gitTriggerScopeLabel": "监听范围",
     "gitTriggerScopeProject": "单个仓库",
     "gitTriggerScopeGroup": "整个群组",
-    "gitTriggerScopeAll": "全部可见",
-    "gitTriggerScopeAllHint": "监听当前 glab 凭据可见的所有仓库。范围很广，建议配合目标分支过滤使用。",
     "gitTriggerGroupPlaceholder": "https://gitlab.example.com/acme/platform",
     "gitTriggerGroupParsed": "Host {{host}} · 群组 {{project}}（含子群组）",
     "gitTriggerGroupParsedDefaultHost": "使用 CLI 默认 Host · 群组 {{project}}（含子群组）",

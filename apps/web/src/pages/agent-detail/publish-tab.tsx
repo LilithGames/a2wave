@@ -130,13 +130,11 @@ function toGitTriggerDraft(config: unknown, defaultIntent = ''): GitTriggerDraft
   // The stored config keeps host and project apart, so the URL the field shows
   // is rebuilt from them on load.
   const repos = (raw.repos ?? [])
-    // `all` is the one scope with nothing to name; every other row still needs a
-    // path, or it would render as an empty field claiming to watch something.
-    .filter((repo) => repo?.project || repo?.scope === 'all')
+    .filter((repo) => repo?.project)
     .map((repo) => {
       const parts = { project: repo.project ?? '', host: repo.host ?? '' }
       return {
-        url: repo.scope === 'all' ? '' : formatGitRepoUrl(parts),
+        url: formatGitRepoUrl(parts),
         ...parts,
         scope: repo.scope ?? 'project',
       }
@@ -613,10 +611,7 @@ export function PublishTab({
     return {
       provider,
       repos: draft.repos
-        // The instance-wide scope names no path, so a project check would drop
-        // the one row the user deliberately left blank — publishing a channel
-        // with no watch entries at all.
-        .filter((repo) => repo.project.trim() || repo.scope === 'all')
+        .filter((repo) => repo.project.trim())
         .map((repo) => ({
           scope: repo.scope ?? 'project',
           project: repo.project.trim(),

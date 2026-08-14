@@ -24,9 +24,9 @@
 import type { GitTriggerEvent, GitTriggerRepoState } from '@a2wave/shared'
 import { describe, expect, it } from 'vitest'
 import {
+  diffRepoState,
   MAX_RETAINED_REQUESTS,
   type ObservedRequest,
-  diffRepoState,
   rollbackUnhandled,
 } from '../git-trigger-diff.js'
 

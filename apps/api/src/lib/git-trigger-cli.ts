@@ -621,7 +621,6 @@ export function buildGitLabListPath(
   page: number,
 ): string {
   const query = `state=opened&per_page=${LIST_PAGE_SIZE}&order_by=updated_at&sort=desc&page=${page}`
-  if (entry.scope === 'all') return `merge_requests?scope=all&${query}`
   const collection = entry.scope === 'group' ? 'groups' : 'projects'
   return `${collection}/${encodeURIComponent(entry.project)}/merge_requests?${query}`
 }

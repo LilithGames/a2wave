@@ -113,10 +113,7 @@ export function getChannelBlockReason(
 }
 
 function getGitTriggerBlockReason(input: GitTriggerReadiness): string | null {
-  // The instance-wide scope names no path on purpose, so it counts as a filled
-  // row. Every other scope still needs one, or an untouched form would read as
-  // ready — the form seeds one blank row.
-  const repos = input.repos.filter((repo) => repo.project.trim() || repo.scope === 'all')
+  const repos = input.repos.filter((repo) => repo.project.trim())
   if (repos.length === 0) return 'agentPublish.gitTriggerRepoRequired'
   // A row the user typed into that yielded no project would otherwise be
   // filtered out of the payload without ever being mentioned.

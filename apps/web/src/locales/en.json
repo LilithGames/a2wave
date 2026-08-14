@@ -1777,8 +1777,6 @@
     "gitTriggerScopeLabel": "Watch scope",
     "gitTriggerScopeProject": "One repository",
     "gitTriggerScopeGroup": "Whole group",
-    "gitTriggerScopeAll": "Everything visible",
-    "gitTriggerScopeAllHint": "Watches every repository the current glab credential can see. This is wide — consider pairing it with a target-branch filter.",
     "gitTriggerGroupPlaceholder": "https://gitlab.example.com/acme/platform",
     "gitTriggerGroupParsed": "Host {{host}} · group {{project}} (subgroups included)",
     "gitTriggerGroupParsedDefaultHost": "CLI default host · group {{project}} (subgroups included)",
