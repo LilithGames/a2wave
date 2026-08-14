@@ -71,6 +71,13 @@
       "when": 1786623520502,
       "tag": "0009_harsh_redwing",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786674880152,
+      "tag": "0010_quick_cobalt_man",
+      "breakpoints": true
     }
   ]
 }

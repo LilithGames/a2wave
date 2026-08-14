@@ -1286,6 +1286,27 @@ export const scmWorkspaceRemovals = sqliteTable(
 )
 
 // ============================================================
+// Instance Heartbeats - process liveness for cross-replica recovery
+// ============================================================
+/**
+ * One row per live API process, renewed on an interval. Liveness is what
+ * durable SCM marks (workload leases, workspace-removal reservations) cannot
+ * carry themselves: the age of a mark proves nothing — a multi-repository Git
+ * operation can outlive any timeout — but a stopped heartbeat does prove its
+ * owner is gone. `started_at` is this process's boot instant: instance ids are
+ * reused across container restarts (HOSTNAME, a pinned A2WAVE_INSTANCE_ID), so
+ * a mark written before its owner's current boot belongs to a dead previous
+ * life even while the heartbeat looks fresh.
+ */
+export const instanceHeartbeats = sqliteTable('instance_heartbeats', {
+  /** Process instance id (`processInstanceId`). */
+  id: text('id').primaryKey(),
+  /** Boot instant of the current life; overwritten when a reused id restarts. */
+  startedAt: integer('started_at', { mode: 'timestamp' }).notNull(),
+  heartbeatAt: integer('heartbeat_at', { mode: 'timestamp' }).notNull(),
+})
+
+// ============================================================
 // Evaluation Results - per-case execution result + manual review, isolated by cascade on taskId
 // ============================================================
 export const evaluationResults = sqliteTable(

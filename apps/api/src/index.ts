@@ -39,6 +39,7 @@ import { listPendingMessages } from './lib/feishu-pending-store.js'
 import { feishuConnectionManager } from './lib/feishu-service.js'
 import { gitTriggerManager } from './lib/git-trigger-manager.js'
 import { runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
+import { deleteInstanceHeartbeat, startInstanceHeartbeat } from './lib/instance-heartbeat.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
 import { initAutoSyncSchedulers } from './lib/p4-sync.js'
@@ -356,6 +357,10 @@ const port = env.PORT
 // first-boot /auth/setup race cannot be won by an unauthenticated caller.
 let server: ReturnType<typeof serve> | undefined
 
+// Set once the pre-listen bootstrap starts the beat; shutdown stops it before
+// deleting the row so an interval tick cannot resurrect a released heartbeat.
+let stopInstanceHeartbeat: (() => void) | undefined
+
 setDurableExecutionLeaseReleaseHandler(async (runId, agentId) => {
   await retryScmWorkloadReleaseUntilSuccess({
     type: 'run',
@@ -429,6 +434,10 @@ function gracefulShutdown(signal: string) {
       },
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
       drainAuditWrites: () => drainAuditWrites(),
+      releaseInstanceHeartbeat: async () => {
+        stopInstanceHeartbeat?.()
+        await deleteInstanceHeartbeat()
+      },
       closeDatabase: () => closeDatabaseConnection(),
     }).finally(() => process.exit(0))
     return
@@ -454,6 +463,10 @@ function gracefulShutdown(signal: string) {
       },
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
       drainAuditWrites: () => drainAuditWrites(),
+      releaseInstanceHeartbeat: async () => {
+        stopInstanceHeartbeat?.()
+        await deleteInstanceHeartbeat()
+      },
       closeDatabase: () => closeDatabaseConnection(),
     })
     logger.info('Database connection closed')
@@ -505,6 +518,10 @@ async function replayPendingFeishuMessages(): Promise<void> {
 // ADMIN_PASSWORD. Gating the listen on this closes that race.
 void ensureAdminExists()
   .then(async () => {
+    // Liveness must be visible before this instance acquires any durable SCM
+    // mark: recovery treats an owner with no heartbeat row as dead, so beating
+    // first is what makes this instance's marks untouchable while it lives.
+    stopInstanceHeartbeat = startInstanceHeartbeat()
     // Single-process backend: no previous workspace removal can still be
     // running, so every reservation row is a leak from the dead process. Clear
     // before env bootstrap (which otherwise defers SCM changes on such a row)

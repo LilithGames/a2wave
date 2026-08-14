@@ -26,6 +26,9 @@ describe('runGracefulShutdownSequence', () => {
         drainAuditWrites: vi.fn(async () => {
           calls.push('drainAuditWrites')
         }),
+        releaseInstanceHeartbeat: vi.fn(async () => {
+          calls.push('releaseInstanceHeartbeat')
+        }),
         // Typed void (not the number `push` returns) so the async variants the
         // PostgreSQL path needs can be substituted in individual tests.
         closeDatabase: vi.fn((): void | Promise<void> => {
@@ -61,8 +64,25 @@ describe('runGracefulShutdownSequence', () => {
       'drainExecutionLeases',
       'drainWorkspaceRemovalReleases',
       'drainAuditWrites',
+      'releaseInstanceHeartbeat',
       'closeDatabase',
     ])
+  })
+
+  it('releases the instance heartbeat only after every drain, before the database closes', async () => {
+    // The heartbeat row is what tells a surviving replica "do not touch my
+    // marks". Deleting it before the drains would let a peer reap a lease this
+    // process is still about to release itself; deleting it after means any
+    // mark a failed drain leaked becomes instantly recoverable — by this point
+    // the engines have exited, so nothing here still uses a checkout.
+    const { calls, deps } = makeDeps()
+
+    await runGracefulShutdownSequence(deps)
+
+    const release = calls.indexOf('releaseInstanceHeartbeat')
+    expect(release).toBeGreaterThan(calls.indexOf('drainExecutionLeases'))
+    expect(release).toBeGreaterThan(calls.indexOf('drainWorkspaceRemovalReleases'))
+    expect(release).toBeLessThan(calls.indexOf('closeDatabase'))
   })
 
   it('drains in-flight audit writes BEFORE closing the database', async () => {

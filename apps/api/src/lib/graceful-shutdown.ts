@@ -23,6 +23,14 @@ export interface GracefulShutdownDeps {
    */
   drainAuditWrites: () => Promise<void>
   /**
+   * Delete this instance's heartbeat row. Runs after every drain — the row is
+   * what tells surviving replicas "do not touch my marks", so it must outlive
+   * this process's own release attempts — and before the database closes. Any
+   * mark a failed drain leaked becomes instantly recoverable by a peer; the
+   * engines have already exited, so nothing here still uses a checkout.
+   */
+  releaseInstanceHeartbeat: () => Promise<void>
+  /**
    * Close the database. Returns a promise on PostgreSQL, where closing drains a
    * connection pool over the network; SQLite closes synchronously. Awaited
    * either way, so an unawaited drain cannot let the process exit while
@@ -57,6 +65,7 @@ export async function runGracefulShutdownSequence(deps: GracefulShutdownDeps): P
   await safelyAsync(deps.drainExecutionLeases, 'drainExecutionLeases')
   await safelyAsync(deps.drainWorkspaceRemovalReleases, 'drainWorkspaceRemovalReleases')
   await safelyAsync(deps.drainAuditWrites, 'drainAuditWrites')
+  await safelyAsync(deps.releaseInstanceHeartbeat, 'releaseInstanceHeartbeat')
   await safelyAsync(deps.closeDatabase, 'closeDatabase')
 }
 
