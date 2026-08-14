@@ -439,7 +439,17 @@ jobs:
       SCM_STORAGE_POSTGRES_URL: postgres://a2wave:a2wave@127.0.0.1:5432/a2wave_scm_test
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - uses: pnpm/action-setup@v6
         with:
-          build-shared: 'true'
+          version: 9.15.4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      # Install explicitly, WITHOUT --ignore-scripts: this suite opens a real
+      # SQLite database, so better-sqlite3 must build its native addon. A setup
+      # path that skips install scripts fails every case on a missing addon
+      # rather than on anything this gate is meant to catch.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @a2wave/shared build
       - run: pnpm test:scm-storage
