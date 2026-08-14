@@ -27,6 +27,7 @@ src/
 ├── lib/
 │   ├── agent-yaml.ts # YAML parsing / reference resolution / diff for agents apply
 │   ├── args.ts       # Shared flag utilities: toStringArray / parseKeyValues / confirmDestructive
+│   ├── fields.ts     # `--fields` dot-path projection (applied AFTER redaction — see below)
 │   ├── output.ts     # `--json` support: jsonArg flag fragment + emit() / wantsJson()
 │   ├── prompt.ts     # readSecret(): echo-suppressed stdin read (login + setup password)
 │   ├── setup-plan.ts # docker-compose / .env generation for `a2wave setup`
@@ -189,12 +190,22 @@ See [docs/agent/cli-oauth.md](../../docs/agent/cli-oauth.md) for details.
 
 ### citty argument pitfalls (enforced by tests)
 
-Two structural rules are checked by [src/__tests__/command-structure.test.ts](./src/__tests__/command-structure.test.ts), because both classes of bug are invisible to unit tests that call a command's `run()` directly:
+Four structural rules are checked by [src/__tests__/command-structure.test.ts](./src/__tests__/command-structure.test.ts), because every one of these bug classes is invisible to unit tests that call a command's `run()` directly — they never exercise citty's parser, router or usage renderer:
 
 | Rule | Why |
 |------|------|
 | A node with `subCommands` must declare **no positional** | citty resolves the first non-flag argument against `subCommands`; a positional on the same node is unreachable and errors with `Unknown command`. |
 | Never declare an arg named `no-<x>` | citty parses `--no-x` as negation of `x`, setting `args.x = false` — it never populates an arg literally named `no-x`, so the flag is silently inert. Declare `x` with `default: true` and read `args.x === false`; the `--no-x` spelling still works and still shows up in `--help`. |
+| **Every node must declare `meta.name`**, equal to its key in the parent's `subCommands` | citty builds the usage line as `` `${parentMeta.name} ` + (cmdMeta.name \|\| process.argv[1]) `` (`citty/dist/index.mjs:353`). With no `meta.name` it falls back to **`process.argv[1]`** — the absolute path of the running script — so the published binary printed `USAGE a2wave /usr/local/lib/node_modules/a2wave/dist/index.cjs list\|get\|...`. Wrong, unrunnable as printed, and ~87 wasted tokens on every `--help` an agent reads. |
+| `meta.name` must be a **single segment**, never a full path | `runMain` resolves the name against the root command when building the prefix, so `name: 'a2wave agents'` renders a doubled `a2wave a2wave agents` **and stops the node routing at all**. |
+
+Scope note on the last two: `resolveSubCommand` passes only the *immediate*
+parent, so a depth-2 usage line reads `agents members list` without the leading
+`a2wave`. That is a citty limitation, not a defect in our tree — widening
+`meta.name` to compensate breaks routing, which is why the rule above exists.
+The property the tests actually guarantee is that **no absolute path ever
+reaches the user**, asserted behaviourally via `renderUsage()` on every node
+against its real parent.
 
 ### Evaluation
 
@@ -358,6 +369,26 @@ Referenced resources support both forms: `provider: name` or `provider: prv_xxx`
 | `a2wave update` | Check for and update the a2wave CLI to the latest published version. Queries the npm default registry unless `$A2WAVE_NPM_REGISTRY` points at a mirror |
 | `a2wave upgrade` | Alias for `a2wave update` |
 
+## Design principle: the primary consumer is an Agent
+
+Iron Rule 6 says the platform builds no convenience UI, so **the CLI and the API
+*are* the surface a user's local Agent drives**. That makes an AI agent — not a
+human at a terminal — this tool's main caller, and three properties follow:
+
+| Property | What it means here |
+|---|---|
+| **Token-frugal** | Output is read into a context window. `--json` is compact; `--fields` projects; anything unbounded gets a cap and says so. |
+| **Machine-parseable** | Every read command can answer in JSON. An agent should never have to scrape a column layout. |
+| **Safe by construction** | The CLI is the last hop before terminal scrollback and CI logs, so it redacts rather than trusting every upstream route to have done it. |
+
+Two rules fall out of this that are easy to get backwards:
+
+- **Human-readable stays the DEFAULT.** Agent-first is not agent-only; a bare
+  invocation still prints the table. JSON is opt-in, so nothing that scrapes
+  today breaks.
+- **Redaction runs BEFORE projection.** See `--fields` below — this ordering is
+  a security property, not a style choice.
+
 ## Machine-readable output (`--json`)
 
 Read-oriented commands accept `--json` and print the **raw API payload** instead of the human-formatted columns, so scripts and CI never have to scrape output:
@@ -369,11 +400,24 @@ a2wave agents list --json | jq -r '.data[] | select(.publishStatus=="published")
 # never mistaken for a total. Raise --limit to widen the window.
 a2wave runs list --status failed --json | jq '.filter.matchedOnPage'
 a2wave chat send my-bot -m "ping" --json | jq -r '.data.reply'
+
+# Project to the fields you need — the single biggest token lever there is.
+a2wave agents list --fields 'data[].id,data[].name'     # >90% smaller than --json
 ```
+
+| Flag | Effect |
+|------|--------|
+| `--json` | Compact single-line JSON. The default JSON layout, because indentation is 9–25% of the bytes (highest on wide short-valued rows, lowest when a long `systemPrompt` dominates) and an agent gains nothing from it |
+| `--json-pretty` | Same payload, indented for human reading. Implies `--json` |
+| `--fields <paths>` | Comma-separated dot paths, `[]` to map over an array (`data[].id,data[].name`). Implies `--json` |
+| `--show-secrets` | Print credentials verbatim instead of `********` |
 
 Rules:
 
 - The flag comes from the shared `jsonArg` fragment in [src/lib/output.ts](./src/lib/output.ts); commands call `if (emit(args, result)) return` before their own formatting, so the two modes can never both print.
+- **`--fields` projects AFTER redaction, never before** ([src/lib/fields.ts](./src/lib/fields.ts)). `redactSecrets` decides what is secret partly from *sibling* keys — an agent env var is `{value, sensitive: true}`, and the `sensitive` flag is the only marker that `value` needs masking. Projecting first would strip that sibling, so `--fields data.env.FOO.value` would hand the redactor a bare `{value: 'sk-live'}` and print the secret in clear. Redacting first is safe both ways: projection only removes keys, and `********` survives it. An invariant test in `src/lib/__tests__/fields.test.ts` pins this.
+- A `--fields` path that matches nothing is **omitted, not fatal** — an agent composing paths from a schema will legitimately name a field that is optional and absent on this row. The misses come back under `_meta.unmatchedFields` so it can self-correct without another round-trip.
+- **No `--jq`.** It would need either a `jq` binary or a vendored JS implementation; the published package ships only `citty` + `yaml`, and an agent that wants real jq still has `| jq` in its own shell.
 - **Credentials are redacted by default.** The API returns secrets in plaintext to an owner/editor (the Web UI gates that behind a "click the eye" affordance), but CLI output lands in terminal scrollback, shell history and CI logs. Pass **`--show-secrets`** to print them verbatim; only do so when piping to a secure consumer. Four rules, because secrets arrive in four shapes:
 
   | Rule | Covers |

@@ -434,7 +434,8 @@ describe('runsCommand get (multi-step)', () => {
 
     await getSubCommand('get').run({ args: { id: 'run_1', json: true } })
 
-    expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify(payload, null, 2))
+    // Parsed, not string-compared: the JSON layout belongs to emit().
+    expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual(payload)
     expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('Status:'))
   })
 })

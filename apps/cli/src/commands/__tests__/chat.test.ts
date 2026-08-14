@@ -153,9 +153,11 @@ describe('chat one-shot', () => {
       message: 'ping',
       stream: false,
     })
-    expect(consoleSpy).toHaveBeenCalledWith(
-      JSON.stringify({ data: { reply: 'pong', chatId: 'chat_9' } }, null, 2),
-    )
+    // Parsed, not string-compared: the layout belongs to emit() (compact by
+    // default, indented under --json-pretty) and is asserted there.
+    expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual({
+      data: { reply: 'pong', chatId: 'chat_9' },
+    })
   })
 
   it('rejects --json without a message (an interactive session has no single payload)', async () => {

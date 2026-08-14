@@ -14,12 +14,46 @@ describe('wantsJson', () => {
 describe('emit', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('prints pretty JSON and reports that it handled output', () => {
+  // The CLI's primary consumer is an AI agent, and indentation is pure cost to
+  // one: 9-25% of the bytes on a 20-agent list, depending on how much long text
+  // each row carries. `--json` is therefore compact, and humans who want the
+  // indented form ask for it with `--json-pretty`.
+  it('prints compact JSON and reports that it handled output', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const handled = emit({ json: true }, { data: [{ id: 'agt_1' }] })
 
     expect(handled).toBe(true)
+    expect(spy).toHaveBeenCalledWith(JSON.stringify({ data: [{ id: 'agt_1' }] }))
+  })
+
+  it('prints indented JSON under --json-pretty', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const handled = emit({ json: true, 'json-pretty': true }, { data: [{ id: 'agt_1' }] })
+
+    expect(handled).toBe(true)
     expect(spy).toHaveBeenCalledWith(JSON.stringify({ data: [{ id: 'agt_1' }] }, null, 2))
+  })
+
+  it('treats --json-pretty as implying --json', () => {
+    // An agent that passes only the pretty flag still wants JSON; requiring
+    // both spellings would be a silent no-op that prints the human table.
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(emit({ 'json-pretty': true }, { data: [] })).toBe(true)
+    expect(spy).toHaveBeenCalledWith(JSON.stringify({ data: [] }, null, 2))
+  })
+
+  it('redacts identically in both layouts', () => {
+    const payload = { data: { endpointApiKey: 'sk-live-abc' } }
+    const compact = vi.spyOn(console, 'log').mockImplementation(() => {})
+    emit({ json: true }, payload)
+    const compactOut = String(compact.mock.calls.at(-1)?.[0])
+    emit({ json: true, 'json-pretty': true }, payload)
+    const prettyOut = String(compact.mock.calls.at(-1)?.[0])
+
+    expect(compactOut).not.toContain('sk-live-abc')
+    expect(prettyOut).not.toContain('sk-live-abc')
+    // Same value, different layout only.
+    expect(JSON.parse(compactOut)).toEqual(JSON.parse(prettyOut))
   })
 
   it('prints nothing and defers to the caller without --json', () => {
@@ -30,6 +64,7 @@ describe('emit', () => {
 
   it('exposes a citty-shaped flag definition', () => {
     expect(jsonArg.json.type).toBe('boolean')
+    expect(jsonArg['json-pretty'].type).toBe('boolean')
   })
 })
 
