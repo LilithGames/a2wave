@@ -1,20 +1,19 @@
-import { GatewayErrorCode, attachmentsInputSchema } from '@a2wave/shared'
+import { attachmentsInputSchema, GatewayErrorCode } from '@a2wave/shared'
 import { and, desc, eq } from 'drizzle-orm'
+import type { Context, Next } from 'hono'
 // TODO: oauth-gateway and gateway share ~300 lines of invoke/runs/cancel logic.
 // Extract a shared handleInvoke(agent, caller, channelBuilder, triggerSource) helper
 // when either route needs to diverge (metrics tags, rate-limit granularity, etc.).
 import { Hono } from 'hono'
-import type { Context, Next } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
-import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { completeExecutionLease } from '../engine/execution-lease-registry.js'
+import { agents, runSteps, runs } from '../db/schema.js'
 import { engineRegistry } from '../engine/index.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../lib/agent-helpers.js'
 import {
   cleanupMaterializedRoot,
   materializeForRun,
@@ -44,6 +43,7 @@ import { registerPendingContext, takePendingContext } from '../lib/pending-job-r
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildOAuthChannel, stripReservedContextKeys } from '../lib/run-channel.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
+import { persistRunTurn, recoverRunStartup } from '../lib/run-startup.js'
 import {
   type GatewayCaller,
   oauthUploaderId,
@@ -441,16 +441,15 @@ app.post('/:agentId/invoke', async (c) => {
     resolvedWorkDir = await resolveWorkDir(agent, undefined, runId, agentConfig.agentEnv)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await db
-      .update(runs)
-      .set({
-        status: 'failed',
-        result: { error: msg },
-        updatedAt: new Date(),
-      })
-      .where(eq(runs.id, runId))
-    completeExecutionLease(runId)
-    void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+    await recoverRunStartup({
+      runId,
+      agentId,
+      settleRun: () =>
+        db
+          .update(runs)
+          .set({ status: 'failed', result: { error: msg }, updatedAt: new Date() })
+          .where(eq(runs.id, runId)),
+    })
     const busy =
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
@@ -478,50 +477,39 @@ app.post('/:agentId/invoke', async (c) => {
     stepInput.attachments = materialized
   }
   try {
-    await db.insert(runSteps).values({
-      id: stepId,
-      runId,
-      agentId,
-      order: 1,
-      input: stepInput,
-      status: 'running',
-    })
-
-    await db.insert(chatMessages).values({
-      id: createId('msg'),
-      runId,
-      role: 'user',
-      // 存用户原文，不存注入了附件路径的 mergedPrompt（历史回显靠 runSteps.input.attachments）。
-      content: parsed.data.message,
+    await persistRunTurn({
+      step: {
+        id: stepId,
+        runId,
+        agentId,
+        order: 1,
+        input: stepInput,
+        status: 'running',
+      },
+      message: {
+        id: createId('msg'),
+        runId,
+        role: 'user',
+        // 存用户原文，不存注入了附件路径的 mergedPrompt（历史回显靠 runSteps.input.attachments）。
+        content: parsed.data.message,
+      },
     })
   } catch (err) {
-    // 先清理已落盘的附件目录（本分支），再走 main 侧的健壮失败收口（标 failed +
-    // scheduleNext + 500，不 rethrow——避免槽泄漏）。
-    if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
     logger.error({ err, runId, agentId }, 'Failed to initialize OAuth run after slot acquisition')
-    try {
-      await taskQueueDb.failRunSteps(runId)
-    } catch (cleanupError) {
-      logger.error({ err: cleanupError, runId }, 'Failed to mark OAuth run steps as failed')
-    }
-    try {
-      await db
-        .update(runs)
-        .set({
-          status: 'failed',
-          result: { error: 'Run setup failed' },
-          updatedAt: new Date(),
-        })
-        .where(eq(runs.id, runId))
-    } catch (cleanupError) {
-      logger.error({ err: cleanupError, runId }, 'Failed to mark OAuth run as failed')
-    }
-    try {
-      completeExecutionLease(runId)
-      void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
-    } catch (cleanupError) {
-      logger.error({ err: cleanupError, runId, agentId }, 'Failed to schedule next OAuth run')
-    }
+    await recoverRunStartup({
+      runId,
+      agentId,
+      cleanup: attachmentRootDir ? () => cleanupMaterializedRoot(attachmentRootDir) : undefined,
+      settleRun: () =>
+        db
+          .update(runs)
+          .set({
+            status: 'failed',
+            result: { error: 'Run setup failed' },
+            updatedAt: new Date(),
+          })
+          .where(eq(runs.id, runId)),
+    })
     return c.json(internalOAuthError({ runId }), 500)
   }
 
@@ -678,7 +666,6 @@ app.get('/:agentId/runs/:runId', async (c) => {
 
 app.post('/:agentId/runs/:runId/cancel', async (c) => {
   const { agentId, runId } = c.req.param()
-  const agent = c.get('gatewayAgent')
 
   const run = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0]
   if (!run) {

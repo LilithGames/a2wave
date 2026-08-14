@@ -1,22 +1,21 @@
 import {
+  attachmentsInputSchema,
   type GatewayError,
   GatewayErrorCode,
-  attachmentsInputSchema,
   worktreeCallParamsSchema,
 } from '@a2wave/shared'
 import { and, desc, eq } from 'drizzle-orm'
-import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
+import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
-import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { completeExecutionLease } from '../engine/execution-lease-registry.js'
+import { agents, runSteps, runs } from '../db/schema.js'
 import { engineRegistry } from '../engine/index.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../lib/agent-helpers.js'
 import {
   cleanupMaterializedRoot,
   materializeForRun,
@@ -33,13 +32,13 @@ import { registerPendingContext, takePendingContext } from '../lib/pending-job-r
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildGatewayChannel, stripReservedContextKeys } from '../lib/run-channel.js'
 import {
-  type IdempotentRun,
   findIdempotentRun,
+  type IdempotentRun,
   isActiveOrCompletedRun,
   isRunIdempotencyConflict,
 } from '../lib/run-idempotency.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
-import { createLogCollector, finishRunError, finishRunSuccess } from '../lib/run-lifecycle.js'
+import { persistRunTurn, recoverRunStartup } from '../lib/run-startup.js'
 import {
   type GatewayCaller,
   normalizeAuthType,
@@ -330,9 +329,11 @@ app.post('/:agentId/invoke', async (c) => {
     // concurrency slot, so it must be reclaimed on EVERY failure path — not
     // just the three typed ones. Leaving it behind wedges the Agent at
     // maxConcurrency forever, recoverable only by editing the database.
-    await db.delete(runs).where(eq(runs.id, runId))
-    completeExecutionLease(runId)
-    void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+    await recoverRunStartup({
+      runId,
+      agentId,
+      settleRun: () => db.delete(runs).where(eq(runs.id, runId)),
+    })
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
@@ -365,25 +366,30 @@ app.post('/:agentId/invoke', async (c) => {
   // materialize 已建 rootDir；到进入下方 lifecycle 的 finally 之前若 insert 抛错，rootDir 会
   // 泄漏（review [P2]）。这里兜一层：insert 失败即清理落盘目录再 rethrow。
   try {
-    await db.insert(runSteps).values({
-      id: stepId,
-      runId,
-      agentId,
-      order: 1,
-      input: stepInput,
-      status: 'running',
-    })
-
-    await db.insert(chatMessages).values({
-      id: createId('msg'),
-      runId,
-      role: 'user',
-      // 存用户原文，不存注入了附件路径的 mergedPrompt（历史回显靠 runSteps.input.attachments）。
-      content: parsed.data.message,
+    await persistRunTurn({
+      step: {
+        id: stepId,
+        runId,
+        agentId,
+        order: 1,
+        input: stepInput,
+        status: 'running',
+      },
+      message: {
+        id: createId('msg'),
+        runId,
+        role: 'user',
+        // 存用户原文，不存注入了附件路径的 mergedPrompt（历史回显靠 runSteps.input.attachments）。
+        content: parsed.data.message,
+      },
     })
   } catch (err) {
-    if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
-    completeExecutionLease(runId)
+    await recoverRunStartup({
+      runId,
+      agentId,
+      cleanup: attachmentRootDir ? () => cleanupMaterializedRoot(attachmentRootDir) : undefined,
+      settleRun: () => db.delete(runs).where(eq(runs.id, runId)),
+    })
     throw err
   }
 
@@ -507,7 +513,6 @@ app.get('/:agentId/runs/:runId', async (c) => {
 /** POST /:agentId/runs/:runId/cancel — 外部取消端点 */
 app.post('/:agentId/runs/:runId/cancel', async (c) => {
   const { agentId, runId } = c.req.param()
-  const agent = c.get('gatewayAgent')
 
   const run = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0]
   if (!run) {

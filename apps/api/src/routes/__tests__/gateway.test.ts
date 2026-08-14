@@ -1,6 +1,6 @@
 import { GatewayErrorCode } from '@a2wave/shared'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 type Json = Record<string, unknown>
 type ErrorJson = { error: { code: string; message: string; details?: unknown } }
@@ -155,7 +155,7 @@ function makeUpdateChain() {
 import { db } from '../../db/client.js'
 import { engineRegistry } from '../../engine/index.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from '../../lib/agent-helpers.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../../lib/agent-helpers.js'
 import { ProviderConfigurationError } from '../../lib/errors.js'
 import { WorktreeBranchLockedError } from '../../lib/git-workspace.js'
 import { validateGatewayAuth } from '../../middleware/gateway-auth.js'
@@ -392,6 +392,29 @@ describe('Gateway routes', () => {
       const json = (await res.json()) as ErrorJson
       expect(json.error.code).toBe(GatewayErrorCode.EXECUTION_ERROR)
       expect(json.error.message).toBe('Execution failed. Check server logs for details.')
+    })
+
+    it('reclaims the run and advances the queue when turn persistence fails', async () => {
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(db.insert as Mock)
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue(
+            asyncQuery({
+              run: vi.fn(() => {
+                throw new Error('message insert failed')
+              }),
+            }),
+          ),
+        })
+
+      const res = await invokeRequest({ message: 'hi', async: false })
+
+      expect(res.status).toBe(500)
+      expect(db.delete).toHaveBeenCalled()
+      expect(scheduleNext).toHaveBeenCalled()
+      expect(executeInWorker).not.toHaveBeenCalled()
     })
   })
 

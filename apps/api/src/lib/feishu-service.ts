@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { promises as fs, createWriteStream, readFileSync, statSync } from 'node:fs'
+import { createWriteStream, promises as fs, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { finished } from 'node:stream/promises'
@@ -9,42 +9,34 @@ import * as lark from '@larksuiteoapi/node-sdk'
 import { and, desc, eq, isNull, lt, or } from 'drizzle-orm'
 import WebSocket from 'ws'
 import { db } from '../db/client.js'
-import {
-  agents,
-  chatMessages,
-  feishuCardCallbacks,
-  feishuPendingMessages,
-  runSteps,
-  runs,
-} from '../db/schema.js'
+import { agents, feishuCardCallbacks, feishuPendingMessages, runSteps, runs } from '../db/schema.js'
 import { withTransaction } from '../db/transaction.js'
-import { completeExecutionLease } from '../engine/execution-lease-registry.js'
 import { resolveAgentRuntimeTmpDir } from '../engine/runtime-context.js'
 import { buildTaskId } from '../engine/task-id.js'
+import { tryAcquireSlot } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
-import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { env } from '../env.js'
 import type { WorkerTaskPayload } from '../worker/index.js'
 import { buildAgentConfig, resolveEngineType, resolveWorkDir } from './agent-helpers.js'
 import { buildFeishuArtifactSection } from './artifact-links.js'
 import {
+  getDirectorySourceSize,
   MAX_ZIP_SOURCE_BYTES,
   type RegisteredArtifact,
-  getDirectorySourceSize,
   zipDirectoryToBuffer,
 } from './artifact-storage.js'
 import { ProviderConfigurationError } from './errors.js'
 import { FeishuStreamingCard } from './feishu-card-streaming.js'
 import { type NormalizedFeishuConfig, normalizeFeishuConfig } from './feishu-config.js'
 import {
-  type CardCallbackValue,
-  type CardStyle,
-  INTERACTIVE_CARD_PROMPT,
-  type InteractiveCardSpec,
   buildInteractiveCardJson,
   buildPlainCardJson,
   buildResolvedCardJson,
+  type CardCallbackValue,
+  type CardStyle,
   decideCardAction,
+  INTERACTIVE_CARD_PROMPT,
+  type InteractiveCardSpec,
   parseInteractiveCardSpec,
   summarizeCardAction,
 } from './feishu-interactive-card.js'
@@ -85,17 +77,16 @@ import { buildFeishuChannel } from './run-channel.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { runWithLifecycle } from './run-launcher.js'
 import { finishRunAborted, finishRunError } from './run-lifecycle.js'
+import { persistRunTurn, recoverRunStartup } from './run-startup.js'
 import {
   registerStreamingCard,
   touchStreamingCard,
   unregisterStreamingCard,
 } from './streaming-card-registry.js'
 
-export type { FeishuConfig }
 export { normalizeFeishuConfig } from './feishu-config.js'
 export { buildTriggerSessionId, quoteAnchorId } from './feishu-message-context.js'
-
-export type { FeishuMessagePayload, FeishuSenderPayload }
+export type { FeishuConfig, FeishuMessagePayload, FeishuSenderPayload }
 
 /** The `im.message.receive_v1` event body delivered over the long connection. */
 interface FeishuMessageEvent {
@@ -174,6 +165,7 @@ export function buildFeishuReplyContent(
 // Re-export from feishu-fallback.ts (dependency-free module) so both this file
 // and run-lifecycle.ts can use it without forming a cycle.
 import { buildFeishuFallbackText, buildFeishuProviderConfigErrorText } from './feishu-fallback.js'
+
 export { buildFeishuFallbackText }
 
 // ── Pure helpers (exported for testing) ──────────────────────────
@@ -2080,16 +2072,15 @@ class FeishuConnectionManager {
 
     /** Fail the run and release the concurrency slot so queued runs can proceed. */
     const failRunAndReleaseSlot = async (error: string) => {
-      await db
-        .update(runs)
-        .set({ status: 'failed', result: { error }, updatedAt: new Date() })
-        .where(eq(runs.id, runId))
-      completeExecutionLease(runId)
-      void scheduleNext(
-        taskQueueDb,
+      await recoverRunStartup({
+        runId,
         agentId,
-        (rid, aid) => void import('./execute-chat-run.js').then((m) => m.executeChatRun(aid, rid)),
-      )
+        settleRun: () =>
+          db
+            .update(runs)
+            .set({ status: 'failed', result: { error }, updatedAt: new Date() })
+            .where(eq(runs.id, runId)),
+      })
     }
 
     // ── Streaming card: create before queue decision so queued jobs show "排队中..." ──
@@ -2420,17 +2411,17 @@ class FeishuConnectionManager {
         }
 
         const stepId = createId('rst')
-        await db.insert(runSteps).values({
-          id: stepId,
-          runId,
-          agentId,
-          order: 1,
-          input: { message: fullPrompt, context: feishuContext },
-          status: 'running',
+        await persistRunTurn({
+          step: {
+            id: stepId,
+            runId,
+            agentId,
+            order: 1,
+            input: { message: fullPrompt, context: feishuContext },
+            status: 'running',
+          },
+          message: { id: createId('msg'), runId, role: 'user', content: fullPrompt },
         })
-        await db
-          .insert(chatMessages)
-          .values({ id: createId('msg'), runId, role: 'user', content: fullPrompt })
 
         // 不在此创建 collector：runWithLifecycle 内部已 createPersistingLogCollector +
         // registerLogCollector，Web UI 通过该 collector 看到流式日志；feishu 本地无需另起一份。

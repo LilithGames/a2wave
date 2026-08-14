@@ -1,10 +1,10 @@
 import { and, desc, eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { db } from '../db/client.js'
-import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
+import { agents, runSteps, runs } from '../db/schema.js'
 import { allTaskIdVariants } from '../engine/task-id.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
 import { tryAcquireSlot } from '../engine/task-queue.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
 import { cleanupMaterializedRoot, materializeForRun } from '../lib/attachment-materializer.js'
 import { logAudit } from '../lib/audit.js'
 import { executeWithRetry } from '../lib/execute-with-retry.js'
@@ -13,13 +13,14 @@ import { logger } from '../lib/logger.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildGatewayChannel } from '../lib/run-channel.js'
 import {
-  type IdempotentRun,
   findIdempotentRun,
+  type IdempotentRun,
   isActiveOrCompletedRun,
   isRunIdempotencyConflict,
 } from '../lib/run-idempotency.js'
 import { finishRunError, finishRunSuccess } from '../lib/run-lifecycle.js'
 import { stopLogCollector } from '../lib/run-log-registry.js'
+import { persistRunTurn } from '../lib/run-startup.js'
 import {
   type GatewayCaller,
   normalizeAuthType,
@@ -306,21 +307,22 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         context: { ...(payload.context ?? {}), channel },
       }
 
-      await db.insert(runSteps).values({
-        id: stepId,
-        runId,
-        agentId: agent.id,
-        order: 1,
-        input: stepInput,
-        status: 'running',
-      })
-
-      await db.insert(chatMessages).values({
-        id: createId('msg'),
-        runId,
-        role: 'user',
-        // 存用户原文（payload.prompt，合并前），不存注入了附件路径的 mergedPrompt。
-        content: payload.prompt,
+      await persistRunTurn({
+        step: {
+          id: stepId,
+          runId,
+          agentId: agent.id,
+          order: 1,
+          input: stepInput,
+          status: 'running',
+        },
+        message: {
+          id: createId('msg'),
+          runId,
+          role: 'user',
+          // 存用户原文（payload.prompt，合并前），不存注入了附件路径的 mergedPrompt。
+          content: payload.prompt,
+        },
       })
 
       const { provenance: _provenance, ...executeOptions } = options ?? {}

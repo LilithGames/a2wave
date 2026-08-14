@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
@@ -292,16 +292,15 @@ function makeDeleteChain() {
 import { db } from '../../db/client.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
 import {
-  WorktreeOccupiedError,
   resolveCleanupWorkDirs,
   resolveWorkDir,
+  WorktreeOccupiedError,
 } from '../../lib/agent-helpers.js'
 import { AppError, ProviderMcpUnsupportedError } from '../../lib/errors.js'
 import { WorktreeBranchLockedError } from '../../lib/git-workspace.js'
 import { MEMORY_OVERRIDE_MARKER } from '../../lib/memory-storage.js'
-import { executeInWorker } from '../../worker/index.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { executeInWorker } from '../../worker/index.js'
 
 /**
  * Build the test app with the same global onError shape as `apps/api/src/index.ts`
@@ -1976,6 +1975,31 @@ describe('POST /agents/:id/chat — sync execution', () => {
 
     const res = await chatRequest({ message: 'hi' })
     expect(res.status).toBe(500)
+  })
+
+  it('restores the run and advances the queue when turn persistence fails', async () => {
+    mockDb.select.mockReturnValue(makeSelectChain(CHAT_AGENT))
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockDb.delete.mockReturnValue(makeDeleteChain())
+    mockDb.insert
+      .mockReturnValueOnce(makeInsertChain())
+      .mockReturnValueOnce(makeInsertChain())
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue(
+          asyncQuery({
+            run: vi.fn(() => {
+              throw new Error('message insert failed')
+            }),
+          }),
+        ),
+      })
+
+    const res = await chatRequest({ message: 'hi' })
+
+    expect(res.status).toBe(500)
+    expect(mockDb.delete).toHaveBeenCalled()
+    expect(mockScheduleNext).toHaveBeenCalled()
+    expect(mockExecuteInWorker).not.toHaveBeenCalled()
   })
 
   it('returns 404 when agent does not exist', async () => {
