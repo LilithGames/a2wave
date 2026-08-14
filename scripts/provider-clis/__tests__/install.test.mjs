@@ -311,6 +311,15 @@ test('Dockerfile keeps the Linux dependency for Claude Code native sandboxing', 
   assert.match(dockerfile, /apt-get install[^\n]*\bbubblewrap\b/)
 })
 
+test('Dockerfile retries the pinned Perforce download on transient network failures', () => {
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
+
+  assert.match(
+    dockerfile,
+    /curl -fsSL --retry 5 --retry-all-errors --retry-delay 2\s+\\\s+"https:\/\/cdist2\.perforce\.com\/perforce\/r24\.2/,
+  )
+})
+
 test('Dockerfile points the service at the flattened installer directory', () => {
   const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
 

@@ -63,7 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
       arm64) P4_ARCH="aarch64"; P4_SHA256="a3813fc18cca541d347f38874d8c835b370d11478d6430a07a23eeb17268bb9f" ;; \
       *)     P4_ARCH="x86_64"; P4_SHA256="5132fc1fc81c1911700924f18375558eec30d0aa7c82e80f8397da0b9f352a86" ;; \
     esac && \
-    curl -fsSL "https://cdist2.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+      "https://cdist2.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
       -o /usr/local/bin/p4 && \
     # Verify the binary against Perforce's published SHA256SUMS so a poisoned CDN
     # or MITM (esp. builds routed through a proxy) cannot slip in a backdoored p4.
