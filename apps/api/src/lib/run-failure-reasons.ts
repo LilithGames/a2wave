@@ -13,6 +13,7 @@ export type FailureReasonCode =
   | 'FEISHU_QUEUED_RESET_FOR_REPLAY'
   | 'REPLACED_BY_REPLAY'
   | 'DANGLING_RUN_ON_STARTUP'
+  | 'INSTANCE_STOPPED_DURING_EXEC'
 
 export interface FailureReason {
   code: FailureReasonCode
@@ -46,5 +47,13 @@ export const FAILURE_REASONS: Record<FailureReasonCode, FailureReason> = {
     code: 'DANGLING_RUN_ON_STARTUP',
     message: 'The associated Agent no longer exists; archived during startup recovery',
     retryable: false,
+  },
+  // Applied by the dead-instance reaper, not startup recovery: a surviving
+  // replica observed the owning instance's heartbeat stop and settled the
+  // workload the way that instance's own restart would have.
+  INSTANCE_STOPPED_DURING_EXEC: {
+    code: 'INSTANCE_STOPPED_DURING_EXEC',
+    message: 'Interrupted: the owning server instance stopped; safe to retry',
+    retryable: true,
   },
 }

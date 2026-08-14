@@ -5,17 +5,23 @@ const {
   completeExecutionLease,
   sweepStaleLeases,
   scheduleNext,
+  scheduleNextEvaluation,
   executeChatRun,
   sweepOrphanedScmWorkloadLeases,
+  failScmWorkloadsOfDeadInstances,
   retryPendingWorkspaceRemovalReleases,
+  pruneDeadInstanceHeartbeats,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
   sweepStaleLeases: vi.fn(),
   scheduleNext: vi.fn(),
+  scheduleNextEvaluation: vi.fn(),
   executeChatRun: vi.fn(),
   sweepOrphanedScmWorkloadLeases: vi.fn(),
+  failScmWorkloadsOfDeadInstances: vi.fn(),
   retryPendingWorkspaceRemovalReleases: vi.fn(),
+  pruneDeadInstanceHeartbeats: vi.fn(),
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
@@ -24,9 +30,15 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
 }))
 vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
 vi.mock('../../engine/task-queue.js', () => ({ sweepStaleLeases, scheduleNext }))
+vi.mock('../../engine/evaluation-queue-db.js', () => ({ evaluationQueueDb: {} }))
+vi.mock('../../engine/evaluation-queue.js', () => ({ scheduleNextEvaluation }))
 vi.mock('../execute-chat-run.js', () => ({ executeChatRun }))
-vi.mock('../scm-lease-sweeper.js', () => ({ sweepOrphanedScmWorkloadLeases }))
+vi.mock('../scm-lease-sweeper.js', () => ({
+  sweepOrphanedScmWorkloadLeases,
+  failScmWorkloadsOfDeadInstances,
+}))
 vi.mock('../scm-workspace-removal.js', () => ({ retryPendingWorkspaceRemovalReleases }))
+vi.mock('../instance-heartbeat.js', () => ({ pruneDeadInstanceHeartbeats }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
@@ -40,7 +52,9 @@ describe('startStaleLeaseSweeper', () => {
     listActiveExecutionLeases.mockResolvedValue([])
     sweepStaleLeases.mockResolvedValue([])
     sweepOrphanedScmWorkloadLeases.mockResolvedValue([])
+    failScmWorkloadsOfDeadInstances.mockResolvedValue([])
     retryPendingWorkspaceRemovalReleases.mockResolvedValue([])
+    pruneDeadInstanceHeartbeats.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -123,6 +137,61 @@ describe('startStaleLeaseSweeper', () => {
 
     expect(scheduleNext).toHaveBeenCalledTimes(1)
     expect(scheduleNext.mock.calls[0]?.[1]).toBe('agt_a')
+  })
+
+  it('reaps workloads of dead instances BEFORE sweeping their leases', async () => {
+    // Ordering is the point: the reaper makes a crashed instance's workload
+    // terminal, and only then can the sweep release its lease. Reversed, the
+    // release would wait a whole tick for no reason.
+    const order: string[] = []
+    failScmWorkloadsOfDeadInstances.mockImplementation(async () => {
+      order.push('reap')
+      return []
+    })
+    sweepOrphanedScmWorkloadLeases.mockImplementation(async () => {
+      order.push('sweep')
+      return []
+    })
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(order).toEqual(['reap', 'sweep'])
+    stop()
+  })
+
+  it('still sweeps leases when the dead-instance reaper throws', async () => {
+    failScmWorkloadsOfDeadInstances.mockRejectedValue(new Error('db unavailable'))
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(sweepOrphanedScmWorkloadLeases).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it('nudges the evaluation queue when a released lease frees evaluation capacity', async () => {
+    // Evaluations are serial per Agent, so a leaked lease stalls that Agent's
+    // entire evaluation queue until an unrelated trigger arrives.
+    sweepOrphanedScmWorkloadLeases.mockResolvedValue([
+      { type: 'evaluation', workloadId: 'evt_1', agentId: 'agt_b' },
+    ])
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(scheduleNextEvaluation).toHaveBeenCalledTimes(1)
+    expect(scheduleNextEvaluation.mock.calls[0]?.[1]).toBe('agt_b')
+    stop()
+  })
+
+  it('prunes long-dead instance heartbeat tombstones', async () => {
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(pruneDeadInstanceHeartbeats).toHaveBeenCalledTimes(1)
+    stop()
   })
 
   it('does not throw if a sweep fails', async () => {

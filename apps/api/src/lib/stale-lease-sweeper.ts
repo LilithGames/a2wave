@@ -1,12 +1,19 @@
+import { evaluationQueueDb } from '../engine/evaluation-queue-db.js'
+import { scheduleNextEvaluation } from '../engine/evaluation-queue.js'
 import {
   completeExecutionLease,
   listActiveExecutionLeases,
 } from '../engine/execution-lease-registry.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext, sweepStaleLeases } from '../engine/task-queue.js'
+import { runEvaluationTask } from '../routes/evaluation.js'
 import { executeChatRun } from './execute-chat-run.js'
+import { pruneDeadInstanceHeartbeats } from './instance-heartbeat.js'
 import { logger } from './logger.js'
-import { sweepOrphanedScmWorkloadLeases } from './scm-lease-sweeper.js'
+import {
+  failScmWorkloadsOfDeadInstances,
+  sweepOrphanedScmWorkloadLeases,
+} from './scm-lease-sweeper.js'
 import { retryPendingWorkspaceRemovalReleases } from './scm-workspace-removal.js'
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000
@@ -44,6 +51,21 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: sweep failed')
     }
+    // Before the lease sweep, not after: a crashed instance leaves its
+    // workload non-terminal forever, and the sweep only releases leases of
+    // terminal workloads. Reaping first lets the same tick release what it
+    // just settled instead of waiting a full interval.
+    try {
+      const reaped = await failScmWorkloadsOfDeadInstances()
+      if (reaped.length > 0) {
+        logger.warn(
+          { reaped },
+          'stale-lease-sweeper: failed workloads abandoned by a stopped instance',
+        )
+      }
+    } catch (error) {
+      logger.error({ error }, 'stale-lease-sweeper: dead-instance workload reap failed')
+    }
     // Durable SCM workload leases are released after process exit and
     // workspace cleanup. Their owning lifecycle retries transient failures;
     // this independent sweep is the recovery path if that owner disappears.
@@ -63,9 +85,25 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
         for (const agentId of runAgentIds) {
           void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
         }
+        // Evaluations run one per Agent at a time, so a released evaluation
+        // lease frees the only slot that Agent's queue has. Without this nudge
+        // the next queued task waits for an unrelated trigger.
+        const evaluationAgentIds = new Set(
+          releasedDurable
+            .filter((workload) => workload.type === 'evaluation')
+            .map((workload) => workload.agentId),
+        )
+        for (const agentId of evaluationAgentIds) {
+          void scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
+        }
       }
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: durable SCM lease sweep failed')
+    }
+    try {
+      await pruneDeadInstanceHeartbeats()
+    } catch (error) {
+      logger.error({ error }, 'stale-lease-sweeper: instance heartbeat prune failed')
     }
     try {
       const releasedReservations = await retryPendingWorkspaceRemovalReleases()
