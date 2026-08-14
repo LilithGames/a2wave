@@ -60,6 +60,7 @@ function deps(
     isWorkloadLocallyActive: (identity: { type: string; workloadId: string }) => boolean
     ownerInstanceId: string
     loadLiveness: () => Promise<InstanceLivenessMap>
+    canJudgePeers: () => boolean
   }> = {},
 ) {
   return {
@@ -67,6 +68,7 @@ function deps(
     isWorkloadLocallyActive: overrides.isWorkloadLocallyActive ?? (() => false),
     ownerInstanceId: overrides.ownerInstanceId ?? 'instance-a',
     loadLiveness: overrides.loadLiveness ?? (async () => alivePeerLiveness()),
+    canJudgePeers: overrides.canJudgePeers ?? (() => true),
     now: () => NOW,
   } as never
 }
@@ -175,6 +177,58 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
     )
 
     expect(released).toEqual([{ type: 'run', workloadId: 'run_prev_life', agentId: 'agt_1' }])
+    expect(deleted).toHaveLength(1)
+  })
+
+  it('leaves peer leases alone during the post-boot grace window', async () => {
+    // Right after an upgrade the heartbeat table is empty, so every peer reads
+    // as dead. Reclaiming then would pull checkouts out from under replicas
+    // that simply have not written their first row yet.
+    const { tx, deleted } = sweepTx(
+      [
+        {
+          id: 'run:run_peer',
+          workloadType: 'run',
+          workloadId: 'run_peer',
+          agentId: 'agt_1',
+          phase: 'active',
+          ownerInstanceId: 'instance-b',
+          updatedAt: RECENT,
+        },
+      ],
+      [[{ status: 'failed' }]],
+    )
+
+    const released = await sweepOrphanedScmWorkloadLeases(
+      deps(tx, { canJudgePeers: () => false, loadLiveness: async () => new Map() }),
+    )
+
+    expect(released).toEqual([])
+    expect(deleted).toHaveLength(0)
+  })
+
+  it('still releases its OWN leases during the grace window', async () => {
+    // No heartbeat is needed to know this process is alive, so its own
+    // bookkeeping must not stall for five minutes after every restart.
+    const { tx, deleted } = sweepTx(
+      [
+        {
+          id: 'run:run_mine',
+          workloadType: 'run',
+          workloadId: 'run_mine',
+          agentId: 'agt_1',
+          phase: 'active',
+          ownerInstanceId: 'instance-a',
+        },
+      ],
+      [[{ status: 'completed' }]],
+    )
+
+    const released = await sweepOrphanedScmWorkloadLeases(
+      deps(tx, { canJudgePeers: () => false, loadLiveness: async () => new Map() }),
+    )
+
+    expect(released).toEqual([{ type: 'run', workloadId: 'run_mine', agentId: 'agt_1' }])
     expect(deleted).toHaveLength(1)
   })
 
@@ -292,6 +346,7 @@ function reaperDeps(
   statusRows: Row[][],
   overrides: Partial<{
     loadLiveness: () => Promise<InstanceLivenessMap>
+    canJudgePeers: () => boolean
     isWorkloadLocallyActive: (identity: { type: string; workloadId: string }) => boolean
   }> = {},
 ) {
@@ -315,6 +370,7 @@ function reaperDeps(
     deps: {
       db: dbMock,
       loadLiveness: overrides.loadLiveness ?? (async () => deadPeerLiveness()),
+      canJudgePeers: overrides.canJudgePeers ?? (() => true),
       isWorkloadLocallyActive: overrides.isWorkloadLocallyActive ?? (() => false),
       failRun,
       failEvaluation,

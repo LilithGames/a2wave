@@ -4,6 +4,65 @@ SCM storage crosses API routes, environment bootstrap, container startup, Git,
 P4, and two database dialects. A change is complete only when the invariants
 below hold across every affected entry point.
 
+## The model: marks, liveness, convergence
+
+Three ideas carry most of the weight here; the detailed rules below are their
+consequences.
+
+**Durable marks, not in-process state.** Two mirrored tables arbitrate a
+worktree across replicas: a *workload lease* says "a workload may be using this
+directory", a *removal reservation* says "a remover is about to delete this
+one". Both are committed under the SCM mutation lock *before* their action, so
+the lock's total order guarantees any interleaving observes at least one of
+them. In-process mutexes cannot close that window by construction — the peer
+that would need to observe them is another process.
+
+**Liveness comes from heartbeats, never from age.** A mark's age proves
+nothing: multi-repository Git work and filesystem cleanup routinely outlive any
+per-command timeout, so a slow-but-healthy owner looks exactly like a dead one.
+What does distinguish them is a heartbeat that stopped. Every process renews an
+`instance_heartbeats` row, and an owner counts as dead when it has no row, its
+heartbeat stopped past the threshold, or it booted *after* the mark was written
+— the last case being a reused instance id (a container restart under the same
+`HOSTNAME`) whose previous life wrote the mark. Never infer death any other
+way, and never touch the mark of an instance that is still beating.
+
+Recovery of *peers* therefore stays disabled for one staleness window after
+boot: immediately after an upgrade the table is empty, so every peer would read
+as dead and this replica would reclaim checkouts out from under processes that
+have simply not written their first row yet. A process's own marks, and any
+reservation explicitly handed off with a NULL owner, need no such wait — no
+liveness has to be inferred for either.
+
+**Convergence is periodic, not inline.** Removing a worktree is a filesystem
+operation that can fail for reasons the caller cannot fix (a handle the exited
+CLI has not released, a busy mount). The owner tries inline for a bounded
+window because it is the fastest path while the failure is transient, then
+hands the reservation off; a periodic reconciler adopts every reservation with
+no live owner and retries. A failed attempt keeps the reservation and the next
+tick tries again — **that is the retry loop**, which is why no operation path
+needs an unbounded one. The reservation, not the retrying process, is what
+keeps other actors off the worktree, so handing off frees the concurrency slot
+and Agent binding without reopening any race.
+
+Two directions this deliberately does *not* go, and the reason each is worth
+revisiting when this area is next touched:
+
+- **Fewer shared writable directories beats better arbitration of them.** Today
+  seven kinds of actor (chat run, evaluation, manual delete, TTL cleanup,
+  ephemeral cleanup, sync/index, source mutation) can contend for one checkout,
+  and the invariant surface is roughly *actors × shared directories*. Giving
+  every Git workload its own worktree — as evaluations already do with
+  `eval-<taskId>` — would collapse most of that matrix, leaving the base
+  checkout with a single writer. P4 cannot follow: a client spec binds one
+  server-side `Root`, so its checkout is shared by construction and the
+  serialization here is the only available answer.
+- **Not sharing workspace storage between replicas beats coordinating it.**
+  Pinning a source's workspaces to one replica, or giving each replica its own
+  volume, would remove the cross-replica arbitration problem rather than solve
+  it. The durable marks exist because the storage is shared; they are the cost
+  of that choice, not a permanent requirement.
+
 ## Path ownership
 
 - `localPath` is the source checkout; `workspacesPath` is the Git worktree root.
@@ -90,10 +149,19 @@ below hold across every affected entry point.
   cleanup API. The reservation transaction first proves that the exact durable
   lease is active on this process instance and pinned to this source; its own
   Run row and lease are then excluded while every other occupant still blocks.
-  A failed cleanup is retried while the local workload owner and durable lease
-  remain active, and one removal reservation stays continuously visible across
-  filesystem retries. Queue capacity and binding/path guards are released only
-  after cleanup succeeds.
+  A failed cleanup is retried inline while the local workload owner and durable
+  lease remain active, and one removal reservation stays continuously visible
+  across filesystem retries.
+- **Inline cleanup retries are bounded and end in a handoff, not in success.**
+  The owner retries for roughly a minute of capped backoff, then sets
+  `owner_instance_id` to NULL and returns; the reconciler owns the removal from
+  there. Queue capacity and the binding/path guards are released at that point
+  even though the worktree may still exist — the reservation is what keeps every
+  counter-party off it, and holding a concurrency slot open for an undeletable
+  directory costs the Agent a slot permanently for no added safety. A handed-off
+  reservation must never be released by the handing-off process; if the handoff
+  write itself fails, the row keeps naming that instance and the reconciler
+  adopts it once the instance stops beating.
 - The reservation is recognized by every counter-party: worktree resolution
   refuses to create or reuse a reserved name; run admission rejects a run
   whose explicit `worktreeConfig.name` is reserved; path PATCH, source DELETE,
@@ -105,17 +173,36 @@ below hold across every affected entry point.
   **mixed-version operation is unsupported**. Stop all pre-attempt-token API
   replicas before applying the workspace-removal migrations, then start only
   the upgraded version; an old writer still deletes by stable id alone.
+- The **heartbeat migration is non-rolling for the same reason, and for a
+  sharper one**: a pre-heartbeat replica writes no `instance_heartbeats` row, so
+  an upgraded replica reads it as dead and would reclaim leases and reservations
+  out from under a process that is very much alive. Stop every replica before
+  upgrading; do not run mixed versions even briefly.
 - Reservation age is **not** proof of abandonment: multi-repository Git work
   and filesystem cleanup can outlive any per-command timeout, and a slow or
-  partitioned peer may still be deleting. Single-process SQLite clears leaked
-  rows synchronously before opening its port after restart. PostgreSQL retains
-  an uncertain row; startup and the lease sweeper must never delete a peer's
-  reservation merely by age. A live process retries its own failed release by
-  exact attempt token. Crash leftovers use the explicit PostgreSQL operator
-  recovery procedure, also fenced by the observed token.
-  Graceful shutdown drains these exact-token release retries before closing the
-  database, so a normal stop does not turn a transient release error into an
-  operator-only recovery.
+  partitioned peer may still be deleting. **A stopped heartbeat is** — see the
+  liveness rule above. A reservation is therefore adoptable when its owner is
+  NULL (an explicit handoff) or its owner is provably dead; a beating owner's
+  reservation is never touched, because adopting it would run a second
+  concurrent filesystem removal against the same worktree.
+- Adoption is a **compare-and-set on the attempt token** under the SCM mutation
+  lock, which stamps a fresh token, a new owner, and a new `attempt_started_at`.
+  Two reconcilers racing on one row therefore produce exactly one filesystem
+  operation. `attempt_started_at` is per *attempt*, not per target: liveness is
+  judged against the attempt an owner actually started, or an adopted row would
+  keep the original creation time and re-trip the boot-instant fence forever.
+- The reconciler re-runs the **same occupancy decision** every remover runs, and
+  releases the row as obsolete rather than removing when the worktree became
+  legitimately occupied again or its source is gone. Holding an obsolete
+  reservation is not "safe by default" — it blocks that source's path mutations
+  and worktree creation indefinitely.
+- Single-process SQLite still clears leaked rows synchronously before opening
+  its port after restart: a restart proves the previous owner is gone, which is
+  strictly faster than waiting out a staleness threshold. A live process retries
+  its own failed release by exact attempt token, and graceful shutdown drains
+  those retries before closing the database — then deletes its own heartbeat
+  row last, so anything a failed drain leaked becomes immediately adoptable
+  instead of waiting for the threshold.
 - A leased Run whose `workDir` is still NULL blocks every worktree of the
   source: it has not chosen its directory yet and may resolve to the one being
   deleted.
@@ -134,21 +221,32 @@ below hold across every affected entry point.
   of that window. Reserved-phase leases are queued work, not occupied slots, and
   a lease whose run row was deleted outright is sweeper input, not occupancy.
 - Lease release after cleanup may fail transiently, and that failure must remain
-  pending in the owning lifecycle until it succeeds. Graceful shutdown drains
-  those retries before closing the database; a permanent failure therefore
-  reaches the non-zero shutdown timeout instead of being reported as a clean
-  stop. The stale-lease sweeper is an additional recovery path: it releases a
-  lease only when its workload is terminal (or its row deleted), nothing local
-  still runs or cleans up the workload, and — for an active lease — this
-  instance is the recorded owner. An active lease owned by another instance is
-  never swept; a reserved lease never had a process and may be released on any
-  replica. Both an owner retry and the sweeper nudge the affected Run queue after
-  freeing capacity, so queued work does not wait for an unrelated trigger.
-- PostgreSQL startup must not reset in-progress Run, Evaluation, sync, or index
-  rows merely because another replica started. Without a positively identified
-  dead owner, preserving a visible stuck lease is safer than reclaiming a checkout
-  beneath a healthy peer. SQLite startup is the symmetric single-owner case: after
-  failing interrupted workloads, it releases their durable leases explicitly.
+  pending in the owning lifecycle until it succeeds. Unlike workspace removal,
+  this retry stays unbounded: it is a pure database write holding no filesystem
+  resource, and graceful shutdown drains it, so a permanent failure reaches the
+  non-zero shutdown timeout instead of being reported as a clean stop.
+- The stale-lease sweeper is an additional recovery path: it releases a lease
+  only when its workload is terminal (or its row deleted), nothing local still
+  runs or cleans up the workload, and — for an active lease — **this instance is
+  the recorded owner or that owner is provably dead**. A lease owned by a
+  beating peer is never swept; a reserved lease never had a process and may be
+  released on any replica. Releases nudge the affected Run queue *and* the
+  Evaluation queue after freeing capacity — evaluations run one per Agent, so a
+  leaked evaluation lease stalls that Agent's entire queue until an unrelated
+  trigger arrives.
+- **A dead owner's non-terminal workload is failed, not left running.** The
+  sweep only releases leases of terminal workloads, so a crashed instance would
+  otherwise pin its Agent binding and slot forever behind a Run stuck at
+  `running`. A companion pass applies exactly what that instance's own restart
+  would have applied — the Run fails with a retryable structured reason and its
+  A2A task is synced, the Evaluation task fails — and runs *before* the sweep so
+  the same tick releases what it just settled.
+- PostgreSQL startup must still not reset in-progress Run, Evaluation, sync, or
+  index rows merely because another replica started: another replica booting
+  says nothing about a peer. Recovery of a peer's work is the heartbeat-driven
+  reaper's job, not startup's. SQLite startup is the symmetric single-owner
+  case: after failing interrupted workloads, it releases their durable leases
+  explicitly.
 - Environment bootstrap is a true upsert under the same rule: an env-driven
   source row that already matches the environment gets no write, sync state is
   reset only when the checkout's inputs (config or localPath) actually changed,

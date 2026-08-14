@@ -4,6 +4,7 @@ import {
   INSTANCE_HEARTBEAT_INTERVAL_MS,
   type InstanceLivenessMap,
   beatInstanceHeartbeat,
+  canJudgePeerLiveness,
   deleteInstanceHeartbeat,
   isInstanceOwnerDead,
   loadInstanceLiveness,
@@ -179,5 +180,26 @@ describe('pruneDeadInstanceHeartbeats / deleteInstanceHeartbeat', () => {
     await pruneDeadInstanceHeartbeats(deps(dbMock))
     await deleteInstanceHeartbeat(deps(dbMock))
     expect(deletes).toHaveLength(2)
+  })
+})
+
+describe('canJudgePeerLiveness', () => {
+  // The upgrade hazard this guards: right after a rollout the heartbeat table
+  // is empty, so every pre-existing mark reads as owner-less and recovery
+  // would reclaim checkouts from peers that simply have not beaten yet.
+  it('refuses to judge peers until a full staleness window has passed since boot', () => {
+    const { dbMock } = mockHeartbeatDb()
+    const justBooted = deps(dbMock, {
+      bootTime: new Date(NOW.getTime() - INSTANCE_DEAD_AFTER_MS + 1),
+    })
+    expect(canJudgePeerLiveness(justBooted)).toBe(false)
+  })
+
+  it('judges peers once the grace window has elapsed', () => {
+    const { dbMock } = mockHeartbeatDb()
+    const settled = deps(dbMock, {
+      bootTime: new Date(NOW.getTime() - INSTANCE_DEAD_AFTER_MS),
+    })
+    expect(canJudgePeerLiveness(settled)).toBe(true)
   })
 })

@@ -25,6 +25,17 @@ import { processInstanceId } from './process-instance.js'
 export const INSTANCE_HEARTBEAT_INTERVAL_MS = 30_000
 /** ~10 missed beats; generous to GC pauses, event-loop stalls, and clock skew. */
 export const INSTANCE_DEAD_AFTER_MS = 5 * 60_000
+/**
+ * Recovery stays disabled for this long after boot.
+ *
+ * The dangerous moment is the first minutes of an upgrade: the heartbeat table
+ * is empty, so *every* pre-existing mark reads as owner-less and this replica
+ * would reclaim checkouts belonging to peers that simply have not written their
+ * first row yet. Waiting one staleness window means a genuinely live peer has
+ * beaten by the time any decision is made — and a genuinely dead owner's marks
+ * were not going anywhere anyway.
+ */
+export const RECOVERY_GRACE_AFTER_BOOT_MS = INSTANCE_DEAD_AFTER_MS
 /** Rows this stale are kept only as tombstones; prune to keep the table bounded. */
 const PRUNE_AFTER_MS = 24 * 60 * 60_000
 
@@ -107,6 +118,17 @@ export async function pruneDeadInstanceHeartbeats(
       )
       .returning({ id: instanceHeartbeats.id }),
   )
+}
+
+/**
+ * Has this process been up long enough to judge anyone else's liveness?
+ *
+ * Recovery must stay off until every healthy peer has had a full staleness
+ * window to write its first heartbeat — otherwise the empty table right after
+ * an upgrade reads as "everyone is dead".
+ */
+export function canJudgePeerLiveness(deps: InstanceHeartbeatDeps = defaultDeps): boolean {
+  return deps.now().getTime() - deps.bootTime.getTime() >= RECOVERY_GRACE_AFTER_BOOT_MS
 }
 
 export async function loadInstanceLiveness(

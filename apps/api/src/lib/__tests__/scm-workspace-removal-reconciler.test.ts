@@ -39,6 +39,7 @@ function makeDeps(
   reservations: Reservation[],
   overrides: Partial<{
     loadLiveness: () => Promise<InstanceLivenessMap>
+    canJudgePeers: () => boolean
     adopt: (id: string, expectedToken: string, token: string) => Promise<boolean>
     findBlocker: () => Promise<string | null>
     removeWorkspace: (sourceId: string, name: string) => Promise<void>
@@ -51,6 +52,7 @@ function makeDeps(
   const deps = {
     listAbandonedCandidates: async () => reservations,
     loadLiveness: overrides.loadLiveness ?? (async () => deadPeer()),
+    canJudgePeers: overrides.canJudgePeers ?? (() => true),
     adopt:
       overrides.adopt ??
       (async (id: string) => {
@@ -118,6 +120,31 @@ describe('reconcileAbandonedWorkspaceRemovals', () => {
     )
 
     expect(await reconcileAbandonedWorkspaceRemovals(deps)).toEqual([])
+    expect(removed).toEqual([])
+  })
+
+  it('adopts a handed-off reservation even during the post-boot grace window', async () => {
+    // A NULL owner is an explicit handoff, not an inference from silence, so
+    // no liveness question needs answering — and stalling it would leave the
+    // worktree blocked for five minutes after every restart.
+    const { deps, removed } = makeDeps([reservation()], {
+      canJudgePeers: () => false,
+      loadLiveness: async () => new Map(),
+    })
+
+    await reconcileAbandonedWorkspaceRemovals(deps)
+
+    expect(removed).toEqual(['scm_1:wt-a'])
+  })
+
+  it('leaves a named owner alone during the post-boot grace window', async () => {
+    const { deps, removed, adopted } = makeDeps([reservation({ ownerInstanceId: 'instance-b' })], {
+      canJudgePeers: () => false,
+      loadLiveness: async () => new Map(),
+    })
+
+    expect(await reconcileAbandonedWorkspaceRemovals(deps)).toEqual([])
+    expect(adopted).toEqual([])
     expect(removed).toEqual([])
   })
 

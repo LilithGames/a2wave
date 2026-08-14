@@ -8,6 +8,7 @@ import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import {
   type InstanceLivenessMap,
+  canJudgePeerLiveness,
   isInstanceOwnerDead,
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
@@ -57,6 +58,8 @@ export interface ScmLeaseSweepDeps {
   ownerInstanceId: string
   /** Read outside the mutation: staleness thresholds dwarf the read-to-decision gap. */
   loadLiveness: () => Promise<InstanceLivenessMap>
+  /** False during the post-boot grace window, when an empty table means nothing. */
+  canJudgePeers: () => boolean
   now: () => Date
 }
 
@@ -76,6 +79,7 @@ const defaultDeps: ScmLeaseSweepDeps = {
   isWorkloadLocallyActive,
   ownerInstanceId: processInstanceId,
   loadLiveness: () => loadInstanceLiveness(db),
+  canJudgePeers: () => canJudgePeerLiveness(),
   now: () => new Date(),
 }
 
@@ -110,16 +114,19 @@ async function isWorkloadTerminal(
 export async function sweepOrphanedScmWorkloadLeases(
   deps: ScmLeaseSweepDeps = defaultDeps,
 ): Promise<ReleasedScmWorkload[]> {
-  const liveness = await deps.loadLiveness()
+  const canJudgePeers = deps.canJudgePeers()
+  const liveness = canJudgePeers ? await deps.loadLiveness() : new Map()
   return deps.withMutation(async (tx) => {
     const leases = await tx.select().from(scmWorkloadLeases)
     const released: ReleasedScmWorkload[] = []
     const now = deps.now()
     for (const lease of leases) {
+      // Own leases are always judgeable — no heartbeat needed to know this
+      // process is alive. Peer leases wait out the post-boot grace window.
       if (
         lease.phase === 'active' &&
         lease.ownerInstanceId !== deps.ownerInstanceId &&
-        !isLeaseOwnerDead(lease, liveness, now)
+        (!canJudgePeers || !isLeaseOwnerDead(lease, liveness, now))
       ) {
         continue
       }
@@ -167,6 +174,7 @@ function isLeaseOwnerDead(
 export interface DeadInstanceWorkloadReaperDeps {
   db: Pick<typeof db, 'select'>
   loadLiveness: () => Promise<InstanceLivenessMap>
+  canJudgePeers: () => boolean
   isWorkloadLocallyActive: (identity: ScmWorkloadIdentity) => boolean
   failRun: (runId: string) => Promise<void>
   failEvaluation: (taskId: string) => Promise<void>
@@ -198,6 +206,7 @@ async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
 const defaultReaperDeps: DeadInstanceWorkloadReaperDeps = {
   db,
   loadLiveness: () => loadInstanceLiveness(db),
+  canJudgePeers: () => canJudgePeerLiveness(),
   isWorkloadLocallyActive,
   failRun: failRunAbandonedByDeadInstance,
   failEvaluation: (taskId) =>
@@ -224,6 +233,9 @@ export interface ReapedScmWorkload extends ScmWorkloadIdentity {
 export async function failScmWorkloadsOfDeadInstances(
   deps: DeadInstanceWorkloadReaperDeps = defaultReaperDeps,
 ): Promise<ReapedScmWorkload[]> {
+  // Nothing here is judgeable during the post-boot grace window: every peer
+  // that has not yet written its first heartbeat would look dead.
+  if (!deps.canJudgePeers()) return []
   const leases = await deps.db.select().from(scmWorkloadLeases)
   const activePeerLeases = leases.filter(
     (lease) => lease.phase === 'active' && lease.ownerInstanceId,

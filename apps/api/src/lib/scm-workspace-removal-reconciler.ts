@@ -4,6 +4,7 @@ import { db } from '../db/client.js'
 import { scmSources, scmWorkspaceRemovals } from '../db/schema.js'
 import {
   type InstanceLivenessMap,
+  canJudgePeerLiveness,
   isInstanceOwnerDead,
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
@@ -59,6 +60,8 @@ interface AbandonedCandidate {
 export interface WorkspaceRemovalReconcilerDeps {
   listAbandonedCandidates: () => Promise<AbandonedCandidate[]>
   loadLiveness: () => Promise<InstanceLivenessMap>
+  /** False during the post-boot grace window; gates only the dead-owner branch. */
+  canJudgePeers: () => boolean
   /** Compare-and-set the attempt token; false means another replica won the row. */
   adopt: (reservationId: string, expectedToken: string, nextToken: string) => Promise<boolean>
   /** The same occupancy decision every remover runs; a reason string blocks. */
@@ -159,6 +162,7 @@ async function release(reservationId: string, attemptToken: string): Promise<voi
 const defaultDeps: WorkspaceRemovalReconcilerDeps = {
   listAbandonedCandidates,
   loadLiveness: () => loadInstanceLiveness(db),
+  canJudgePeers: () => canJudgePeerLiveness(),
   adopt,
   findBlocker,
   removeWorkspace,
@@ -173,18 +177,23 @@ export async function reconcileAbandonedWorkspaceRemovals(
   const candidates = await deps.listAbandonedCandidates()
   if (candidates.length === 0) return []
 
-  const liveness = await deps.loadLiveness()
+  const canJudgePeers = deps.canJudgePeers()
+  const liveness = canJudgePeers ? await deps.loadLiveness() : new Map()
   const now = deps.now()
   const reconciled: ReconciledRemoval[] = []
 
   for (const candidate of candidates) {
-    // A beating owner is mid-removal; adopting would run a second concurrent
+    // A NULL owner is an explicit handoff — always adoptable, no liveness
+    // question to answer. A named owner must be proved dead first: a beating
+    // one is mid-removal, and adopting would run a second concurrent
     // filesystem removal against the same worktree.
-    if (
-      candidate.ownerInstanceId &&
-      !isInstanceOwnerDead(liveness, candidate.ownerInstanceId, candidate.attemptStartedAt, now)
-    ) {
-      continue
+    if (candidate.ownerInstanceId) {
+      if (!canJudgePeers) continue
+      if (
+        !isInstanceOwnerDead(liveness, candidate.ownerInstanceId, candidate.attemptStartedAt, now)
+      ) {
+        continue
+      }
     }
     try {
       const nextToken = deps.newToken()
