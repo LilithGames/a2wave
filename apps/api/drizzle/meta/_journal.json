@@ -792,6 +792,13 @@
       "when": 1786674874763,
       "tag": "0112_worthless_sugar_man",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "6",
+      "when": 1786675657824,
+      "tag": "0113_jittery_sunfire",
+      "breakpoints": true
     }
   ]
 }

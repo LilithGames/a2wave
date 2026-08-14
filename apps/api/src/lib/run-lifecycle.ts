@@ -31,7 +31,7 @@ import { createScmSource } from './scm-source.js'
 import { removeOwnedSourceWorkspaceGuarded } from './scm-workspace-removal.js'
 import { notifyRunError } from './webhook-notifier.js'
 import { generateWorkLog } from './worklog-generator.js'
-import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
+import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
 
 /** Max serialized size (chars) for a single tool_call input when persisted */
 const MAX_INPUT_JSON_LENGTH = 2000
@@ -240,7 +240,7 @@ async function cleanupFinishedExecution(
   agentId: string,
   shouldScheduleNext: boolean,
 ): Promise<void> {
-  await retryWorkspaceCleanupUntilSuccess(() => cleanupWorktreeIfEphemeral(runId, agentId), {
+  await cleanupWorkspaceOrHandOff(() => cleanupWorktreeIfEphemeral(runId, agentId), {
     context: { type: 'run', runId, agentId },
   })
   completeExecutionLease(runId)

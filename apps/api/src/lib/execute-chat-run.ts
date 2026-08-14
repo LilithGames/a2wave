@@ -23,7 +23,7 @@ import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
 import { retryUntilSuccess } from './retry-until-success.js'
 import { runWithLifecycle } from './run-launcher.js'
-import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
+import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
 
 /**
  * Execute a chat run (used for both immediate execution and queued run scheduling).
@@ -333,7 +333,7 @@ async function cleanupPreparedExecution(
 ): Promise<void> {
   if (rootDir) await cleanupMaterializedRoot(rootDir).catch(() => {})
   const { cleanupWorktreeIfEphemeral } = await import('./run-lifecycle.js')
-  await retryWorkspaceCleanupUntilSuccess(() => cleanupWorktreeIfEphemeral(runId, agentId), {
+  await cleanupWorkspaceOrHandOff(() => cleanupWorktreeIfEphemeral(runId, agentId), {
     context: { type: 'run', runId, agentId, phase: 'pre-execution' },
   })
   completeExecutionLease(runId)

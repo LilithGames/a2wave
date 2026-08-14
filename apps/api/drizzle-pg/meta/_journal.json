@@ -78,6 +78,13 @@
       "when": 1786674880152,
       "tag": "0010_quick_cobalt_man",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786675659404,
+      "tag": "0011_chubby_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }

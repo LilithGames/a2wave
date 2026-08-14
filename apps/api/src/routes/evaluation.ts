@@ -59,7 +59,7 @@ import {
 } from '../lib/scm-workload-lifecycle.js'
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
 import { removeOwnedSourceWorkspaceGuarded } from '../lib/scm-workspace-removal.js'
-import { retryWorkspaceCleanupUntilSuccess } from '../lib/workspace-cleanup-retry.js'
+import { cleanupWorkspaceOrHandOff } from '../lib/workspace-cleanup-retry.js'
 
 const app = new Hono()
 const activeEvaluationExecutions = new Set<Promise<void>>()
@@ -619,7 +619,7 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
   } finally {
     try {
       await auditEvaluationExecution(taskId, agentId, execution)
-      await retryWorkspaceCleanupUntilSuccess(() => discardEvaluationWorkspace(workspace, taskId), {
+      await cleanupWorkspaceOrHandOff(() => discardEvaluationWorkspace(workspace, taskId), {
         context: { type: 'evaluation', taskId, agentId },
       })
     } finally {

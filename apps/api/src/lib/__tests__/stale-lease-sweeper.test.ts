@@ -11,6 +11,7 @@ const {
   failScmWorkloadsOfDeadInstances,
   retryPendingWorkspaceRemovalReleases,
   pruneDeadInstanceHeartbeats,
+  reconcileAbandonedWorkspaceRemovals,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
@@ -22,6 +23,7 @@ const {
   failScmWorkloadsOfDeadInstances: vi.fn(),
   retryPendingWorkspaceRemovalReleases: vi.fn(),
   pruneDeadInstanceHeartbeats: vi.fn(),
+  reconcileAbandonedWorkspaceRemovals: vi.fn(),
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
@@ -38,6 +40,7 @@ vi.mock('../scm-lease-sweeper.js', () => ({
   failScmWorkloadsOfDeadInstances,
 }))
 vi.mock('../scm-workspace-removal.js', () => ({ retryPendingWorkspaceRemovalReleases }))
+vi.mock('../scm-workspace-removal-reconciler.js', () => ({ reconcileAbandonedWorkspaceRemovals }))
 vi.mock('../instance-heartbeat.js', () => ({ pruneDeadInstanceHeartbeats }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -55,6 +58,7 @@ describe('startStaleLeaseSweeper', () => {
     failScmWorkloadsOfDeadInstances.mockResolvedValue([])
     retryPendingWorkspaceRemovalReleases.mockResolvedValue([])
     pruneDeadInstanceHeartbeats.mockResolvedValue(undefined)
+    reconcileAbandonedWorkspaceRemovals.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -182,6 +186,30 @@ describe('startStaleLeaseSweeper', () => {
 
     expect(scheduleNextEvaluation).toHaveBeenCalledTimes(1)
     expect(scheduleNextEvaluation.mock.calls[0]?.[1]).toBe('agt_b')
+    stop()
+  })
+
+  it('reconciles abandoned workspace removals on every tick', async () => {
+    // This tick IS the retry loop for a failed removal, which is why the
+    // owner's inline retries can be bounded.
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(reconcileAbandonedWorkspaceRemovals).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(reconcileAbandonedWorkspaceRemovals).toHaveBeenCalledTimes(2)
+
+    stop()
+  })
+
+  it('keeps reconciling removals when an earlier sweep throws', async () => {
+    sweepOrphanedScmWorkloadLeases.mockRejectedValue(new Error('db unavailable'))
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(reconcileAbandonedWorkspaceRemovals).toHaveBeenCalledTimes(1)
     stop()
   })
 

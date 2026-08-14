@@ -1268,11 +1268,21 @@ export const scmWorkspaceRemovals = sqliteTable(
       .notNull()
       .references(() => scmSources.id),
     workspaceName: text('workspace_name').notNull(),
-    /** Process instance performing the removal; observability, not authority. */
-    ownerInstanceId: text('owner_instance_id').notNull(),
+    /**
+     * Process instance currently attempting the removal. NULL means the row was
+     * explicitly handed off — its owner exhausted its bounded retries and left
+     * the reservation for the reconciler to adopt. A non-NULL owner whose
+     * heartbeat stopped is adopted the same way; only a beating owner's
+     * reservation is left alone.
+     */
+    ownerInstanceId: text('owner_instance_id'),
     /** Opaque attempt fence; final release must match it to avoid ABA deletion. */
     attemptToken: text('attempt_token').notNull().default('legacy'),
     createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    /** Refreshed on every adoption, so liveness is judged per attempt, not per target. */
+    attemptStartedAt: integer('attempt_started_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),
   },

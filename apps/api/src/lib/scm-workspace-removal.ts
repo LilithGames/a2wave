@@ -13,7 +13,7 @@ import {
   type ScmWorkloadIdentity,
   scmWorkloadLeaseId,
 } from './scm-workload-lifecycle.js'
-import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
+import { WorkspaceCleanupExhaustedError, retryWorkspaceCleanup } from './workspace-cleanup-retry.js'
 
 /**
  * The single protocol for removing a source's worktree.
@@ -240,6 +240,9 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
   // the independent attempt token fences current-version ABA replacement.
   const reservationId = workspaceRemovalId(sourceId, name)
   const attemptToken = randomUUID()
+  // Set when inline cleanup gave up and the reservation was left for the
+  // reconciler; the `finally` release must then not run.
+  let handedOff = false
 
   await withScmPathMutation(async (tx) => {
     const excludingWorkload = ownedWorkload
@@ -256,6 +259,7 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         ownerInstanceId: processInstanceId,
         attemptToken,
         createdAt: new Date(),
+        attemptStartedAt: new Date(),
       })
       .onConflictDoNothing()
       .returning({ id: scmWorkspaceRemovals.id })
@@ -281,14 +285,30 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
       // Keep the reservation continuously visible between retries. Releasing
       // it after a failed attempt would let a maxConcurrency>1 peer reuse this
       // terminal workload's path before cleanup tries again.
-      await retryWorkspaceCleanupUntilSuccess(remove, {
-        context: {
-          type: ownedWorkload.type,
-          workloadId: ownedWorkload.workloadId,
-          sourceId,
-          workspaceName: name,
-        },
-      })
+      try {
+        await retryWorkspaceCleanup(remove, {
+          context: {
+            type: ownedWorkload.type,
+            workloadId: ownedWorkload.workloadId,
+            sourceId,
+            workspaceName: name,
+          },
+        })
+      } catch (error) {
+        if (!(error instanceof WorkspaceCleanupExhaustedError)) throw error
+        // Hand the reservation off instead of holding a slot open forever: the
+        // row keeps blocking this worktree and its source, and the reconciler
+        // adopts it on a later tick.
+        //
+        // Either way the `finally` release is skipped. The worktree is still
+        // on disk, so releasing would reopen the very race the reservation
+        // prevents — and if the handoff write itself failed, the row simply
+        // keeps naming this instance and the reconciler adopts it once this
+        // instance stops beating.
+        handedOff = true
+        await handOffWorkspaceRemoval({ reservationId, attemptToken })
+        return
+      }
     } else {
       await remove()
     }
@@ -296,13 +316,55 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
     // Release even when the removal failed: the reservation only needs to
     // span the attempt. If this delete fails, leaving the row is safer than
     // guessing that filesystem removal stopped and reopening the race.
-    await releaseWorkspaceRemovalReservation({ reservationId, attemptToken }).catch((error) => {
-      pendingReservationReleases.set(reservationId, { reservationId, attemptToken })
-      logger.error(
-        { error, reservationId },
-        'Failed to release workspace removal reservation; queued an exact-attempt retry',
-      )
+    // A handed-off reservation is deliberately NOT released — it now belongs
+    // to the reconciler.
+    if (!handedOff) {
+      await releaseWorkspaceRemovalReservation({ reservationId, attemptToken }).catch((error) => {
+        pendingReservationReleases.set(reservationId, { reservationId, attemptToken })
+        logger.error(
+          { error, reservationId },
+          'Failed to release workspace removal reservation; queued an exact-attempt retry',
+        )
+      })
+    }
+  }
+}
+
+/**
+ * Give up ownership of a reservation without releasing it.
+ *
+ * NULLing the owner is the explicit "nobody is working on this" signal the
+ * reconciler adopts on its next tick. The token predicate fences the same ABA
+ * case release does: a delayed handoff must not disown a newer attempt on the
+ * same target.
+ *
+ * @returns whether the row was actually disowned; false means it was gone or
+ * already superseded, which needs no action either way.
+ */
+async function handOffWorkspaceRemoval(pending: PendingReservationRelease): Promise<boolean> {
+  try {
+    return await withScmPathMutation(async (tx) => {
+      const updated = await tx
+        .update(scmWorkspaceRemovals)
+        .set({ ownerInstanceId: null })
+        .where(
+          and(
+            eq(scmWorkspaceRemovals.id, pending.reservationId),
+            eq(scmWorkspaceRemovals.attemptToken, pending.attemptToken),
+          ),
+        )
+        .returning({ id: scmWorkspaceRemovals.id })
+      return updated.length > 0
     })
+  } catch (error) {
+    // The row keeps this process as owner. Its heartbeat stops when the process
+    // dies, so the reconciler still adopts it — just after the staleness
+    // threshold rather than immediately.
+    logger.error(
+      { error, reservationId: pending.reservationId },
+      'Failed to hand off a workspace removal reservation; the reconciler adopts it once this instance stops',
+    )
+    return false
   }
 }
 

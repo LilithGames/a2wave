@@ -14,6 +14,7 @@ import {
   failScmWorkloadsOfDeadInstances,
   sweepOrphanedScmWorkloadLeases,
 } from './scm-lease-sweeper.js'
+import { reconcileAbandonedWorkspaceRemovals } from './scm-workspace-removal-reconciler.js'
 import { retryPendingWorkspaceRemovalReleases } from './scm-workspace-removal.js'
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000
@@ -99,6 +100,21 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
       }
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: durable SCM lease sweep failed')
+    }
+    // Finish removals nobody is finishing: an owner that crashed, or one that
+    // exhausted its bounded retries and handed the row off. This is the retry
+    // mechanism for workspace removal — a failed attempt keeps the reservation
+    // and the next tick tries again.
+    try {
+      const reconciledRemovals = await reconcileAbandonedWorkspaceRemovals()
+      if (reconciledRemovals.length > 0) {
+        logger.info(
+          { reconciled: reconciledRemovals },
+          'stale-lease-sweeper: reconciled abandoned workspace removals',
+        )
+      }
+    } catch (error) {
+      logger.error({ error }, 'stale-lease-sweeper: workspace removal reconciliation failed')
     }
     try {
       await pruneDeadInstanceHeartbeats()
