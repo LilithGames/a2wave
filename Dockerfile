@@ -50,7 +50,12 @@ LABEL org.opencontainers.image.title="a2wave" \
       org.opencontainers.image.version="$APP_VERSION" \
       org.opencontainers.image.source="https://github.com/LilithGames/a2wave"
 
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+# Only the shims here: `corepack prepare` (which caches a ~20MB pnpm tarball under
+# /root/.cache) runs inside the production-install RUN below, where the cache is
+# deleted in the same layer. pnpm exists for that one build step — nothing at
+# runtime spawns it (the provider-CLI installer uses npm), so caching it in its
+# own layer shipped 20MB the service never reads.
+RUN corepack enable
 
 ARG TARGETARCH
 
@@ -81,22 +86,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
 # change under us between builds, breaking reproducibility and widening the
 # supply-chain surface. Bump UV_VERSION deliberately when upgrading.
 ARG UV_VERSION=0.11.32
+# The installer's own copies under /root/.local are deleted in the same layer:
+# uv alone is ~55MB, so leaving them would ship every binary in this layer twice.
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     cp /root/.local/bin/uv /usr/local/bin/uv && \
     cp /root/.local/bin/uvx /usr/local/bin/uvx && \
     chmod 755 /usr/local/bin/uv /usr/local/bin/uvx && \
+    rm -rf /root/.local && \
     uv --version
-
-# Provider CLIs are NOT baked into the image. The growing roster adds well over
-# 1GB plus CodeGraph, while a given deployment typically uses one or two — so
-# preinstalling scales the image linearly
-# against a need that stays flat. Ship the lock plus its installer instead and
-# let an admin install on demand from the UI (POST /api/provider-clis/:kind/install),
-# which reuses this exact installer and therefore the same pinned versions and
-# checksum verification the build used to perform.
-COPY provider-cli-lock.json /app/provider-clis/provider-cli-lock.json
-COPY scripts/provider-clis/install.mjs /app/provider-clis/install.mjs
-COPY scripts/provider-clis/provider-cli-lock.schema.json /app/provider-clis/provider-cli-lock.schema.json
 
 # Runtime installs land in the service HOME, which docker-compose persists as a
 # named volume: the service runs as non-root appuser and cannot write
@@ -128,11 +125,16 @@ WORKDIR /app
 
 # Created before the app files land so every COPY below can set ownership inline.
 # A trailing `chown -R /app` would instead duplicate the whole tree into a new
-# layer (~220MB) purely to rewrite its metadata.
+# layer (~220MB) purely to rewrite its metadata. /app/data is created here for
+# the same reason: bundled with user creation, it costs no extra layer.
 RUN groupadd -r -g 10001 appuser && useradd -r -u 10001 -m -g appuser appuser && \
-    chown appuser:appuser /app
+    chown appuser:appuser /app && \
+    mkdir -p /app/data/skills && chown -R appuser:appuser /app/data
 
-COPY --chown=appuser:appuser pnpm-lock.yaml pnpm-workspace.yaml package.json CHANGELOG.md ./
+# Only the install inputs — CHANGELOG.md ships with the LICENSE group further
+# down, because it changes on every release and anything COPY'd here invalidates
+# the expensive production-install layer below.
+COPY --chown=appuser:appuser pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY --chown=appuser:appuser packages/shared/package.json packages/shared/
 COPY --chown=appuser:appuser apps/api/package.json apps/api/
 
@@ -148,13 +150,30 @@ COPY --chown=appuser:appuser apps/api/package.json apps/api/
 # workspace's node_modules when it actually has production dependencies, so a
 # hardcoded path list would break the build the day one of them becomes
 # type-only. -prune stops the descent at each match (the -R does that work).
+# The trailing cleanup removes what only the install step needed: the pnpm store
+# (its files are hardlinked into node_modules, so deleting the store keeps every
+# module intact while dropping the store's own metadata from the layer), the
+# corepack cache holding the pnpm tarball `corepack prepare` fetched, and npm's
+# cache. Together they are ~60MB that the runtime never reads.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && \
+    corepack prepare pnpm@9.15.4 --activate && \
     pnpm install --frozen-lockfile --prod && \
     apt-get purge -y --auto-remove python3 make g++ && \
-    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /var/lib/apt/lists/* /root/.local/share/pnpm /root/.cache /root/.npm && \
     find /app -maxdepth 3 -name node_modules -prune -exec chown -R appuser:appuser {} +
 
-COPY --chown=appuser:appuser LICENSE NOTICE README.md ./
+# Provider CLIs are NOT baked into the image. The growing roster adds well over
+# 1GB plus CodeGraph, while a given deployment typically uses one or two — so
+# preinstalling scales the image linearly
+# against a need that stays flat. Ship the lock plus its installer instead and
+# let an admin install on demand from the UI (POST /api/provider-clis/:kind/install),
+# which reuses this exact installer and therefore the same pinned versions and
+# checksum verification the build used to perform.
+# Positioned after the production install on purpose: the lock's pins move on
+# their own review cadence, and a bump must not invalidate the node_modules layer.
+COPY provider-cli-lock.json scripts/provider-clis/install.mjs scripts/provider-clis/provider-cli-lock.schema.json /app/provider-clis/
+
+COPY --chown=appuser:appuser LICENSE NOTICE README.md CHANGELOG.md ./
 # The OFL requires the font's license to travel with the font binaries, which the web
 # bundle below embeds — see NOTICE.
 COPY --chown=appuser:appuser licenses ./licenses
@@ -169,8 +188,6 @@ COPY --from=builder --chown=appuser:appuser /app/apps/api/drizzle apps/api/drizz
 COPY --from=builder --chown=appuser:appuser /app/apps/api/drizzle-pg apps/api/drizzle-pg
 COPY --from=builder --chown=appuser:appuser /app/apps/web/dist apps/web/dist
 
-RUN mkdir -p /app/data/skills && chown -R appuser:appuser /app/data
-
 # Note: `USER appuser` is deliberately omitted. docker-entrypoint.sh starts as root to adapt the
 # UID (aligning appuser with the owner UID of host-mounted directories such as .claude), then
 # execs gosu to drop to appuser for the main process. The service still runs as non-root at
@@ -183,9 +200,10 @@ ENV HOME=/home/appuser
 ENV USER=appuser
 ENV LOGNAME=appuser
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY scripts/ensure-container-auth-secret.sh /usr/local/bin/ensure-container-auth-secret.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/ensure-container-auth-secret.sh
+# --chmod instead of a trailing `RUN chmod +x`, which would re-store both scripts
+# in an extra layer purely to flip the executable bit.
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=0755 scripts/ensure-container-auth-secret.sh /usr/local/bin/ensure-container-auth-secret.sh
 
 EXPOSE 3502
 
