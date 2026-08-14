@@ -185,7 +185,7 @@ export const evalCommand = defineCommand({
       meta: { name: 'sets', description: 'Manage evaluation sets' },
       subCommands: {
         list: defineCommand({
-          meta: { name: 'list', description: 'List evaluation sets' },
+          meta: { name: 'list', description: 'List evaluation sets', agentMeta: { risk: 'read' } },
           args: { ...agentArg, ...jsonArg, ...urlArg },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
@@ -205,7 +205,11 @@ export const evalCommand = defineCommand({
         }),
 
         create: defineCommand({
-          meta: { name: 'create', description: 'Create an evaluation set' },
+          meta: {
+            name: 'create',
+            description: 'Create an evaluation set',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             name: { type: 'string', description: 'Set name', required: true },
@@ -226,7 +230,11 @@ export const evalCommand = defineCommand({
         }),
 
         update: defineCommand({
-          meta: { name: 'update', description: 'Update an evaluation set' },
+          meta: {
+            name: 'update',
+            description: 'Update an evaluation set',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -259,6 +267,7 @@ export const evalCommand = defineCommand({
         delete: defineCommand({
           meta: {
             name: 'delete',
+            agentMeta: { risk: 'high-risk-write' },
             description: 'Delete an evaluation set (cases cascade; task history kept)',
           },
           args: {
@@ -286,7 +295,7 @@ export const evalCommand = defineCommand({
       meta: { name: 'cases', description: 'Manage the cases of an evaluation set' },
       subCommands: {
         list: defineCommand({
-          meta: { name: 'list', description: 'List cases in a set' },
+          meta: { name: 'list', description: 'List cases in a set', agentMeta: { risk: 'read' } },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -312,7 +321,11 @@ export const evalCommand = defineCommand({
         }),
 
         add: defineCommand({
-          meta: { name: 'add', description: 'Add one case (single turn) to a set' },
+          meta: {
+            name: 'add',
+            description: 'Add one case (single turn) to a set',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -342,7 +355,11 @@ export const evalCommand = defineCommand({
         }),
 
         import: defineCommand({
-          meta: { name: 'import', description: 'Bulk-import cases from a YAML or JSON file' },
+          meta: {
+            name: 'import',
+            description: 'Bulk-import cases from a YAML or JSON file',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -397,7 +414,11 @@ export const evalCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { name: 'delete', description: 'Delete one case' },
+          meta: {
+            name: 'delete',
+            description: 'Delete one case',
+            agentMeta: { risk: 'high-risk-write' },
+          },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -423,6 +444,7 @@ export const evalCommand = defineCommand({
     run: defineCommand({
       meta: {
         name: 'run',
+        agentMeta: { risk: 'write' },
         description: 'Start an evaluation task (replay a set against the Agent)',
       },
       args: {
@@ -473,7 +495,11 @@ export const evalCommand = defineCommand({
       meta: { name: 'tasks', description: 'Inspect evaluation tasks' },
       subCommands: {
         list: defineCommand({
-          meta: { name: 'list', description: 'List evaluation tasks (newest first)' },
+          meta: {
+            name: 'list',
+            description: 'List evaluation tasks (newest first)',
+            agentMeta: { risk: 'read' },
+          },
           args: { ...agentArg, ...jsonArg, ...urlArg },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
@@ -496,7 +522,11 @@ export const evalCommand = defineCommand({
         }),
 
         get: defineCommand({
-          meta: { name: 'get', description: 'Show a task with its per-case results' },
+          meta: {
+            name: 'get',
+            description: 'Show a task with its per-case results',
+            agentMeta: { risk: 'read' },
+          },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -519,7 +549,11 @@ export const evalCommand = defineCommand({
         }),
 
         verdict: defineCommand({
-          meta: { name: 'verdict', description: 'Record a manual verdict on one case result' },
+          meta: {
+            name: 'verdict',
+            description: 'Record a manual verdict on one case result',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -555,7 +589,11 @@ export const evalCommand = defineCommand({
         }),
 
         cancel: defineCommand({
-          meta: { name: 'cancel', description: 'Cancel a queued or running task' },
+          meta: {
+            name: 'cancel',
+            description: 'Cancel a queued or running task',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -577,7 +615,11 @@ export const evalCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { name: 'delete', description: 'Delete a task and its results' },
+          meta: {
+            name: 'delete',
+            description: 'Delete a task and its results',
+            agentMeta: { risk: 'high-risk-write' },
+          },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },

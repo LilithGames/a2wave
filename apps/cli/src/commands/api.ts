@@ -1,7 +1,7 @@
 import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
-import { confirmDestructive, readJsonFile, toStringArray } from '../lib/args.js'
+import { readJsonFile, requireConfirmation, resolveForceFlag, toStringArray } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
 
 const METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const
@@ -83,6 +83,7 @@ function resolveBody(args: Record<string, unknown>): unknown {
 export const apiCommand = defineCommand({
   meta: {
     name: 'api',
+    agentMeta: { risk: 'high-risk-write' },
     description: [
       'Call any a2wave API endpoint directly (raw HTTP escape hatch).',
       'Prefer the typed command when one exists: it validates parameters, resolves names to',
@@ -124,15 +125,17 @@ export const apiCommand = defineCommand({
     // caller a confirmation they then have to answer again.
     const body = method === 'GET' ? undefined : resolveBody(args)
 
-    if (method !== 'GET') {
-      // The CLI cannot know what an arbitrary write does, so it assumes the
-      // worst. confirmDestructive already has the agent-safe semantics: --yes
-      // proceeds, a non-TTY throws instead of running unattended.
-      await confirmDestructive(
-        `${method} ${path} may create, modify or delete data irreversibly.`,
-        args.yes === true,
-      )
-    }
+    // The CLI cannot know what an arbitrary write does, so it assumes the worst
+    // and carries the `high-risk-write` label for the whole command. A GET is
+    // downgraded here rather than in the label, since a single leaf gets one
+    // static risk and the escape hatch's worst case is what a caller must plan
+    // for. `requireConfirmation` keeps the agent-safe semantics: --yes/--force
+    // proceeds, a non-TTY throws instead of running unattended.
+    await requireConfirmation(
+      method === 'GET' ? 'read' : 'high-risk-write',
+      `${method} ${path} may create, modify or delete data irreversibly.`,
+      resolveForceFlag(args),
+    )
 
     const client = createClient({ url: args.url as string | undefined })
     let result: unknown

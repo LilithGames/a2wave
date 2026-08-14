@@ -31,27 +31,55 @@ export interface AgentYamlRefs {
 /**
  * Feishu channel config (mirrors @a2wave/shared feishuConfigSchema).
  * appId / appSecret are required; all other fields have defaults — override as needed.
+ *
+ * WHY a key list rather than a 23-field type mirror: the type version drifted
+ * eight fields behind the platform, and nothing failed until a user's YAML was
+ * rejected. The CLI only needs to know which keys are legal to pass through, so
+ * the mirror is one runtime array pinned against the generated snapshot by
+ * src/lib/__tests__/agent-yaml-schema-drift.test.ts. Values stay unvalidated
+ * here on purpose — the API owns that, and duplicating it is what rots.
  */
-export interface AgentYamlFeishuConfig {
-  appId: string
-  appSecret: string
+export const FEISHU_CONFIG_KEYS = [
+  'appId',
+  'appSecret',
   // Regular group chat settings
-  groupTriggerOnAt?: boolean
-  groupTriggerOnNewMessage?: boolean
-  groupReplyMode?: 'quote' | 'new' | 'none'
+  'groupTriggerOnAt',
+  'groupTriggerOnNewMessage',
+  'groupReplyMode',
   // Topic group settings
-  topicTriggerOnAt?: boolean
-  topicTriggerOnNewTopic?: boolean
-  topicTriggerOnNewComment?: boolean
-  topicReplyMode?: 'topic_reply' | 'none'
+  'topicTriggerOnAt',
+  'topicTriggerOnNewTopic',
+  'topicTriggerOnNewComment',
+  'topicReplyMode',
+  'topicReplyMentionTarget',
+  'topicInjectRootMessage',
   // P2P direct chat settings (always triggers; only the reply style is configurable)
-  p2pReplyMode?: 'quote' | 'new' | 'none'
+  'p2pReplyMode',
   // Shared settings
-  replyContentType?: 'text' | 'post' | 'interactive' | 'streaming_card'
-  cardTemplateId?: string
-  sendArtifactsAsFile?: boolean
-  fetchUserInfo?: boolean
-}
+  'replyContentType',
+  'cardTemplateId',
+  'debugShowSessionId',
+  'debugShowProvider',
+  'debugShowModel',
+  'sendArtifactsAsFile',
+  'fetchUserInfo',
+  'welcomeMessage',
+  'welcomeOnP2pEnabled',
+  'welcomeP2pIdleDays',
+  'welcomeOnGroupAddedEnabled',
+] as const
+
+export type AgentYamlFeishuConfigKey = (typeof FEISHU_CONFIG_KEYS)[number]
+
+/** appId / appSecret are required; every other key is optional and server-defaulted. */
+export type AgentYamlFeishuConfig = { appId: string; appSecret: string } & Partial<
+  Record<AgentYamlFeishuConfigKey, unknown>
+>
+
+/** Mirrors artifactPolicySchema's `autoShare` enum. */
+export const ARTIFACT_AUTO_SHARE = ['off', 'on'] as const
+/** Mirrors artifactPolicySchema's `shareAccessLevel` enum. */
+export const ARTIFACT_SHARE_ACCESS_LEVELS = ['authenticated', 'public'] as const
 
 /**
  * Artifact policy (mirrors @a2wave/shared artifactPolicySchema).
@@ -60,9 +88,9 @@ export interface AgentYamlFeishuConfig {
  */
 export interface AgentYamlArtifactPolicy {
   /** Auto-share toggle (default off) */
-  autoShare?: 'off' | 'on'
+  autoShare?: (typeof ARTIFACT_AUTO_SHARE)[number]
   /** Default access level for share links: authenticated (login required) | public (default authenticated) */
-  shareAccessLevel?: 'authenticated' | 'public'
+  shareAccessLevel?: (typeof ARTIFACT_SHARE_ACCESS_LEVELS)[number]
   /** Share link validity in days, 1–365 (default 7) */
   shareExpiryDays?: number
 }
@@ -84,6 +112,10 @@ export interface AgentYamlScheduleConfig {
  *   - remote: discovers a standard service from its Agent Card, or directly calls a known JSON-RPC endpoint
  *             set apiKey when auth is required (sent as Authorization: Bearer at runtime; supports ${ENV} placeholders)
  */
+export const A2A_ROUTE_TARGET_TYPES = ['local', 'remote'] as const
+export const A2A_CONNECTION_MODES = ['agent_card', 'direct'] as const
+export const A2A_PROTOCOL_VERSIONS = ['1.0', '0.3'] as const
+
 export type AgentYamlA2ARouteTarget =
   | { type: 'local'; agentId: string }
   | {
@@ -91,9 +123,9 @@ export type AgentYamlA2ARouteTarget =
       name: string
       url: string
       /** Agent Card discovery for standard services, or direct for a known JSON-RPC endpoint. */
-      connectionMode?: 'agent_card' | 'direct'
+      connectionMode?: (typeof A2A_CONNECTION_MODES)[number]
       /** Direct endpoint protocol version; omitted legacy routes remain direct A2A 0.3. */
-      protocolVersion?: '1.0' | '0.3'
+      protocolVersion?: (typeof A2A_PROTOCOL_VERSIONS)[number]
       description?: string
       apiKey?: string
     }
@@ -110,10 +142,34 @@ export interface AgentYamlA2ASkill {
   tags?: string[]
 }
 
+/**
+ * Publish channels, mirroring @a2wave/shared `publishChannelEnum`.
+ *
+ * This list was hand-maintained and fell five members behind: a YAML declaring
+ * `channels: [slack]` was rejected by the CLI's own type while the API accepted
+ * it. It is now pinned to the generated snapshot by
+ * src/lib/__tests__/agent-yaml-schema-drift.test.ts, so the next channel added
+ * upstream fails a test instead of a user's apply.
+ */
+export const PUBLISH_CHANNELS = [
+  'api',
+  'a2a',
+  'feishu',
+  'slack',
+  'discord',
+  'schedule',
+  'oauth',
+  'chat_app',
+  'glab',
+  'gh',
+] as const
+
+export const PUBLISH_AUTH_TYPES = ['none', 'api_key'] as const
+
 export interface AgentYamlPublishBlock {
   /** Channel list; if this block is present, apply automatically calls POST /publish once */
-  channels?: Array<'api' | 'a2a' | 'feishu' | 'schedule' | 'oauth'>
-  authType?: 'none' | 'api_key'
+  channels?: Array<(typeof PUBLISH_CHANNELS)[number]>
+  authType?: (typeof PUBLISH_AUTH_TYPES)[number]
   ipWhitelist?: string[]
   description?: string
   /** Whether to regenerate endpointApiKey on publish; existing key is kept by default */
@@ -570,9 +626,47 @@ env:
 
 # Publish block (optional; when present, /publish is called automatically after apply)
 # publish:
-#   channels: [api, feishu]                # api | a2a | feishu | schedule | oauth
+#   channels: [api, feishu]                # ${PUBLISH_CHANNELS.join(' | ')}
 #   authType: api_key                      # none | api_key
 #   ipWhitelist: []
 #   description: Public API documentation
 #   regenerateApiKey: false                # true = rotate endpointApiKey
 `
+
+/**
+ * Name the parts of a diff that REMOVE something.
+ *
+ * `agents apply` is an ordinary `write` almost always, but a diff that unmounts
+ * a Skill or clears a system prompt is not recoverable from the YAML in hand —
+ * the thing being removed is precisely what the new YAML no longer names. That
+ * subset is treated as `high-risk-write` and gated on `--yes`.
+ *
+ * Only removals count. Growing a list or replacing a value is an edit the
+ * caller can reverse by editing again; a `write` label is honest about that,
+ * and labelling every apply high-risk would train callers to pass `--yes`
+ * unconditionally, which costs the protection on the cases that need it.
+ */
+export function describeDestructiveDiff(
+  existing: Record<string, unknown>,
+  diff: Record<string, unknown>,
+): string[] {
+  const findings: string[] = []
+  for (const [key, next] of Object.entries(diff)) {
+    const before = existing[key]
+    if (before === undefined || before === null) continue
+
+    if (Array.isArray(before)) {
+      const after = new Set((Array.isArray(next) ? next : []).map((v) => JSON.stringify(v)))
+      const removed = before.filter((v) => !after.has(JSON.stringify(v)))
+      if (removed.length > 0) {
+        findings.push(`${key}: removes ${removed.length} (${removed.map(String).join(', ')})`)
+      }
+      continue
+    }
+
+    // A non-empty scalar replaced by an empty one. A different non-empty value
+    // is an edit, not a loss.
+    if (before !== '' && (next === '' || next === null)) findings.push(`${key}: cleared`)
+  }
+  return findings
+}

@@ -253,6 +253,7 @@ function renderUser(report: CheckReport): void {
 export const statusCommand = defineCommand({
   meta: {
     name: 'status',
+    agentMeta: { risk: 'read' },
     description:
       'Show current a2wave CLI status: URL / credentials / SSO cache / backend health / current user',
   },

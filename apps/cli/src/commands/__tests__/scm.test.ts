@@ -108,7 +108,9 @@ describe('scmCommand', () => {
     it('deletes resolved id', async () => {
       mockResolveScmSourceId.mockResolvedValueOnce('scm_1')
       mockDel.mockResolvedValueOnce({})
-      await getSubCommand('delete').run({ args: { id: 'repo' } })
+      // `--force` is now required: delete is high-risk-write, and this suite
+      // runs without a TTY exactly as an agent does.
+      await getSubCommand('delete').run({ args: { id: 'repo', force: true } })
       expect(mockDel).toHaveBeenCalledWith('/api/scm-sources/scm_1')
     })
   })

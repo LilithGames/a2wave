@@ -6,12 +6,18 @@ import { CliError } from '../errors.js'
 import {
   EXAMPLE_AGENT_YAML,
   computeDiff,
+  describeDestructiveDiff,
   parseAgentYaml,
   resolveRefs,
   toCreatePayload,
   toPublishPayload,
 } from '../lib/agent-yaml.js'
-import { confirmDestructive } from '../lib/args.js'
+import {
+  confirmDestructive,
+  forceArgs,
+  requireConfirmation,
+  resolveForceFlag,
+} from '../lib/args.js'
 import { emit, jsonArg, redactSecrets } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
 
@@ -151,7 +157,7 @@ export const agentsCommand = defineCommand({
   meta: { name: 'agents', description: 'Manage Agents' },
   subCommands: {
     list: defineCommand({
-      meta: { name: 'list', description: 'List all Agents' },
+      meta: { name: 'list', description: 'List all Agents', agentMeta: { risk: 'read' } },
       args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -169,7 +175,11 @@ export const agentsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { name: 'get', description: 'Show Agent details (accepts ID or name)' },
+      meta: {
+        name: 'get',
+        description: 'Show Agent details (accepts ID or name)',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...jsonArg,
@@ -248,7 +258,17 @@ export const agentsCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { name: 'update', description: 'Update Agent (accepts ID or name)' },
+      meta: {
+        name: 'update',
+        description: 'Update Agent (accepts ID or name)',
+        agentMeta: {
+          risk: 'write',
+          notFor: [
+            'A full config change — use `agents apply` with a YAML; a sequence of updates is not equivalent and will not converge',
+          ],
+          examples: ['a2wave agents update agt_x --add-skill lark-mail'],
+        },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -348,6 +368,7 @@ export const agentsCommand = defineCommand({
     diagnose: defineCommand({
       meta: {
         name: 'diagnose',
+        agentMeta: { risk: 'read' },
         description:
           'Full Agent diagnosis (GET /agents/:id/diagnose): engine/Provider/Feishu/gateway, etc.',
       },
@@ -383,7 +404,11 @@ export const agentsCommand = defineCommand({
     }),
 
     export: defineCommand({
-      meta: { name: 'export', description: 'Export Agent config as ZIP (accepts ID or name)' },
+      meta: {
+        name: 'export',
+        description: 'Export Agent config as ZIP (accepts ID or name)',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         output: {
@@ -413,7 +438,11 @@ export const agentsCommand = defineCommand({
     }),
 
     import: defineCommand({
-      meta: { name: 'import', description: 'Import Agent from a ZIP file' },
+      meta: {
+        name: 'import',
+        description: 'Import Agent from a ZIP file',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         file: { type: 'positional', description: 'ZIP file path', required: true },
         ...urlArg,
@@ -459,6 +488,21 @@ export const agentsCommand = defineCommand({
     apply: defineCommand({
       meta: {
         name: 'apply',
+        agentMeta: {
+          risk: 'write',
+          preconditions: [
+            'Every name the YAML references (provider, skills, mcpServers, kbDocuments, workspace.source) already exists — apply resolves names to IDs and fails on an unknown one',
+            'Any ${ENV} placeholder in the YAML is exported in the calling shell',
+          ],
+          notFor: [
+            'Changing one field — `agents update` is one request against one field',
+            'Deleting an Agent; apply never removes one',
+          ],
+          examples: [
+            'a2wave agents apply -f bot.yaml --dry-run',
+            'a2wave agents apply --example > bot.yaml',
+          ],
+        },
         description:
           'YAML-driven idempotent apply (looked up by name; --example shows the full example yaml)',
       },
@@ -485,6 +529,9 @@ export const agentsCommand = defineCommand({
           default: true,
           description: 'Apply the publish block in the yaml. Use --no-publish to stay in draft',
         },
+        // Only consulted when the diff actually removes something; an additive
+        // apply never asks, so this flag is inert on the common path.
+        ...forceArgs,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -544,6 +591,21 @@ export const agentsCommand = defineCommand({
             )
             console.log(JSON.stringify(redactSecrets(diff), null, 2))
           } else {
+            // Apply is `write` in general, but a diff that UNMOUNTS something is
+            // the one shape a caller cannot undo from the YAML in hand — the
+            // thing removed is exactly what the new YAML no longer names. Only
+            // that subset is gated; labelling every apply high-risk would teach
+            // callers to pass --yes always and cost the protection here.
+            const destructive = describeDestructiveDiff(current.data, diff)
+            if (destructive.length > 0) {
+              await requireConfirmation(
+                'high-risk-write',
+                `This apply removes configuration from ${existing.id} (${yaml.name}):\n${destructive
+                  .map((line) => `  - ${line}`)
+                  .join('\n')}`,
+                resolveForceFlag(args),
+              )
+            }
             await client.patch(`/api/agents/${existing.id}`, diff)
             console.log(
               `Updated ${existing.id} (${yaml.name}) — fields: ${Object.keys(diff).join(', ')}`,
@@ -560,7 +622,11 @@ export const agentsCommand = defineCommand({
     }),
 
     publish: defineCommand({
-      meta: { name: 'publish', description: 'Publish Agent (POST /agents/:id/publish)' },
+      meta: {
+        name: 'publish',
+        description: 'Publish Agent (POST /agents/:id/publish)',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         channels: {
@@ -598,7 +664,11 @@ export const agentsCommand = defineCommand({
     }),
 
     stop: defineCommand({
-      meta: { name: 'stop', description: 'Stop a published Agent (POST /agents/:id/stop)' },
+      meta: {
+        name: 'stop',
+        description: 'Stop a published Agent (POST /agents/:id/stop)',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...urlArg,
@@ -612,7 +682,11 @@ export const agentsCommand = defineCommand({
     }),
 
     resume: defineCommand({
-      meta: { name: 'resume', description: 'Resume a stopped Agent (POST /agents/:id/resume)' },
+      meta: {
+        name: 'resume',
+        description: 'Resume a stopped Agent (POST /agents/:id/resume)',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...urlArg,
@@ -628,6 +702,7 @@ export const agentsCommand = defineCommand({
     clone: defineCommand({
       meta: {
         name: 'clone',
+        agentMeta: { risk: 'write' },
         description:
           'Clone Agent (POST /agents/:id/clone); new agent is named "<original> (Copy)" with draft status',
       },
@@ -649,6 +724,7 @@ export const agentsCommand = defineCommand({
     'regenerate-api-key': defineCommand({
       meta: {
         name: 'regenerate-api-key',
+        agentMeta: { risk: 'write' },
         description:
           'Regenerate the Agent endpointApiKey (POST /agents/:id/regenerate-api-key). Note: the old key becomes invalid immediately.',
       },
@@ -673,7 +749,11 @@ export const agentsCommand = defineCommand({
       meta: { name: 'members', description: 'Manage Agent members' },
       subCommands: {
         list: defineCommand({
-          meta: { name: 'list', description: 'List all Agent members (including owner)' },
+          meta: {
+            name: 'list',
+            description: 'List all Agent members (including owner)',
+            agentMeta: { risk: 'read' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...jsonArg,
@@ -698,7 +778,11 @@ export const agentsCommand = defineCommand({
         }),
 
         add: defineCommand({
-          meta: { name: 'add', description: 'Add a member to the Agent' },
+          meta: {
+            name: 'add',
+            description: 'Add a member to the Agent',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -724,7 +808,11 @@ export const agentsCommand = defineCommand({
         }),
 
         update: defineCommand({
-          meta: { name: 'update', description: 'Update an Agent member role' },
+          meta: {
+            name: 'update',
+            description: 'Update an Agent member role',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -750,7 +838,11 @@ export const agentsCommand = defineCommand({
         }),
 
         remove: defineCommand({
-          meta: { name: 'remove', description: 'Remove an Agent member' },
+          meta: {
+            name: 'remove',
+            description: 'Remove an Agent member',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -776,6 +868,7 @@ export const agentsCommand = defineCommand({
     delete: defineCommand({
       meta: {
         name: 'delete',
+        agentMeta: { risk: 'high-risk-write' },
         description:
           'Delete Agent (irreversible; accepts ID or name; asks for confirmation by default)',
       },
@@ -800,6 +893,7 @@ export const agentsCommand = defineCommand({
     stats: defineCommand({
       meta: {
         name: 'stats',
+        agentMeta: { risk: 'read' },
         description: 'Agent overview stats (KPI / asker count / channel breakdown)',
       },
       args: {
@@ -834,7 +928,7 @@ export const agentsCommand = defineCommand({
       meta: { name: 'artifacts', description: 'Manage Agent artifacts' },
       subCommands: {
         list: defineCommand({
-          meta: { name: 'list', description: 'List Agent artifacts' },
+          meta: { name: 'list', description: 'List Agent artifacts', agentMeta: { risk: 'read' } },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...jsonArg,
@@ -858,7 +952,11 @@ export const agentsCommand = defineCommand({
         }),
 
         download: defineCommand({
-          meta: { name: 'download', description: 'Download a single artifact' },
+          meta: {
+            name: 'download',
+            description: 'Download a single artifact',
+            agentMeta: { risk: 'read' },
+          },
           args: {
             id: { type: 'positional', description: 'Artifact ID (art_xxx)', required: true },
             out: {
@@ -899,13 +997,23 @@ export const agentsCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { name: 'delete', description: 'Delete a single artifact' },
+          meta: {
+            name: 'delete',
+            description: 'Delete a single artifact',
+            agentMeta: { risk: 'high-risk-write' },
+          },
           args: {
             id: { type: 'positional', description: 'Artifact ID (art_xxx)', required: true },
+            ...forceArgs,
             ...urlArg,
           },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
+            await requireConfirmation(
+              'high-risk-write',
+              `This will permanently delete artifact ${args.id as string}. This action is irreversible.`,
+              resolveForceFlag(args),
+            )
             await client.del(`/api/artifacts/${args.id as string}`)
             console.log('Artifact deleted ✓')
           },
@@ -917,7 +1025,7 @@ export const agentsCommand = defineCommand({
       meta: { name: 'memory', description: 'Manage Agent memory' },
       subCommands: {
         stats: defineCommand({
-          meta: { name: 'stats', description: 'Memory stats' },
+          meta: { name: 'stats', description: 'Memory stats', agentMeta: { risk: 'read' } },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...jsonArg,
@@ -933,7 +1041,7 @@ export const agentsCommand = defineCommand({
         }),
 
         search: defineCommand({
-          meta: { name: 'search', description: 'Search memories' },
+          meta: { name: 'search', description: 'Search memories', agentMeta: { risk: 'read' } },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             query: { type: 'string', description: 'Search query', required: true },
@@ -953,7 +1061,11 @@ export const agentsCommand = defineCommand({
         }),
 
         reindex: defineCommand({
-          meta: { name: 'reindex', description: 'Rebuild the memory index' },
+          meta: {
+            name: 'reindex',
+            description: 'Rebuild the memory index',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -967,7 +1079,11 @@ export const agentsCommand = defineCommand({
         }),
 
         consolidate: defineCommand({
-          meta: { name: 'consolidate', description: 'Consolidate / merge memories' },
+          meta: {
+            name: 'consolidate',
+            description: 'Consolidate / merge memories',
+            agentMeta: { risk: 'write' },
+          },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -983,7 +1099,11 @@ export const agentsCommand = defineCommand({
     }),
 
     'import-url': defineCommand({
-      meta: { name: 'import-url', description: 'Import Agent from a remote a2wave instance URL' },
+      meta: {
+        name: 'import-url',
+        description: 'Import Agent from a remote a2wave instance URL',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         source: {
           type: 'positional',

@@ -131,7 +131,9 @@ describe('mcpCommand', () => {
     it('deletes resolved id', async () => {
       mockResolveMcpServerId.mockResolvedValueOnce('mcp_1')
       mockDel.mockResolvedValueOnce({})
-      await getSubCommand('delete').run({ args: { id: 'A' } })
+      // `--force` is now required: delete is high-risk-write, and this suite
+      // runs without a TTY exactly as an agent does.
+      await getSubCommand('delete').run({ args: { id: 'A', force: true } })
       expect(mockDel).toHaveBeenCalledWith('/api/mcp-servers/mcp_1')
       expect(consoleSpy).toHaveBeenCalledWith('MCP Server deleted ✓')
     })

@@ -2,17 +2,23 @@ import { renderUsage } from 'citty'
 import { describe, expect, it } from 'vitest'
 import { agentsCommand } from '../commands/agents.js'
 import { apiCommand } from '../commands/api.js'
+import { channelsCommand } from '../commands/channels.js'
 import { chatCommand } from '../commands/chat.js'
+import { completionCommand } from '../commands/completion.js'
 import { configCommand } from '../commands/config.js'
+import { docsCommand } from '../commands/docs.js'
 import { doctorCommand } from '../commands/doctor.js'
 import { evalCommand } from '../commands/eval.js'
 import { kbCommand } from '../commands/kb.js'
 import { loginCommand, logoutCommand } from '../commands/login.js'
 import { mcpCommand } from '../commands/mcp.js'
+import { memoryCommand } from '../commands/memory.js'
 import { providersCommand } from '../commands/providers.js'
 import { runsCommand } from '../commands/runs.js'
+import { schemaCommand } from '../commands/schema.js'
 import { scmCommand } from '../commands/scm.js'
 import { setupCommand } from '../commands/setup.js'
+import { skillGroupsCommand } from '../commands/skill-groups.js'
 import { skillsCommand } from '../commands/skills.js'
 import { statusCommand } from '../commands/status.js'
 import { updateCommand } from '../commands/update.js'
@@ -27,30 +33,42 @@ import { whoamiCommand } from '../commands/whoami.js'
  */
 
 type Node = {
-  meta?: { name?: string; description?: string }
+  meta?: { name?: string; description?: string; agentMeta?: { risk?: string } }
   args?: Record<string, { type?: string; default?: unknown }>
+  run?: unknown
   subCommands?: Record<string, Node>
+}
+
+/** A node that does work itself rather than routing to children. */
+function isLeaf(node: Node): boolean {
+  return typeof node.run === 'function' && Object.keys(node.subCommands ?? {}).length === 0
 }
 
 const ROOTS: Array<[string, Node]> = [
   ['agents', agentsCommand as unknown as Node],
   ['api', apiCommand as unknown as Node],
   ['chat', chatCommand as unknown as Node],
+  ['channels', channelsCommand as unknown as Node],
   ['config', configCommand as unknown as Node],
   ['eval', evalCommand as unknown as Node],
   ['kb', kbCommand as unknown as Node],
   ['login', loginCommand as unknown as Node],
   ['logout', logoutCommand as unknown as Node],
   ['mcp', mcpCommand as unknown as Node],
+  ['memory', memoryCommand as unknown as Node],
   ['providers', providersCommand as unknown as Node],
   ['runs', runsCommand as unknown as Node],
   ['scm', scmCommand as unknown as Node],
   ['setup', setupCommand as unknown as Node],
   ['skills', skillsCommand as unknown as Node],
+  ['skill-groups', skillGroupsCommand as unknown as Node],
   ['status', statusCommand as unknown as Node],
   ['update', updateCommand as unknown as Node],
   ['whoami', whoamiCommand as unknown as Node],
   ['doctor', doctorCommand as unknown as Node],
+  ['schema', schemaCommand as unknown as Node],
+  ['docs', docsCommand as unknown as Node],
+  ['completion', completionCommand as unknown as Node],
 ]
 
 function walk(
@@ -139,6 +157,32 @@ describe('citty command tree invariants', () => {
     expect(
       violations,
       `These nodes fall back to process.argv[1] in usage output:\n${violations.join('\n')}`,
+    ).toEqual([])
+  })
+
+  it('every leaf command declares agentMeta.risk', () => {
+    // The CLI's primary consumer is an agent, which has to decide whether it may
+    // run something BEFORE running it. A missing label is indistinguishable from
+    // "read" to a cautious caller and from "harmless" to a careless one, so the
+    // label is mandatory rather than defaulted. Only leaves carry it: a parent
+    // with subCommands does no work of its own, and labelling it would have to
+    // be the max of its children — a number nobody maintains.
+    const RISKS = new Set(['read', 'write', 'high-risk-write'])
+    const violations: string[] = []
+
+    for (const [rootName, root] of ROOTS) {
+      walk(root, [rootName], (node, path) => {
+        if (!isLeaf(node)) return
+        const risk = node.meta?.agentMeta?.risk
+        if (!risk || !RISKS.has(risk)) {
+          violations.push(`a2wave ${path.join(' ')} → agentMeta.risk = ${JSON.stringify(risk)}`)
+        }
+      })
+    }
+
+    expect(
+      violations,
+      `These leaf commands carry no risk label:\n${violations.join('\n')}`,
     ).toEqual([])
   })
 

@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
-import { parseIntFlag } from '../lib/args.js'
+import { forceArgs, parseIntFlag, requireConfirmation, resolveForceFlag } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
 
@@ -28,7 +28,7 @@ export const kbCommand = defineCommand({
   meta: { name: 'kb', description: 'Manage knowledge base documents (KB Document)' },
   subCommands: {
     list: defineCommand({
-      meta: { name: 'list', description: 'List all KB documents' },
+      meta: { name: 'list', description: 'List all KB documents', agentMeta: { risk: 'read' } },
       args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -47,7 +47,11 @@ export const kbCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { name: 'get', description: 'Show KB document details (by ID or name)' },
+      meta: {
+        name: 'get',
+        description: 'Show KB document details (by ID or name)',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         ...jsonArg,
@@ -77,6 +81,7 @@ export const kbCommand = defineCommand({
     create: defineCommand({
       meta: {
         name: 'create',
+        agentMeta: { risk: 'write' },
         description:
           'Create a KB document from a Feishu / Notion source (for local files use kb upload)',
       },
@@ -120,6 +125,7 @@ export const kbCommand = defineCommand({
     upload: defineCommand({
       meta: {
         name: 'upload',
+        agentMeta: { risk: 'write' },
         description:
           'Upload a local .md / .txt file as a KB document (name taken from the filename)',
       },
@@ -148,6 +154,7 @@ export const kbCommand = defineCommand({
     update: defineCommand({
       meta: {
         name: 'update',
+        agentMeta: { risk: 'write' },
         description: 'Update KB document metadata or Notion connection (by ID or name)',
       },
       args: {
@@ -184,14 +191,25 @@ export const kbCommand = defineCommand({
     }),
 
     delete: defineCommand({
-      meta: { name: 'delete', description: 'Delete a KB document (by ID or name)' },
+      meta: {
+        name: 'delete',
+        description: 'Delete a KB document (by ID or name)',
+        agentMeta: { risk: 'high-risk-write' },
+      },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
+        ...forceArgs,
         ...urlArg,
       },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
+        // Resolve first so the confirmation names the ID actually being deleted.
         const id = await client.resolveKbDocumentId(args.id as string)
+        await requireConfirmation(
+          'high-risk-write',
+          `This will permanently delete KB document ${id} (${args.id}). This action is irreversible.`,
+          resolveForceFlag(args),
+        )
         await client.del(`/api/kb-documents/${id}`)
         console.log('KB document deleted ✓')
       },
@@ -200,6 +218,7 @@ export const kbCommand = defineCommand({
     sync: defineCommand({
       meta: {
         name: 'sync',
+        agentMeta: { risk: 'write' },
         description: 'Manually re-fetch the document content from Feishu / Notion',
       },
       args: {
@@ -217,6 +236,7 @@ export const kbCommand = defineCommand({
     content: defineCommand({
       meta: {
         name: 'content',
+        agentMeta: { risk: 'read' },
         description: 'Print the cached document body (for troubleshooting)',
       },
       args: {

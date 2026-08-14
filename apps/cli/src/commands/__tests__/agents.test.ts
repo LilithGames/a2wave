@@ -721,7 +721,9 @@ describe('agentsCommand', () => {
 
     it('deletes an artifact', async () => {
       mockDel.mockResolvedValueOnce({})
-      await getGroupSub('artifacts', 'delete').run({ args: { id: 'art_1' } })
+      // `--force` is now required: artifact delete is high-risk-write, and
+      // this suite runs without a TTY exactly as an agent does.
+      await getGroupSub('artifacts', 'delete').run({ args: { id: 'art_1', force: true } })
       expect(mockDel).toHaveBeenCalledWith('/api/artifacts/art_1')
     })
   })

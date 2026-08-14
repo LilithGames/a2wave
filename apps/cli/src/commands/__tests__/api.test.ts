@@ -17,14 +17,15 @@ vi.mock('../../client.js', () => ({
   }),
 }))
 
-const mockConfirmDestructive = vi.fn()
+const mockRequireConfirmation = vi.fn()
 const mockReadJsonFile = vi.fn()
 
 vi.mock('../../lib/args.js', async () => {
   const actual = await vi.importActual<typeof import('../../lib/args.js')>('../../lib/args.js')
   return {
     ...actual,
-    confirmDestructive: (message: string, force: boolean) => mockConfirmDestructive(message, force),
+    requireConfirmation: (risk: string, message: string, force: boolean) =>
+      mockRequireConfirmation(risk, message, force),
     readJsonFile: (path: string, flag?: string) => mockReadJsonFile(path, flag),
   }
 })
@@ -40,7 +41,7 @@ describe('apiCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    mockConfirmDestructive.mockResolvedValue(undefined)
+    mockRequireConfirmation.mockResolvedValue(undefined)
   })
 
   describe('method dispatch', () => {
@@ -119,20 +120,27 @@ describe('apiCommand', () => {
   })
 
   describe('write confirmation', () => {
-    it('does not confirm a GET', async () => {
+    it('downgrades a GET to the read risk, so nothing is asked', async () => {
+      // The command carries `high-risk-write` because a leaf gets one static
+      // label and an arbitrary write is the worst case. The GET path passes
+      // 'read', which requireConfirmation lets through untouched.
       mockGet.mockResolvedValueOnce({})
       await run({ method: 'GET', path: '/api/agents' })
-      expect(mockConfirmDestructive).not.toHaveBeenCalled()
+      expect(mockRequireConfirmation).toHaveBeenCalledWith('read', expect.any(String), false)
     })
 
     it('confirms every non-GET, passing --yes as force', async () => {
       mockDel.mockResolvedValueOnce({})
       await run({ method: 'DELETE', path: '/api/agents/agt_1', yes: true })
-      expect(mockConfirmDestructive).toHaveBeenCalledWith(expect.any(String), true)
+      expect(mockRequireConfirmation).toHaveBeenCalledWith(
+        'high-risk-write',
+        expect.any(String),
+        true,
+      )
     })
 
     it('aborts the request when confirmation is declined', async () => {
-      mockConfirmDestructive.mockRejectedValueOnce(new Error('Cancelled.'))
+      mockRequireConfirmation.mockRejectedValueOnce(new Error('Cancelled.'))
       await expect(run({ method: 'POST', path: '/api/agents', body: '{}' })).rejects.toThrow(
         'Cancelled.',
       )

@@ -7,6 +7,54 @@ import { confirmDestructive } from '../lib/args.js'
 import { emit, jsonArg } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
 
+/**
+ * Longest Skill file rendered to a human. A Skill can ship reference material of
+ * any size, so a bare `files get` would otherwise dump it all into a context
+ * window. `--json` stays whole: dropping lines from a machine payload corrupts
+ * it with no error.
+ */
+const MAX_SKILL_FILE_LINES = 200
+
+interface SkillFileEntry {
+  name: string
+  type: 'file' | 'directory'
+  size?: number
+  entries?: SkillFileEntry[]
+}
+
+/** Depth-first flatten of the tree into `dir/file` paths `files get` accepts. */
+function flattenSkillFiles(
+  entries: SkillFileEntry[],
+  prefix = '',
+): Array<{
+  path: string
+  size?: number
+}> {
+  const out: Array<{ path: string; size?: number }> = []
+  for (const entry of entries) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.type === 'directory') {
+      out.push(...flattenSkillFiles((entry.entries as SkillFileEntry[]) ?? [], path))
+    } else {
+      out.push({ path, ...(entry.size === undefined ? {} : { size: entry.size }) })
+    }
+  }
+  return out
+}
+
+/** Print at most MAX_SKILL_FILE_LINES lines, naming how to get the rest. */
+function printBoundedText(content: string, full: boolean): void {
+  const lines = content.split('\n')
+  if (full || lines.length <= MAX_SKILL_FILE_LINES) {
+    console.log(content)
+    return
+  }
+  console.log(lines.slice(0, MAX_SKILL_FILE_LINES).join('\n'))
+  console.log(
+    `\n… ${lines.length - MAX_SKILL_FILE_LINES} more lines truncated. Use --full or --json for everything.`,
+  )
+}
+
 interface Skill {
   id: string
   name: string
@@ -137,6 +185,7 @@ export const skillsCommand = defineCommand({
     create: defineCommand({
       meta: {
         name: 'create',
+        agentMeta: { risk: 'write' },
         description: 'Create a Skill (via fields, or upload .md/.zip with --file)',
       },
       args: {
@@ -237,6 +286,7 @@ export const skillsCommand = defineCommand({
     install: defineCommand({
       meta: {
         name: 'install',
+        agentMeta: { risk: 'write' },
         description: 'Install public Skills from a skills.sh or GitHub URL',
       },
       args: {
@@ -274,6 +324,7 @@ export const skillsCommand = defineCommand({
     'check-update': defineCommand({
       meta: {
         name: 'check-update',
+        agentMeta: { risk: 'read' },
         description: 'Check a remote Skill for upstream and local file changes',
       },
       args: {
@@ -308,6 +359,7 @@ export const skillsCommand = defineCommand({
     'update-remote': defineCommand({
       meta: {
         name: 'update-remote',
+        agentMeta: { risk: 'write' },
         description: 'Update a remote Skill after an explicit three-way comparison',
       },
       args: {
@@ -352,7 +404,7 @@ export const skillsCommand = defineCommand({
     }),
 
     list: defineCommand({
-      meta: { name: 'list', description: 'List all Skills' },
+      meta: { name: 'list', description: 'List all Skills', agentMeta: { risk: 'read' } },
       args: { ...jsonArg, ...pageArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -370,7 +422,11 @@ export const skillsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { name: 'get', description: 'Show Skill details (ID or name)' },
+      meta: {
+        name: 'get',
+        description: 'Show Skill details (ID or name)',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         ...jsonArg,
@@ -395,7 +451,11 @@ export const skillsCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { name: 'update', description: 'Update a Skill (ID or name)' },
+      meta: {
+        name: 'update',
+        description: 'Update a Skill (ID or name)',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -465,6 +525,7 @@ export const skillsCommand = defineCommand({
     delete: defineCommand({
       meta: {
         name: 'delete',
+        agentMeta: { risk: 'high-risk-write' },
         description: 'Delete a Skill (irreversible; ID or name; confirms by default)',
       },
       args: {
@@ -481,6 +542,93 @@ export const skillsCommand = defineCommand({
         )
         await client.del(`/api/skills/${skillId}`)
         console.log('Skill deleted ✓')
+      },
+    }),
+
+    files: defineCommand({
+      meta: {
+        name: 'files',
+        description: 'Read the files a Skill ships (decide whether to attach it before you do)',
+      },
+      subCommands: {
+        list: defineCommand({
+          meta: {
+            name: 'list',
+            description: 'List the files in a Skill’s storage',
+            agentMeta: { risk: 'read' },
+          },
+          args: {
+            id: { type: 'positional', description: 'Skill ID or name', required: true },
+            ...jsonArg,
+            ...urlArg,
+          },
+          run: async ({ args }) => {
+            const client = createClient({ url: args.url as string | undefined })
+            const skillId = await client.resolveSkillId(args.id as string)
+            const result = await client.get<{ data: { path: string; entries: SkillFileEntry[] } }>(
+              `/api/skills/${skillId}/files`,
+            )
+            if (emit(args, result)) return
+            // The API answers with a nested tree, but every consumer of this
+            // list wants a path it can pass straight back to `files get`.
+            const flat = flattenSkillFiles(result.data.entries ?? [])
+            if (flat.length === 0) {
+              console.log('No files')
+              return
+            }
+            for (const f of flat) {
+              console.log(`${f.path}${f.size === undefined ? '' : `  ${f.size} bytes`}`)
+            }
+          },
+        }),
+
+        get: defineCommand({
+          meta: {
+            name: 'get',
+            description: 'Print one file from a Skill’s storage',
+            agentMeta: { risk: 'read' },
+          },
+          args: {
+            id: { type: 'positional', description: 'Skill ID or name', required: true },
+            file: {
+              type: 'positional',
+              description: 'File path within the Skill (e.g. SKILL.md, refs/api.md)',
+              required: true,
+            },
+            full: {
+              type: 'boolean',
+              description: `Print the whole file instead of the first ${MAX_SKILL_FILE_LINES} lines`,
+            },
+            ...jsonArg,
+            ...urlArg,
+          },
+          run: async ({ args }) => {
+            const client = createClient({ url: args.url as string | undefined })
+            const skillId = await client.resolveSkillId(args.id as string)
+            const path = (args.file as string).replace(/^\/+/, '')
+            // This route answers with the file BODY, not a JSON envelope — text
+            // for known text extensions, octet-stream otherwise. `getRaw` is the
+            // only client method that hands back an unparsed Response.
+            const res = await client.getRaw(`/api/skills/${skillId}/files/${path}`)
+            const contentType = res.headers.get('content-type') ?? ''
+            if (!/^text\/|json/i.test(contentType)) {
+              throw new CliError(
+                `"${path}" is a binary file (${contentType || 'unknown type'}); the CLI will not print it.`,
+                {
+                  type: 'validation',
+                  subtype: 'binary_file',
+                  hint: `a2wave api GET /api/skills/${skillId}/files/${path}`,
+                },
+              )
+            }
+            const content = await res.text()
+            // The route returns a bare body, so wrap it in the `data` envelope
+            // every other command emits — a caller should not have to special-
+            // case one endpoint's shape.
+            if (emit(args, { data: { path, content } })) return
+            printBoundedText(content, args.full === true)
+          },
+        }),
       },
     }),
   },

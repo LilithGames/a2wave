@@ -92,3 +92,30 @@ describe('dispatch', { timeout: 60_000 }, () => {
     expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
   })
 })
+
+describe('agent-facing help', { timeout: 60_000 }, () => {
+  it('prints the risk label of a leaf command', () => {
+    // A risk label an agent cannot see is a label it cannot act on, and --help
+    // is the one surface every caller reads first.
+    const { stdout } = run(['agents', 'delete', '--help'])
+    expect(stdout).toContain('Risk: high-risk-write')
+  })
+
+  it('prints `read` for a read-only leaf', () => {
+    const { stdout } = run(['agents', 'list', '--help'])
+    expect(stdout).toContain('Risk: read')
+  })
+
+  it('omits the risk line on a group node, which does no work of its own', () => {
+    const { stdout } = run(['agents', '--help'])
+    expect(stdout).not.toContain('Risk:')
+  })
+
+  it('opens the root help with the agent quickstart', () => {
+    // The loop and the tier order are what a first-time caller needs; human
+    // setup is exiled to the last line so it does not lead.
+    const { stdout } = run(['--help'])
+    expect(stdout).toContain('AGENT QUICKSTART')
+    expect(stdout).toContain('schema')
+  })
+})

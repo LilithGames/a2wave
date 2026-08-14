@@ -25,6 +25,7 @@ interface MeUser {
 export const whoamiCommand = defineCommand({
   meta: {
     name: 'whoami',
+    agentMeta: { risk: 'read' },
     description: 'Show the identity and instance the next command will act as',
   },
   args: { ...jsonArg, ...urlArg },

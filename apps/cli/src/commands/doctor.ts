@@ -25,6 +25,7 @@ const ICON: Record<Check['status'], string> = {
 export const doctorCommand = defineCommand({
   meta: {
     name: 'doctor',
+    agentMeta: { risk: 'read' },
     description: 'Run the CLI self-diagnosis as an addressable checklist (exit 1 on any failure)',
   },
   args: { ...jsonArg, ...urlArg },

@@ -327,3 +327,62 @@ env:
     }
   })
 })
+
+describe('agents apply — destructive diff', () => {
+  let dir: string
+  let yamlPath: string
+  const originalIsTTY = process.stdin.isTTY
+
+  beforeEach(() => {
+    for (const m of [mockGet, mockPost, mockPatch, mockFindAgentByName]) m.mockReset()
+    mockResolveSkillId.mockReset().mockImplementation(async (n: string) => `skl_${n}`)
+    dir = mkdtempSync(join(tmpdir(), 'a2wave-apply-destructive-'))
+    yamlPath = join(dir, 'bot.yaml')
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    // No TTY, matching an agent: a confirmation must throw, never prompt.
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true })
+    vi.restoreAllMocks()
+  })
+
+  function stageRemoval(): void {
+    writeFileSync(yamlPath, 'name: my-bot\nskills: [keep]\n')
+    mockFindAgentByName.mockResolvedValue({ id: 'agt_x', name: 'my-bot' })
+    mockGet.mockResolvedValue({ data: { id: 'agt_x', skills: ['skl_keep', 'skl_drop'] } })
+  }
+
+  it('refuses a diff that removes a mounted resource without --yes', async () => {
+    // An apply that only adds is recoverable from the YAML in hand; one that
+    // unmounts is not, because the YAML no longer names what it removed.
+    stageRemoval()
+    const err = await apply.run({ args: { file: yamlPath } }).catch((e) => e)
+
+    expect((err as { type?: string }).type).toBe('confirmation')
+    expect(mockPatch).not.toHaveBeenCalled()
+  })
+
+  it('proceeds with --yes', async () => {
+    stageRemoval()
+    await apply.run({ args: { file: yamlPath, yes: true } })
+    expect(mockPatch).toHaveBeenCalled()
+  })
+
+  it('never confirms under --dry-run, which writes nothing', async () => {
+    stageRemoval()
+    await apply.run({ args: { file: yamlPath, 'dry-run': true } })
+    expect(mockPatch).not.toHaveBeenCalled()
+  })
+
+  it('does not confirm a purely additive diff', async () => {
+    writeFileSync(yamlPath, 'name: my-bot\nskills: [keep, extra]\n')
+    mockFindAgentByName.mockResolvedValue({ id: 'agt_x', name: 'my-bot' })
+    mockGet.mockResolvedValue({ data: { id: 'agt_x', skills: ['skl_keep'] } })
+
+    await apply.run({ args: { file: yamlPath } })
+    expect(mockPatch).toHaveBeenCalled()
+  })
+})

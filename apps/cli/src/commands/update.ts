@@ -16,6 +16,7 @@ function registryArgs(registry: string | null): string[] {
 export const updateCommand = defineCommand({
   meta: {
     name: 'update',
+    agentMeta: { risk: 'write' },
     description: 'Update the a2wave CLI to the latest version',
   },
   run: async () => {

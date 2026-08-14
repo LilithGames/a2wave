@@ -15,11 +15,14 @@ src/
 │   ├── doctor.ts     # doctor (same probes as an addressable checklist; exit 1 on fail)
 │   ├── api.ts        # api (raw HTTP escape hatch for uncovered endpoints)
 │   ├── config.ts     # config set-url / get / unset-url
-│   ├── skills.ts     # skills list/get/create/install/check-update/update-remote/update/delete
+│   ├── skills.ts     # skills list/get/create/install/check-update/update-remote/update/delete + files
+│   ├── skill-groups.ts # skill-groups list/get/create/update/delete (the values --group accepts)
 │   ├── agents.ts     # agents list/get/update/delete/stats + export/import/members/artifacts/memory + lifecycle
-│   ├── chat.ts       # chat send (one-shot + interactive) / chat list / chat messages
+│   ├── chat.ts       # chat send (one-shot + interactive, --attach) / chat list / chat messages
+│   ├── channels.ts   # channels set / chat-app (per-channel config WITHOUT republishing)
 │   ├── eval.ts       # eval sets / cases / run / tasks (evaluation replay + manual verdicts)
 │   ├── mcp.ts        # mcp list / get / create / update / delete / tools
+│   ├── memory.ts     # memory files list/get/put/delete + topics list/recall/remember
 │   ├── scm.ts        # scm list/get/create/update/delete/sync/check/status + workspaces/codegraph
 │   ├── kb.ts         # kb (knowledge base) list/get/create/upload/update/delete/sync/content
 │   ├── providers.ts  # providers list/get/login-status/dependents (read-only)
@@ -140,6 +143,9 @@ The a2wave service address is not hardcoded; it is provided by the user. Three s
 | `a2wave config set-url <url>` | **Globally persistent**: written to `~/.a2wave/config.json`, effective across shells |
 | `a2wave config get` | Show current config (token auto-masked to last 4 characters) |
 | `a2wave config unset-url` | Clear the global URL (keeps the token) |
+| `a2wave config add-profile <name> <url>` | Name an instance URL so it can be switched to |
+| `a2wave config use <name>` | Point the default URL at a named profile |
+| `a2wave config list` | List profiles, marking the current one (`--json` supported) |
 
 Example:
 ```bash
@@ -177,6 +183,21 @@ See [docs/agent/cli-oauth.md](../../docs/agent/cli-oauth.md) for details.
 | `a2wave skills update <id\|name> --name "..." --description "..."` | Update name/description |
 | `a2wave skills update <id\|name> --file ./skill.zip` | Full package replacement (.md or .zip) |
 | `a2wave skills delete <id\|name> [--force]` | Delete Skill (irreversible; confirms by default; non-interactive needs `--force`) |
+| `a2wave skills files list <id\|name>` | List the files a Skill ships, as flat `dir/file` paths ready to pass to `files get` |
+| `a2wave skills files get <id\|name> <file> [--full]` | Print one Skill file. Reading a Skill's contents is how you decide whether to attach it. **This route answers with the file body, not a JSON envelope** — the CLI wraps it as `{data:{path,content}}` under `--json`, and refuses a binary body rather than dumping it into a terminal |
+
+### Skill Groups
+
+`--group` and the yaml's `skillGroups:` have always resolved a group by name, but
+nothing listed the valid values — an asymmetry worse than the feature being absent.
+
+| Command | Description |
+|------|------|
+| `a2wave skill-groups list` | List groups. Flags any group holding a member its own owner cannot bind, since binding it to an Agent silently drops those Skills |
+| `a2wave skill-groups get <id\|name>` | Show one group merged with its membership (two routes, one command) |
+| `a2wave skill-groups create --name X [--skill <id\|name> ...]` | Create; each `--skill` is resolved by name |
+| `a2wave skill-groups update <id\|name> [--name ...] [--skill ...] [--clear-skills]` | Update. `skillIds` **replaces** the membership server-side, so emptying it needs the explicit `--clear-skills` — a bare `--skill` with no value cannot express it |
+| `a2wave skill-groups delete <id\|name> [--force]` | Delete the group; member Skills are released, not deleted |
 
 ### Agents
 
@@ -208,7 +229,47 @@ See [docs/agent/cli-oauth.md](../../docs/agent/cli-oauth.md) for details.
 | `a2wave agents import-url <url> [--header "K: V"]` | Import from a remote a2wave instance's export URL |
 | `a2wave agents members list\|add\|update\|remove ...` | Members: `add --user <id\|name> --role viewer\|editor`; owner-only for writes |
 | `a2wave agents artifacts list\|download\|delete ...` | Artifacts: list `?agentId=`; download takes only the basename of the server filename into the current directory (prevents path traversal), needs `--force` if the target exists; delete |
-| `a2wave agents memory stats\|search\|reindex\|consolidate ...` | Memory: via `/api/memories/:agentId/*` (memoryAuthMiddleware) |
+| `a2wave agents memory stats\|search\|reindex\|consolidate ...` | Memory aggregates: via `/api/memories/:agentId/*` (memoryAuthMiddleware). **File- and topic-level access lives under the top-level `memory` command** below |
+
+### Memory
+
+The most agent-native surface the platform has, and the one the CLI covered least
+— four of thirteen endpoints. `agents memory` keeps the aggregate operations
+(stats/search/reindex/consolidate); this command adds the per-file and per-topic
+reads and writes an Agent actually performs.
+
+| Command | Description |
+|------|------|
+| `a2wave memory files list <agent>` | List the Agent's memory files |
+| `a2wave memory files get <agent> <file> [--full]` | Print one file. A nested path is sent verbatim (the route is a `/files/*` wildcard, so encoding the separators would address a file literally named `notes%2Fa.md`) |
+| `a2wave memory files put <agent> <file> --content "..." \| --content-file ./x.md [--append]` | Write or append. **Exactly one** content source — silently ignoring the second is how you write the wrong body and cannot tell |
+| `a2wave memory files delete <agent> <file> [--force]` | Delete one file (irreversible; confirms by default) |
+| `a2wave memory topics list <agent> [--status active\|archived\|all]` | Topic metadata only; bodies are never included |
+| `a2wave memory topics recall <agent> <query> [--full]` | Select and read the single best-matching active topic. **`data: null` is a successful "nothing matched"**, reported as a message rather than an error |
+| `a2wave memory topics remember <agent> --title X --item "..." [--item ...]` | Record an insight into a topic |
+| `a2wave memory topics remember <agent> --replace --topic <id> --content "..."` | Replace a whole topic body |
+
+> `files get` and `topics recall` are **capped at 200 lines** in the human path with
+> an explicit truncation marker; `--full` or `--json` returns everything. A memory
+> file is agent-written and grows without bound, so an uncapped read is a context
+> window hazard — but the `--json` payload is left WHOLE, because silently dropping
+> lines from a machine payload corrupts it with no error.
+
+### Channels
+
+| Command | Description |
+|------|------|
+| `a2wave channels set <agent> <channel> --set k=v ...` | Save one channel's config. `true`/`false`/integers are typed, since every shell flag arrives as a string and zod rejects `"false"` |
+| `a2wave channels set <agent> <channel> --config-file ./feishu.json` | Same, reading the whole config object from JSON |
+| `a2wave channels chat-app <agent>` | Show the published chat page profile (404 when the channel is off) |
+
+> **Configuring is not publishing.** `PATCH /channels/:channel` deliberately does
+> *not* set `publishStatus`, rotate the API key, or restart other channels' sockets —
+> a draft stays a draft until `agents publish`. The config object is **replaced**, so
+> a partial `--set` drops the fields it omits; the CLI says so on every success.
+> Configurable channels are `feishu`, `slack`, `discord`, `chat_app`, `schedule`,
+> `glab`, `gh` — `api` / `a2a` / `oauth` carry no saveable config and are rejected
+> client-side with the valid set named, rather than as a bare 400.
 
 ### Chat
 
@@ -221,6 +282,16 @@ See [docs/agent/cli-oauth.md](../../docs/agent/cli-oauth.md) for details.
 | `a2wave chat send <agent> -m "..." --json` | Emit `{data: {reply, chatId, runId, queued?}}` as one JSON object — note the `data` wrapper, matching every other command (implies `--no-stream`; requires `-m`) |
 | `a2wave chat list <agent>` | List the Agent's chat sessions. Prints **both** ids: the `run_xxx` (for `chat messages`) and the `chat-id` (for `--chat-id`) — they are different, and passing a run id to `--chat-id` silently starts a new conversation instead of resuming |
 | `a2wave chat messages <agent> <runId>` | Print the messages of one session |
+| `a2wave chat send <agent> -m "..." --attach ./a.png --attach ./b.md` | Attach local files to one turn. Two-step: each file is staged at `POST /api/attachments`, and the returned `{token,name,mimeType,size}` refs go on the chat body, which is what consumes them |
+
+> **Attachments.** Capped at **10 per turn**, mirroring `attachmentsInputSchema`'s
+> `.max(10)`, and checked **before any upload** — staging eleven files and then
+> having the send rejected leaves eleven blobs on the server for the whole staging
+> TTL. Uploads are sequential on purpose: the server enforces a size limit and an
+> extension allowlist per file, and a parallel upload would report whichever file
+> failed first while the others were already staged, leaving the caller unable to
+> tell which argument was wrong. `--attach` requires `-m/--message`: an interactive
+> session sends many turns and there is no single one the files belong to.
 
 > Chat is available to **viewer** permission and up (debug access), matching `POST /api/agents/:id/chat`.
 >
@@ -506,6 +577,7 @@ wants the cap. Every cap names the way to get everything:
 |---|---|---|
 | `runs get` | 200 log entries per step, **tail kept** (a run's logs are read to find out how it ended, and the failure is at the bottom) | `--full`, `--max-log-lines N`, or `a2wave runs logs <id>` |
 | `eval tasks get` / `eval run --wait` | Turn transcripts clipped at 200 chars; turn *errors* never clipped | `--verbose` |
+| `memory files get` / `memory topics recall` / `skills files get` | 200 lines, **head kept** (a memory or Skill file is read top-down for what it says, unlike a run log read bottom-up for how it failed) | `--full` or `--json` |
 | list commands | `--limit` / `--page`, clamped to the API's 1–100 window | `--limit 100` |
 
 `--limit` on the six resource lists (`agents`/`skills`/`mcp`/`scm`/`kb`/
@@ -611,12 +683,47 @@ Ambiguous names **error out and list the candidates** rather than silently takin
 ```
 ~/.a2wave/config.json
 {
-  "url": "https://your-a2wave.com",
-  "token": "eyJ..."
+  "url": "https://your-a2wave.com",        // the default instance
+  "token": "eyJ...",                       // its credential (legacy shape, still read)
+  "credentials": {                         // credentials keyed by instance URL
+    "https://your-a2wave.com": { "token": "eyJ..." },
+    "https://staging.example":  { "token": "eyJ..." }
+  },
+  "profiles": { "staging": { "url": "https://staging.example" } },
+  "currentProfile": "staging"
 }
 ```
 
 `a2wave login` writes it automatically and `a2wave logout` clears it. All commands read this file at startup and prompt for re-login when it is missing or invalid.
+
+### Credentials are keyed by URL
+
+**The bug this fixes:** `requireToken()` took no URL argument, and `createClient`
+called it alongside `resolveUrl(opts.url)` with nothing linking the two. So
+`--url https://other` paired that host with the *stored* instance's token —
+leaking it there, then failing as a 401 that blamed the user's login rather than
+naming the cause. `client.ts` now resolves the URL **first** and asks for the
+credential belonging to it.
+
+Resolution order in `resolveCredential(url)`:
+
+1. `credentials[url]` — the per-instance entry.
+2. the legacy top-level `token`, **but only when `config.url` is that same URL**.
+   That conditional is the entire fix; the fallback used to be unconditional.
+3. otherwise throw `{type:'auth', subtype:'no_credential_for_url'}` with a
+   `a2wave login --url <url>` hint. Never fall through to "some token we happen
+   to have" — sending the wrong instance's credential is worse than failing.
+
+**Migration is implicit and lazy: no version field, no rewrite-on-read.** An
+existing flat `{url, token}` keeps working untouched, and because nothing is
+rewritten on read, downgrading to an older CLI still works. `login` writes both
+the legacy pair *and* the per-URL entry, so logging into a second deployment no
+longer costs you the first one's token.
+
+Profiles (`config add-profile` / `use` / `list`) are **named aliases over this**,
+not a second mechanism. An agent almost never wants "a profile" — it wants "this
+URL with the right token", which `--url` already gives it. Profiles are for a
+human switching between deployments.
 
 ## Key References
 

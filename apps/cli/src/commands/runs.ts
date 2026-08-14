@@ -171,7 +171,7 @@ export const runsCommand = defineCommand({
   meta: { name: 'runs', description: 'Manage runs' },
   subCommands: {
     list: defineCommand({
-      meta: { name: 'list', description: 'List run records' },
+      meta: { name: 'list', description: 'List run records', agentMeta: { risk: 'read' } },
       args: {
         agent: { type: 'string', description: 'Filter by Agent ID or name' },
         status: {
@@ -250,7 +250,7 @@ export const runsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { name: 'get', description: 'View run details and logs' },
+      meta: { name: 'get', description: 'View run details and logs', agentMeta: { risk: 'read' } },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         'max-log-lines': {
@@ -309,7 +309,17 @@ export const runsCommand = defineCommand({
     }),
 
     logs: defineCommand({
-      meta: { name: 'logs', description: 'Download the full execution log (NDJSON, untruncated)' },
+      meta: {
+        name: 'logs',
+        description: 'Download the full execution log (NDJSON, untruncated)',
+        agentMeta: {
+          risk: 'read',
+          notFor: [
+            'Checking whether a run finished — the server caps this at 256 MiB and it is never the cheap answer. Use `runs get <id> --fields data.status`',
+          ],
+          examples: ['a2wave runs logs run_x -o run.ndjson'],
+        },
+      },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         output: {
@@ -394,7 +404,11 @@ export const runsCommand = defineCommand({
     }),
 
     cancel: defineCommand({
-      meta: { name: 'cancel', description: 'Cancel a queued or running run' },
+      meta: {
+        name: 'cancel',
+        description: 'Cancel a queued or running run',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         ...jsonArg,
@@ -412,7 +426,11 @@ export const runsCommand = defineCommand({
     }),
 
     rerun: defineCommand({
-      meta: { name: 'rerun', description: 'Replay a run with its original intent and attachments' },
+      meta: {
+        name: 'rerun',
+        description: 'Replay a run with its original intent and attachments',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         wait: {
@@ -451,7 +469,11 @@ export const runsCommand = defineCommand({
     }),
 
     trigger: defineCommand({
-      meta: { name: 'trigger', description: 'Trigger an Agent run with live log output' },
+      meta: {
+        name: 'trigger',
+        description: 'Trigger an Agent run with live log output',
+        agentMeta: { risk: 'write' },
+      },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         intent: { type: 'string', description: 'Execution intent', required: true },

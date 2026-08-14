@@ -2,23 +2,53 @@
 import { defineCommand, runCommand, showUsage } from 'citty'
 import { agentsCommand } from './commands/agents.js'
 import { apiCommand } from './commands/api.js'
+import { channelsCommand } from './commands/channels.js'
 import { chatCommand } from './commands/chat.js'
+import { completionCommand } from './commands/completion.js'
 import { configCommand } from './commands/config.js'
+import { docsCommand } from './commands/docs.js'
 import { doctorCommand } from './commands/doctor.js'
 import { evalCommand } from './commands/eval.js'
 import { kbCommand } from './commands/kb.js'
 import { loginCommand, logoutCommand } from './commands/login.js'
 import { mcpCommand } from './commands/mcp.js'
+import { memoryCommand } from './commands/memory.js'
 import { providersCommand } from './commands/providers.js'
 import { runsCommand } from './commands/runs.js'
+import { schemaCommand } from './commands/schema.js'
 import { scmCommand } from './commands/scm.js'
 import { setupCommand } from './commands/setup.js'
+import { skillGroupsCommand } from './commands/skill-groups.js'
 import { skillsCommand } from './commands/skills.js'
 import { statusCommand } from './commands/status.js'
 import { updateCommand } from './commands/update.js'
 import { whoamiCommand } from './commands/whoami.js'
 import { CliError, toErrorEnvelope } from './errors.js'
+import { readAgentMeta } from './lib/agent-meta.js'
+import { setRootCommand } from './lib/root-registry.js'
 import { getVersion } from './version.js'
+
+/**
+ * The block that opens `a2wave --help`.
+ *
+ * The primary consumer is an AI agent, and the first thing it reads is this
+ * page — so it opens with the loop and the tier order rather than with install
+ * instructions. Human setup is exiled to the last line on purpose: it is the
+ * one item almost no caller of this page needs, and leading with it teaches an
+ * agent that the top of --help is not worth reading.
+ */
+const AGENT_QUICKSTART = `AGENT QUICKSTART
+  1. a2wave schema                    list every command path
+  2. a2wave schema "<command>" --brief  parameters, risk label, required args
+  3. a2wave <command> --dry-run       preview a write, where offered
+  4. a2wave <command> --json --fields 'data[].id,data[].name'
+
+  Prefer a typed command over the 'api' escape hatch — api resolves no names,
+  validates no parameters, and needs --yes for every write.
+  Risk labels: read (safe) | write | high-risk-write (needs --yes; you have no TTY).
+  a2wave docs      the full agent guide, including what NOT to use each command for.
+
+  Human first-time setup: a2wave setup, then a2wave login.`
 
 // Silent alias: rewrite the legacy `upgrade` to `update` without registering a
 // second entry in subCommands — avoids two identical update commands in help.
@@ -31,9 +61,14 @@ const rootCommand = defineCommand({
   meta: {
     name: 'a2wave',
     version: getVersion(),
-    description: 'a2wave command-line tool',
+    description: `a2wave command-line tool\n\n${AGENT_QUICKSTART}`,
   },
   subCommands: {
+    // First on purpose: these three are how a caller learns the rest, so they
+    // lead the list an agent reads top-down.
+    schema: schemaCommand,
+    docs: docsCommand,
+    completion: completionCommand,
     setup: setupCommand,
     login: loginCommand,
     logout: logoutCommand,
@@ -42,10 +77,13 @@ const rootCommand = defineCommand({
     doctor: doctorCommand,
     config: configCommand,
     skills: skillsCommand,
+    'skill-groups': skillGroupsCommand,
     agents: agentsCommand,
     chat: chatCommand,
+    channels: channelsCommand,
     eval: evalCommand,
     mcp: mcpCommand,
+    memory: memoryCommand,
     scm: scmCommand,
     kb: kbCommand,
     providers: providersCommand,
@@ -56,6 +94,11 @@ const rootCommand = defineCommand({
     update: updateCommand,
   },
 })
+
+// `schema` / `docs` / `completion` walk this tree but live inside it, so they
+// cannot import it without a cycle. Handing it over here is the one moment it
+// exists and they do not yet need it.
+setRootCommand(rootCommand as never)
 
 /**
  * Whether the invocation asked for machine-readable output.
@@ -149,6 +192,21 @@ function resolveForUsage(root: CommandNode, rawArgs: string[]): [CommandNode, Co
   return [node, parent]
 }
 
+/**
+ * citty's usage, followed by the node's risk label.
+ *
+ * Appended rather than woven in: `renderUsage` is citty's, and reimplementing
+ * it to insert one line would put the whole usage layout under our maintenance
+ * for the sake of a suffix. Only leaves carry a label — a group node does no
+ * work of its own, so a risk there would have to be the max of its children,
+ * which is a number nobody maintains.
+ */
+async function showUsageWithRisk(cmd: CommandNode, parent?: CommandNode): Promise<void> {
+  await showUsage(cmd as never, parent as never)
+  const risk = readAgentMeta(cmd)?.risk
+  if (risk) console.log(`Risk: ${risk}`)
+}
+
 /** citty throws its own CLIError for routing failures (unknown/missing command). */
 function isCittyRoutingError(err: unknown): err is Error {
   return err instanceof Error && err.name === 'CLIError'
@@ -158,7 +216,7 @@ async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2)
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     const [cmd, parent] = resolveForUsage(rootCommand as CommandNode, rawArgs)
-    await showUsage(cmd as never, parent as never)
+    await showUsageWithRisk(cmd, parent)
     return
   }
   if (rawArgs.length === 1 && rawArgs[0] === '--version') {
@@ -173,7 +231,7 @@ async function main(): Promise<void> {
     // usage that citty would have shown, then report it as a validation error.
     if (isCittyRoutingError(err)) {
       const [cmd, parent] = resolveForUsage(rootCommand as CommandNode, rawArgs)
-      await showUsage(cmd as never, parent as never)
+      await showUsageWithRisk(cmd, parent)
       throw new CliError(err.message, { type: 'validation', subtype: 'unknown_command' })
     }
     throw err
