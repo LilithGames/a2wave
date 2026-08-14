@@ -4,6 +4,7 @@ import { agentsCommand } from './commands/agents.js'
 import { apiCommand } from './commands/api.js'
 import { chatCommand } from './commands/chat.js'
 import { configCommand } from './commands/config.js'
+import { doctorCommand } from './commands/doctor.js'
 import { evalCommand } from './commands/eval.js'
 import { kbCommand } from './commands/kb.js'
 import { loginCommand, logoutCommand } from './commands/login.js'
@@ -15,6 +16,7 @@ import { setupCommand } from './commands/setup.js'
 import { skillsCommand } from './commands/skills.js'
 import { statusCommand } from './commands/status.js'
 import { updateCommand } from './commands/update.js'
+import { whoamiCommand } from './commands/whoami.js'
 import { CliError, toErrorEnvelope } from './errors.js'
 import { getVersion } from './version.js'
 
@@ -36,6 +38,8 @@ const rootCommand = defineCommand({
     login: loginCommand,
     logout: logoutCommand,
     status: statusCommand,
+    whoami: whoamiCommand,
+    doctor: doctorCommand,
     config: configCommand,
     skills: skillsCommand,
     agents: agentsCommand,

@@ -38,7 +38,10 @@ function run(args: string[]): { stdout: string; stderr: string; code: number } {
   }
 }
 
-describe('dispatch', () => {
+// Each case spawns `npx tsx` on the real entry point, which is slow to cold
+// start — well past vitest's 5s default once several run in one file. The cost
+// is the point: nothing cheaper observes how the process actually behaves.
+describe('dispatch', { timeout: 60_000 }, () => {
   it('reports a CliError as one clean line, with no stack trace', () => {
     const { stderr, code } = run(['agents', 'list'])
 

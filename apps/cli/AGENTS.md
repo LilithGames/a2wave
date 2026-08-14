@@ -10,7 +10,10 @@ src/
 │   ├── setup.ts      # setup (local platform install via docker compose)
 │   ├── login.ts      # login / logout
 │   ├── oauth.ts      # IDaaS OAuth browser flow used by login
-│   ├── status.ts     # status (self-check: URL / credentials / health / current user)
+│   ├── status.ts     # status (self-check narrative; renders lib/checks.ts)
+│   ├── whoami.ts     # whoami (cheap identity read: one /api/auth/me call)
+│   ├── doctor.ts     # doctor (same probes as an addressable checklist; exit 1 on fail)
+│   ├── api.ts        # api (raw HTTP escape hatch for uncovered endpoints)
 │   ├── config.ts     # config set-url / get / unset-url
 │   ├── skills.ts     # skills list/get/create/install/check-update/update-remote/update/delete
 │   ├── agents.ts     # agents list/get/update/delete/stats + export/import/members/artifacts/memory + lifecycle
@@ -27,6 +30,7 @@ src/
 ├── lib/
 │   ├── agent-yaml.ts # YAML parsing / reference resolution / diff for agents apply
 │   ├── args.ts       # Shared flag utilities: toStringArray / parseKeyValues / confirmDestructive
+│   ├── checks.ts     # Self-diagnosis probes as data; shared by status / doctor
 │   ├── fields.ts     # `--fields` dot-path projection (applied AFTER redaction — see below)
 │   ├── output.ts     # `--json` support: jsonArg flag fragment + emit() / wantsJson()
 │   ├── paginate.ts   # `--limit` / `--page`: pageArgs fragment + pageQuery()
@@ -86,7 +90,42 @@ pnpm --filter a2wave dev -- skills list
 | `a2wave login --no-browser` | Only reuse the existing cache, don't launch the browser |
 | `a2wave login --password` | Legacy username + password login (requires setting the instance URL first via `a2wave config set-url`) |
 | `a2wave logout` | Clear local credentials (keeps the SSO token cache) |
-| `a2wave status` | One-stop self-check: URL / IDaaS cache / a2wave credentials / backend health / current user. First choice for diagnosing "why 401" or "is the token expired" |
+| `a2wave status` | One-stop self-check: URL / IDaaS cache / a2wave credentials / backend health / current user. First choice for diagnosing "why 401" or "is the token expired". `--json` emits the same `CheckReport` as `doctor` |
+| `a2wave whoami` | "As whom, and against which instance, will my next command run?" **One request** (`/api/auth/me`) — cheap enough for an agent to call before a risky write. `--json` adds `isAdmin`, so a caller need not know the role string is spelled `admin` |
+| `a2wave doctor` | The same probes as `status`, rendered as an addressable checklist. **Exits 1 on any `fail`** |
+
+### Self-diagnosis: `status`, `whoami`, `doctor`
+
+All three read from one probing layer, [src/lib/checks.ts](./src/lib/checks.ts),
+so a probe can only be wrong in one place. What differs is the shape of the
+answer, and each shape exists for a different caller:
+
+| | Question | Cost |
+|---|---|---|
+| `whoami` | "Who am I acting as?" | 1 request |
+| `status` | "Is everything set up?" — a narrative for a human | 4 probes |
+| `doctor` | "Which precondition is broken?" — a checklist for a machine | 4 probes |
+
+`runChecks()` returns `{ok, checks[]}` where each check has a stable
+dot-separated `name` (`instance.url`, `instance.health`, `sso.cache`,
+`credentials.token`, `user.identity`), a three-state `status`, an ANSI-free
+`message`, a `hint` on every non-pass, and structured `detail`. An agent tests
+one precondition by name or the whole thing by `ok`.
+
+Three rules the model depends on:
+
+- **`warn` does not flip `ok`.** Half of what this reports is optional (an SSO
+  cache on a password-login install) or merely blocked on an earlier failure.
+  Letting those read as failures is exactly the noise that teaches a caller to
+  ignore a health signal — and `doctor`'s exit code with it.
+- **A hint must be able to work.** A reachability failure is *not* fixed by
+  `config set-url`: the URL is already set, which is how we got far enough to
+  dial it. An agent acting on a hint that cannot work is worse off than one
+  given none, so `instance.health` says to check the instance is running.
+- **No ANSI and no cleartext credential in `checks.ts`.** Colour belongs to the
+  renderer; an escape sequence inside a JSON payload is garbage to every
+  non-terminal consumer. `detail` is emitted verbatim under `--json`, so tokens
+  go through `maskToken` on the way in.
 
 > Login does not need `--url`. Set the a2wave instance URL globally via **`a2wave config set-url`**, or override it per data command with `--url` / `$A2WAVE_URL`.
 
