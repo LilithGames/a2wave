@@ -94,7 +94,7 @@ import {
 } from '../lib/attachment-materializer.js'
 import { logAudit } from '../lib/audit.js'
 import { discordConnectionManager } from '../lib/discord-service.js'
-import { executeChatRun } from '../lib/execute-chat-run.js'
+import { executeChatRun, failRunBeforeLifecycle } from '../lib/execute-chat-run.js'
 import { type DiagnoseSeverity, runAgentFeishuDiagnose } from '../lib/feishu-diagnose.js'
 import { feishuConnectionManager, normalizeFeishuConfig } from '../lib/feishu-service.js'
 import { normalizeOauthAccessMode } from '../lib/gateway-auth-errors.js'
@@ -2672,33 +2672,9 @@ app.post('/:id/chat', async (c) => {
       scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
       return c.json({ error: err.message }, 409)
     }
-    completeExecutionLease(runId)
+    await failRunBeforeLifecycle(runId, id, err instanceof Error ? err.message : String(err))
     throw err
   }
-
-  // Determine step order
-  const lastStep = (
-    await db
-      .select({ maxOrder: sql<number>`MAX(${runSteps.order})` })
-      .from(runSteps)
-      .where(eq(runSteps.runId, runId))
-      .limit(1)
-  )[0]
-  const nextOrder = (lastStep?.maxOrder ?? 0) + 1
-
-  // 附件落盘 + prompt 注入（与飞书逐字节一致的路径提示）。无附件时 mergedPrompt ===
-  // message、rootDir === null。原始 refs 存 runSteps.input.attachments（免迁移审计）。
-  const {
-    mergedPrompt,
-    rootDir: attachmentRootDir,
-    materialized,
-  } = await materializeForRun({
-    agentId: id,
-    runId,
-    message: parsed.data.message,
-    sources: refsToSources(parsed.data.attachments),
-    consumerId: userId, // 上传者=当前 web 用户
-  })
 
   const stepId = createId('rst')
   // channelResult was built up-front for the runs.triggerUserName denormalization;
@@ -2709,13 +2685,32 @@ app.post('/:id/chat', async (c) => {
     ...stripReservedContextKeys(parsed.data.context),
     channel: channelResult.ctx,
   }
-  const stepInput: Record<string, unknown> = { message: mergedPrompt, context: stepContext }
-  // 只记**实际落盘**的附件（materialized），不用请求原始 refs——被拒/过期时不写不存在的 chip。
-  if (materialized.length > 0) {
-    stepInput.attachments = materialized
-  }
-  // insert 失败即清理已落盘的附件目录再 rethrow，避免泄漏（review [P2]）。
+  let attachmentRootDir: string | null = null
+  let mergedPrompt = parsed.data.message
   try {
+    const lastStep = (
+      await db
+        .select({ maxOrder: sql<number>`MAX(${runSteps.order})` })
+        .from(runSteps)
+        .where(eq(runSteps.runId, runId))
+        .limit(1)
+    )[0]
+    const nextOrder = (lastStep?.maxOrder ?? 0) + 1
+
+    const attachmentPreparation = await materializeForRun({
+      agentId: id,
+      runId,
+      message: parsed.data.message,
+      sources: refsToSources(parsed.data.attachments),
+      consumerId: userId,
+    })
+    mergedPrompt = attachmentPreparation.mergedPrompt
+    attachmentRootDir = attachmentPreparation.rootDir
+    const stepInput: Record<string, unknown> = { message: mergedPrompt, context: stepContext }
+    if (attachmentPreparation.materialized.length > 0) {
+      stepInput.attachments = attachmentPreparation.materialized
+    }
+
     await db.insert(runSteps).values({
       id: stepId,
       runId,
@@ -2735,8 +2730,12 @@ app.post('/:id/chat', async (c) => {
       content: parsed.data.message,
     })
   } catch (err) {
-    if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
-    completeExecutionLease(runId)
+    await failRunBeforeLifecycle(
+      runId,
+      id,
+      err instanceof Error ? err.message : String(err),
+      attachmentRootDir,
+    )
     throw err
   }
 

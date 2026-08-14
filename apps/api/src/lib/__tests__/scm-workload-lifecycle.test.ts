@@ -341,6 +341,23 @@ describe('SCM workload lifecycle', () => {
     expect(delay).toHaveBeenCalledWith(25)
   })
 
+  it('backs off repeated durable release failures and caps the delay', async () => {
+    const release = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('database unavailable 1'))
+      .mockRejectedValueOnce(new Error('database unavailable 2'))
+      .mockRejectedValueOnce(new Error('database unavailable 3'))
+      .mockResolvedValueOnce(true)
+    const delay = vi.fn(async () => undefined)
+
+    await retryScmWorkloadReleaseUntilSuccess(
+      { type: 'run', workloadId: 'run_backoff', ownerInstanceId: 'instance-a' },
+      { release, delay, retryDelayMs: 25, maxRetryDelayMs: 60 },
+    )
+
+    expect(delay.mock.calls).toEqual([[25], [50], [60]])
+  })
+
   it('treats the durable row as active after the Run status is already terminal', async () => {
     const { tx } = mutationTx([
       [

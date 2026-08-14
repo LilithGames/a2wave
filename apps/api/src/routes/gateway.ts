@@ -25,7 +25,7 @@ import {
 import { attachmentBodyLimit, handleAttachmentUpload } from '../lib/attachment-upload.js'
 import { resolveClientIp } from '../lib/client-ip.js'
 import { ProviderConfigurationError } from '../lib/errors.js'
-import { executeChatRun } from '../lib/execute-chat-run.js'
+import { executeChatRun, failRunBeforeLifecycle } from '../lib/execute-chat-run.js'
 import { WorktreeBranchLockedError, WorktreeDirtyError } from '../lib/git-workspace.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
@@ -323,22 +323,25 @@ app.post('/:agentId/invoke', async (c) => {
       void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
       return c.json(gatewayError(GatewayErrorCode.EXECUTION_ERROR, err.message), 409)
     }
-    completeExecutionLease(runId)
+    await failRunBeforeLifecycle(runId, agentId, err instanceof Error ? err.message : String(err))
     throw err
   }
 
   // 附件落盘 + prompt 注入（即时路径）。无附件时 mergedPrompt === message、rootDir === null。
-  const {
-    mergedPrompt,
-    rootDir: attachmentRootDir,
-    materialized,
-  } = await materializeForRun({
-    agentId,
-    runId,
-    message: parsed.data.message,
-    sources: refsToSources(attachmentRefs),
-    consumerId: `agent:${agentId}`, // 上传经 gateway 上传端点，uploaderId=agent:<id>
-  })
+  let attachmentPreparation: Awaited<ReturnType<typeof materializeForRun>>
+  try {
+    attachmentPreparation = await materializeForRun({
+      agentId,
+      runId,
+      message: parsed.data.message,
+      sources: refsToSources(attachmentRefs),
+      consumerId: `agent:${agentId}`, // 上传经 gateway 上传端点，uploaderId=agent:<id>
+    })
+  } catch (err) {
+    await failRunBeforeLifecycle(runId, agentId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
+  const { mergedPrompt, rootDir: attachmentRootDir, materialized } = attachmentPreparation
 
   const stepId = createId('rst')
   const stepInput: Record<string, unknown> = { message: mergedPrompt, context: stepContext }
@@ -366,8 +369,12 @@ app.post('/:agentId/invoke', async (c) => {
       content: parsed.data.message,
     })
   } catch (err) {
-    if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
-    completeExecutionLease(runId)
+    await failRunBeforeLifecycle(
+      runId,
+      agentId,
+      err instanceof Error ? err.message : String(err),
+      attachmentRootDir,
+    )
     throw err
   }
 

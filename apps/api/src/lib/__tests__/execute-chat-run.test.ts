@@ -102,8 +102,9 @@ vi.mock('../id.js', () => ({
   createId: vi.fn((prefix: string) => `${prefix}_test1`),
 }))
 
+const mockLoggerError = vi.fn()
 vi.mock('../logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logger: { info: vi.fn(), warn: vi.fn(), error: mockLoggerError },
 }))
 
 class WorktreeOccupiedErrorMock extends Error {
@@ -181,6 +182,11 @@ vi.mock('../../engine/task-queue.js', () => ({
 
 vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
+}))
+
+const mockCompleteExecutionLease = vi.fn()
+vi.mock('../../engine/execution-lease-registry.js', () => ({
+  completeExecutionLease: (...args: unknown[]) => mockCompleteExecutionLease(...args),
 }))
 
 const mockExecuteWithRetry = vi.fn()
@@ -568,8 +574,35 @@ describe('executeChatRun', () => {
     // Run 被标记 failed + scheduleNext 触发下一个排队任务，槽不泄漏。
     expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }))
     expect(mockScheduleNext).toHaveBeenCalled()
+    expect(mockCleanupWorktreeIfEphemeral.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCompleteExecutionLease.mock.invocationCallOrder[0],
+    )
+    expect(mockCompleteExecutionLease.mock.invocationCallOrder[0]).toBeLessThan(
+      mockScheduleNext.mock.invocationCallOrder[0],
+    )
     // 未进入真正执行。
     expect(mockExecuteWithRetry).not.toHaveBeenCalled()
+  })
+
+  it('reports terminalization retry as a DB lifecycle failure, not workspace cleanup', async () => {
+    vi.useFakeTimers()
+    mockDbRun
+      .mockImplementationOnce(() => {
+        throw new Error('database unavailable')
+      })
+      .mockReturnValueOnce({ changes: 1 })
+
+    const { failRunBeforeLifecycle } = await import('../execute-chat-run.js')
+    const result = failRunBeforeLifecycle('run_1', 'agt_1', 'preparation failed')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', agentId: 'agt_1', retryDelayMs: 1_000 }),
+      'Failed to terminalize run preparation; retaining the workload lease and retrying',
+    )
+    expect(mockCompleteExecutionLease).toHaveBeenCalledWith('run_1')
+    vi.useRealTimers()
   })
 
   it('does not insert a step when cancellation wins during async preparation', async () => {

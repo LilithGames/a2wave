@@ -46,4 +46,34 @@ describe('retryWorkspaceCleanupUntilSuccess', () => {
     await result
     expect(cleanup).toHaveBeenCalledTimes(2)
   })
+
+  it('backs off repeated failures and caps the retry delay', async () => {
+    vi.useFakeTimers()
+    const cleanup = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('failure 1'))
+      .mockRejectedValueOnce(new Error('failure 2'))
+      .mockRejectedValueOnce(new Error('failure 3'))
+      .mockResolvedValueOnce(undefined)
+
+    const result = retryWorkspaceCleanupUntilSuccess(cleanup, {
+      retryDelayMs: 100,
+      maxRetryDelayMs: 250,
+      context: { type: 'run', id: 'run_backoff' },
+    })
+
+    await vi.advanceTimersByTimeAsync(99)
+    expect(cleanup).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(cleanup).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(199)
+    expect(cleanup).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(cleanup).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(249)
+    expect(cleanup).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    await result
+    expect(cleanup).toHaveBeenCalledTimes(4)
+  })
 })

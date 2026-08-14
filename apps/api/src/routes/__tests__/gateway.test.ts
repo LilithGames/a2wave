@@ -5,6 +5,8 @@ import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
 type Json = Record<string, unknown>
 type ErrorJson = { error: { code: string; message: string; details?: unknown } }
 
+const mockFailRunBeforeLifecycle = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
 vi.mock('../../db/client.js', () => {
   const database = {
     select: vi.fn(),
@@ -29,6 +31,11 @@ vi.mock('../../worker/index.js', () => ({
   executeInWorker: vi.fn(),
 }))
 
+vi.mock('../../lib/execute-chat-run.js', () => ({
+  executeChatRun: vi.fn(),
+  failRunBeforeLifecycle: mockFailRunBeforeLifecycle,
+}))
+
 vi.mock('../../lib/agent-helpers.js', () => ({
   resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
   WorktreeOccupiedError: class extends Error {
@@ -51,6 +58,12 @@ vi.mock('../../lib/git-workspace.js', () => ({
     constructor(b: string, l: string) {
       super(`locked: ${b} by ${l}`)
       this.name = 'WorktreeBranchLockedError'
+    }
+  },
+  WorktreeDirtyError: class extends Error {
+    constructor(p: string) {
+      super(`dirty: ${p}`)
+      this.name = 'WorktreeDirtyError'
     }
   },
 }))
@@ -920,6 +933,32 @@ describe('Gateway routes', () => {
         worktree: { name: 'wt-a', cleanup: 'ephemeral' },
       })
       expect(res.status).not.toBe(409)
+      expect(mockFailRunBeforeLifecycle).toHaveBeenCalledWith(
+        expect.any(String),
+        'agt_test1',
+        'disk exploded',
+      )
+    })
+
+    it('fails lifecycle ownership before releasing an acquired ephemeral worktree on insert error', async () => {
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(db.insert as Mock)
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce({ values: vi.fn().mockRejectedValue(new Error('step insert failed')) })
+
+      const res = await invokeRequest({
+        message: 'hi',
+        async: false,
+        worktree: { name: 'wt-a', cleanup: 'ephemeral' },
+      })
+
+      expect(res.status).toBe(500)
+      expect(mockFailRunBeforeLifecycle).toHaveBeenCalledWith(
+        expect.any(String),
+        'agt_test1',
+        'step insert failed',
+        null,
+      )
     })
   })
 

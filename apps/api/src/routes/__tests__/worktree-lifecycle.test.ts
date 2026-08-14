@@ -38,6 +38,7 @@ const {
   deleteCalls,
   mockTryAcquireSlot,
   mockScheduleNext,
+  mockFailRunBeforeLifecycle,
 } = vi.hoisted(() => ({
   mockResolveWorkDir: vi.fn(),
   runsSetCalls: [] as unknown[],
@@ -46,6 +47,7 @@ const {
   deleteCalls: [] as unknown[],
   mockTryAcquireSlot: vi.fn().mockReturnValue('acquired'),
   mockScheduleNext: vi.fn(),
+  mockFailRunBeforeLifecycle: vi.fn().mockResolvedValue(undefined),
 }))
 
 // ============================================================
@@ -139,7 +141,10 @@ vi.mock('../../engine/task-queue.js', () => ({
 
 vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
 
-vi.mock('../../lib/execute-chat-run.js', () => ({ executeChatRun: vi.fn() }))
+vi.mock('../../lib/execute-chat-run.js', () => ({
+  executeChatRun: vi.fn(),
+  failRunBeforeLifecycle: mockFailRunBeforeLifecycle,
+}))
 
 vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -669,6 +674,34 @@ describe('Agents POST /:id/chat — worktree lifecycle', () => {
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: string }
     expect(body.error).toContain('hotfix')
+  })
+
+  it('hands post-resolution insert failures to the lifecycle cleanup boundary', async () => {
+    mockDb.select.mockReturnValue(
+      selectChainForChat({ agent: publishedAgent, source: scmSyncedSource }),
+    )
+    mockResolveWorkDir.mockResolvedValue('/ws/prepared')
+    let insertNumber = 0
+    mockDb.insert.mockImplementation(() => {
+      insertNumber += 1
+      if (insertNumber === 2) {
+        return { values: vi.fn().mockRejectedValue(new Error('step insert failed')) }
+      }
+      return makeInsertChain()
+    })
+
+    const res = await chat({
+      message: 'hi',
+      worktree: { name: 'prepared', cleanup: 'ephemeral' },
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockFailRunBeforeLifecycle).toHaveBeenCalledWith(
+      expect.any(String),
+      'agt_test1',
+      'step insert failed',
+      null,
+    )
   })
 
   it('复用 run 的轮 worktree 冲突回滚时还原 worktreeConfig（不残留新一轮配置，review 回归）', async () => {

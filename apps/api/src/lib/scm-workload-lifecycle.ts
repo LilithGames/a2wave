@@ -3,6 +3,7 @@ import type { db } from '../db/client.js'
 import { agents, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { logger } from './logger.js'
+import { retryUntilSuccess } from './retry-until-success.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 
 export type ScmWorkloadType = 'run' | 'evaluation'
@@ -273,11 +274,13 @@ export async function releaseScmWorkload(
 }
 
 const DEFAULT_RELEASE_RETRY_DELAY_MS = 1_000
+const DEFAULT_MAX_RELEASE_RETRY_DELAY_MS = 30_000
 
 export interface ScmWorkloadReleaseRetryDeps {
   release?: () => Promise<boolean>
   delay?: (delayMs: number) => Promise<void>
   retryDelayMs?: number
+  maxRetryDelayMs?: number
 }
 
 /** Keep a failed owner release observable until it succeeds or shutdown times out. */
@@ -287,22 +290,30 @@ export async function retryScmWorkloadReleaseUntilSuccess(
 ): Promise<void> {
   const release = deps.release ?? (() => releaseScmWorkload(input))
   const retryDelayMs = deps.retryDelayMs ?? DEFAULT_RELEASE_RETRY_DELAY_MS
+  const maxRetryDelayMs = Math.max(
+    retryDelayMs,
+    deps.maxRetryDelayMs ?? DEFAULT_MAX_RELEASE_RETRY_DELAY_MS,
+  )
   const delay =
     deps.delay ??
     ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)))
 
-  for (;;) {
-    try {
-      await release()
-      return
-    } catch (error) {
+  await retryUntilSuccess(release, {
+    initialDelayMs: retryDelayMs,
+    maxDelayMs: maxRetryDelayMs,
+    wait: delay,
+    onFailure: (error, nextRetryDelayMs) => {
       logger.error(
-        { error, workloadType: input.type, workloadId: input.workloadId },
+        {
+          error,
+          workloadType: input.type,
+          workloadId: input.workloadId,
+          retryDelayMs: nextRetryDelayMs,
+        },
         'Failed to release durable SCM workload lease; retrying',
       )
-      await delay(retryDelayMs)
-    }
-  }
+    },
+  })
 }
 
 /**

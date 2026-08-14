@@ -21,6 +21,7 @@ import { logger } from './logger.js'
 import { resolveNativeChatAttachments } from './native-chat-attachments.js'
 import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
+import { retryUntilSuccess } from './retry-until-success.js'
 import { runWithLifecycle } from './run-launcher.js'
 import { retryWorkspaceCleanupUntilSuccess } from './workspace-cleanup-retry.js'
 
@@ -338,23 +339,40 @@ async function cleanupPreparedExecution(
   completeExecutionLease(runId)
 }
 
-async function failRunBeforeLifecycle(
+export async function failRunBeforeLifecycle(
   runId: string,
   agentId: string,
   error: string,
   rootDir?: string | null,
 ): Promise<void> {
   let ownsTerminalTransition = false
-  try {
-    const transition = await db
-      .update(runs)
-      .set({ status: 'failed', result: { error }, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
-      .returning({ id: runs.id })
-    ownsTerminalTransition = didChangeOneRow(transition)
-  } catch (updateError) {
-    logger.error({ agentId, runId, err: updateError }, 'Failed to mark prepared run as failed')
-  }
+  await retryUntilSuccess(
+    async () => {
+      const transition = await db
+        .update(runs)
+        .set({ status: 'failed', result: { error }, updatedAt: new Date() })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .returning({ id: runs.id })
+      ownsTerminalTransition = didChangeOneRow(transition)
+      if (ownsTerminalTransition) return
+
+      const current = (
+        await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1)
+      )[0]
+      if (!current || current.status !== 'running') return
+      throw new Error('Run is still running after the preparation-failure transition')
+    },
+    {
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      onFailure: (transitionError, retryDelayMs) => {
+        logger.error(
+          { err: transitionError, runId, agentId, retryDelayMs },
+          'Failed to terminalize run preparation; retaining the workload lease and retrying',
+        )
+      },
+    },
+  )
 
   await cleanupPreparedExecution(runId, agentId, rootDir)
   if (ownsTerminalTransition) {
