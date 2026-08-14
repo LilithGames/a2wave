@@ -200,6 +200,27 @@ Four structural rules are checked by [src/__tests__/command-structure.test.ts](.
 | **Every node must declare `meta.name`**, equal to its key in the parent's `subCommands` | citty builds the usage line as `` `${parentMeta.name} ` + (cmdMeta.name \|\| process.argv[1]) `` (`citty/dist/index.mjs:353`). With no `meta.name` it falls back to **`process.argv[1]`** — the absolute path of the running script — so the published binary printed `USAGE a2wave /usr/local/lib/node_modules/a2wave/dist/index.cjs list\|get\|...`. Wrong, unrunnable as printed, and ~87 wasted tokens on every `--help` an agent reads. |
 | `meta.name` must be a **single segment**, never a full path | `runMain` resolves the name against the root command when building the prefix, so `name: 'a2wave agents'` renders a doubled `a2wave a2wave agents` **and stops the node routing at all**. |
 
+**`runMain` is not used, on purpose.** It catches every error itself, prints it
+through consola and calls `process.exit(1)` — so the idiomatic
+`runMain(cmd).catch(handleError)` is dead code, and a plain `CliError` reached
+the user as a stack trace with the message printed twice. `src/index.ts` owns
+its own try/catch instead, reproducing citty's `--help` / `--version` branches
+because they live inside the function being replaced. Two traps if you touch it:
+
+- citty's `resolveSubCommand` is **internal** — absent from both the public type
+  surface and the CJS bundle's exports, so importing it typechecks and then
+  throws `is not a function` at runtime. `src/index.ts` walks the tree itself.
+- A wrong command name arrives as citty's own `CLIError`. It must be reported as
+  `validation`, not `internal` — a typo is not a crash in this CLI.
+
+Because unit tests call `handleError` directly, none of this was observable from
+them; `src/__tests__/dispatch.test.ts` runs the real entry point as a subprocess.
+That file strips `TEST` / `VITEST` / `NODE_ENV` from the child environment:
+consola suppresses output when it believes it is under test (std-env computes
+`isTest` from `NODE_ENV === 'test' || !!env.TEST`), and a child inherits both, so
+every help assertion would otherwise compare against `''` and pass for the wrong
+reason.
+
 Scope note on the last two: `resolveSubCommand` passes only the *immediate*
 parent, so a depth-2 usage line reads `agents members list` without the leading
 `a2wave`. That is a citty limitation, not a defect in our tree — widening
@@ -370,6 +391,28 @@ Referenced resources support both forms: `provider: name` or `provider: prv_xxx`
 | `a2wave update` | Check for and update the a2wave CLI to the latest published version. Queries the npm default registry unless `$A2WAVE_NPM_REGISTRY` points at a mirror |
 | `a2wave upgrade` | Alias for `a2wave update` |
 
+### `api` — the raw escape hatch
+
+**Prefer a typed command when one exists.** It validates parameters, resolves
+names to IDs, and carries usage guidance that `api` cannot. Reach for `api` only
+for endpoints with no typed command yet — the CLI covers roughly 60 of the
+platform's ~150 routes, and before this existed the alternative was hand-rolled
+`curl` plus digging the token out of `~/.a2wave/config.json`.
+
+```bash
+a2wave api GET /api/settings
+a2wave api GET /api/runs --query status=failed --query limit=5
+a2wave api PATCH /api/agents/agt_x --body '{"name":"renamed"}' --yes
+a2wave api POST /api/skills --body-file ./skill.json --yes
+```
+
+| Property | Behaviour |
+|---|---|
+| **Auth** | Goes through `createClient()`, so it inherits the IDaaS JWT exchange. An independent `fetch` would silently break every OIDC user, whose stored token needs exchanging first |
+| **Path guard** | Must start with `/api/`. Anything containing `://`, or starting `//`, is refused — `api GET https://evil.example/x` would otherwise send the bearer token to that host. Use `--url` to target a different instance |
+| **Writes** | Any method other than GET requires `--yes` (aliased to `--force`). The CLI cannot know what an arbitrary POST does, so it assumes the worst |
+| **Output** | Always JSON, always through `emit()` — so redaction, `--fields` and `--show-secrets` all apply. This matters *more* here than for typed commands: `api` reaches endpoints the redaction denylist has never seen, and that denylist fails open by design |
+
 ## Design principle: the primary consumer is an Agent
 
 Iron Rule 6 says the platform builds no convenience UI, so **the CLI and the API
@@ -447,7 +490,51 @@ Rules:
   | Key is a **secret container** (`env`, `headers`) | MCP servers store credentials in free-form maps the operator names, so **every value** inside is masked regardless of name; the keys stay visible |
   | Key holds a **URL** (`url`, `repoUrl`, `endpoint`, `baseUrl`) | Only the credential-bearing *parts* are masked — userinfo, query, fragment, and opaque token-like path segments. Scheme, host and ordinary path survive, so links stay usable and the server's `********@host/path` sentinel still round-trips through `scm update --config-file` |
 - `--json` prints exactly **one** JSON document to stdout. `a2wave chat --json` therefore implies `--no-stream` (streamed tokens would interleave) and requires `-m/--message` — an interactive session has no single payload.
-- Errors still go to stderr as plain text with a non-zero exit code; `--json` shapes success output only.
+- Errors always go to **stderr**, so a caller piping stdout into a parser never has the payload and the failure interleaved. Under a JSON flag they are an envelope; otherwise plain text. Either way the exit code is non-zero. See below.
+
+## Error contract
+
+An agent recovers from a failure by branching on it, and matching prose is a
+brittle way to do that — `"Session expired"` breaks the moment someone rewords
+it. So errors carry a stable `type`/`subtype` and, where one exists, a `hint`
+that is a **runnable next step** rather than advice.
+
+Under `--json` / `--json-pretty` / `--fields`, stderr gets one compact object:
+
+```json
+{"ok":false,"error":{"type":"auth","subtype":"expired","message":"Session expired or invalid.","hint":"a2wave login"}}
+```
+
+Absent fields are **omitted, not null** — `error.subtype` should read as
+`undefined`, not something to special-case. Plain-text mode prints the message,
+then `Hint: <hint>` on its own line when there is one.
+
+| `type` | Means |
+|---|---|
+| `auth` | The caller's own credentials. HTTP 401 is intercepted in `client.ts` before it can become an `ApiError`, so this never gets confused with "the request was rejected" |
+| `permission` | Authenticated, but not allowed (403) |
+| `not_found` (404) · `conflict` (409) · `rate_limit` (429) | As named |
+| `validation` | Bad input, caught client-side or as a 4xx |
+| `server` | 5xx |
+| `network` | Could not reach the instance at all |
+| `confirmation` | Needs `--force` / `--yes`. The most likely error an agent hits, since it never has a TTY |
+| `cli` | Any other deliberate CLI failure |
+| `internal` | A bug in this CLI |
+
+`ApiError` sets `subtype` to the numeric status, and **clips the server body at
+2000 chars** — a 5xx can answer with a whole HTML error page, and untruncated
+that lands in a CI log or a context window.
+
+`internal` deserves its own note: an unexpected `TypeError` used to be
+re-thrown, surfacing as a full Node stack dump. It is now reported in the same
+shape as everything else, with the stack behind `A2WAVE_DEBUG=1` for whoever is
+actually debugging it.
+
+**Structured fields are additive.** `new CliError('...')` still works, so the
+~60 existing throw sites needed no edit; enrich them as each is shown to matter.
+When you do, keep the human sentence self-sufficient — the structured fields are
+for the machine, and dropping the readable instruction to avoid repeating
+yourself makes plain-text mode strictly worse.
 
 ## Numeric flag parsing
 

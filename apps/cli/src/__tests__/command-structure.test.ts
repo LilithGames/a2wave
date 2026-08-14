@@ -1,6 +1,7 @@
 import { renderUsage } from 'citty'
 import { describe, expect, it } from 'vitest'
 import { agentsCommand } from '../commands/agents.js'
+import { apiCommand } from '../commands/api.js'
 import { chatCommand } from '../commands/chat.js'
 import { configCommand } from '../commands/config.js'
 import { evalCommand } from '../commands/eval.js'
@@ -31,6 +32,7 @@ type Node = {
 
 const ROOTS: Array<[string, Node]> = [
   ['agents', agentsCommand as unknown as Node],
+  ['api', apiCommand as unknown as Node],
   ['chat', chatCommand as unknown as Node],
   ['config', configCommand as unknown as Node],
   ['eval', evalCommand as unknown as Node],
