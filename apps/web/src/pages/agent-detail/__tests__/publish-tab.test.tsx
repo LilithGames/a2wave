@@ -1,13 +1,13 @@
-import { renderWithProviders, screen, userEvent, waitFor, within } from '@/test/render'
 import {
-  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
   CHAT_APP_SUGGESTED_QUESTION_MAX_LENGTH,
+  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
 } from '@a2wave/shared'
 /**
  * 渲染测试：确认 Publish 页 API tab 只剩 none / api_key 两种鉴权方式，
  * 且 OAuth 作为独立渠道 tab 出现。
  */
 import { describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen, userEvent, waitFor, within } from '@/test/render'
 
 vi.mock('@/hooks/use-agents', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/use-agents')>('@/hooks/use-agents')
@@ -23,9 +23,9 @@ vi.mock('@/lib/antd-static', () => ({
 }))
 
 import {
-  PublishTab,
   normalizeSchedulePublishConfigs,
   oauthEnvErrorKey,
+  PublishTab,
   parseSuggestedQuestions,
   shouldSubmitFeishuConfigForPublish,
 } from '../publish-tab'
@@ -167,7 +167,7 @@ describe('PublishTab — OAuth 渠道卡片', () => {
       />,
     )
 
-    await user.click(await screen.findByRole('button', { name: /更新发布/ }))
+    await user.click(await screen.findByRole('button', { name: /更新渠道/ }))
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
     expect(onPublishConfirm.mock.calls[0][0].oauthAccessMode).toBe('all_idaas_users')
@@ -252,7 +252,7 @@ describe('PublishTab — Slack and Discord channels', () => {
       />,
     )
 
-    await user.click(await screen.findByRole('button', { name: /更新发布/ }))
+    await user.click(await screen.findByRole('button', { name: /更新渠道/ }))
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
     const sent = onPublishConfirm.mock.calls[0][0]
@@ -386,7 +386,7 @@ describe("PublishTab — feishuConfig.appSecret '********' masking", () => {
     renderWithProviders(<PublishTab {...props} />)
 
     // Click the top-level "Update" button (edit mode since publishStatus=published)
-    const updateBtn = await screen.findByRole('button', { name: /更新发布/ })
+    const updateBtn = await screen.findByRole('button', { name: /更新渠道/ })
     await user.click(updateBtn)
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
@@ -437,7 +437,7 @@ describe("PublishTab — feishuConfig.appSecret '********' masking", () => {
     renderWithProviders(<PublishTab {...props} />)
 
     await user.click(screen.getByText('OAuth 授权'))
-    await user.click(await screen.findByRole('button', { name: /更新发布/ }))
+    await user.click(await screen.findByRole('button', { name: /更新渠道/ }))
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
     const sent = onPublishConfirm.mock.calls[0][0]
@@ -483,7 +483,7 @@ describe('PublishTab — 开场白字段 round-trip', () => {
     }
     renderWithProviders(<PublishTab {...props} />)
 
-    const updateBtn = await screen.findByRole('button', { name: /更新发布/ })
+    const updateBtn = await screen.findByRole('button', { name: /更新渠道/ })
     await user.click(updateBtn)
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
@@ -528,7 +528,7 @@ describe('PublishTab — 开场白字段 round-trip', () => {
     }
     renderWithProviders(<PublishTab {...props} />)
 
-    const updateBtn = await screen.findByRole('button', { name: /更新发布/ })
+    const updateBtn = await screen.findByRole('button', { name: /更新渠道/ })
     await user.click(updateBtn)
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
@@ -652,7 +652,7 @@ describe('PublishTab — 对话网页渠道', () => {
     }
     renderWithProviders(<PublishTab {...props} />)
 
-    const updateBtn = await screen.findByRole('button', { name: /更新发布/ })
+    const updateBtn = await screen.findByRole('button', { name: /更新渠道/ })
     await user.click(updateBtn)
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
@@ -687,7 +687,7 @@ describe('PublishTab — 对话网页渠道', () => {
     }
     renderWithProviders(<PublishTab {...props} />)
 
-    const updateBtn = await screen.findByRole('button', { name: /更新发布/ })
+    const updateBtn = await screen.findByRole('button', { name: /更新渠道/ })
     await user.click(updateBtn)
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())

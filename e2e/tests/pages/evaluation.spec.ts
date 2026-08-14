@@ -28,7 +28,7 @@ test.describe('Agent evaluation', () => {
     if (agentId) await deleteAgentAs(token, agentId)
   })
 
-  test('evaluation tab sits after publish', async ({ page }) => {
+  test('evaluation tab sits after channels', async ({ page }) => {
     await page.goto(`${ROUTES.agents}/${agentId}`)
 
     const tabs = page.getByRole('tab')
@@ -36,12 +36,12 @@ test.describe('Agent evaluation', () => {
 
     const labels = await tabs.allInnerTexts()
     const configIndex = labels.findIndex((l) => /配置|Config/.test(l))
-    const publishIndex = labels.findIndex((l) => /发布|Publish/.test(l))
+    const channelsIndex = labels.findIndex((l) => /渠道|Channels/.test(l))
     const evalIndex = labels.findIndex((l) => /评测|Evaluation/.test(l))
 
     expect(configIndex).toBeGreaterThanOrEqual(0)
-    expect(publishIndex).toBeGreaterThan(configIndex)
-    expect(evalIndex).toBeGreaterThan(publishIndex)
+    expect(channelsIndex).toBeGreaterThan(configIndex)
+    expect(evalIndex).toBeGreaterThan(channelsIndex)
   })
 
   test('deep link opens the evaluation tab directly', async ({ page }) => {

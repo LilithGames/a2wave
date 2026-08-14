@@ -52,7 +52,7 @@ test.describe('Chat page channel', () => {
     await expect(page.getByText(`/agents/${agentId}/chat_app`)).toBeVisible()
 
     await page
-      .getByRole('button', { name: /发布|更新发布/ })
+      .getByRole('button', { name: /发布|更新渠道/ })
       .first()
       .click()
 
@@ -69,7 +69,7 @@ test.describe('Chat page channel', () => {
     await expect(enableSwitch).toBeVisible({ timeout: 10000 })
     await enableSwitch.click()
     await page
-      .getByRole('button', { name: /发布|更新发布/ })
+      .getByRole('button', { name: /发布|更新渠道/ })
       .first()
       .click()
 

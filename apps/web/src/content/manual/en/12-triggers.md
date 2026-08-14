@@ -2,9 +2,9 @@
 
 a2wave currently provides **eight publish channels**: REST API, OAuth, A2A protocol, Feishu, Slack, Discord, scheduled trigger, and chat page. A single Agent can enable multiple at once. Slack and Discord currently provide text messaging through the same direct-connection model as Feishu and will later converge on a shared chat-channel adapter.
 
-## Managing channels on the Publish tab
+## Managing channels on the Channels tab
 
-The Agent's **Publish** tab lays every channel out as a card, so you can see at a glance which ones are on. The filter above the grid narrows by category: All / API / Protocol / Chat Bots / Scheduled / Web App.
+The Agent's **Channels** tab lays every channel out as a card, so you can see at a glance which ones are on. The filter above the grid narrows by category: All / API / Protocol / Chat Bots / Scheduled / Web App.
 
 Each card carries two independent actions:
 
@@ -18,7 +18,7 @@ Each card carries two independent actions:
 
 **A channel that is not fully configured cannot be enabled** — its switch is greyed out, with a tooltip explaining why. If Slack is missing its App Token, for example, the switch stays disabled rather than letting you turn on a channel that could never connect. REST API is always on and therefore has no switch.
 
-Once configured, click **Publish / Update** at the bottom of the page to put the Agent live. For an Agent that is already live, saving in a channel's dialog takes effect immediately and only affects that channel — the other channels' connections are left alone.
+Once configured, click **Publish / Update Channels** at the bottom of the page to put the Agent live. For an Agent that is already live, saving in a channel's dialog takes effect immediately and only affects that channel — the other channels' connections are left alone.
 
 ### Connection status for chat channels
 
@@ -29,7 +29,7 @@ Feishu, Slack and Discord each hold their own **long connection** to the platfor
 | **Connected** | This instance holds the channel's long connection and messages flow normally. |
 | **Reconnecting** | The connection is registered but not yet open; it usually recovers on its own. |
 | **No connection on this instance** | The Agent is published, but this API instance holds no connection for that channel — usually because another Agent claimed the app first (see "one App, one connection"), or the credentials are wrong. |
-| **Pending publish** | The switch was just changed but not published yet. The connection does **not** follow the switch immediately — it is opened or dropped when you click Publish / Update. |
+| **Pending publish** | The switch was just changed but not published yet. The connection does **not** follow the switch immediately — it is opened or dropped when you click Publish / Update Channels. |
 | **Status unavailable** | The connection status could not be read (API error or network problem); the socket may or may not still be up. |
 | **Not running** | The Agent is a draft or has been stopped, so no long connection is established. |
 | **Not connected** | The channel has saved config but is not enabled. **Disabling a channel or stopping the Agent drops its connection once the change is published.** |
@@ -42,7 +42,7 @@ Feishu, Slack and Discord each hold their own **long connection** to the platfor
 
 A channel that was never configured shows no connection status; nor do the remaining channels (REST API, OAuth, A2A, scheduled, chat page), which are inbound HTTP or internal scheduling and hold no long connection.
 
-**The Agents list and the Agent detail header** also show a summary indicator carrying the **worst** status across that Agent's enabled chat channels — so a dropped connection is visible while scanning the list, without opening each Agent's Publish tab.
+**The Agents list and the Agent detail header** also show a summary indicator carrying the **worst** status across that Agent's enabled chat channels — so a dropped connection is visible while scanning the list, without opening each Agent's Channels tab.
 
 ---
 
@@ -170,7 +170,7 @@ First complete these three groups of settings in the [Feishu Open Platform](http
 > [!IMPORTANT]
 > Events and callbacks are two independent settings in the Feishu console, and each needs its own long-connection mode. If you subscribe to the event but miss the callback, ordinary messages arrive fine but button clicks on interactive cards do nothing at all.
 
-Once that is done, open the Feishu Bot card's **Configure** dialog on the Publish tab in a2wave and set the **App ID / App Secret** plus the trigger and reply policies:
+Once that is done, open the Feishu Bot card's **Configure** dialog on the Channels tab in a2wave and set the **App ID / App Secret** plus the trigger and reply policies:
 
 - **Group chat**: triggered on being @-mentioned (`groupTriggerOnAt`, on by default) / triggered on any new message (off by default); reply modes `quote / new / none`. Replies to ordinary group messages mention the trigger sender by default; selecting “Do not mention anyone” under “Mention on reply” turns that off for ordinary group replies as well.
 - **Topic group**: triggered on @-mention / new topic / new comment; reply modes `topic_reply / none`. “Mention on reply” can target the trigger sender (default), the topic creator, or no one. The first two answer “whom to mention” and apply to topic replies only — an ordinary group message has no topic creator, so it always mentions the trigger sender. “Do not mention anyone” answers “mention at all?” and applies to every group reply, ordinary messages included. When the topic creator is selected, the platform reads the root message sender; if that lookup fails, it mentions no one rather than notifying a triggering bot by mistake. This applies only to plain-text and rich-text replies. By default a topic reply only sends the current message content, and continuous context within the same topic relies on the Agent's session history; to attach the topic's first message (text/images/files) on every reply, enable “Include the topic root message content” (`topicInjectRootMessage`) on the publish tab.
@@ -179,7 +179,7 @@ Once that is done, open the Feishu Bot card's **Configure** dialog on the Publis
 - **File messages**: when a user triggers the Agent by sending a file directly in Feishu, the platform first downloads the file and writes the readable file path for this round into the input content and `context.files`; the Agent can read the file at that path. Temporary files are cleaned up automatically after the run finishes.
 
 > [!WARNING]
-> **One App, one connection**. Within a single API process, a given Feishu App ID may hold only **one** active WebSocket — **first come, first served; later starters must not preempt**. Multiple Agents connecting to Feishu must each use a **separate Feishu app**. The connection status is shown directly on the Feishu card in the Publish tab (a preempted app reads "no connection on this instance"), and also in the Agent's "Full Diagnosis".
+> **One App, one connection**. Within a single API process, a given Feishu App ID may hold only **one** active WebSocket — **first come, first served; later starters must not preempt**. Multiple Agents connecting to Feishu must each use a **separate Feishu app**. The connection status is shown directly on the Feishu card in the Channels tab (a preempted app reads "no connection on this instance"), and also in the Agent's "Full Diagnosis".
 
 ### Interactive cards
 
@@ -205,7 +205,7 @@ Complete these three groups of settings in Slack App Management first:
 
 To trigger on every new message in public or private channels, also subscribe to `message.channels` and `message.groups`, and grant `channels:history` plus `groups:history`.
 
-After completing the Slack-side setup, open the Slack card's **Configure** dialog on the Publish tab and enter the **App ID** (`A...`), **App Token** (`xapp-...`), and **Bot User OAuth Token** (`xoxb-...`). Channel messages trigger on @mention by default, while direct messages always trigger. Before testing in a channel, add the bot to that channel and send `@Bot hello`; you can also DM the bot directly.
+After completing the Slack-side setup, open the Slack card's **Configure** dialog on the Channels tab and enter the **App ID** (`A...`), **App Token** (`xapp-...`), and **Bot User OAuth Token** (`xoxb-...`). Channel messages trigger on @mention by default, while direct messages always trigger. Before testing in a channel, add the bot to that channel and send `@Bot hello`; you can also DM the bot directly.
 
 > [!WARNING]
 > Within one API process, a Slack App ID can be held by only one Agent's Socket Mode connection. A later Agent does not preempt the existing connection. Use separate Slack apps for multiple Agents.
@@ -216,7 +216,7 @@ Slack Files are downloaded under the platform-wide attachment policy and provide
 
 ## 4. Discord
 
-Open the Discord card's **Configure** dialog on the Publish tab and provide the **Application ID** and **Bot Token**. Enable **Message Content Intent** in the Discord Developer Portal, then invite the bot with `View Channels`, `Send Messages`, `Read Message History`, and `Attach Files`. Add `Send Messages in Threads` when using thread channels.
+Open the Discord card's **Configure** dialog on the Channels tab and provide the **Application ID** and **Bot Token**. Enable **Message Content Intent** in the Discord Developer Portal, then invite the bot with `View Channels`, `Send Messages`, `Read Message History`, and `Attach Files`. Add `Send Messages in Threads` when using thread channels.
 
 Server-channel messages trigger on @mention by default, with an option to trigger on every new message. When the Application ID and Bot Token are unchanged, saving message behavior updates the active Gateway connection immediately without reconnecting. Replies can reference the original message, send a new message, or be disabled. Direct messages always trigger. Agent sessions are maintained per user within a server channel, while Discord threads are isolated by their channel ID.
 
@@ -234,7 +234,7 @@ Discord Attachments are downloaded under the platform-wide attachment policy and
 
 Publish an Agent as a shareable chat page: its profile, status and creator on the left, a full conversation window on the right. Good for handing an Agent straight to a colleague without teaching them the console first.
 
-Open the Chat Page card's **Configure** dialog on the Publish tab; once saved, switch the card on and you get a link:
+Open the Chat Page card's **Configure** dialog on the Channels tab; once saved, switch the card on and you get a link:
 
 ```
 https://<your-domain>/agents/<agentId>/chat_app
@@ -270,7 +270,7 @@ A2A (Agent-to-Agent) lets external Agent systems discover and invoke this platfo
 
 ### Publish as an A2A service
 
-Enable **A2A Protocol** on the Agent's Publish tab, then copy the Agent Card URL and invocation endpoint shown there. A caller first reads the Agent Card, then sends requests to the protocol version and endpoint advertised by the card.
+Enable **A2A Protocol** on the Agent's Channels tab, then copy the Agent Card URL and invocation endpoint shown there. A caller first reads the Agent Card, then sends requests to the protocol version and endpoint advertised by the card.
 
 ```bash
 # Discovery: fetch the Agent Card
@@ -336,7 +336,7 @@ When the parent Run is canceled or reaches its timeout, the router sends `Cancel
 
 ## 7. Scheduled trigger
 
-Have an Agent automatically create and execute Runs at specified times on a Cron schedule (e.g. daily code review, weekly reports, inspections). Open the Schedule Trigger card's **Configure** dialog on the Publish tab:
+Have an Agent automatically create and execute Runs at specified times on a Cron schedule (e.g. daily code review, weekly reports, inspections). Open the Schedule Trigger card's **Configure** dialog on the Channels tab:
 
 - **cron**: 5 fields `minute hour day month weekday`.
 - **intent**: the intent text at trigger time, supporting the Mustache variables `{{date}}` / `{{time}}` / `{{iso}}`.

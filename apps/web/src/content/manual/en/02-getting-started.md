@@ -33,7 +33,7 @@ Administrators can go to "Settings → Enterprise Login" to see the effective st
 2. **Create an Agent**: go to "Agents" → "New Agent", then choose "Blank" or a suitable scenario template. Templates prefill the name, prompt, and some safe defaults, but credentials remain empty; confirm the Provider, model, and required capabilities before saving.
 3. **Mount capabilities (optional)**: as needed, mount [Skills](/wiki/skills), [MCP Servers](/wiki/mcp-servers), [SCM Sources](/wiki/scm-sources), and [Knowledge Bases](/wiki/knowledge-base); enable [Long-term Memory](/wiki/memory) if you need cross-session memory.
 4. **Debug first**: use **Chat debugging** on the Agent detail page to verify that the prompt and capabilities work as expected, without exposing any external trigger.
-5. **Configure a trigger and publish**: in the "Publish" area, choose one or more [Trigger Methods](/wiki/triggers) (API / Feishu / A2A / scheduled), then click **Publish**.
+5. **Configure a trigger and publish**: in the "Channels" area, choose one or more [Trigger Methods](/wiki/triggers) (API / Feishu / A2A / scheduled), then click **Publish**.
 6. **Observe runs**: every trigger generates a Run; view its input, output, logs, and artifacts in [Runs](/wiki/runs).
 
 ## A Minimal Working Example

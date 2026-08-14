@@ -2,7 +2,7 @@
 
 You changed the prompt, or switched models — did the Agent actually get better? Evaluation answers that: pin down a set of conversations with what should be asked and how it should be answered, replay them after every config change, and compare.
 
-Evaluation lives in the **Evaluation** tab of the Agent detail page (after Publish), with two sub-tabs: **Evaluation Sets** and **Evaluation Tasks**.
+Evaluation lives in the **Evaluation** tab of the Agent detail page (after Channels), with two sub-tabs: **Evaluation Sets** and **Evaluation Tasks**.
 
 ## Two concepts
 

@@ -15,7 +15,7 @@ The principle is "extend through composition": anything solvable with a Skill / 
 
 ## Why isn't my Feishu Agent receiving messages?
 
-The most common cause is a **occupied Feishu long connection**: within a single API process, a given Feishu App ID may hold only one active long connection, and the first to start takes priority. Multiple Agents connecting to Feishu should each use a **separate Feishu app**. The connection status is shown directly on the channel cards in the Publish tab (Feishu, Slack and Discord each display their protocol and live status); the Agents list and the detail header also carry a summary indicator so a dropped connection is visible while scanning. It is also reported in the Agent's "Full Diagnosis". See [Trigger Methods](/wiki/triggers).
+The most common cause is a **occupied Feishu long connection**: within a single API process, a given Feishu App ID may hold only one active long connection, and the first to start takes priority. Multiple Agents connecting to Feishu should each use a **separate Feishu app**. The connection status is shown directly on the channel cards in the Channels tab (Feishu, Slack and Discord each display their protocol and live status); the Agents list and the detail header also carry a summary indicator so a dropped connection is visible while scanning. It is also reported in the Agent's "Full Diagnosis". See [Trigger Methods](/wiki/triggers).
 
 ## Why doesn't an API call return the result directly by default?
 

@@ -3,7 +3,7 @@
 Enterprise SSO is the configuration a2wave uses to verify identities issued by an enterprise identity provider (IdP). It relates to both "backend enterprise login" and "user authenticated access":
 
 - **Backend enterprise login**: after enabling OAuth / enterprise SSO login in "Settings → Enterprise Login", Web can use OIDC or SAML, while CLI enterprise login uses OIDC (or local password login as a fallback).
-- **User authenticated access**: after enabling it on the Agent's OAuth card on the Publish tab, an external caller must carry a JWT issued by your enterprise OIDC provider (typically an access token) to access `/api/oauth/:agentId/invoke` (this channel does not support SAML — see below).
+- **User authenticated access**: after enabling it on the Agent's OAuth card on the Channels tab, an external caller must carry a JWT issued by your enterprise OIDC provider (typically an access token) to access `/api/oauth/:agentId/invoke` (this channel does not support SAML — see below).
 
 Two standard protocols are supported: **OIDC (authorization code + PKCE)** and **SAML 2.0**. Either one can be enabled once fully configured, and the corresponding button appears automatically on the login page; the master switch is "Settings → Enterprise Login → Enable OAuth / enterprise SSO login".
 

@@ -29,7 +29,7 @@ curl -X POST http://localhost:3502/api/auth/setup \
 2. **创建 Agent**：进入「Agents」→「新建 Agent」，选择「空白创建」或合适的场景模板。模板会预填名称、提示词和部分安全默认值，但凭证始终为空；确认 Provider、模型及所需能力后保存。
 3. **挂载能力（可选）**：按需挂载 [Skill](/wiki/skills)、[MCP Server](/wiki/mcp-servers)、[代码源](/wiki/scm-sources)、[知识库](/wiki/knowledge-base)；需要跨会话记忆就开启 [长期记忆](/wiki/memory)。
 4. **先调试**：在 Agent 详情页用 **Chat 调试**，无需对外触发即可验证提示词与能力是否符合预期。
-5. **配置触发并发布**：在「发布」区选择 [触发方式](/wiki/triggers)（API / 飞书 / A2A / 定时）中的一种或多种，点击 **发布**。
+5. **配置触发并发布**：在「渠道」区选择 [触发方式](/wiki/triggers)（API / 飞书 / A2A / 定时）中的一种或多种，点击 **发布**。
 6. **观察运行**：每次触发都会生成一条 Run，在 [运行记录](/wiki/runs) 查看输入、输出、日志与产物。
 
 ## 一个最小可用示例

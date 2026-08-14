@@ -3,7 +3,7 @@
 企业 SSO 是 a2wave 用来校验企业身份提供方（IdP）签发身份的配置。它和「后台企业登录」「用户鉴权访问」都有关：
 
 - **后台企业登录**：在「设置 → 企业登录」开启 OAuth / 企业 SSO 登录后，Web 可使用 OIDC 或 SAML，CLI 企业登录则只使用 OIDC（也可回落到本地密码登录）。
-- **用户鉴权访问**：在 Agent「发布」页的「OAuth 授权」卡片上开启后，外部调用方需要携带企业 OIDC 签发的 JWT（通常是 access token）访问 `/api/oauth/:agentId/invoke`（该渠道不支持 SAML，详见下文）。
+- **用户鉴权访问**：在 Agent「渠道」页的「OAuth 授权」卡片上开启后，外部调用方需要携带企业 OIDC 签发的 JWT（通常是 access token）访问 `/api/oauth/:agentId/invoke`（该渠道不支持 SAML，详见下文）。
 
 支持两种标准协议：**OIDC（授权码 + PKCE）** 与 **SAML 2.0**。任一配置齐全并启用，登录页就会出现对应按钮；总开关是「设置 → 企业登录 → 启用 OAuth / 企业 SSO 登录」。
 
