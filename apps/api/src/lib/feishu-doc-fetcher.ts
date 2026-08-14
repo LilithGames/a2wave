@@ -9,9 +9,15 @@ import { logger } from './logger.js'
 const SUPPORTED_FEISHU_DOC_TYPES = ['docx', 'wiki']
 const FEISHU_HTTP_TIMEOUT_MS = 60 * 1000
 
+// Typed via lark's own HttpInstance['request'] rather than axios generics: axios >= 1.19
+// resolves `request<T, R, D>` to `Promise<AxiosResponseResult<T, R, D, P>>`, which tsc cannot
+// prove assignable to the `Promise<R>` lark declares while `R` is still an unbound generic.
 const boundedFeishuHttpInstance = Object.assign(Object.create(lark.defaultHttpInstance), {
-  request: <T = unknown, R = T, D = unknown>(options: lark.HttpRequestOptions<D>): Promise<R> =>
-    lark.defaultHttpInstance.request<T, R, D>({ ...options, timeout: FEISHU_HTTP_TIMEOUT_MS }),
+  request: ((options) =>
+    lark.defaultHttpInstance.request({
+      ...options,
+      timeout: FEISHU_HTTP_TIMEOUT_MS,
+    })) as lark.HttpInstance['request'],
 }) as lark.HttpInstance
 
 /** 解析飞书文档 URL，提取 token 和类型 */
