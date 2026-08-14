@@ -12,7 +12,7 @@ test.describe('Admin: users page', () => {
     await page.goto(ROUTES.users)
 
     await expect(page.getByRole('heading', { name: '用户管理' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '添加用户' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '邀请用户' })).toBeVisible()
   })
 
   test('users table shows existing users with correct columns', async ({ page }) => {
@@ -50,61 +50,116 @@ test.describe('Admin: users page', () => {
     expect(foundAdmin).toBe(true)
   })
 
-  test('add user flow', async ({ page }) => {
+  test('invite flow: issue a link and see it listed', async ({ page }) => {
     await page.goto(ROUTES.users)
 
-    await page.getByRole('button', { name: '添加用户' }).click()
+    await page.getByRole('button', { name: '邀请用户' }).click()
 
-    // Dialog should appear
     const dialog = page.locator('[role="dialog"]')
-    await expect(dialog.getByRole('heading', { name: '添加用户' })).toBeVisible()
+    await expect(dialog.getByRole('heading', { name: '邀请用户' })).toBeVisible()
 
-    // Fill form
-    const testUsername = `e2euser_${Date.now()}`
-    await dialog.getByPlaceholder('输入用户名').fill(testUsername)
-    await dialog.getByPlaceholder('输入显示名称').fill('E2E Test User')
-    await dialog.getByPlaceholder('输入密码').fill('TestPass1')
+    const inviteEmail = `e2e_${Date.now()}@company.com`
+    await dialog.getByLabel('邮箱').fill(inviteEmail)
 
-    // Submit
-    const submitBtn = dialog.getByRole('button', { name: '添加用户' })
+    const submitBtn = dialog.getByRole('button', { name: '生成邀请链接' })
     await expect(submitBtn).toBeEnabled()
     await submitBtn.click()
 
-    // User should appear in table
-    await expect(page.locator('.ant-table').getByText(testUsername)).toBeVisible({ timeout: 5000 })
+    // Success keeps the dialog open and shows the link — that is the deliverable.
+    await expect(dialog.getByText(/\/invite\//)).toBeVisible({ timeout: 5000 })
+    await dialog.getByRole('button', { name: '关闭' }).click()
 
-    // Cleanup: delete the test user
-    const row = page.locator('.ant-table-row', { hasText: testUsername })
-    await row.getByRole('button', { name: '删除' }).click()
-    // Confirm deletion in antd Modal.confirm — locate via the primary/danger OK button
-    const confirmModal = page.locator('.ant-modal').filter({ hasText: '删除用户' })
+    // The invitation shows up in the invitations drawer, one click from the roster.
+    await page.getByRole('button', { name: '邀请记录' }).click()
+    await expect(page.getByText(inviteEmail)).toBeVisible({ timeout: 5000 })
+
+    // Cleanup: revoke it so repeat runs do not accumulate live links.
+    const row = page.locator('.ant-table-row', { hasText: inviteEmail })
+    await row.getByRole('button', { name: '撤销邀请' }).click()
+    const confirmModal = page.locator('.ant-modal').filter({ hasText: '撤销该邀请' })
     await confirmModal.locator('button.ant-btn-primary').click()
-    await expect(page.locator('.ant-table').getByText(testUsername)).toBeHidden({ timeout: 5000 })
+    await expect(row.getByText('已撤销')).toBeVisible({ timeout: 5000 })
   })
 
-  test('delete user flow', async ({ page }) => {
-    await page.goto(ROUTES.users)
+  test('invitee registers through the link and lands signed in', async ({ page, browser }) => {
+    // Issue the invitation over the API: this case is about the *invitee's* page, and
+    // driving the admin dialog again would only re-test the previous case.
+    const token = await getAdminToken(page)
+    const stamp = Date.now()
+    const res = await page.request.post(`${API_BASE}/users/invitations`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { role: 'user', expiresInHours: 24 },
+    })
+    expect(res.ok()).toBe(true)
+    const { data: invitation } = (await res.json()) as { data: { id: string; code: string } }
 
-    // First create a user to delete
-    await page.getByRole('button', { name: '添加用户' }).click()
-    const dialog = page.locator('[role="dialog"]')
-    const testUsername = `del_${Date.now()}`
-    await dialog.getByPlaceholder('输入用户名').fill(testUsername)
-    await dialog.getByPlaceholder('输入密码').fill('TestPass1')
-    await dialog.getByRole('button', { name: '添加用户' }).click()
-    await expect(page.locator('.ant-table').getByText(testUsername)).toBeVisible({ timeout: 5000 })
+    // A fresh context: the invitee is not signed in, and must not inherit the admin cookie.
+    const inviteeContext = await browser.newContext()
+    const inviteePage = await inviteeContext.newPage()
+    try {
+      await inviteePage.goto(`/invite/${invitation.code}`)
+      await expect(inviteePage.getByTestId('invite-card')).toBeVisible()
 
-    // Delete the user
-    const row = page.locator('.ant-table-row', { hasText: testUsername })
-    await row.getByRole('button', { name: '删除' }).click()
+      const username = `e2einvitee_${stamp}`
+      await inviteePage.getByLabel('用户名').fill(username)
+      await inviteePage.getByLabel('邮箱').fill(`${username}@company.com`)
+      await inviteePage.getByLabel('密码', { exact: false }).first().fill('TestPass1')
+      await inviteePage.getByLabel('确认密码').fill('TestPass1')
 
-    // Confirm in antd Modal.confirm
-    const confirmModal = page.locator('.ant-modal').filter({ hasText: '删除用户' })
-    await expect(confirmModal).toBeVisible()
-    await confirmModal.locator('button.ant-btn-primary').click()
+      await inviteePage.getByRole('button', { name: '创建账号并登录' }).click()
 
-    // User should disappear
-    await expect(page.locator('.ant-table').getByText(testUsername)).toBeHidden({ timeout: 5000 })
+      // Accept signs the account in, so the invitee lands inside the console, not on /login.
+      await expect(inviteePage).not.toHaveURL(/\/login/, { timeout: 10_000 })
+      await expect(inviteePage).toHaveURL(/\/$|\/#/, { timeout: 10_000 })
+
+      // The link is single-use: revisiting it reports the invitation as already used.
+      await inviteePage.goto(`/invite/${invitation.code}`)
+      await expect(inviteePage.getByTestId('invite-unusable')).toBeVisible({ timeout: 5000 })
+    } finally {
+      await inviteeContext.close()
+    }
+
+    // Cleanup: remove the account this test created.
+    const list = await page.request.get(`${API_BASE}/users?page=1&pageSize=100`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const body = (await list.json()) as { data: Array<{ id: string; username: string }> }
+    const created = body.data.find((u) => u.username === `e2einvitee_${stamp}`)
+    if (created) {
+      await page.request.delete(`${API_BASE}/users/${created.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    }
+  })
+
+  test('the invitations drawer is deep-linkable and survives a reload', async ({ page }) => {
+    await page.goto(`${ROUTES.users}?view=invitations`)
+
+    // Opened straight from the URL, with no click.
+    await expect(page.getByRole('heading', { name: '邀请记录' })).toBeVisible()
+
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '邀请记录' })).toBeVisible()
+
+    // Closing drops the param and returns to the roster.
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('heading', { name: '邀请记录' })).toBeHidden()
+    await expect(page).not.toHaveURL(/view=invitations/)
+  })
+
+  test('an expired or unknown invite code shows a clear message, not a form', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext()
+    const invitePage = await context.newPage()
+    try {
+      await invitePage.goto('/invite/definitely-not-a-real-code')
+      await expect(invitePage.getByTestId('invite-unusable')).toBeVisible({ timeout: 5000 })
+      // The registration fields must not render for a code the server rejected.
+      await expect(invitePage.getByLabel('确认密码')).toBeHidden()
+    } finally {
+      await context.close()
+    }
   })
 
   test('reset password dialog renders', async ({ page }) => {

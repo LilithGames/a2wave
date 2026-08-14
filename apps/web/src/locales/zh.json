@@ -567,7 +567,13 @@
     "HTTP_429": "请求过于频繁，请稍候重试",
     "HTTP_501": "服务器不支持该操作",
     "HTTP_502": "上游服务返回无效响应，请稍后重试",
-    "HTTP_503": "服务暂时不可用，请稍后重试"
+    "HTTP_503": "服务暂时不可用，请稍后重试",
+    "EMAIL_ALREADY_REGISTERED": "该邮箱已被注册",
+    "INVITATION_NOT_FOUND": "邀请链接无效，请确认链接是否完整",
+    "INVITATION_EXPIRED": "邀请链接已过期，请联系管理员重新生成",
+    "INVITATION_REVOKED": "邀请链接已被管理员撤销",
+    "INVITATION_ALREADY_ACCEPTED": "该邀请已被使用，请直接登录",
+    "INVITATION_EMAIL_MISMATCH": "该邀请已指定邮箱，请使用受邀邮箱注册"
   },
   "skills": {
     "groupNotFoundTitle": "分组不存在",
@@ -1917,8 +1923,6 @@
   "users": {
     "title": "用户管理",
     "subtitle": "管理系统用户账号",
-    "addUser": "添加用户",
-    "addUserDesc": "创建新用户账号",
     "username": "用户名",
     "usernamePlaceholder": "输入用户名",
     "displayName": "显示名称",
@@ -1951,7 +1955,37 @@
     "enableContent": "确定要重新启用 \"{{username}}\" 吗？该用户将恢复登录和访问权限。",
     "changeStatusFailed": "状态修改失败",
     "roleAdmin": "管理员",
-    "roleUser": "普通用户"
+    "roleUser": "普通用户",
+    "inviteUser": "邀请用户",
+    "inviteUserDesc": "生成一个注册链接发给同事，由对方自行设置用户名、邮箱和密码。链接有效期 {{hours}} 小时。",
+    "inviteCreatedDesc": "邀请链接已生成，请复制并发送给受邀人。",
+    "createInvite": "生成邀请链接",
+    "inviteEmail": "邮箱",
+    "inviteEmailPlaceholder": "someone@company.com（可留空）",
+    "inviteEmailHint": "填写后此链接只能由该邮箱注册；留空则由受邀人自行填写邮箱。",
+    "inviteEmailInvalid": "邮箱格式不正确",
+    "inviteAnyEmail": "不限邮箱",
+    "inviteNote": "备注",
+    "inviteNotePlaceholder": "仅管理员可见，例如所属团队",
+    "inviteLinkHint": "链接将于 {{expiresAt}} 失效，失效后需重新生成。",
+    "inviteCopyLink": "复制链接",
+    "inviteCopied": "已复制",
+    "inviteCopyFailed": "复制失败，请手动选中链接复制",
+    "inviteExpiresAt": "失效时间",
+    "inviteInvitedBy": "邀请人",
+    "inviteRevoke": "撤销邀请",
+    "inviteRevokeTitle": "撤销该邀请？",
+    "inviteRevokeContent": "撤销后该链接立即失效，受邀人将无法再用它注册。",
+    "invitationsTitle": "邀请记录",
+    "invitationsSubtitle": "待接受与历史邀请链接。",
+    "inviteStatus": {
+      "pending": "待接受",
+      "accepted": "已注册",
+      "expired": "已过期",
+      "revoked": "已撤销"
+    },
+    "viewInvitations": "邀请记录",
+    "invitationsEmpty": "暂无邀请记录"
   },
   "chatApp": {
     "welcomeTitle": "我是 {{name}}",
@@ -2272,7 +2306,11 @@
       "user.role.updated": "修改用户角色",
       "user.status.updated": "修改用户状态",
       "agent.git_trigger": "Git 仓库触发",
-      "agent.git_trigger_probe": "探测 Git 触发 CLI 状态"
+      "agent.git_trigger_probe": "探测 Git 触发 CLI 状态",
+      "user_invitation.created": "创建用户邀请",
+      "user_invitation.revoked": "撤销用户邀请",
+      "user_invitation.accepted": "接受用户邀请",
+      "user_invitation.accept_failed": "接受用户邀请失败"
     },
     "resources": {
       "agent": "Agent",
@@ -2292,7 +2330,8 @@
       "settings": "系统设置",
       "skill": "技能",
       "skill-group": "技能分组",
-      "user": "用户"
+      "user": "用户",
+      "user_invitation": "用户邀请"
     },
     "datePresetAll": "全部时间",
     "dateRange": "时间范围"
@@ -2437,5 +2476,36 @@
     "belowLockMeetsMinimumHint": "当前版本低于平台锁定版本，但未低于该 Provider 的最低版本要求，可以正常运行；更新为可选操作。",
     "belowMinimumHint": "当前版本低于最低版本要求 {{minVersion}}，引擎依赖的子命令可能不存在，建议更新。",
     "unmanagedHint": "当前版本不是平台锁定的构建。"
+  },
+  "invite": {
+    "title": "创建你的账号",
+    "desc": "你受邀加入该 a2wave 工作区，请设置登录信息。",
+    "usernamePlaceholder": "用于登录，3-32 位字母、数字、. _ -",
+    "usernameInvalid": "用户名需 3-32 位，以字母或数字开头，仅可含字母、数字、. _ -",
+    "email": "邮箱",
+    "emailPlaceholder": "建议使用公司邮箱",
+    "emailHint": "建议使用公司邮箱，便于后续与企业账号打通。",
+    "emailPinnedHint": "该邀请已指定邮箱，不可修改。",
+    "emailInvalid": "邮箱格式不正确",
+    "submit": "创建账号并登录",
+    "goToLogin": "前往登录",
+    "unusable": {
+      "notFound": {
+        "title": "邀请链接无效",
+        "desc": "该链接不存在，请检查是否复制完整，或联系管理员重新发送。"
+      },
+      "expired": {
+        "title": "邀请链接已过期",
+        "desc": "该链接已超过有效期，请联系管理员重新生成一个。"
+      },
+      "revoked": {
+        "title": "邀请链接已撤销",
+        "desc": "该链接已被管理员撤销，请联系管理员确认。"
+      },
+      "accepted": {
+        "title": "该邀请已被使用",
+        "desc": "此链接对应的账号已创建，请直接登录。"
+      }
+    }
   }
 }

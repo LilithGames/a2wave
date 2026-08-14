@@ -106,6 +106,65 @@ export const users = sqliteTable(
 )
 
 // ============================================================
+// User Invitations - invite links that let a new colleague create their own account
+// ============================================================
+/**
+ * An administrator issues an invitation instead of typing someone else's password.
+ *
+ * The row is the single source of truth for whether a link still works, so it records both
+ * of the terminal transitions explicitly (`acceptedAt`, `revokedAt`) rather than deleting
+ * itself: a consumed or withdrawn invitation must stay auditable, and the accept path needs
+ * to tell "already used" apart from "never existed" to give the invitee an actionable
+ * message.
+ *
+ * Status is *derived*, never stored — a stored `expired` would only become true when some
+ * sweeper happened to run, so a link would keep working past its deadline until then.
+ */
+export const userInvitations = sqliteTable(
+  'user_invitations',
+  {
+    id: text('id').primaryKey(), // inv_xxx
+    /**
+     * The secret in the invite URL. Unique so the lookup is a single indexed read, and
+     * generated with 32 bytes of CSPRNG entropy — it is a bearer credential for account
+     * creation, and the accept endpoint is unauthenticated by design.
+     */
+    code: text('code').notNull().unique(),
+    /**
+     * Address the invitation is pinned to, lowercased. Null means the admin issued an
+     * unpinned link and the invitee supplies their own address. When set, accept refuses a
+     * different address, so forwarding the link does not silently transfer the invitation.
+     */
+    email: text('email'),
+    /** Role the created account receives. Only an admin can choose it, at issue time. */
+    role: text('role', { enum: ['admin', 'user'] })
+      .notNull()
+      .default('user'),
+    /** Free-form admin memo ("contractor, Q3 project"). Never rendered to the invitee. */
+    note: text('note'),
+    /** Administrator who issued it. Nullable so deleting that admin does not delete history. */
+    invitedBy: text('invited_by').references(() => users.id, { onDelete: 'set null' }),
+    /** Account created by accepting it; null while pending. */
+    acceptedUserId: text('accepted_user_id').references(() => users.id, { onDelete: 'set null' }),
+    acceptedAt: integer('accepted_at', { mode: 'timestamp' }),
+    revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: integer('updated_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The admin list orders by created_at DESC with a LIMIT; the pending-duplicate check
+    // filters by email. Both would otherwise scan a table that only ever grows.
+    createdAtIdx: index('user_invitations_created_at_idx').on(table.createdAt),
+    emailIdx: index('user_invitations_email_idx').on(table.email),
+  }),
+)
+
+// ============================================================
 // Audit Logs - audit log
 // ============================================================
 export const auditLogs = sqliteTable(

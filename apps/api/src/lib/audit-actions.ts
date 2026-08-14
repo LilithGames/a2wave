@@ -36,6 +36,15 @@ export const AUDIT_ACTIONS = {
   USER_ROLE_UPDATED: 'user.role.updated',
   USER_STATUS_UPDATED: 'user.status.updated',
 
+  // User invitations — an admin issues a link, the invitee creates their own account.
+  // The accept entry is written by an unauthenticated request, so it is attributed to
+  // the account it just created rather than to a caller identity.
+  USER_INVITATION_CREATED: 'user_invitation.created',
+  USER_INVITATION_REVOKED: 'user_invitation.revoked',
+  USER_INVITATION_ACCEPTED: 'user_invitation.accepted',
+  /** Accept was refused (expired / revoked / already used / conflicting username or email). */
+  USER_INVITATION_ACCEPT_FAILED: 'user_invitation.accept_failed',
+
   // Provider CLIs (runtime install; the image ships none)
   PROVIDER_CLI_INSTALL: 'provider_cli.install',
   PROVIDER_CLI_UNINSTALL: 'provider_cli.uninstall',

@@ -10,6 +10,21 @@ const API_BASE = '/api'
 const AUTH_REDIRECT_EXEMPT = new Set(['/login', '/setup', '/share-login'])
 
 /**
+ * 同样豁免、但路径带参数所以无法用集合精确匹配的公开路由。
+ * /invite/:code 是受邀人注册页：此时对方本就没有账号，把 401 踢去 /login 只会让邀请链接
+ * 永远走不到注册表单。
+ */
+const AUTH_REDIRECT_EXEMPT_PREFIXES = ['/invite/']
+
+/** Exported for tests: getting this wrong silently breaks a whole public entry point. */
+export function isAuthRedirectExempt(pathname: string): boolean {
+  return (
+    AUTH_REDIRECT_EXEMPT.has(pathname) ||
+    AUTH_REDIRECT_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+  )
+}
+
+/**
  * 浏览器认证态走 HttpOnly cookie（API 写入），fetch 用 credentials: 'include' 自动携带。
  * 这里不再读写 localStorage —— XSS 也偷不到 token。
  */
@@ -31,7 +46,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     if (res.status === 401) {
       const { pathname } = window.location
-      if (!AUTH_REDIRECT_EXEMPT.has(pathname)) {
+      if (!isAuthRedirectExempt(pathname)) {
         window.location.href = '/login'
       }
     }

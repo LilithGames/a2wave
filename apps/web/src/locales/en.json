@@ -567,7 +567,13 @@
     "HTTP_429": "Too many requests. Wait a moment and try again.",
     "HTTP_501": "This operation is not supported by the server.",
     "HTTP_502": "The upstream service returned an invalid response. Try again shortly.",
-    "HTTP_503": "The service is temporarily unavailable. Try again shortly."
+    "HTTP_503": "The service is temporarily unavailable. Try again shortly.",
+    "EMAIL_ALREADY_REGISTERED": "This email is already registered",
+    "INVITATION_NOT_FOUND": "Invalid invitation link — check that you copied it in full",
+    "INVITATION_EXPIRED": "This invitation link has expired; ask an administrator for a new one",
+    "INVITATION_REVOKED": "An administrator has revoked this invitation link",
+    "INVITATION_ALREADY_ACCEPTED": "This invitation has already been used — please sign in",
+    "INVITATION_EMAIL_MISMATCH": "This invitation is pinned to a specific address; register with the invited email"
   },
   "skills": {
     "groupNotFoundTitle": "Group not found",
@@ -1917,8 +1923,6 @@
   "users": {
     "title": "Users",
     "subtitle": "Manage system user accounts",
-    "addUser": "Add User",
-    "addUserDesc": "Create a new user account",
     "username": "Username",
     "usernamePlaceholder": "Enter username",
     "displayName": "Display Name",
@@ -1951,7 +1955,37 @@
     "enableContent": "Re-enable \"{{username}}\"? Their sign-in and access will be restored.",
     "changeStatusFailed": "Failed to change status",
     "roleAdmin": "Admin",
-    "roleUser": "User"
+    "roleUser": "User",
+    "inviteUser": "Invite user",
+    "inviteUserDesc": "Generate a registration link to send to a colleague; they set their own username, email and password. The link is valid for {{hours}} hour(s).",
+    "inviteCreatedDesc": "The invitation link is ready — copy it and send it to the invitee.",
+    "createInvite": "Create invite link",
+    "inviteEmail": "Email",
+    "inviteEmailPlaceholder": "someone@company.com (optional)",
+    "inviteEmailHint": "If set, only this address can use the link; leave empty to let the invitee supply their own.",
+    "inviteEmailInvalid": "Invalid email address",
+    "inviteAnyEmail": "Any email",
+    "inviteNote": "Note",
+    "inviteNotePlaceholder": "Admin-only, e.g. which team they join",
+    "inviteLinkHint": "This link expires at {{expiresAt}}; issue a new one after that.",
+    "inviteCopyLink": "Copy link",
+    "inviteCopied": "Copied",
+    "inviteCopyFailed": "Copy failed — please select the link and copy it manually",
+    "inviteExpiresAt": "Expires",
+    "inviteInvitedBy": "Invited by",
+    "inviteRevoke": "Revoke invitation",
+    "inviteRevokeTitle": "Revoke this invitation?",
+    "inviteRevokeContent": "The link stops working immediately and the invitee can no longer register with it.",
+    "invitationsTitle": "Invitations",
+    "invitationsSubtitle": "Outstanding and past invitation links.",
+    "inviteStatus": {
+      "pending": "Pending",
+      "accepted": "Registered",
+      "expired": "Expired",
+      "revoked": "Revoked"
+    },
+    "viewInvitations": "Invitations",
+    "invitationsEmpty": "No invitations yet"
   },
   "kbDocuments": {
     "title": "Knowledge Base",
@@ -2245,7 +2279,11 @@
       "user.role.updated": "Change user role",
       "user.status.updated": "Change user status",
       "agent.git_trigger": "Git repository trigger fired",
-      "agent.git_trigger_probe": "Probe git trigger CLI status"
+      "agent.git_trigger_probe": "Probe git trigger CLI status",
+      "user_invitation.created": "Create user invitation",
+      "user_invitation.revoked": "Revoke user invitation",
+      "user_invitation.accepted": "Accept user invitation",
+      "user_invitation.accept_failed": "User invitation accept failed"
     },
     "resources": {
       "agent": "Agent",
@@ -2265,7 +2303,8 @@
       "settings": "Settings",
       "skill": "Skill",
       "skill-group": "Skill group",
-      "user": "User"
+      "user": "User",
+      "user_invitation": "User invitation"
     },
     "datePresetAll": "All time",
     "dateRange": "Date range"
@@ -2437,5 +2476,36 @@
     "belowLockMeetsMinimumHint": "The installed version is older than the platform pin but is not below the Provider's minimum version requirement, so it runs normally — updating is optional.",
     "belowMinimumHint": "The installed version is below the minimum requirement {{minVersion}}; subcommands the engine depends on may be missing, so updating is recommended.",
     "unmanagedHint": "The installed version is not the build the platform pins."
+  },
+  "invite": {
+    "title": "Create your account",
+    "desc": "You have been invited to this a2wave workspace. Set your sign-in details below.",
+    "usernamePlaceholder": "For sign-in: 3-32 chars, letters, digits, . _ -",
+    "usernameInvalid": "Username must be 3-32 characters, start with a letter or digit, and use only letters, digits, . _ -",
+    "email": "Email",
+    "emailPlaceholder": "Your company email is recommended",
+    "emailHint": "A company email is recommended so the account lines up with your corporate identity.",
+    "emailPinnedHint": "This invitation is pinned to a specific address and cannot be changed.",
+    "emailInvalid": "Invalid email address",
+    "submit": "Create account and sign in",
+    "goToLogin": "Go to sign in",
+    "unusable": {
+      "notFound": {
+        "title": "Invalid invitation link",
+        "desc": "This link does not exist. Check that you copied it in full, or ask an administrator to resend it."
+      },
+      "expired": {
+        "title": "Invitation link expired",
+        "desc": "This link is past its expiry date. Ask an administrator to issue a new one."
+      },
+      "revoked": {
+        "title": "Invitation link revoked",
+        "desc": "An administrator has withdrawn this link. Please check with them."
+      },
+      "accepted": {
+        "title": "Invitation already used",
+        "desc": "The account for this link has already been created. Please sign in."
+      }
+    }
   }
 }

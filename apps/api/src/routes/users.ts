@@ -5,10 +5,9 @@ import { db } from '../db/client.js'
 import { isPostgresRuntime } from '../db/dialect-runtime.js'
 import { users } from '../db/schema.js'
 import { withTransaction } from '../db/transaction.js'
-import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { logAudit } from '../lib/audit.js'
+import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { hashPassword, validatePassword } from '../lib/auth.js'
-import { createId } from '../lib/id.js'
 
 const app = new Hono()
 
@@ -52,65 +51,15 @@ app.get('/', async (c) => {
   })
 })
 
-const createUserSchema = z.object({
-  username: z.string().min(1),
-  displayName: z.string().optional(),
-  password: z.string(),
-})
-
-/** POST /users — 创建用户 */
-app.post('/', async (c) => {
-  const body = await c.req.json()
-  const parsed = createUserSchema.safeParse(body)
-  if (!parsed.success) {
-    return c.json({ error: parsed.error.flatten() }, 400)
-  }
-
-  const { username, displayName, password } = parsed.data
-
-  const validation = validatePassword(password)
-  if (!validation.valid) {
-    return c.json({ error: validation.message }, 400)
-  }
-
-  const existing = (await db.select().from(users).where(eq(users.username, username)).limit(1))[0]
-  if (existing) {
-    return c.json({ error: 'USERNAME_EXISTS' }, 409)
-  }
-
-  const id = createId('usr')
-  const passwordHash = await hashPassword(password)
-
-  const newUser = (
-    await db
-      .insert(users)
-      .values({
-        id,
-        username,
-        displayName: displayName ?? null,
-        role: 'user',
-        passwordHash,
-        isActive: true,
-      })
-      .returning()
-  )[0]
-
-  logAudit(c, { action: 'user.create', resource: 'user', resourceId: id })
-
-  return c.json(
-    {
-      data: {
-        id: newUser.id,
-        username: newUser.username,
-        displayName: newUser.displayName,
-        role: newUser.role,
-        isActive: newUser.isActive,
-        createdAt: newUser.createdAt,
-      },
-    },
-    201,
-  )
-})
+/**
+ * Accounts are no longer created here.
+ *
+ * An administrator issuing a password on someone else's behalf means that password travels
+ * over a chat message and is known to two people, and it makes the account's own email —
+ * the field SSO alignment and notifications depend on — a field nobody ever fills in.
+ * `POST /users/invitations` replaces it: the invitee follows a expiring link and sets their
+ * own username, email and password. See routes/user-invitations.ts.
+ */
 
 /** DELETE /users/:id — 删除用户 */
 app.delete('/:id', async (c) => {

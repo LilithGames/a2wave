@@ -11,19 +11,19 @@ import { SqliteTaskStore } from './a2a/sqlite-task-store.js'
 import { closeDatabaseConnection, db, isPostgres } from './db/client.js'
 import { runMigrations } from './db/migrate-runtime.js'
 import { agents, mcpServers } from './db/schema.js'
-import { evaluationQueueDb } from './engine/evaluation-queue-db.js'
 import {
   pauseEvaluationQueuePromotions,
   recoverEvaluationsOnStartup,
 } from './engine/evaluation-queue.js'
+import { evaluationQueueDb } from './engine/evaluation-queue-db.js'
 import {
   drainActiveExecutionLeases,
   drainDurableExecutionLeaseReleases,
   setDurableExecutionLeaseReleaseHandler,
 } from './engine/execution-lease-registry.js'
 import { engineRegistry } from './engine/index.js'
-import { taskQueueDb } from './engine/task-queue-db.js'
 import { pauseTaskQueuePromotions, recoverOnStartup, scheduleNext } from './engine/task-queue.js'
+import { taskQueueDb } from './engine/task-queue-db.js'
 import { env } from './env.js'
 import { startArtifactCleanupScheduler } from './lib/artifact-cleanup.js'
 import { startAttachmentStagingCleanupScheduler } from './lib/attachment-cleanup.js'
@@ -38,7 +38,7 @@ import { executeChatRun } from './lib/execute-chat-run.js'
 import { listPendingMessages } from './lib/feishu-pending-store.js'
 import { feishuConnectionManager } from './lib/feishu-service.js'
 import { gitTriggerManager } from './lib/git-trigger-manager.js'
-import { SHUTDOWN_HARD_TIMEOUT_MS, runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
+import { runGracefulShutdownSequence, SHUTDOWN_HARD_TIMEOUT_MS } from './lib/graceful-shutdown.js'
 import {
   beatInstanceHeartbeat,
   deleteInstanceHeartbeat,
@@ -80,9 +80,9 @@ import agentsRoutes from './routes/agents.js'
 import artifactsRoutes from './routes/artifacts.js'
 import attachmentsRoutes from './routes/attachments.js'
 import auditLogsRoutes from './routes/audit-logs.js'
+import authRoutes from './routes/auth.js'
 import authOidcRoutes from './routes/auth-oidc.js'
 import authSamlRoutes from './routes/auth-saml.js'
-import authRoutes from './routes/auth.js'
 import changelogRoutes from './routes/changelog.js'
 import docsRoutes from './routes/docs.js'
 import e2eRoutes from './routes/e2e.js'
@@ -107,6 +107,7 @@ import shareViewRoutes from './routes/share-view.js'
 import skillGroupsRoutes from './routes/skill-groups.js'
 import skillsRoutes from './routes/skills.js'
 import uploadsRoutes from './routes/uploads.js'
+import { adminInvitationRoutes, publicInvitationRoutes } from './routes/user-invitations.js'
 import userLookupRoutes from './routes/user-lookup.js'
 import usersRoutes from './routes/users.js'
 
@@ -231,6 +232,10 @@ app.use('/api/auth/logout', authMiddleware)
 // 标准 SSO 登录（OIDC / SAML）：公开未鉴权的浏览器跳转流，回调触发验签 + 建号，限流
 app.use('/api/auth/oidc/*', authRateLimit)
 app.use('/api/auth/saml/*', authRateLimit)
+// 邀请注册：公开未鉴权（受邀人此时还没有账号），且 accept 会建号 + Argon2 哈希（CPU 放大），
+// code 又是 URL 里的 bearer 凭据，必须限流，否则可被枚举探测。
+app.use('/api/auth/invitations/*', authRateLimit)
+app.route('/api/auth/invitations', publicInvitationRoutes)
 app.route('/api/auth/oidc', authOidcRoutes)
 app.route('/api/auth/saml', authSamlRoutes)
 app.route('/api/auth', authRoutes)
@@ -313,6 +318,10 @@ app.use('/api/audit-logs', authMiddleware, requireAdmin)
 // Installing a CLI runs an installer as the service user, so it is admin-only.
 app.use('/api/provider-clis/*', authMiddleware, requireAdmin)
 app.use('/api/provider-clis', authMiddleware, requireAdmin)
+// Invitation management inherits the admin guard from the /api/users prefix above. It is
+// mounted before the users routes so `/users/invitations` resolves here rather than being
+// swallowed by a parameterised users path.
+app.route('/api/users/invitations', adminInvitationRoutes)
 app.route('/api/users', usersRoutes)
 app.route('/api/audit-logs', auditLogsRoutes)
 app.route('/api/provider-clis', providerClisRoutes)
