@@ -1,4 +1,5 @@
 import { logger } from './logger.js'
+import { WorkspaceRemovalHandedOffError } from './workspace-removal-outcome.js'
 
 const DEFAULT_RETRY_DELAY_MS = 1_000
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000
@@ -65,6 +66,10 @@ export async function retryWorkspaceCleanup(
       await cleanup()
       return
     } catch (error) {
+      // A committed handoff is terminal, not a transient failure: the removal
+      // protocol already gave the reservation away, so retrying would re-run
+      // the whole guarded path against a row this process no longer owns.
+      if (error instanceof WorkspaceRemovalHandedOffError) throw error
       if (attempt >= maxAttempts) {
         logger.warn(
           { error, ...options.context, attempts: attempt },
@@ -83,17 +88,22 @@ export async function retryWorkspaceCleanup(
 }
 
 /**
- * The workload owner's cleanup boundary: try inline, and treat exhaustion as a
- * completed handoff rather than an error.
+ * The workload owner's cleanup boundary: try inline, and return normally only
+ * when the worktree is either gone or provably guarded by a durable mark.
  *
- * By the time this returns, either the worktree is gone or its removal
- * reservation has been handed to the reconciler — which keeps every
- * counter-party off that worktree and its source. The caller may therefore
- * release its lease and free the concurrency slot, which is the whole point:
- * one undeletable directory must not cost an Agent a permanent slot.
+ * The caller releases its workload lease as soon as this resolves, so the bar
+ * for resolving is exactly: *something* now keeps other actors off this
+ * worktree. Two outcomes clear it — cleanup succeeded, or the removal protocol
+ * committed a reservation and handed it to the reconciler
+ * (`WorkspaceRemovalHandedOffError`, raised only past the committed insert).
  *
- * A non-exhaustion error still propagates; it means cleanup failed in a way
- * that never reached the removal protocol, so nothing was handed off.
+ * Every other failure propagates and keeps the lease held. This is the
+ * distinction an earlier version got wrong by swallowing any exhausted retry:
+ * cleanup does substantial work *before* the reservation exists — resolving
+ * the run, the Agent, the source row, building the SCM handle — and a failure
+ * in that stretch leaves no durable mark whatsoever. Releasing the lease then
+ * frees the slot and unpins the binding while the worktree sits unguarded on
+ * disk, which is precisely the race the reservation was introduced to close.
  */
 export async function cleanupWorkspaceOrHandOff(
   cleanup: () => Promise<void>,
@@ -103,10 +113,25 @@ export async function cleanupWorkspaceOrHandOff(
   try {
     await retry(cleanup, options)
   } catch (error) {
-    if (!(error instanceof WorkspaceCleanupExhaustedError)) throw error
+    const handoff = findHandoffSignal(error)
+    if (!handoff) throw error
     logger.warn(
-      { ...options.context },
+      { ...options.context, reservationId: handoff.reservationId },
       'Workspace cleanup handed off to the reconciler; releasing the workload lease',
     )
   }
+}
+
+/**
+ * The handoff signal arrives wrapped: the retry helper reports exhaustion and
+ * carries the last real failure as `cause`. Unwrap one level rather than
+ * matching on the outer type, which would readmit the over-broad rule.
+ */
+function findHandoffSignal(error: unknown): WorkspaceRemovalHandedOffError | null {
+  if (error instanceof WorkspaceRemovalHandedOffError) return error
+  if (error instanceof WorkspaceCleanupExhaustedError) {
+    const cause = error.cause
+    if (cause instanceof WorkspaceRemovalHandedOffError) return cause
+  }
+  return null
 }

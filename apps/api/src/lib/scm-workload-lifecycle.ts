@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import type { db } from '../db/client.js'
 import { agents, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
+import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { retryUntilSuccess } from './retry-until-success.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -36,9 +37,18 @@ type MutationRunner = <T>(mutation: (tx: TransactionHandle) => Promise<T>) => Pr
 
 export interface ScmWorkloadLifecycleDeps {
   withMutation: MutationRunner
+  /**
+   * True when this instance can no longer renew its liveness heartbeat.
+   * Optional because only admission consults it: releasing a lease while
+   * fenced is not merely allowed but desirable — it hands capacity back.
+   */
+  hasLostOwnership?: () => boolean
 }
 
-const defaultDeps: ScmWorkloadLifecycleDeps = { withMutation: withScmPathMutation }
+const defaultDeps: ScmWorkloadLifecycleDeps = {
+  withMutation: withScmPathMutation,
+  hasLostOwnership: () => hasLostHeartbeatOwnership(),
+}
 
 type LeaseRow = typeof scmWorkloadLeases.$inferSelect
 
@@ -103,6 +113,16 @@ export async function withScmWorkloadAdmission<T>(
   writeWorkloadState: (tx: TransactionHandle, admission: ScmWorkloadAdmission) => Promise<T>,
   deps: ScmWorkloadLifecycleDeps = defaultDeps,
 ): Promise<T> {
+  // Self-fenced: renewals have been failing long enough that peers are
+  // entitled to reclaim this instance's checkouts. Taking on new SCM work now
+  // would put two processes in the same worktree, so refuse at the door — the
+  // caller surfaces this as a normal admission failure and the work retries
+  // wherever liveness is intact.
+  if (deps.hasLostOwnership?.() ?? hasLostHeartbeatOwnership()) {
+    throw new ScmWorkloadAdmissionError(
+      'This instance cannot renew its liveness heartbeat and is not admitting SCM workloads',
+    )
+  }
   return deps.withMutation(async (tx) => {
     const agent = (
       await tx

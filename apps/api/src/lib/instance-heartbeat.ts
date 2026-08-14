@@ -81,14 +81,72 @@ export async function beatInstanceHeartbeat(
   )
 }
 
-/** Beat immediately and on the interval until stopped. A failed beat is retried by the next tick. */
+/**
+ * Per-deps renewal state. Keyed by the deps object so tests get isolation and
+ * production shares one entry via `defaultDeps`.
+ */
+interface RenewalState {
+  inFlight: boolean
+  /**
+   * Last successful renewal, seeded when the loop starts rather than from
+   * `bootTime`: liveness is about *renewal* health, and a long-lived process
+   * that has beaten happily for hours must not read as instantly fenced.
+   */
+  lastSuccessAt: number
+}
+
+const renewalStates = new WeakMap<InstanceHeartbeatDeps, RenewalState>()
+
+function renewalState(deps: InstanceHeartbeatDeps): RenewalState {
+  let state = renewalStates.get(deps)
+  if (!state) {
+    state = { inFlight: false, lastSuccessAt: deps.now().getTime() }
+    renewalStates.set(deps, state)
+  }
+  return state
+}
+
+/**
+ * Has this process failed to renew for long enough that peers will call it dead?
+ *
+ * The owner must reach the same verdict its peers will. Once renewals have been
+ * failing past the staleness threshold, a peer is entitled to reclaim this
+ * instance's checkouts — so continuing to act as an owner (admitting work,
+ * treating its own marks as protected) would mean two processes writing the
+ * same worktree. Self-fencing here is what keeps the heartbeat a lease rather
+ * than merely a hint.
+ */
+export function hasLostHeartbeatOwnership(deps: InstanceHeartbeatDeps = defaultDeps): boolean {
+  const state = renewalStates.get(deps)
+  if (!state) return false
+  return deps.now().getTime() - state.lastSuccessAt > INSTANCE_DEAD_AFTER_MS
+}
+
+/**
+ * Beat immediately and on the interval until stopped.
+ *
+ * Renewals are single-flight: a write that outlives its interval must not be
+ * joined by a second one, since two concurrent upserts of the same row race to
+ * set `heartbeat_at` and a slow one landing last would move liveness backwards.
+ * A failed beat is retried by the next tick, and sustained failure trips
+ * `hasLostHeartbeatOwnership`.
+ */
 export function startInstanceHeartbeat(deps: InstanceHeartbeatDeps = defaultDeps): () => void {
-  const beat = () =>
-    beatInstanceHeartbeat(deps).catch((error) =>
-      logger.warn({ error }, 'Instance heartbeat write failed; next interval retries'),
-    )
+  const state = renewalState(deps)
+  const beat = async () => {
+    if (state.inFlight) return
+    state.inFlight = true
+    try {
+      await beatInstanceHeartbeat(deps)
+      state.lastSuccessAt = deps.now().getTime()
+    } catch (error) {
+      logger.warn({ error }, 'Instance heartbeat write failed; next interval retries')
+    } finally {
+      state.inFlight = false
+    }
+  }
   void beat()
-  const timer = setInterval(beat, INSTANCE_HEARTBEAT_INTERVAL_MS)
+  const timer = setInterval(() => void beat(), INSTANCE_HEARTBEAT_INTERVAL_MS)
   timer.unref?.()
   return () => clearInterval(timer)
 }
@@ -128,6 +186,10 @@ export async function pruneDeadInstanceHeartbeats(
  * an upgrade reads as "everyone is dead".
  */
 export function canJudgePeerLiveness(deps: InstanceHeartbeatDeps = defaultDeps): boolean {
+  // A self-fenced instance has no standing to judge anyone: peers already
+  // consider it dead, so acting on its own stale view of the table would let
+  // two processes reclaim the same resources.
+  if (hasLostHeartbeatOwnership(deps)) return false
   return deps.now().getTime() - deps.bootTime.getTime() >= RECOVERY_GRACE_AFTER_BOOT_MS
 }
 

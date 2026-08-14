@@ -14,6 +14,7 @@ import {
   scmWorkloadLeaseId,
 } from './scm-workload-lifecycle.js'
 import { WorkspaceCleanupExhaustedError, retryWorkspaceCleanup } from './workspace-cleanup-retry.js'
+import { WorkspaceRemovalHandedOffError } from './workspace-removal-outcome.js'
 
 /**
  * The single protocol for removing a source's worktree.
@@ -64,6 +65,8 @@ export class WorkspaceRemovalBlockedError extends Error {
     this.name = 'WorkspaceRemovalBlockedError'
   }
 }
+
+export { WorkspaceRemovalHandedOffError } from './workspace-removal-outcome.js'
 
 /** How the removal target sees the source; also the snapshot the re-check pins. */
 export interface RemovableScmWorkspace {
@@ -307,10 +310,25 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         // instance stops beating.
         handedOff = true
         await handOffWorkspaceRemoval({ reservationId, attemptToken })
-        return
+        // Raised only here, past the committed reservation, so callers can
+        // distinguish "a durable mark now guards this worktree" from any
+        // earlier failure that left no mark at all.
+        throw new WorkspaceRemovalHandedOffError(reservationId, { cause: error })
       }
     } else {
-      await remove()
+      // Manual DELETE and TTL/LRU cleanup: one attempt, no inline retry — the
+      // caller is a request or a sweep tick, neither of which should block on
+      // a busy worktree. A failure still leaves the worktree on disk, so the
+      // reservation is handed to the reconciler rather than released; the
+      // error propagates so the route still answers honestly.
+      try {
+        await remove()
+      } catch (error) {
+        if (error instanceof WorkspaceRemovalBlockedError) throw error
+        handedOff = true
+        await handOffWorkspaceRemoval({ reservationId, attemptToken })
+        throw error
+      }
     }
   } finally {
     // Release even when the removal failed: the reservation only needs to
@@ -341,7 +359,9 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
  * @returns whether the row was actually disowned; false means it was gone or
  * already superseded, which needs no action either way.
  */
-async function handOffWorkspaceRemoval(pending: PendingReservationRelease): Promise<boolean> {
+export async function handOffWorkspaceRemoval(
+  pending: PendingReservationRelease,
+): Promise<boolean> {
   try {
     return await withScmPathMutation(async (tx) => {
       const updated = await tx

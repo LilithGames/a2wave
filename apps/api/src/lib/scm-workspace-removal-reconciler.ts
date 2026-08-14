@@ -12,7 +12,7 @@ import { logger } from './logger.js'
 import { processInstanceId } from './process-instance.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 import { createScmSource } from './scm-source.js'
-import { findWorkspaceRemovalBlocker } from './scm-workspace-removal.js'
+import { findWorkspaceRemovalBlocker, handOffWorkspaceRemoval } from './scm-workspace-removal.js'
 
 /**
  * Periodic convergence for workspace removals nobody is finishing.
@@ -68,6 +68,8 @@ export interface WorkspaceRemovalReconcilerDeps {
   findBlocker: (scmSourceId: string, workspaceName: string) => Promise<string | null>
   removeWorkspace: (scmSourceId: string, workspaceName: string) => Promise<void>
   release: (reservationId: string, attemptToken: string) => Promise<void>
+  /** Disown a row again after a failed attempt so the next tick can adopt it. */
+  handOff: (reservationId: string, attemptToken: string) => Promise<boolean>
   newToken: () => string
   now: () => Date
 }
@@ -91,6 +93,32 @@ async function adopt(
   nextToken: string,
 ): Promise<boolean> {
   return withScmPathMutation(async (tx) => {
+    // Re-verify liveness inside the claim transaction, not from the snapshot
+    // the caller took. That snapshot was read before the loop began, and a
+    // peer resuming its heartbeat in between must keep its reservation —
+    // otherwise two processes remove the same worktree concurrently.
+    const row = (
+      await tx
+        .select({
+          ownerInstanceId: scmWorkspaceRemovals.ownerInstanceId,
+          attemptStartedAt: scmWorkspaceRemovals.attemptStartedAt,
+        })
+        .from(scmWorkspaceRemovals)
+        .where(
+          and(
+            eq(scmWorkspaceRemovals.id, reservationId),
+            eq(scmWorkspaceRemovals.attemptToken, expectedToken),
+          ),
+        )
+        .limit(1)
+    )[0]
+    if (!row) return false
+    if (row.ownerInstanceId) {
+      const liveness = await loadInstanceLiveness(tx)
+      if (!isInstanceOwnerDead(liveness, row.ownerInstanceId, row.attemptStartedAt, new Date())) {
+        return false
+      }
+    }
     const claimed = await tx
       .update(scmWorkspaceRemovals)
       .set({
@@ -167,6 +195,8 @@ const defaultDeps: WorkspaceRemovalReconcilerDeps = {
   findBlocker,
   removeWorkspace,
   release,
+  handOff: (reservationId, attemptToken) =>
+    handOffWorkspaceRemoval({ reservationId, attemptToken }),
   newToken: () => randomUUID(),
   now: () => new Date(),
 }
@@ -213,12 +243,23 @@ export async function reconcileAbandonedWorkspaceRemovals(
       try {
         await deps.removeWorkspace(candidate.scmSourceId, candidate.workspaceName)
       } catch (error) {
-        // Keep the reservation: it is what holds every counter-party off this
-        // worktree, and the next tick is the retry.
+        // Keep the reservation — it is what holds every counter-party off this
+        // worktree — but disown it again. Adoption stamped this instance as
+        // owner, and a *live* owner is exactly what the next tick skips, so
+        // leaving it claimed would block the source until this process died.
+        // Handing it back is what makes "the next tick is the retry" true.
         logger.warn(
           { error, reservationId: candidate.id },
-          'workspace-removal-reconciler: removal failed; retrying on the next tick',
+          'workspace-removal-reconciler: removal failed; disowning for the next tick',
         )
+        await deps
+          .handOff(candidate.id, nextToken)
+          .catch((handOffError) =>
+            logger.error(
+              { error: handOffError, reservationId: candidate.id },
+              'workspace-removal-reconciler: failed to disown after a failed removal; the row is adoptable once this instance stops',
+            ),
+          )
         reconciled.push({ reservationId: candidate.id, outcome: 'retry' })
         continue
       }

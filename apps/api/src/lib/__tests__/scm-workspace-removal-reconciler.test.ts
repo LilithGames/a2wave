@@ -44,11 +44,13 @@ function makeDeps(
     findBlocker: () => Promise<string | null>
     removeWorkspace: (sourceId: string, name: string) => Promise<void>
     release: (id: string, token: string) => Promise<void>
+    handOff: (id: string, token: string) => Promise<boolean>
   }> = {},
 ) {
   const removed: string[] = []
   const released: string[] = []
   const adopted: string[] = []
+  const handedOff: string[] = []
   const deps = {
     listAbandonedCandidates: async () => reservations,
     loadLiveness: overrides.loadLiveness ?? (async () => deadPeer()),
@@ -70,10 +72,16 @@ function makeDeps(
       (async (id: string) => {
         released.push(id)
       }),
+    handOff:
+      overrides.handOff ??
+      (async (id: string) => {
+        handedOff.push(id)
+        return true
+      }),
     newToken: () => 'token-next',
     now: () => NOW,
   } as never
-  return { deps, removed, released, adopted }
+  return { deps, removed, released, adopted, handedOff }
 }
 
 describe('reconcileAbandonedWorkspaceRemovals', () => {
@@ -163,10 +171,13 @@ describe('reconcileAbandonedWorkspaceRemovals', () => {
     expect(result).toEqual([{ reservationId: 'scm_1:wt-a', outcome: 'obsolete' }])
   })
 
-  it('keeps the reservation when the filesystem removal fails again', async () => {
+  it('keeps the reservation and re-hands it off when the removal fails again', async () => {
     // Failure must not release: the row is what keeps every counter-party off
-    // this worktree. The next tick retries — that IS the retry loop.
-    const { deps, released } = makeDeps([reservation()], {
+    // this worktree. But it must also not stay owned by THIS instance — the
+    // next tick would then see a live owner and skip it, so the source would
+    // stay blocked until this process dies. Disowning it again is what makes
+    // "the next tick is the retry" actually true.
+    const { deps, released, handedOff } = makeDeps([reservation()], {
       removeWorkspace: async () => {
         throw new Error('EBUSY')
       },
@@ -175,7 +186,48 @@ describe('reconcileAbandonedWorkspaceRemovals', () => {
     const result = await reconcileAbandonedWorkspaceRemovals(deps)
 
     expect(released).toEqual([])
+    expect(handedOff).toEqual(['scm_1:wt-a'])
     expect(result).toEqual([{ reservationId: 'scm_1:wt-a', outcome: 'retry' }])
+  })
+
+  it('adopts the same reservation again on the next tick after a failed attempt', async () => {
+    // The end-to-end statement of the rule above, across two ticks: a row this
+    // very instance failed on must not be invisible to it afterwards.
+    let row = reservation()
+    const deps = {
+      listAbandonedCandidates: async () => [row],
+      loadLiveness: async () =>
+        new Map([['instance-self', { startedAt: LONG_AGO, heartbeatAt: NOW }]]),
+      canJudgePeers: () => true,
+      adopt: async (_id: string, expected: string, next: string) => {
+        if (row.attemptToken !== expected) return false
+        row = {
+          ...row,
+          ownerInstanceId: 'instance-self',
+          attemptToken: next,
+          attemptStartedAt: NOW,
+        }
+        return true
+      },
+      findBlocker: async () => null,
+      removeWorkspace: async () => {
+        throw new Error('EBUSY')
+      },
+      release: async () => {},
+      handOff: async (_id: string, token: string) => {
+        if (row.attemptToken !== token) return false
+        row = { ...row, ownerInstanceId: null, attemptToken: 'token-after-handoff' }
+        return true
+      },
+      newToken: () => `token-${row.attemptToken}-next`,
+      now: () => NOW,
+    } as never
+
+    const first = await reconcileAbandonedWorkspaceRemovals(deps)
+    expect(first).toEqual([{ reservationId: 'scm_1:wt-a', outcome: 'retry' }])
+
+    const second = await reconcileAbandonedWorkspaceRemovals(deps)
+    expect(second).toEqual([{ reservationId: 'scm_1:wt-a', outcome: 'retry' }])
   })
 
   it('skips a reservation another replica adopted first', async () => {

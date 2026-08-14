@@ -39,7 +39,11 @@ import { listPendingMessages } from './lib/feishu-pending-store.js'
 import { feishuConnectionManager } from './lib/feishu-service.js'
 import { gitTriggerManager } from './lib/git-trigger-manager.js'
 import { runGracefulShutdownSequence } from './lib/graceful-shutdown.js'
-import { deleteInstanceHeartbeat, startInstanceHeartbeat } from './lib/instance-heartbeat.js'
+import {
+  beatInstanceHeartbeat,
+  deleteInstanceHeartbeat,
+  startInstanceHeartbeat,
+} from './lib/instance-heartbeat.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
 import { initAutoSyncSchedulers } from './lib/p4-sync.js'
@@ -521,6 +525,14 @@ void ensureAdminExists()
     // Liveness must be visible before this instance acquires any durable SCM
     // mark: recovery treats an owner with no heartbeat row as dead, so beating
     // first is what makes this instance's marks untouchable while it lives.
+    //
+    // AWAITED, and fatal on failure. A fire-and-forget first beat would let
+    // this process open its port, admit a Run, and activate a lease while no
+    // peer can see it is alive — and a peer past its grace window would then
+    // reap that live workload and reclaim its checkout. Refusing to start is
+    // the safe end of that trade: an instance that cannot record liveness
+    // cannot safely own a shared workspace.
+    await beatInstanceHeartbeat()
     stopInstanceHeartbeat = startInstanceHeartbeat()
     // Single-process backend: no previous workspace removal can still be
     // running, so every reservation row is a leak from the dead process. Clear

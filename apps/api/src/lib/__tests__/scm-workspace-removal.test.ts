@@ -40,6 +40,7 @@ function protocolTx(options: {
   let selectCall = 0
   const inserted: Row[] = []
   const deleted: string[] = []
+  const updated: Row[] = []
   let deleteFailures = options.deleteFailures ?? 0
   const tx = {
     select: vi.fn(() => ({
@@ -53,6 +54,16 @@ function protocolTx(options: {
           }),
         }),
       ),
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn((value: Row) => {
+        updated.push(value)
+        return {
+          where: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ id: 'scm_1:ws-a' }])),
+          })),
+        }
+      }),
     })),
     insert: vi.fn(() => ({
       values: vi.fn((value: Row) => {
@@ -78,7 +89,7 @@ function protocolTx(options: {
       })),
     })),
   }
-  return { tx, inserted, deleted }
+  return { tx, inserted, deleted, updated }
 }
 
 /** Row set for a clean occupancy decision: row matches, nothing occupies. */
@@ -175,8 +186,12 @@ describe('removeSourceWorkspaceGuarded', () => {
     expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
-  it('releases the reservation even when the removal itself fails', async () => {
-    const { tx, deleted } = protocolTx({
+  it('hands the reservation to the reconciler when a manual removal fails', async () => {
+    // Manual DELETE and TTL cleanup used to release here, which left a failed
+    // removal with no durable mark at all: the worktree stayed on disk and
+    // nothing was tracking that it still needed removing. Disowning the row
+    // instead keeps every counter-party blocked and lets the reconciler retry.
+    const { tx, deleted, updated } = protocolTx({
       selects: [...cleanDecisionSelects(), ...cleanDecisionSelects()],
     })
     mockWithMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) => fn(tx as never))
@@ -190,7 +205,33 @@ describe('removeSourceWorkspaceGuarded', () => {
       }),
     ).rejects.toThrow('EBUSY')
 
-    // The reservation spans the attempt and is released on this failure path.
+    expect(deleted).toHaveLength(0)
+    expect(updated).toEqual([{ ownerInstanceId: null }])
+  })
+
+  it('releases rather than hands off when the re-check blocks the removal', async () => {
+    // A blocked re-check means the removal became illegitimate — someone
+    // legitimately occupies the worktree now — so there is nothing left to
+    // converge and holding the row would block that occupant.
+    const { tx, deleted, updated } = protocolTx({
+      selects: [...cleanDecisionSelects(), [{ id: 'run_x' }]],
+    })
+    mockWithMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) => fn(tx as never))
+    const removeWorkspace = vi.fn(
+      async (_name: string, opts?: { beforeRemove?: () => Promise<void> }) => {
+        await opts?.beforeRemove?.()
+      },
+    )
+
+    await expect(
+      removeSourceWorkspaceGuarded({
+        sourceId: 'scm_1',
+        name: 'ws-a',
+        scm: scmOf(removeWorkspace),
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceRemovalBlockedError)
+
+    expect(updated).toEqual([])
     expect(deleted).toHaveLength(1)
   })
 

@@ -1,11 +1,12 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
 import { evaluationTasks, runs, scmWorkloadLeases } from '../db/schema.js'
-import type { TransactionHandle } from '../db/transaction.js'
+import { type TransactionHandle, runExclusive } from '../db/transaction.js'
 import { evaluationQueueDb } from '../engine/evaluation-queue-db.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
+import { logBackgroundAudit } from './audit.js'
 import {
   type InstanceLivenessMap,
   canJudgePeerLiveness,
@@ -56,8 +57,16 @@ export interface ScmLeaseSweepDeps {
   withMutation: MutationRunner
   isWorkloadLocallyActive: (identity: ScmWorkloadIdentity) => boolean
   ownerInstanceId: string
-  /** Read outside the mutation: staleness thresholds dwarf the read-to-decision gap. */
-  loadLiveness: () => Promise<InstanceLivenessMap>
+  /**
+   * Read **inside** the mutation, on the same executor as the delete.
+   *
+   * An out-of-transaction snapshot is a check-then-act: the owner can resume
+   * beating between the read and the delete, and the sweep would then reclaim
+   * a lease whose owner is demonstrably alive. Reading under the same lock
+   * that serialises every lease decision makes the verdict and the delete one
+   * atomic step.
+   */
+  loadLiveness: (executor: WorkloadStatusExecutor) => Promise<InstanceLivenessMap>
   /** False during the post-boot grace window, when an empty table means nothing. */
   canJudgePeers: () => boolean
   now: () => Date
@@ -78,7 +87,7 @@ const defaultDeps: ScmLeaseSweepDeps = {
   withMutation: withScmPathMutation,
   isWorkloadLocallyActive,
   ownerInstanceId: processInstanceId,
-  loadLiveness: () => loadInstanceLiveness(db),
+  loadLiveness: (executor) => loadInstanceLiveness(executor),
   canJudgePeers: () => canJudgePeerLiveness(),
   now: () => new Date(),
 }
@@ -115,8 +124,10 @@ export async function sweepOrphanedScmWorkloadLeases(
   deps: ScmLeaseSweepDeps = defaultDeps,
 ): Promise<ReleasedScmWorkload[]> {
   const canJudgePeers = deps.canJudgePeers()
-  const liveness = canJudgePeers ? await deps.loadLiveness() : new Map()
   return deps.withMutation(async (tx) => {
+    // Inside the mutation, so a peer that resumes beating cannot slip between
+    // the liveness verdict and the delete that acts on it.
+    const liveness = canJudgePeers ? await deps.loadLiveness(tx) : new Map()
     const leases = await tx.select().from(scmWorkloadLeases)
     const released: ReleasedScmWorkload[] = []
     const now = deps.now()
@@ -176,12 +187,57 @@ export interface DeadInstanceWorkloadReaperDeps {
   loadLiveness: () => Promise<InstanceLivenessMap>
   canJudgePeers: () => boolean
   isWorkloadLocallyActive: (identity: ScmWorkloadIdentity) => boolean
+  /**
+   * Claim the terminal transition by compare-and-set on the current status.
+   * False means someone else settled the workload first, and this reap must
+   * not proceed — the status read that selected this workload happened before
+   * the write, so a concurrent completion or cancellation can land in between.
+   */
+  claimRun: (runId: string) => Promise<boolean>
+  claimEvaluation: (taskId: string) => Promise<boolean>
   failRun: (runId: string) => Promise<void>
   failEvaluation: (taskId: string) => Promise<void>
   now: () => Date
 }
 
 const INSTANCE_STOPPED_EVALUATION_REASON = 'Interrupted: the owning server instance stopped'
+
+/** Statuses a reap may take over; anything else is already settled. */
+const REAPABLE_RUN_STATUSES = ['running', 'pending', 'queued'] as const
+const REAPABLE_EVALUATION_STATUSES = ['running', 'pending', 'queued'] as const
+
+/**
+ * Take ownership of the terminal transition, in one predicated write.
+ *
+ * `.returning()` row count is the claim result — the two drivers disagree
+ * about `changes`/`rowCount`, so it is the only portable answer.
+ */
+async function claimRunForReap(runId: string): Promise<boolean> {
+  const claimed = await runExclusive(() =>
+    db
+      .update(runs)
+      .set({ status: 'failed', updatedAt: new Date() })
+      .where(and(eq(runs.id, runId), inArray(runs.status, [...REAPABLE_RUN_STATUSES])))
+      .returning({ id: runs.id }),
+  )
+  return claimed.length > 0
+}
+
+async function claimEvaluationForReap(taskId: string): Promise<boolean> {
+  const claimed = await runExclusive(() =>
+    db
+      .update(evaluationTasks)
+      .set({ status: 'failed', updatedAt: new Date() })
+      .where(
+        and(
+          eq(evaluationTasks.id, taskId),
+          inArray(evaluationTasks.status, [...REAPABLE_EVALUATION_STATUSES]),
+        ),
+      )
+      .returning({ id: evaluationTasks.id }),
+  )
+  return claimed.length > 0
+}
 
 async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
   const run = (
@@ -203,14 +259,60 @@ async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
   }
 }
 
+/**
+ * Settle a reaped evaluation and record the spend.
+ *
+ * Every terminal path of an evaluation owes an `evaluation_task.execute` audit
+ * entry — evaluations deliberately write no `runs` rows, so that entry is the
+ * only record the work happened at all (Iron Rule 5, via the Evaluation
+ * carve-out). A reap is a terminal path like any other, and settling one
+ * silently would leave a task that consumed provider tokens with no trace.
+ */
+async function failEvaluationAbandonedByDeadInstance(taskId: string): Promise<void> {
+  await evaluationQueueDb.failTask(taskId, INSTANCE_STOPPED_EVALUATION_REASON)
+  const task = (
+    await db
+      .select({
+        agentId: evaluationTasks.agentId,
+        userId: evaluationTasks.userId,
+        configSnapshot: evaluationTasks.configSnapshot,
+        summary: evaluationTasks.summary,
+      })
+      .from(evaluationTasks)
+      .where(eq(evaluationTasks.id, taskId))
+      .limit(1)
+  )[0]
+  logBackgroundAudit({
+    action: 'evaluation_task.execute',
+    resource: 'evaluation_task',
+    resourceId: taskId,
+    userId: task?.userId ?? undefined,
+    details: {
+      agentId: task?.agentId ?? null,
+      status: 'failed',
+      reapedByInstance: processInstanceId,
+      reason: INSTANCE_STOPPED_EVALUATION_REASON,
+      // The in-process tally died with the owner, so volume is reported from
+      // the persisted summary — what the dead instance had finished and
+      // recorded — rather than guessed.
+      casesRun: task?.summary?.total ?? null,
+      // The frozen config these calls ran on — never credentials.
+      providerId: task?.configSnapshot?.providerId ?? null,
+      providerName: task?.configSnapshot?.providerName ?? null,
+      model: task?.configSnapshot?.model ?? null,
+    },
+  })
+}
+
 const defaultReaperDeps: DeadInstanceWorkloadReaperDeps = {
   db,
   loadLiveness: () => loadInstanceLiveness(db),
   canJudgePeers: () => canJudgePeerLiveness(),
   isWorkloadLocallyActive,
+  claimRun: claimRunForReap,
+  claimEvaluation: claimEvaluationForReap,
   failRun: failRunAbandonedByDeadInstance,
-  failEvaluation: (taskId) =>
-    evaluationQueueDb.failTask(taskId, INSTANCE_STOPPED_EVALUATION_REASON),
+  failEvaluation: failEvaluationAbandonedByDeadInstance,
   now: () => new Date(),
 }
 
@@ -253,9 +355,20 @@ export async function failScmWorkloadsOfDeadInstances(
     if (deps.isWorkloadLocallyActive(identity)) continue
     if (!isLeaseOwnerDead(lease, liveness, now)) continue
     if (await isWorkloadTerminal(deps.db as WorkloadStatusExecutor, identity)) continue
+    // Re-read liveness immediately before the write. The snapshot above was
+    // taken before the per-workload status queries, and a peer resuming its
+    // heartbeat in that window must cancel the reap — failing a live owner's
+    // workload is exactly the outcome the heartbeat exists to prevent.
+    if (!isLeaseOwnerDead(lease, await deps.loadLiveness(), deps.now())) continue
+    // Claim before writing: the terminal check above is a read, and the owner
+    // process (or a cancel request) can settle the row in the window that
+    // follows. Without the claim this would overwrite a genuine completion
+    // with a synthetic failure.
     if (identity.type === 'run') {
+      if (!(await deps.claimRun(identity.workloadId))) continue
       await deps.failRun(identity.workloadId)
     } else {
+      if (!(await deps.claimEvaluation(identity.workloadId))) continue
       await deps.failEvaluation(identity.workloadId)
     }
     reaped.push({ ...identity, agentId: lease.agentId })

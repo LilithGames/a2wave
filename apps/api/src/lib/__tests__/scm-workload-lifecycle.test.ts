@@ -401,3 +401,23 @@ describe('SCM workload lifecycle', () => {
     await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toBeNull()
   })
 })
+
+describe('withScmWorkloadAdmission — self-fencing', () => {
+  // The owner must reach the same verdict its peers will. Once renewals have
+  // failed past the threshold, peers may reclaim this instance's checkouts, so
+  // taking on new SCM work would put two processes in one worktree.
+  it('refuses admission while this instance cannot renew its heartbeat', async () => {
+    const withMutation = vi.fn()
+
+    await expect(
+      withScmWorkloadAdmission(
+        { type: 'run', workloadId: 'run_1', agentId: 'agt_1' },
+        async () => 'never',
+        { withMutation: withMutation as never, hasLostOwnership: () => true },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadAdmissionError)
+
+    // Refused at the door: no transaction, so no lease row can be written.
+    expect(withMutation).not.toHaveBeenCalled()
+  })
+})

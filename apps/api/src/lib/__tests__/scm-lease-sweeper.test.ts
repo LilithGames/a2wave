@@ -180,6 +180,34 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
     expect(deleted).toHaveLength(1)
   })
 
+  it('reads liveness inside the mutation, not from an outer snapshot', async () => {
+    // check-then-act on liveness: a snapshot taken before the lock is a
+    // verdict about the past. If the owner resumes beating before the delete
+    // lands, the sweep would reclaim a lease whose owner is demonstrably
+    // alive. Reading under the same lock makes verdict and delete atomic.
+    const { tx, deleted } = sweepTx(
+      [
+        {
+          id: 'run:run_peer',
+          workloadType: 'run',
+          workloadId: 'run_peer',
+          agentId: 'agt_1',
+          phase: 'active',
+          ownerInstanceId: 'instance-b',
+          updatedAt: RECENT,
+        },
+      ],
+      [[{ status: 'failed' }]],
+    )
+    const loadLiveness = vi.fn(async () => deadPeerLiveness())
+
+    await sweepOrphanedScmWorkloadLeases(deps(tx, { loadLiveness }))
+
+    // The executor it was handed must be the transaction, not a bare db.
+    expect(loadLiveness).toHaveBeenCalledWith(tx)
+    expect(deleted).toHaveLength(1)
+  })
+
   it('leaves peer leases alone during the post-boot grace window', async () => {
     // Right after an upgrade the heartbeat table is empty, so every peer reads
     // as dead. Reclaiming then would pull checkouts out from under replicas
@@ -348,11 +376,15 @@ function reaperDeps(
     loadLiveness: () => Promise<InstanceLivenessMap>
     canJudgePeers: () => boolean
     isWorkloadLocallyActive: (identity: { type: string; workloadId: string }) => boolean
+    claimRun: (runId: string) => Promise<boolean>
+    claimEvaluation: (taskId: string) => Promise<boolean>
   }> = {},
 ) {
   let statusCall = 0
   const failRun = vi.fn(async () => {})
   const failEvaluation = vi.fn(async () => {})
+  const claimRun = overrides.claimRun ?? vi.fn(async () => true)
+  const claimEvaluation = overrides.claimEvaluation ?? vi.fn(async () => true)
   const dbMock = {
     select: vi.fn(() => ({
       from: vi.fn(() =>
@@ -367,11 +399,15 @@ function reaperDeps(
   return {
     failRun,
     failEvaluation,
+    claimRun,
+    claimEvaluation,
     deps: {
       db: dbMock,
       loadLiveness: overrides.loadLiveness ?? (async () => deadPeerLiveness()),
       canJudgePeers: overrides.canJudgePeers ?? (() => true),
       isWorkloadLocallyActive: overrides.isWorkloadLocallyActive ?? (() => false),
+      claimRun,
+      claimEvaluation,
       failRun,
       failEvaluation,
       now: () => NOW,
@@ -430,6 +466,19 @@ describe('failScmWorkloadsOfDeadInstances', () => {
     expect(failRun).not.toHaveBeenCalled()
   })
 
+  it('cancels the reap when the owner resumes beating before the write', async () => {
+    // The liveness snapshot is taken before the per-workload status queries,
+    // so a peer recovering in that window would otherwise have its live
+    // workload failed — the exact outcome the heartbeat exists to prevent.
+    let call = 0
+    const { deps, failRun } = reaperDeps([activePeerLease()], [[{ status: 'running' }]], {
+      loadLiveness: async () => (call++ === 0 ? deadPeerLiveness() : alivePeerLiveness()),
+    })
+
+    expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
+    expect(failRun).not.toHaveBeenCalled()
+  })
+
   it('never fails a workload that is still active in this process', async () => {
     // Local activity always wins — the local registry is fresher than any
     // heartbeat, and a dead-looking owner cannot include ourselves.
@@ -446,6 +495,49 @@ describe('failScmWorkloadsOfDeadInstances', () => {
 
     expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
     expect(failRun).not.toHaveBeenCalled()
+  })
+
+  it('does not reap a workload that reached a terminal state concurrently', async () => {
+    // check-then-act: the status read says 'running', but the owner (or a
+    // cancel request) settles the row before the write lands. Without a
+    // predicated claim this would overwrite a real completion with a
+    // synthetic failure.
+    const { deps, failRun, claimRun } = reaperDeps([activePeerLease()], [[{ status: 'running' }]], {
+      claimRun: vi.fn(async () => false),
+    })
+
+    expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
+    // The claim must actually be attempted, or this test would pass for the
+    // wrong reason — e.g. the reap never reaching the write at all.
+    expect(claimRun).toHaveBeenCalledWith('run_stuck')
+    expect(failRun).not.toHaveBeenCalled()
+  })
+
+  it('claims before writing the terminal state', async () => {
+    const { deps, failRun, claimRun } = reaperDeps([activePeerLease()], [[{ status: 'running' }]])
+
+    await failScmWorkloadsOfDeadInstances(deps)
+
+    expect(claimRun).toHaveBeenCalledWith('run_stuck')
+    expect(failRun).toHaveBeenCalledWith('run_stuck')
+  })
+
+  it('does not reap an evaluation another writer settled first', async () => {
+    const { deps, failEvaluation, claimEvaluation } = reaperDeps(
+      [
+        activePeerLease({
+          id: 'evaluation:evt_stuck',
+          workloadType: 'evaluation',
+          workloadId: 'evt_stuck',
+        }),
+      ],
+      [[{ status: 'running' }]],
+      { claimEvaluation: vi.fn(async () => false) },
+    )
+
+    expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
+    expect(claimEvaluation).toHaveBeenCalledWith('evt_stuck')
+    expect(failEvaluation).not.toHaveBeenCalled()
   })
 
   it('ignores reserved leases — queued work has no owning process to die', async () => {

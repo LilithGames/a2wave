@@ -6,6 +6,7 @@ import {
   beatInstanceHeartbeat,
   canJudgePeerLiveness,
   deleteInstanceHeartbeat,
+  hasLostHeartbeatOwnership,
   isInstanceOwnerDead,
   loadInstanceLiveness,
   pruneDeadInstanceHeartbeats,
@@ -161,6 +162,85 @@ describe('startInstanceHeartbeat', () => {
   })
 })
 
+describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('does not overlap beats when a write outlives its interval', async () => {
+    // Two concurrent upserts of the same row race to write heartbeatAt, and a
+    // slow one landing after a fast one would move liveness backwards.
+    const { dbMock, upserts } = mockHeartbeatDb()
+    let release: (() => void) | undefined
+    const slowWrite = <T>(fn: () => Promise<T>): Promise<T> =>
+      new Promise<T>((resolve) => {
+        release = () => resolve(fn())
+      })
+
+    const stop = startInstanceHeartbeat(deps(dbMock, { write: slowWrite }))
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS * 3)
+
+    // Three intervals elapsed while the first write was still in flight; none
+    // of them may have started a second write.
+    expect(upserts).toHaveLength(0)
+    release?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(upserts).toHaveLength(1)
+    stop()
+  })
+
+  it('reports lost ownership once renewals fail past the dead-after threshold', async () => {
+    // The owner must reach the same verdict its peers will: if it cannot renew,
+    // peers will treat it as dead and reclaim its checkouts, so it has to stop
+    // acting as an owner rather than keep writing to a shared worktree.
+    const { dbMock } = mockHeartbeatDb()
+    const failingWrite = <T>(_fn: () => Promise<T>): Promise<T> =>
+      Promise.reject(new Error('db unreachable'))
+    let clock = NOW.getTime()
+    // A just-booted process: boot and now coincide, as they do in production.
+    const state = deps(dbMock, {
+      write: failingWrite,
+      bootTime: NOW,
+      now: () => new Date(clock),
+    })
+
+    const stop = startInstanceHeartbeat(state)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hasLostHeartbeatOwnership(state)).toBe(false)
+
+    clock = NOW.getTime() + INSTANCE_DEAD_AFTER_MS + 1
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
+
+    expect(hasLostHeartbeatOwnership(state)).toBe(true)
+    stop()
+  })
+
+  it('clears lost ownership after a renewal succeeds again', async () => {
+    const { dbMock } = mockHeartbeatDb()
+    let fail = true
+    const flakyWrite = <T>(fn: () => Promise<T>): Promise<T> =>
+      fail ? Promise.reject(new Error('db unreachable')) : fn()
+    let clock = NOW.getTime()
+    const state = deps(dbMock, {
+      write: flakyWrite,
+      bootTime: NOW,
+      now: () => new Date(clock),
+    })
+
+    const stop = startInstanceHeartbeat(state)
+    await vi.advanceTimersByTimeAsync(0)
+    clock = NOW.getTime() + INSTANCE_DEAD_AFTER_MS + 1
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
+    expect(hasLostHeartbeatOwnership(state)).toBe(true)
+
+    fail = false
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
+
+    expect(hasLostHeartbeatOwnership(state)).toBe(false)
+    stop()
+  })
+})
+
 describe('loadInstanceLiveness', () => {
   it('maps rows by instance id', async () => {
     const { dbMock, rows } = mockHeartbeatDb()
@@ -193,6 +273,30 @@ describe('canJudgePeerLiveness', () => {
       bootTime: new Date(NOW.getTime() - INSTANCE_DEAD_AFTER_MS + 1),
     })
     expect(canJudgePeerLiveness(justBooted)).toBe(false)
+  })
+
+  it('refuses to judge peers while self-fenced', async () => {
+    // A self-fenced instance is one peers already consider dead. If it kept
+    // reaping, two processes would reclaim the same lease from opposite sides.
+    vi.useFakeTimers()
+    const { dbMock } = mockHeartbeatDb()
+    let clock = NOW.getTime()
+    const state = deps(dbMock, {
+      write: <T>(_fn: () => Promise<T>): Promise<T> => Promise.reject(new Error('db unreachable')),
+      bootTime: new Date(NOW.getTime() - INSTANCE_DEAD_AFTER_MS * 2),
+      now: () => new Date(clock),
+    })
+    const stop = startInstanceHeartbeat(state)
+    await vi.advanceTimersByTimeAsync(0)
+    // Booted long ago, so the grace window alone would allow judging.
+    expect(canJudgePeerLiveness(state)).toBe(true)
+
+    clock = NOW.getTime() + INSTANCE_DEAD_AFTER_MS + 1
+    await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
+
+    expect(canJudgePeerLiveness(state)).toBe(false)
+    stop()
+    vi.useRealTimers()
   })
 
   it('judges peers once the grace window has elapsed', () => {

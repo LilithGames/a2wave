@@ -52,40 +52,94 @@ one API container, while replicas must mount the same RWX-capable PVC at the sam
 `SCM_STORAGE_ROOT` path. Node-local volumes would give each replica a different
 checkout even though they share the same SCM Source row.
 
-### ⚠️ PostgreSQL recovery is deliberately conservative
+### ⚠️ Upgrading to this release is non-rolling
 
-The workspace-removal attempt-token migration is intentionally non-rolling:
-**mixed-version operation is unsupported**. Stop all pre-attempt-token API
-replicas before applying the workspace-removal migrations (`0008` and `0009`),
-then start only the upgraded version. An older remover deletes reservations by
-stable id alone and can erase a newer attempt's fence; keeping old and new
-writers live together is therefore unsafe even though both can read the row.
+**Stop every API replica before applying these migrations, then start only the
+upgraded version.** Two independent reasons, either of which is sufficient:
 
-Run and Evaluation admission now persists an SCM workload lease in the same
+1. An older remover deletes workspace-removal reservations by stable id alone
+   and can erase a newer attempt's `attempt_token` fence.
+2. A pre-heartbeat replica writes no `instance_heartbeats` row. Upgraded peers
+   read a missing row as "dead" once past their startup grace window, so they
+   would reclaim leases and worktrees out from under a replica that is very
+   much alive.
+
+Both failure modes are silent, so mixed-version operation is unsupported even
+briefly.
+
+### How recovery works
+
+Run and Evaluation admission persists an SCM workload lease in the same
 transaction that snapshots the Agent binding. This prevents another replica from
 unbinding the Agent or reclaiming its checkout while the workload is queued,
 executing, cancelled-but-exiting, or cleaning up. Queue capacity decisions are also
 made under the same cross-replica transaction lock.
 
-A starting PostgreSQL replica does **not** fail `running`/`pending` workloads or
-reset `syncing`/`indexing` SCM rows: those may belong to a healthy peer. SQLite keeps
-the original automatic restart recovery because it has only one API process. The
-safety trade-off is explicit: after a hard PostgreSQL process loss, an in-flight row
-or SCM lease can require operator reconciliation instead of being guessed dead from
-age. Drain workloads before intentionally removing a replica.
+**Liveness comes from heartbeats, never from age.** Every process renews an
+`instance_heartbeats` row every 30s and deletes it during graceful shutdown. A
+mark's owner counts as dead only when it has no row, stopped beating past five
+minutes, or booted *after* the mark was written (a reused instance id — the same
+`HOSTNAME` across container restarts). Age alone proves nothing: multi-repository
+Git work and filesystem cleanup routinely outlive any per-command timeout.
 
-Workspace-removal reservations follow the same fail-closed rule. A live process
-retries a transient final-release failure using the reservation's exact
-`attempt_token`. After a confirmed hard process loss, first verify that no API
-replica is still removing the target and record both values from:
+Three guards keep this honest, and they are the reason manual reconciliation is
+now the exception rather than the routine:
+
+- **Recovery of peers is withheld for one staleness window after boot**, so the
+  empty heartbeat table right after an upgrade is not read as "everyone died".
+- **A process self-fences.** If its own renewals fail past the threshold it stops
+  admitting SCM workloads and stops judging peers — it has reached the same
+  verdict its peers have, so continuing to own a shared worktree would put two
+  processes in one directory.
+- **Every claim re-verifies liveness inside the transaction that acts on it.**
+  A snapshot read before the lock is a statement about the past; an owner that
+  resumes beating in that window keeps its lease.
+
+On that basis a surviving replica automatically:
+
+- fails workloads abandoned by a stopped instance (the Run gets a retryable
+  `INSTANCE_STOPPED_DURING_EXEC`, its A2A task is synced, the Evaluation task
+  fails with an `evaluation_task.execute` audit entry), then releases their
+  leases;
+- adopts workspace-removal reservations with no live owner, re-runs the same
+  occupancy decision every remover runs, and either finishes the removal or
+  releases the row as obsolete. A failed attempt is disowned again so the next
+  tick retries — that periodic tick *is* the retry loop.
+
+A starting PostgreSQL replica still does **not** fail `running`/`pending`
+workloads or reset `syncing`/`indexing` SCM rows on boot: another replica
+starting says nothing about a peer. Recovering a peer's work is the
+heartbeat-driven reaper's job, not startup's. SQLite keeps automatic restart
+recovery because it has only one API process, where a restart does prove the
+predecessor is gone.
+
+Draining workloads before intentionally removing a replica is still the clean
+path — graceful shutdown releases leases and removes the heartbeat row
+immediately, instead of leaving peers to wait out the staleness window.
+
+### Manual reconciliation (last resort)
+
+With the reconciler in place this should not be needed; reach for it only when a
+reservation is visibly stuck past several sweep intervals **and** you have
+confirmed no replica is still working on it. Never delete by age or by source.
+Record both values first:
 
 ```sql
-SELECT id, attempt_token, owner_instance_id, created_at
+SELECT id, attempt_token, owner_instance_id, attempt_started_at
 FROM scm_workspace_removals
-ORDER BY created_at;
+ORDER BY attempt_started_at;
 ```
 
-Then release only the exact observed attempt (never delete by age or source):
+Check the owner against live processes before touching anything:
+
+```sql
+SELECT id, started_at, heartbeat_at, now() - heartbeat_at AS since_beat
+FROM instance_heartbeats
+ORDER BY heartbeat_at DESC;
+```
+
+A row whose `owner_instance_id` still appears here with a recent `heartbeat_at`
+is **live** — leave it alone. Otherwise release only the exact observed attempt:
 
 ```sql
 DELETE FROM scm_workspace_removals
