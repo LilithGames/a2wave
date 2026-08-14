@@ -1774,6 +1774,7 @@
     "gitTriggerRepoParsed": "Host {{host}} · project {{project}}",
     "gitTriggerRepoParsedDefaultHost": "CLI default host · project {{project}}",
     "gitTriggerRepoInvalid": "Unrecognised repository URL. Use a full address such as https://host/group/repo.",
+    "gitTriggerScopeLabel": "Watch scope",
     "gitTriggerScopeProject": "One repository",
     "gitTriggerScopeGroup": "Whole group",
     "gitTriggerScopeAll": "Everything visible",

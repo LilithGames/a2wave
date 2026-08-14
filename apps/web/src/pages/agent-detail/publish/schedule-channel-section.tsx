@@ -6,18 +6,20 @@
  * shares `buildScheduleConfigsForPublish()` with them — splitting that here
  * would fork the source of truth for what actually gets published.
  */
+
+import { SUPPORTED_SCHEDULE_CRON_EXAMPLES } from '@a2wave/shared'
+import { Select, Switch, TimePicker, Tooltip } from 'antd'
+import dayjs from 'dayjs'
+import { Info, Plus, Trash2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
 import { Textarea } from '@/components/ui/textarea'
 import type { SchedulePublishConfig } from '@/hooks/use-agents'
 import type { SchedulePreset } from '@/lib/cron-utils'
 import { cn } from '@/lib/utils'
 import { startSsoMethod } from '@/pages/login'
-import { SUPPORTED_SCHEDULE_CRON_EXAMPLES } from '@a2wave/shared'
-import { Segmented, Select, Switch, TimePicker, Tooltip } from 'antd'
-import dayjs from 'dayjs'
-import { Info, Plus, Trash2 } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 export type ScheduleMode = 'preset' | 'advanced'
 
@@ -154,7 +156,7 @@ export function ScheduleChannelSection({
         <div className="segmented-panel">
           {/* Tab header */}
           <div className="segmented-panel-header">
-            <Segmented
+            <ModePicker
               value={scheduleMode}
               onChange={(v) => setScheduleMode(v as 'preset' | 'advanced')}
               options={[
@@ -169,7 +171,7 @@ export function ScheduleChannelSection({
             <div className="segmented-panel-body space-y-4">
               <div className="flex flex-col gap-2">
                 <Label className="text-sm font-medium text-foreground">{t('common.preset')}</Label>
-                <Segmented
+                <ModePicker
                   className="self-start"
                   value={schedulePreset}
                   onChange={(v) => setSchedulePreset(v as SchedulePreset)}

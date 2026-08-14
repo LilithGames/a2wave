@@ -1,26 +1,6 @@
-import { FaviconUpload } from '@/components/favicon-upload'
-import { SsoMethodsCard } from '@/components/sso-methods-card'
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Switch } from '@/components/ui/switch'
-import { useSettings, useUpdateSettings } from '@/hooks/use-settings'
-import { api } from '@/lib/api'
-import { formatApiError } from '@/lib/api-error'
-import { DEFAULT_BRAND_ICON_URL } from '@/lib/brand-presets'
-import { cn } from '@/lib/utils'
 import { SETTINGS_DEFAULTS } from '@a2wave/shared'
 import { useMutation } from '@tanstack/react-query'
-import { Segmented } from 'antd'
+import type { LucideIcon } from 'lucide-react'
 import {
   AtSign,
   Bell,
@@ -42,12 +22,32 @@ import {
   UserPlus,
   X,
 } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { FieldValues, UseFormReturn } from 'react-hook-form'
 import { Controller, useForm } from 'react-hook-form'
 import { Trans, useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
+import { FaviconUpload } from '@/components/favicon-upload'
+import { SsoMethodsCard } from '@/components/sso-methods-card'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
+import { useSettings, useUpdateSettings } from '@/hooks/use-settings'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/api-error'
+import { DEFAULT_BRAND_ICON_URL } from '@/lib/brand-presets'
+import { cn } from '@/lib/utils'
 
 const SETTINGS_TABS = [
   { id: 'general', labelKey: 'settings.tabs.general', icon: FolderOpen },
@@ -989,7 +989,7 @@ export function SettingsPage() {
                         name="type"
                         control={webhookForm.control}
                         render={({ field }) => (
-                          <Segmented
+                          <ModePicker
                             value={field.value}
                             onChange={field.onChange}
                             options={[
@@ -1322,7 +1322,7 @@ export function SettingsPage() {
                           name="oauthDefaultRole"
                           control={authForm.control}
                           render={({ field }) => (
-                            <Segmented
+                            <ModePicker
                               value={field.value}
                               onChange={field.onChange}
                               options={[

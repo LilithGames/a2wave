@@ -135,9 +135,11 @@ Entity CRUD (MCP Server / Group, Skill, SCM Source, KB Document, …) is done in
 
 ### Segmented (type / mode pickers)
 
-For choosing one option from a small mutually-exclusive set (SCM Git/P4, MCP transport, KB source, list filters, tab switchers), use the **antd `Segmented`** — it is the single standard; do not hand-roll button rows, custom pill controls, or native radios. It is themed in `antdTheme.components.Segmented` + `.ant-segmented*` rules in `globals.css`.
+For choosing one option from a small mutually-exclusive set (SCM Git/P4, MCP transport, KB source, list filters, tab switchers), use **`ModePicker`** ([`components/ui/mode-picker.tsx`](../../apps/web/src/components/ui/mode-picker.tsx)) — it is the single standard; do not reach for antd `Segmented` directly, and do not hand-roll button rows, custom pill controls, or native radios. It wraps `Segmented`, themed in `antdTheme.components.Segmented` + `.ant-segmented*` rules in `globals.css`.
 
-- Icon + label per option: wrap the label in `<span className="inline-flex items-center gap-1.5"><Icon className="h-4 w-4" />{label}</span>`.
+- **Options are data, not markup**: `options={[{ value, label, icon?, disabled? }]}`, where `icon` is the `LucideIcon` itself. The wrapper renders the icon at one fixed size for the whole app. This exists because the icon+label span was previously copied by hand at every call site and the copies drifted — some `h-4 w-4`, others `h-3.5 w-3.5`, so two pickers on one page did not align — and one site shipped `size="small"`, reading as a different control rather than a smaller one. **Do not pass `size`.**
+- The generic infers from `value`, so `onChange` hands back the union type rather than `string`; no `as` cast at the call site.
+- The one sanctioned exception is a deeply nested, dense editor row (`mcp-group-form`'s per-backend type), which keeps a raw `size="small"` `Segmented`.
 - Selected item is a **solid `primary` fill with `primary-foreground` text**; `globals.css` force-sets the selected label + icon to `--color-primary-foreground` (the custom label span otherwise lets the lucide icon inherit the muted colour and lose contrast).
 - **Do not** `transition: none` the thumb — rc-segmented clears its internal `thumbShow` on the thumb's `transitionend`, so killing the transition strands the just-clicked item without the `-selected` class (dark text). Use a 1ms thumb transition instead (imperceptible, still fires `transitionend`); label colour transitions are off so text snaps rather than fading through an intermediate tone.
 - Width: let it size to content for a 2–3 option picker; put the label on its own row (`flex flex-col items-start gap-1.5`) rather than inline with the control.

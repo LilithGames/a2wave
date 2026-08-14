@@ -1,19 +1,6 @@
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { useCurrentUser } from '@/hooks/use-auth'
-import {
-  useCreateMcpServer,
-  useMcpServer,
-  useMcpServerTools,
-  useProbeTools,
-  useUpdateMcpServer,
-} from '@/hooks/use-mcp-servers'
-import { cn } from '@/lib/utils'
 import type { McpServerType } from '@a2wave/shared'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Segmented, Select, Tooltip } from 'antd'
+import { Select, Tooltip } from 'antd'
 import {
   AlertTriangle,
   Eye,
@@ -30,12 +17,26 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Textarea } from '@/components/ui/textarea'
+import { useCurrentUser } from '@/hooks/use-auth'
 import {
-  type McpFormData,
-  ProbeResultDisplay,
+  useCreateMcpServer,
+  useMcpServer,
+  useMcpServerTools,
+  useProbeTools,
+  useUpdateMcpServer,
+} from '@/hooks/use-mcp-servers'
+import { cn } from '@/lib/utils'
+import {
   createMcpServerFormSchema,
   introducesStdio,
   isSensitiveEnvKey,
+  type McpFormData,
+  ProbeResultDisplay,
 } from './mcp-form-shared'
 
 interface Props {
@@ -304,40 +305,14 @@ export function McpServerForm({ serverId, onSaved }: Props) {
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-sm">{t('mcpServerDetail.transportType')}</Label>
-                  <Segmented
+                  <ModePicker
                     block
-                    value={serverType}
-                    onChange={(v) =>
-                      setValue('type', v as 'stdio' | 'sse' | 'http', { shouldDirty: true })
-                    }
+                    value={serverType as 'stdio' | 'sse' | 'http'}
+                    onChange={(v) => setValue('type', v, { shouldDirty: true })}
                     options={[
-                      {
-                        value: 'stdio',
-                        label: (
-                          <span className="inline-flex items-center gap-1.5">
-                            <Terminal className="h-3.5 w-3.5" />
-                            stdio
-                          </span>
-                        ),
-                      },
-                      {
-                        value: 'sse',
-                        label: (
-                          <span className="inline-flex items-center gap-1.5">
-                            <Globe className="h-3.5 w-3.5" />
-                            SSE
-                          </span>
-                        ),
-                      },
-                      {
-                        value: 'http',
-                        label: (
-                          <span className="inline-flex items-center gap-1.5">
-                            <Globe className="h-3.5 w-3.5" />
-                            HTTP
-                          </span>
-                        ),
-                      },
+                      { value: 'stdio', label: 'stdio', icon: Terminal },
+                      { value: 'sse', label: 'SSE', icon: Globe },
+                      { value: 'http', label: 'HTTP', icon: Globe },
                     ]}
                   />
                 </div>

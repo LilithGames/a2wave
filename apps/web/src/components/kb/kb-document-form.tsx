@@ -1,36 +1,4 @@
-import { SyncStatusBadge } from '@/components/sync-status-badge'
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
-import { type KbBatchState, useKbBatch } from '@/hooks/use-kb-batch'
-import {
-  useCreateKbDocument,
-  useDeleteKbDocument,
-  useKbDocument,
-  useKbDocumentContent,
-  useReuploadKbDocument,
-  useSyncKbDocument,
-  useUpdateKbDocument,
-  useUploadKbDocument,
-} from '@/hooks/use-kb-documents'
-import { message } from '@/lib/antd-static'
-import {
-  KB_BATCH_MAX,
-  type KbBatchStatus,
-  isLikelySourceUrl,
-  parseKbSourceUrls,
-} from '@/lib/kb-batch'
-import { Dropdown, Segmented } from 'antd'
+import { Dropdown } from 'antd'
 import {
   AlertCircle,
   BookOpen,
@@ -49,6 +17,39 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
+import { SyncStatusBadge } from '@/components/sync-status-badge'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import { type KbBatchState, useKbBatch } from '@/hooks/use-kb-batch'
+import {
+  useCreateKbDocument,
+  useDeleteKbDocument,
+  useKbDocument,
+  useKbDocumentContent,
+  useReuploadKbDocument,
+  useSyncKbDocument,
+  useUpdateKbDocument,
+  useUploadKbDocument,
+} from '@/hooks/use-kb-documents'
+import { message } from '@/lib/antd-static'
+import {
+  isLikelySourceUrl,
+  KB_BATCH_MAX,
+  type KbBatchStatus,
+  parseKbSourceUrls,
+} from '@/lib/kb-batch'
 
 interface FormData {
   /** Edit mode only — create derives the name from the remote title or the filename. */
@@ -498,7 +499,7 @@ export function KbDocumentForm({ documentId, onSaved, onDeleted }: Props) {
               <section className="space-y-4">
                 <div className="space-y-1.5">
                   <Label className="text-sm">{t('kbDocuments.sourceType')}</Label>
-                  <Segmented
+                  <ModePicker
                     block
                     // Switching source mid-run would swap the credential fields and hide
                     // the Stop control out from under a batch that keeps creating.

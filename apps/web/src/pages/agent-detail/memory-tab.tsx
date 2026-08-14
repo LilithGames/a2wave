@@ -1,35 +1,6 @@
-import { MarkdownContent } from '@/components/markdown-content'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import {
-  type MemoryTopicizationPreview,
-  useDeleteMemoryFile,
-  useMemoryFileContent,
-  useMemoryFiles,
-  useMemoryStats,
-  useMemoryTopic,
-  useMemoryTopics,
-  useReindexMemory,
-  useReorganizeMemoryTopics,
-  useSearchMemories,
-  useUpdateMemoryFile,
-} from '@/hooks/use-memories'
-import { selectFilterOption } from '@/lib/select-filter'
-import { cn } from '@/lib/utils'
 import { DEFAULT_MEMORY_INSIGHT_PROMPT, DEFAULT_MEMORY_WORKLOG_PROMPT } from '@a2wave/shared'
 import { useQueryClient } from '@tanstack/react-query'
-import { Input as AntInput, Segmented, Select, Tooltip } from 'antd'
+import { Input as AntInput, Select, Tooltip } from 'antd'
 import {
   Archive,
   ArchiveRestore,
@@ -48,6 +19,36 @@ import {
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { MarkdownContent } from '@/components/markdown-content'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Switch } from '@/components/ui/switch'
+import {
+  type MemoryTopicizationPreview,
+  useDeleteMemoryFile,
+  useMemoryFileContent,
+  useMemoryFiles,
+  useMemoryStats,
+  useMemoryTopic,
+  useMemoryTopics,
+  useReindexMemory,
+  useReorganizeMemoryTopics,
+  useSearchMemories,
+  useUpdateMemoryFile,
+} from '@/hooks/use-memories'
+import { selectFilterOption } from '@/lib/select-filter'
+import { cn } from '@/lib/utils'
 
 /**
  * One setting inside the main Memory card. Its heading (text-sm semibold) sits
@@ -601,7 +602,7 @@ export function TopicDirectoryCard({
               <CardDescription>{t('memory.topicsDesc')}</CardDescription>
             </div>
             {mode === 'topic_v2' && (
-              <Segmented
+              <ModePicker
                 value={status}
                 onChange={(value) => {
                   setStatus(value as 'active' | 'archived')
@@ -963,7 +964,7 @@ export function MemoryTab({
                 title={t('memory.contextModeLabel')}
                 desc={t('memory.contextModeDesc')}
               >
-                <Segmented
+                <ModePicker
                   value={memoryContextMode === 'full' ? 'memory' : memoryContextMode || 'memory'}
                   onChange={(v) => onUpdateMemoryProvider({ memoryContextMode: v })}
                   options={(['off', 'memory'] as const).map((mode) => ({
@@ -983,7 +984,7 @@ export function MemoryTab({
                 title={t('memory.recallLevelLabel')}
                 desc={t('memory.recallLevelDesc')}
               >
-                <Segmented
+                <ModePicker
                   value={memoryRecallLevel || 'medium'}
                   onChange={(v) => onUpdateMemoryProvider({ memoryRecallLevel: v })}
                   options={(['weak', 'medium', 'strong'] as const).map((level) => ({
@@ -1142,7 +1143,7 @@ export function MemoryTab({
                   className="flex-1"
                   allowClear
                 />
-                <Segmented
+                <ModePicker
                   value={searchMode}
                   onChange={(v) => setSearchMode(v as 'keyword' | 'vector' | 'hybrid')}
                   options={[

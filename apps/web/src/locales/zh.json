@@ -1774,6 +1774,7 @@
     "gitTriggerRepoParsed": "Host {{host}} · 项目 {{project}}",
     "gitTriggerRepoParsedDefaultHost": "使用 CLI 默认 Host · 项目 {{project}}",
     "gitTriggerRepoInvalid": "无法识别仓库地址，请填写形如 https://host/group/repo 的完整地址。",
+    "gitTriggerScopeLabel": "监听范围",
     "gitTriggerScopeProject": "单个仓库",
     "gitTriggerScopeGroup": "整个群组",
     "gitTriggerScopeAll": "全部可见",

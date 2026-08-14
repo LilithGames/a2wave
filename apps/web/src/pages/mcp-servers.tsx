@@ -1,16 +1,6 @@
-import { McpGroupFormModal } from '@/components/mcp/mcp-group-form-modal'
-import { McpServerFormModal } from '@/components/mcp/mcp-server-form-modal'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { useCurrentUser } from '@/hooks/use-auth'
-import { useCloneMcpServer, useDeleteMcpServer, useMcpServers } from '@/hooks/use-mcp-servers'
-import { useUrlParam, useUrlRecord } from '@/hooks/use-url-state'
-import { confirm } from '@/lib/confirm'
-import { ADMIN_MCP_NAMES, INTERNAL_MCP_NAMES } from '@a2wave/shared'
 import type { GroupConfig, McpServer } from '@a2wave/shared'
-import { Dropdown, Segmented } from 'antd'
+import { ADMIN_MCP_NAMES, INTERNAL_MCP_NAMES } from '@a2wave/shared'
+import { Dropdown } from 'antd'
 import {
   Cable,
   Copy,
@@ -23,6 +13,17 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { McpGroupFormModal } from '@/components/mcp/mcp-group-form-modal'
+import { McpServerFormModal } from '@/components/mcp/mcp-server-form-modal'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useCurrentUser } from '@/hooks/use-auth'
+import { useCloneMcpServer, useDeleteMcpServer, useMcpServers } from '@/hooks/use-mcp-servers'
+import { useUrlParam, useUrlRecord } from '@/hooks/use-url-state'
+import { confirm } from '@/lib/confirm'
 
 export function McpServersPage() {
   const { t } = useTranslation()
@@ -133,7 +134,7 @@ export function McpServersPage() {
       </div>
 
       {!isLoading && (visibleServers?.length ?? 0) > 0 && (
-        <Segmented
+        <ModePicker
           value={typeFilter}
           onChange={(v) => setTypeFilter(v as string)}
           options={typeFilterOptions}

@@ -5,11 +5,12 @@
  * behind eight clicks. Follows the filter+grid pattern already used by the MCP
  * servers and Skills list pages.
  */
-import { Card, CardContent } from '@/components/ui/card'
-import { Segmented } from 'antd'
-import { useState } from 'react'
+
 import type { ReactNode } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Card, CardContent } from '@/components/ui/card'
+import { ModePicker } from '@/components/ui/mode-picker'
 import { ChannelCard } from './channel-card'
 import {
   CHANNEL_FILTERS,
@@ -71,7 +72,7 @@ export function ChannelGrid({
 
   return (
     <div className="space-y-4">
-      <Segmented
+      <ModePicker
         value={filter}
         onChange={(value) => setFilter(value as ChannelCategory | 'all')}
         options={CHANNEL_FILTERS.map((f) => ({ value: f.value, label: t(f.labelKey) }))}

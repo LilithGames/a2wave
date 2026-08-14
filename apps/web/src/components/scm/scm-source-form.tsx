@@ -1,5 +1,5 @@
 import type { ScmSourceConfig } from '@a2wave/shared'
-import { Dropdown, Segmented, Tooltip } from 'antd'
+import { Dropdown, Tooltip } from 'antd'
 import {
   AlertCircle,
   AlertTriangle,
@@ -36,6 +36,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -656,34 +657,17 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
         {isCreateMode && (
           <div className="flex flex-col items-start gap-1.5">
             <Label required>{t('scmSources.detail.sourceTypeLabel')}</Label>
-            <Segmented
+            <ModePicker
               value={scmType}
-              onChange={(v) => {
-                const nextType = v as ScmType
+              onChange={(nextType) => {
                 setScmType(nextType)
                 setValue('storageMode', nextType === 'git' ? 'managed' : 'custom', {
                   shouldDirty: true,
                 })
               }}
               options={[
-                {
-                  value: 'git',
-                  label: (
-                    <span className="inline-flex items-center gap-1.5">
-                      <GitBranch className="h-4 w-4" />
-                      Git
-                    </span>
-                  ),
-                },
-                {
-                  value: 'p4',
-                  label: (
-                    <span className="inline-flex items-center gap-1.5">
-                      <FolderGit2 className="h-4 w-4" />
-                      Perforce (P4)
-                    </span>
-                  ),
-                },
+                { value: 'git', label: 'Git', icon: GitBranch },
+                { value: 'p4', label: 'Perforce (P4)', icon: FolderGit2 },
               ]}
             />
           </div>
@@ -761,31 +745,19 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             <legend className="text-sm font-medium leading-none text-foreground">
               {t('scmSources.detail.storageModeLabel')}
             </legend>
-            <Segmented
+            <ModePicker
               value={storageMode}
-              onChange={(value) =>
-                setValue('storageMode', value as 'managed' | 'custom', {
-                  shouldDirty: true,
-                })
-              }
+              onChange={(value) => setValue('storageMode', value, { shouldDirty: true })}
               options={[
                 {
                   value: 'managed',
-                  label: (
-                    <span className="inline-flex items-center gap-1.5">
-                      <HardDrive className="h-4 w-4" />
-                      {t('scmSources.detail.storageManaged')}
-                    </span>
-                  ),
+                  label: t('scmSources.detail.storageManaged'),
+                  icon: HardDrive,
                 },
                 {
                   value: 'custom',
-                  label: (
-                    <span className="inline-flex items-center gap-1.5">
-                      <FolderOpen className="h-4 w-4" />
-                      {t('scmSources.detail.storageCustom')}
-                    </span>
-                  ),
+                  label: t('scmSources.detail.storageCustom'),
+                  icon: FolderOpen,
                 },
               ]}
             />
@@ -1680,9 +1652,9 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
         // content scrolls. Tabs spans the whole column so its context wraps both.
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex shrink-0 items-center justify-between gap-2 pb-3">
-            <Segmented
+            <ModePicker
               value={activeTab}
-              onChange={(v) => setActiveTab(v as 'config' | 'sync')}
+              onChange={setActiveTab}
               options={[
                 { value: 'config', label: t('scmSources.configTab') },
                 { value: 'sync', label: t('scmSources.syncWorkspacesTab') },

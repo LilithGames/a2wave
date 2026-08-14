@@ -1,11 +1,12 @@
-import { Card, CardContent } from '@/components/ui/card'
-import { Label } from '@/components/ui/label'
-import { selectFilterOption } from '@/lib/select-filter'
 import type { ScmSource } from '@a2wave/shared'
-import { Segmented, Select, Tag } from 'antd'
+import { Select, Tag } from 'antd'
 import { ExternalLink, FolderOpen, Info, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { Card, CardContent } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { selectFilterOption } from '@/lib/select-filter'
 
 interface WorkspaceSectionProps {
   workspaceType: 'scm' | 'temp'
@@ -73,7 +74,7 @@ export function WorkspaceSection({
             that rule would be unlayered, so it would outrank Tailwind's layered
             utilities everywhere and top-align every Segmented that sits in a
             flex-ROW next to a taller sibling. */}
-        <Segmented
+        <ModePicker
           className="self-start"
           value={workspaceType === 'temp' ? 'temp' : scmSubType}
           onChange={(key) => {

@@ -1,31 +1,5 @@
-import { RemoteSkillUpdateDialog } from '@/components/remote-skill-update-dialog'
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Textarea } from '@/components/ui/textarea'
-import { useCurrentUser } from '@/hooks/use-auth'
-import type { SkillFileEntry } from '@/hooks/use-skills'
-import {
-  useCreateSkill,
-  useDeleteSkill,
-  useReuploadSkill,
-  useSkill,
-  useSkillFiles,
-  useUpdateSkill,
-  useUploadSkillFiles,
-} from '@/hooks/use-skills'
-import { type UploadEntry, toUploadEntries } from '@/lib/upload-entries'
 import type { SkillVisibility } from '@a2wave/shared'
-import { Dropdown, Segmented, Select } from 'antd'
+import { Dropdown, Select } from 'antd'
 import {
   AlertTriangle,
   ChevronRight,
@@ -43,6 +17,33 @@ import {
 import { type ChangeEvent, useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
+import { RemoteSkillUpdateDialog } from '@/components/remote-skill-update-dialog'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Textarea } from '@/components/ui/textarea'
+import { useCurrentUser } from '@/hooks/use-auth'
+import type { SkillFileEntry } from '@/hooks/use-skills'
+import {
+  useCreateSkill,
+  useDeleteSkill,
+  useReuploadSkill,
+  useSkill,
+  useSkillFiles,
+  useUpdateSkill,
+  useUploadSkillFiles,
+} from '@/hooks/use-skills'
+import { toUploadEntries, type UploadEntry } from '@/lib/upload-entries'
 
 type FormData = {
   name: string
@@ -553,7 +554,7 @@ export function SkillForm({ skillId, onSaved, onDeleted }: Props) {
           never scrolls out of view. Create mode has no Files tab. */}
       {!isCreateMode && (
         <div className="flex shrink-0 items-center justify-between gap-2 pb-3">
-          <Segmented
+          <ModePicker
             value={activeTab}
             onChange={(v) => setActiveTab(v as 'content' | 'files')}
             options={[

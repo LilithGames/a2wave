@@ -25,10 +25,13 @@ import {
   type GitTriggerProvider,
   type GitTriggerScope,
 } from '@a2wave/shared'
-import { Button, Checkbox, InputNumber, Segmented, Switch } from 'antd'
+import { Button, Checkbox, InputNumber, Switch } from 'antd'
 import {
   AlertTriangle,
   CheckCircle2,
+  FolderTree,
+  GitBranch,
+  Globe,
   Loader2,
   Plus,
   RefreshCw,
@@ -39,6 +42,7 @@ import { useTranslation } from 'react-i18next'
 import { PromptEditor } from '@/components/prompt-editor'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
+import { ModePicker } from '@/components/ui/mode-picker'
 import { parseGitNamespaceUrl, parseGitRepoUrl } from '@/lib/git-repo-url'
 
 /**
@@ -277,37 +281,51 @@ export function GitTriggerChannelSection({
             const invalid = scope !== 'all' && repo.url.trim().length > 0 && !repo.project
             return (
               // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional and reorderable only by add/remove
-              <div key={index} className="space-y-1.5 rounded-md border border-border p-3">
+              <div key={index} className="space-y-2 rounded-md border border-border p-3">
                 <div className="flex items-start justify-between gap-2">
                   {/* GitLab only: the gh listing is a per-repository GraphQL
                       query with no org-wide equivalent carrying head SHA and
                       comment counts, so offering the choice there would let the
                       user save a config the poller cannot honour. */}
-                  {isGitlab && (
-                    <Segmented
-                      size="small"
-                      value={scope}
-                      onChange={(value) =>
-                        // Re-parse rather than carry the text across: the same
-                        // string means different things under the two parsers,
-                        // so keeping the old parse would leave the row showing a
-                        // project path while claiming to watch a group.
-                        updateRepo(
-                          index,
-                          toGitTriggerRepoDraft(
-                            repo.url,
-                            provider,
-                            value as GitTriggerScope,
-                            repo.host,
-                          ),
-                        )
-                      }
-                      options={[
-                        { value: 'project', label: t('agentPublish.gitTriggerScopeProject') },
-                        { value: 'group', label: t('agentPublish.gitTriggerScopeGroup') },
-                        { value: 'all', label: t('agentPublish.gitTriggerScopeAll') },
-                      ]}
-                    />
+                  {isGitlab ? (
+                    // Label on its own row above the control, per the design
+                    // doc — sharing a row with the delete button made the picker
+                    // read as a toolbar affordance rather than the field it is.
+                    <div className="flex flex-col items-start gap-1.5">
+                      <Label className="text-sm">{t('agentPublish.gitTriggerScopeLabel')}</Label>
+                      <ModePicker
+                        value={scope}
+                        onChange={(value) =>
+                          // Re-parse rather than carry the text across: the same
+                          // string means different things under the two parsers,
+                          // so keeping the old parse would leave the row showing
+                          // a project path while claiming to watch a group.
+                          updateRepo(
+                            index,
+                            toGitTriggerRepoDraft(repo.url, provider, value, repo.host),
+                          )
+                        }
+                        options={[
+                          {
+                            value: 'project',
+                            label: t('agentPublish.gitTriggerScopeProject'),
+                            icon: GitBranch,
+                          },
+                          {
+                            value: 'group',
+                            label: t('agentPublish.gitTriggerScopeGroup'),
+                            icon: FolderTree,
+                          },
+                          {
+                            value: 'all',
+                            label: t('agentPublish.gitTriggerScopeAll'),
+                            icon: Globe,
+                          },
+                        ]}
+                      />
+                    </div>
+                  ) : (
+                    <span />
                   )}
                   <Button
                     danger
@@ -316,7 +334,6 @@ export function GitTriggerChannelSection({
                     onClick={() => onReposChange(repos.filter((_, i) => i !== index))}
                     icon={<Trash2 className="h-4 w-4" />}
                     aria-label={t('agentPublish.gitTriggerRemoveRepo')}
-                    className={isGitlab ? undefined : 'ml-auto'}
                   />
                 </div>
                 {scope === 'all' ? (
