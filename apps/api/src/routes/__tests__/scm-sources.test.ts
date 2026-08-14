@@ -1252,6 +1252,49 @@ describe('SCM Sources routes', () => {
       expect(updateChain.set).not.toHaveBeenCalled()
     })
 
+    it('returns 409 for a config-only topology change while a durable workload lease pins the source', async () => {
+      const existingSource = {
+        id: 'scm_1',
+        name: 'Source',
+        type: 'git',
+        localPath: '/old/path',
+        isEnabled: true,
+        config: { type: 'git', repoUrl: 'https://github.com/org/repo.git', branch: 'main' },
+        initialSyncCompletedAt: new Date(),
+        syncStatus: 'idle',
+      }
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain(existingSource))
+        .mockReturnValueOnce(makeDbChain([])) // planner peers
+        .mockReturnValueOnce(makeDbChain([])) // stored-root validator peers
+        .mockReturnValueOnce(makeDbChain({ type: 'run', id: 'run_active', agentId: 'agt_1' }))
+      const updateChain = makeUpdateChain()
+      ;(db.update as Mock).mockReturnValue(updateChain)
+
+      const res = await app.request('/api/scm-sources/scm_1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            type: 'git',
+            repoUrl: '',
+            branch: 'main',
+            repos: [
+              {
+                repoUrl: 'https://github.com/org/frontend.git',
+                branch: 'main',
+                directory: 'frontend',
+              },
+            ],
+          },
+        }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: string }).error).toMatch(/run "run_active"/)
+      expect(updateChain.set).not.toHaveBeenCalled()
+    })
+
     it('refuses to reset sync state while a sync is in progress', async () => {
       // Resetting syncStatus to 'idle' here would release a lock this request
       // does not hold, letting POST /:id/sync acquire and start a second sync

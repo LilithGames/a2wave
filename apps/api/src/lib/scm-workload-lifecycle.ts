@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import type { db } from '../db/client.js'
 import { agents, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
+import { logger } from './logger.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 
 export type ScmWorkloadType = 'run' | 'evaluation'
@@ -269,6 +270,39 @@ export async function releaseScmWorkload(
       .returning({ id: scmWorkloadLeases.id })
     return deleted.length > 0
   })
+}
+
+const DEFAULT_RELEASE_RETRY_DELAY_MS = 1_000
+
+export interface ScmWorkloadReleaseRetryDeps {
+  release?: () => Promise<boolean>
+  delay?: (delayMs: number) => Promise<void>
+  retryDelayMs?: number
+}
+
+/** Keep a failed owner release observable until it succeeds or shutdown times out. */
+export async function retryScmWorkloadReleaseUntilSuccess(
+  input: OwnedScmWorkload,
+  deps: ScmWorkloadReleaseRetryDeps = {},
+): Promise<void> {
+  const release = deps.release ?? (() => releaseScmWorkload(input))
+  const retryDelayMs = deps.retryDelayMs ?? DEFAULT_RELEASE_RETRY_DELAY_MS
+  const delay =
+    deps.delay ??
+    ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)))
+
+  for (;;) {
+    try {
+      await release()
+      return
+    } catch (error) {
+      logger.error(
+        { error, workloadType: input.type, workloadId: input.workloadId },
+        'Failed to release durable SCM workload lease; retrying',
+      )
+      await delay(retryDelayMs)
+    }
+  }
 }
 
 /**

@@ -62,9 +62,8 @@ describe('startStaleLeaseSweeper', () => {
     expect(sweepStaleLeases).toHaveBeenCalledTimes(2) // stopped, no more ticks
   })
 
-  // A failed releaseScmWorkload is logged and never retried inline; this tick
-  // is the retry. Without it a single failed delete permanently locks the
-  // Agent's binding and the source's PATCH/DELETE.
+  // The owner retries inline while alive; this sweep remains the recovery path
+  // if the owner disappears after its first failed delete.
   it('sweeps orphaned durable SCM workload leases on every tick', async () => {
     const stop = startStaleLeaseSweeper(1000)
 
@@ -110,6 +109,20 @@ describe('startStaleLeaseSweeper', () => {
     expect(scheduleNext).toHaveBeenCalledTimes(2) // agt_a + agt_b, not 3
     const agents = scheduleNext.mock.calls.map((c) => c[1])
     expect(new Set(agents)).toEqual(new Set(['agt_a', 'agt_b']))
+  })
+
+  it('nudges the Run queue after a durable lease retry frees its capacity', async () => {
+    sweepOrphanedScmWorkloadLeases.mockResolvedValue([
+      { type: 'run', workloadId: 'run_1', agentId: 'agt_a' },
+      { type: 'run', workloadId: 'run_2', agentId: 'agt_a' },
+      { type: 'evaluation', workloadId: 'evt_1', agentId: 'agt_b' },
+    ])
+    startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(scheduleNext).toHaveBeenCalledTimes(1)
+    expect(scheduleNext.mock.calls[0]?.[1]).toBe('agt_a')
   })
 
   it('does not throw if a sweep fails', async () => {

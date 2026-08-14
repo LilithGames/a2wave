@@ -62,6 +62,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
           id: 'run:run_done',
           workloadType: 'run',
           workloadId: 'run_done',
+          agentId: 'agt_1',
           phase: 'active',
           ownerInstanceId: 'instance-a',
         },
@@ -71,7 +72,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
 
     const released = await sweepOrphanedScmWorkloadLeases(deps(tx))
 
-    expect(released).toEqual([{ type: 'run', workloadId: 'run_done' }])
+    expect(released).toEqual([{ type: 'run', workloadId: 'run_done', agentId: 'agt_1' }])
     expect(deleted).toHaveLength(1)
   })
 
@@ -150,6 +151,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
           id: 'evaluation:evt_gone',
           workloadType: 'evaluation',
           workloadId: 'evt_gone',
+          agentId: 'agt_1',
           phase: 'reserved',
           ownerInstanceId: null,
         },
@@ -159,7 +161,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
 
     const released = await sweepOrphanedScmWorkloadLeases(deps(tx))
 
-    expect(released).toEqual([{ type: 'evaluation', workloadId: 'evt_gone' }])
+    expect(released).toEqual([{ type: 'evaluation', workloadId: 'evt_gone', agentId: 'agt_1' }])
     expect(deleted).toHaveLength(1)
   })
 
@@ -190,6 +192,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
           id: 'run:run_erased',
           workloadType: 'run',
           workloadId: 'run_erased',
+          agentId: 'agt_1',
           phase: 'active',
           ownerInstanceId: 'instance-a',
         },
@@ -199,7 +202,7 @@ describe('sweepOrphanedScmWorkloadLeases', () => {
 
     const released = await sweepOrphanedScmWorkloadLeases(deps(tx))
 
-    expect(released).toEqual([{ type: 'run', workloadId: 'run_erased' }])
+    expect(released).toEqual([{ type: 'run', workloadId: 'run_erased', agentId: 'agt_1' }])
     expect(deleted).toHaveLength(1)
   })
 })

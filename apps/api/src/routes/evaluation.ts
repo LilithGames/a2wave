@@ -54,7 +54,7 @@ import { registerScmEvaluationWorkload } from '../lib/scm-workload-guard.js'
 import {
   activateScmWorkload,
   releaseReservedScmWorkloadInMutation,
-  releaseScmWorkload,
+  retryScmWorkloadReleaseUntilSuccess,
   withScmWorkloadAdmission,
 } from '../lib/scm-workload-lifecycle.js'
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
@@ -625,21 +625,11 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     } finally {
       releaseWorkload()
       if (hasDurableLease) {
-        try {
-          await releaseScmWorkload({
-            type: 'evaluation',
-            workloadId: taskId,
-            ownerInstanceId: processInstanceId,
-          })
-        } catch (error) {
-          // Never let a failed lease delete wedge this Agent's evaluation
-          // queue by skipping scheduleNextEvaluation below. The stale-lease
-          // sweeper retries the release once the terminal status is visible.
-          logger.error(
-            { error, taskId },
-            'Failed to release durable SCM workload lease; sweeper will retry',
-          )
-        }
+        await retryScmWorkloadReleaseUntilSuccess({
+          type: 'evaluation',
+          workloadId: taskId,
+          ownerInstanceId: processInstanceId,
+        })
       }
       await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
     }

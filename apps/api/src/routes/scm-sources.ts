@@ -383,9 +383,9 @@ app.patch('/:id', async (c) => {
         isNull(scmSources.deletionRequestedAt),
       )
     : and(eq(scmSources.id, id), isNull(scmSources.deletionRequestedAt))
-  const mutatesPath =
-    parsed.data.localPath !== undefined || parsed.data.workspacesPath !== undefined
-  const updateResult = mutatesPath
+  const mutatesWorkspaceLifecycle =
+    configChanged || parsed.data.localPath !== undefined || parsed.data.workspacesPath !== undefined
+  const updateResult = mutatesWorkspaceLifecycle
     ? await withScmPathMutation(async (tx) => {
         // A durable lease is the authority for "a workload has this checkout
         // as cwd" — including the terminal-status-to-process-exit cleanup
@@ -398,7 +398,7 @@ app.patch('/:id', async (c) => {
             ok: false,
             error: {
               status: 409 as const,
-              error: `Cannot change paths while ${activeWorkload.type} "${activeWorkload.id}" uses this source`,
+              error: `Cannot change paths or config while ${activeWorkload.type} "${activeWorkload.id}" uses this source`,
             },
           } as const
         }

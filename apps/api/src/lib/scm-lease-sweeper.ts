@@ -10,11 +10,9 @@ import type { ScmWorkloadIdentity } from './scm-workload-lifecycle.js'
 /**
  * Reclaim durable SCM workload leases whose workload is provably finished.
  *
- * `releaseScmWorkload` runs after process exit and workspace cleanup, and its
- * failure used to be logged and forgotten — leaving a lease that permanently
- * locks the Agent's binding, blocks the source's PATCH/DELETE, and pins a
- * concurrency slot, with nothing ever retrying the delete. This sweep is that
- * retry.
+ * The owning lifecycle retries `releaseScmWorkload` after process exit and
+ * workspace cleanup. This sweep is the independent recovery path if that owner
+ * disappears while a terminal lease remains.
  *
  * Release rules, deliberately narrower than "the status is terminal":
  *
@@ -39,6 +37,10 @@ export interface ScmLeaseSweepDeps {
   withMutation: MutationRunner
   isWorkloadLocallyActive: (identity: ScmWorkloadIdentity) => boolean
   ownerInstanceId: string
+}
+
+export interface ReleasedScmWorkload extends ScmWorkloadIdentity {
+  agentId: string
 }
 
 function isWorkloadLocallyActive(identity: ScmWorkloadIdentity): boolean {
@@ -79,13 +81,13 @@ async function isWorkloadTerminal(
   return TERMINAL_STATUSES.has(row.status)
 }
 
-/** @returns the identities whose leases were released. */
+/** @returns released identities with the executing Agent whose capacity changed. */
 export async function sweepOrphanedScmWorkloadLeases(
   deps: ScmLeaseSweepDeps = defaultDeps,
-): Promise<ScmWorkloadIdentity[]> {
+): Promise<ReleasedScmWorkload[]> {
   return deps.withMutation(async (tx) => {
     const leases = await tx.select().from(scmWorkloadLeases)
-    const released: ScmWorkloadIdentity[] = []
+    const released: ReleasedScmWorkload[] = []
     for (const lease of leases) {
       if (lease.phase === 'active' && lease.ownerInstanceId !== deps.ownerInstanceId) continue
       const identity: ScmWorkloadIdentity = {
@@ -98,7 +100,7 @@ export async function sweepOrphanedScmWorkloadLeases(
         .delete(scmWorkloadLeases)
         .where(eq(scmWorkloadLeases.id, lease.id))
         .returning({ id: scmWorkloadLeases.id })
-      released.push(identity)
+      released.push({ ...identity, agentId: lease.agentId })
     }
     return released
   })

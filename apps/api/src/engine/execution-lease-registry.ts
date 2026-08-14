@@ -15,13 +15,13 @@ export interface ExecutionLease {
 
 const leasesByRunId = new Map<string, ExecutionLeaseEntry>()
 const leasesByTaskId = new Map<string, ExecutionLeaseEntry>()
-let durableReleaseHandler: ((runId: string) => Promise<void>) | undefined
+let durableReleaseHandler: ((runId: string, agentId?: string) => Promise<void>) | undefined
 const pendingDurableReleases = new Set<Promise<void>>()
 const durableReleaseErrors: unknown[] = []
 
 /** Composition-root hook keeps this process primitive independent of the DB. */
 export function setDurableExecutionLeaseReleaseHandler(
-  handler: ((runId: string) => Promise<void>) | undefined,
+  handler: ((runId: string, agentId?: string) => Promise<void>) | undefined,
 ): void {
   durableReleaseHandler = handler
 }
@@ -171,7 +171,7 @@ function finishExecutionLeaseEntry(entry: ExecutionLeaseEntry): void {
     if (leasesByTaskId.get(taskId) === entry) leasesByTaskId.delete(taskId)
   }
   entry.resolveCompletion()
-  const release = durableReleaseHandler?.(entry.runId)
+  const release = durableReleaseHandler?.(entry.runId, entry.agentId)
   if (release) {
     const tracked = release
       .catch((error) => {

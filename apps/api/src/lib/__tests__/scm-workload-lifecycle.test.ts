@@ -8,6 +8,7 @@ import {
   releaseRecoveredScmWorkload,
   releaseReservedScmWorkload,
   releaseScmWorkload,
+  retryScmWorkloadReleaseUntilSuccess,
   withScmWorkloadAdmission,
 } from '../scm-workload-lifecycle.js'
 
@@ -322,6 +323,22 @@ describe('SCM workload lifecycle', () => {
     ).resolves.toBe(true)
 
     expect(recovered.deleted).toHaveLength(1)
+  })
+
+  it('retains a failed durable release and retries it before lifecycle drain can finish', async () => {
+    const release = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce(true)
+    const delay = vi.fn(async () => undefined)
+
+    await retryScmWorkloadReleaseUntilSuccess(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { release, delay, retryDelayMs: 25 },
+    )
+
+    expect(release).toHaveBeenCalledTimes(2)
+    expect(delay).toHaveBeenCalledWith(25)
   })
 
   it('treats the durable row as active after the Run status is already terminal', async () => {

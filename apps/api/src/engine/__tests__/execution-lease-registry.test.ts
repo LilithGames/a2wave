@@ -93,7 +93,7 @@ describe('execution lease registry', () => {
     })
     await Promise.resolve()
 
-    expect(release).toHaveBeenCalledWith('run_1')
+    expect(release).toHaveBeenCalledWith('run_1', 'agt_1')
     expect(drained).toBe(false)
     completeRelease?.()
     await draining

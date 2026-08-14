@@ -45,11 +45,9 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
       logger.error({ error }, 'stale-lease-sweeper: sweep failed')
     }
     // Durable SCM workload leases are released after process exit and
-    // workspace cleanup; if that release throws it is logged and never
-    // retried inline, so this sweep is the retry. Without it a single failed
-    // delete permanently locks the Agent's binding and the source's
-    // PATCH/DELETE. Separate try: a failure in either sweep must not starve
-    // the other.
+    // workspace cleanup. Their owning lifecycle retries transient failures;
+    // this independent sweep is the recovery path if that owner disappears.
+    // Separate try: a failure in either sweep must not starve the other.
     try {
       const releasedDurable = await sweepOrphanedScmWorkloadLeases()
       if (releasedDurable.length > 0) {
@@ -57,6 +55,14 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
           { swept: releasedDurable },
           'stale-lease-sweeper: released orphaned durable SCM workload leases',
         )
+        const runAgentIds = new Set(
+          releasedDurable
+            .filter((workload) => workload.type === 'run')
+            .map((workload) => workload.agentId),
+        )
+        for (const agentId of runAgentIds) {
+          void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+        }
       }
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: durable SCM lease sweep failed')

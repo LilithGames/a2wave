@@ -23,7 +23,7 @@ import {
 } from './engine/execution-lease-registry.js'
 import { engineRegistry } from './engine/index.js'
 import { taskQueueDb } from './engine/task-queue-db.js'
-import { pauseTaskQueuePromotions, recoverOnStartup } from './engine/task-queue.js'
+import { pauseTaskQueuePromotions, recoverOnStartup, scheduleNext } from './engine/task-queue.js'
 import { env } from './env.js'
 import { startArtifactCleanupScheduler } from './lib/artifact-cleanup.js'
 import { startAttachmentStagingCleanupScheduler } from './lib/attachment-cleanup.js'
@@ -47,7 +47,10 @@ import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
 import { cleanupLegacyRuntimeGroupConfigs } from './lib/runtime-group-config.js'
 import { scheduleTriggerManager } from './lib/schedule-trigger.js'
-import { releaseRecoveredScmWorkload, releaseScmWorkload } from './lib/scm-workload-lifecycle.js'
+import {
+  releaseRecoveredScmWorkload,
+  retryScmWorkloadReleaseUntilSuccess,
+} from './lib/scm-workload-lifecycle.js'
 import {
   clearWorkspaceRemovalsOnStartup,
   drainPendingWorkspaceRemovalReleases,
@@ -353,21 +356,14 @@ const port = env.PORT
 // first-boot /auth/setup race cannot be won by an unauthenticated caller.
 let server: ReturnType<typeof serve> | undefined
 
-setDurableExecutionLeaseReleaseHandler(async (runId) => {
-  try {
-    await releaseScmWorkload({
-      type: 'run',
-      workloadId: runId,
-      ownerInstanceId: processInstanceId,
-    })
-  } catch (error) {
-    // Not a dead end: the stale-lease sweeper retries the release once the
-    // run's terminal status is visible and no local process holds it, so a
-    // transient delete failure cannot permanently lock the Agent or source.
-    logger.error(
-      { error, runId },
-      'Failed to release durable SCM workload lease; sweeper will retry',
-    )
+setDurableExecutionLeaseReleaseHandler(async (runId, agentId) => {
+  await retryScmWorkloadReleaseUntilSuccess({
+    type: 'run',
+    workloadId: runId,
+    ownerInstanceId: processInstanceId,
+  })
+  if (agentId) {
+    await scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
   }
 })
 

@@ -58,11 +58,13 @@ below hold across every affected entry point.
   resolve the checkout after its binding changes.
 - The lease names both sides of the relation, and **source-side mutations must
   consult it keyed by source**, not only by Agent rows: a path-changing PATCH,
-  source DELETE, workspace DELETE, and an env bootstrap update all refuse or
-  defer while a durable lease pins the source. Row state alone disagrees with
-  the lease in exactly the windows that matter — an Evaluation writes no `runs`
-  row yet owns an `eval-<taskId>` worktree, and a Run's lease outlives its
-  terminal status until cleanup.
+  config-changing PATCH, source DELETE, workspace DELETE, and an env bootstrap
+  update all refuse or defer while a durable lease pins the source. Config is
+  part of the cleanup topology (single-repository versus multi-repository), so
+  changing it under a workload is as unsafe as moving a path. Row state alone
+  disagrees with the lease in exactly the windows that matter — an Evaluation
+  writes no `runs` row yet owns an `eval-<taskId>` worktree, and a Run's lease
+  outlives its terminal status until cleanup.
 - Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
   Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and
@@ -131,12 +133,17 @@ below hold across every affected entry point.
   `running` in the runs table; the active lease is the only cross-replica record
   of that window. Reserved-phase leases are queued work, not occupied slots, and
   a lease whose run row was deleted outright is sweeper input, not occupancy.
-- Lease release after cleanup may fail transiently, and that failure must be
-  recoverable without a restart: the stale-lease sweeper releases a lease only
-  when its workload is terminal (or its row deleted), nothing local still runs
-  or cleans up the workload, and — for an active lease — this instance is the
-  recorded owner. An active lease owned by another instance is never swept;
-  a reserved lease never had a process and may be released on any replica.
+- Lease release after cleanup may fail transiently, and that failure must remain
+  pending in the owning lifecycle until it succeeds. Graceful shutdown drains
+  those retries before closing the database; a permanent failure therefore
+  reaches the non-zero shutdown timeout instead of being reported as a clean
+  stop. The stale-lease sweeper is an additional recovery path: it releases a
+  lease only when its workload is terminal (or its row deleted), nothing local
+  still runs or cleans up the workload, and — for an active lease — this
+  instance is the recorded owner. An active lease owned by another instance is
+  never swept; a reserved lease never had a process and may be released on any
+  replica. Both an owner retry and the sweeper nudge the affected Run queue after
+  freeing capacity, so queued work does not wait for an unrelated trigger.
 - PostgreSQL startup must not reset in-progress Run, Evaluation, sync, or index
   rows merely because another replica started. Without a positively identified
   dead owner, preserving a visible stuck lease is safer than reclaiming a checkout
