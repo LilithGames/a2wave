@@ -190,6 +190,18 @@ describe('reconcileAbandonedWorkspaceRemovals', () => {
     expect(result).toEqual([{ reservationId: 'scm_1:wt-a', outcome: 'retry' }])
   })
 
+  it('re-hands the adopted reservation off when the occupancy check fails', async () => {
+    const { deps, released, handedOff } = makeDeps([reservation()], {
+      findBlocker: async () => {
+        throw new Error('database unavailable')
+      },
+    })
+
+    expect(await reconcileAbandonedWorkspaceRemovals(deps)).toEqual([])
+    expect(released).toEqual([])
+    expect(handedOff).toEqual(['scm_1:wt-a'])
+  })
+
   it('adopts the same reservation again on the next tick after a failed attempt', async () => {
     // The end-to-end statement of the rule above, across two ticks: a row this
     // very instance failed on must not be invisible to it afterwards.

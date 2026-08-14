@@ -36,12 +36,14 @@ function protocolTx(options: {
   insertedRows?: Row[]
   deleteError?: Error
   deleteFailures?: number
+  updateFailures?: number
 }) {
   let selectCall = 0
   const inserted: Row[] = []
   const deleted: string[] = []
   const updated: Row[] = []
   let deleteFailures = options.deleteFailures ?? 0
+  let updateFailures = options.updateFailures ?? 0
   const tx = {
     select: vi.fn(() => ({
       from: vi.fn(() =>
@@ -60,7 +62,13 @@ function protocolTx(options: {
         updated.push(value)
         return {
           where: vi.fn(() => ({
-            returning: vi.fn(() => Promise.resolve([{ id: 'scm_1:ws-a' }])),
+            returning: vi.fn(() => {
+              if (updateFailures > 0) {
+                updateFailures -= 1
+                return Promise.reject(new Error('handoff db unavailable'))
+              }
+              return Promise.resolve([{ id: 'scm_1:ws-a' }])
+            }),
           })),
         }
       }),
@@ -207,6 +215,29 @@ describe('removeSourceWorkspaceGuarded', () => {
 
     expect(deleted).toHaveLength(0)
     expect(updated).toEqual([{ ownerInstanceId: null }])
+  })
+
+  it('does not report handoff when the reservation ownership update failed', async () => {
+    const { tx, deleted, updated } = protocolTx({
+      selects: [...cleanDecisionSelects(), ...cleanDecisionSelects()],
+      updateFailures: 1,
+    })
+    mockWithMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) => fn(tx as never))
+
+    await expect(
+      removeSourceWorkspaceGuarded({
+        sourceId: 'scm_1',
+        name: 'ws-a',
+        scm: scmOf(vi.fn().mockRejectedValue(new Error('EBUSY'))),
+      }),
+    ).rejects.toThrow('handoff db unavailable')
+
+    // The attempt is over and no handoff was persisted, so release our mark;
+    // the caller sees failure and may retry rather than believing convergence
+    // now owns it.
+    expect(updated).toEqual([{ ownerInstanceId: null }])
+    expect(deleted).toHaveLength(1)
+    await expect(retryPendingWorkspaceRemovalReleases()).resolves.toContain('scm_1:ws-a')
   })
 
   it('releases rather than hands off when the re-check blocks the removal', async () => {

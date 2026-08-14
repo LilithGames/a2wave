@@ -53,6 +53,7 @@ interface PendingReservationRelease {
 }
 
 const pendingReservationReleases = new Map<string, PendingReservationRelease>()
+const pendingReservationHandoffs = new Map<string, PendingReservationRelease>()
 const RESERVATION_RELEASE_RETRY_DELAY_MS = 100
 
 function delay(ms: number): Promise<void> {
@@ -308,8 +309,12 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         // prevents — and if the handoff write itself failed, the row simply
         // keeps naming this instance and the reconciler adopts it once this
         // instance stops beating.
+        if (!(await handOffWorkspaceRemoval({ reservationId, attemptToken }))) {
+          throw new Error(
+            `Workspace removal reservation disappeared before handoff: ${reservationId}`,
+          )
+        }
         handedOff = true
-        await handOffWorkspaceRemoval({ reservationId, attemptToken })
         // Raised only here, past the committed reservation, so callers can
         // distinguish "a durable mark now guards this worktree" from any
         // earlier failure that left no mark at all.
@@ -325,8 +330,12 @@ async function removeSourceWorkspaceGuardedCore(input: GuardedRemovalInput): Pro
         await remove()
       } catch (error) {
         if (error instanceof WorkspaceRemovalBlockedError) throw error
+        if (!(await handOffWorkspaceRemoval({ reservationId, attemptToken }))) {
+          throw new Error(
+            `Workspace removal reservation disappeared before handoff: ${reservationId}`,
+          )
+        }
         handedOff = true
-        await handOffWorkspaceRemoval({ reservationId, attemptToken })
         throw error
       }
     }
@@ -377,14 +386,8 @@ export async function handOffWorkspaceRemoval(
       return updated.length > 0
     })
   } catch (error) {
-    // The row keeps this process as owner. Its heartbeat stops when the process
-    // dies, so the reconciler still adopts it — just after the staleness
-    // threshold rather than immediately.
-    logger.error(
-      { error, reservationId: pending.reservationId },
-      'Failed to hand off a workspace removal reservation; the reconciler adopts it once this instance stops',
-    )
-    return false
+    pendingReservationHandoffs.set(pending.reservationId, pending)
+    throw error
   }
 }
 
@@ -404,9 +407,9 @@ async function releaseWorkspaceRemovalReservation(
   })
 }
 
-/** Retry only releases this process actually attempted and fence every delete by attempt token. */
+/** Retry this process's failed reservation writes, always fenced by exact attempt token. */
 export async function retryPendingWorkspaceRemovalReleases(): Promise<string[]> {
-  const released: string[] = []
+  const settled = new Set<string>()
   for (const [reservationId, pending] of [...pendingReservationReleases]) {
     try {
       await releaseWorkspaceRemovalReservation(pending)
@@ -415,19 +418,30 @@ export async function retryPendingWorkspaceRemovalReleases(): Promise<string[]> 
       if (pendingReservationReleases.get(reservationId)?.attemptToken === pending.attemptToken) {
         pendingReservationReleases.delete(reservationId)
       }
-      released.push(reservationId)
+      settled.add(reservationId)
     } catch (error) {
       logger.error({ error, reservationId }, 'Workspace removal reservation release retry failed')
     }
   }
-  return released
+  for (const [reservationId, pending] of [...pendingReservationHandoffs]) {
+    try {
+      await handOffWorkspaceRemoval(pending)
+      if (pendingReservationHandoffs.get(reservationId)?.attemptToken === pending.attemptToken) {
+        pendingReservationHandoffs.delete(reservationId)
+      }
+      settled.add(reservationId)
+    } catch (error) {
+      logger.error({ error, reservationId }, 'Workspace removal reservation handoff retry failed')
+    }
+  }
+  return [...settled]
 }
 
-/** Keep retrying this process's fenced releases until shutdown can close the DB safely. */
+/** Keep retrying this process's fenced reservation writes before DB shutdown. */
 export async function drainPendingWorkspaceRemovalReleases(): Promise<void> {
-  while (pendingReservationReleases.size > 0) {
+  while (pendingReservationReleases.size > 0 || pendingReservationHandoffs.size > 0) {
     await retryPendingWorkspaceRemovalReleases()
-    if (pendingReservationReleases.size > 0) {
+    if (pendingReservationReleases.size > 0 || pendingReservationHandoffs.size > 0) {
       await delay(RESERVATION_RELEASE_RETRY_DELAY_MS)
     }
   }

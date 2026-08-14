@@ -532,8 +532,11 @@ void ensureAdminExists()
     // reap that live workload and reclaim its checkout. Refusing to start is
     // the safe end of that trade: an instance that cannot record liveness
     // cannot safely own a shared workspace.
-    await beatInstanceHeartbeat()
-    stopInstanceHeartbeat = startInstanceHeartbeat()
+    const initialHeartbeatAt = await beatInstanceHeartbeat()
+    stopInstanceHeartbeat = startInstanceHeartbeat(undefined, {
+      initialSuccessAt: initialHeartbeatAt,
+      onOwnershipLost: () => gracefulShutdown('SCM heartbeat lease lost'),
+    })
     // Single-process backend: no previous workspace removal can still be
     // running, so every reservation row is a leak from the dead process. Clear
     // before env bootstrap (which otherwise defers SCM changes on such a row)

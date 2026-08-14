@@ -27,6 +27,16 @@ heartbeat stopped past the threshold, or it booted *after* the mark was written
 `HOSTNAME`) whose previous life wrote the mark. Never infer death any other
 way, and never touch the mark of an instance that is still beating.
 
+The owner fail-stops before peers reach that verdict. One minute before the
+five-minute peer-death threshold, a process with no successful renewal
+irreversibly pauses admission/promotion and enters graceful shutdown, which
+terminates every Agent CLI before deleting its heartbeat. A late successful
+write cannot revive that process's ownership: peers may already be preparing to
+reclaim it, so reacquisition requires a new process lifetime. This deliberate
+deadline margin is the fencing mechanism; it avoids spreading an ownership
+epoch through every filesystem call while still ordering owner exit before peer
+recovery.
+
 Recovery of *peers* therefore stays disabled for one staleness window after
 boot: immediately after an upgrade the table is empty, so every peer would read
 as dead and this replica would reclaim checkouts out from under processes that
@@ -240,7 +250,10 @@ revisiting when this area is next touched:
   `running`. A companion pass applies exactly what that instance's own restart
   would have applied — the Run fails with a retryable structured reason and its
   A2A task is synced, the Evaluation task fails — and runs *before* the sweep so
-  the same tick releases what it just settled.
+  the same tick releases what it just settled. Run status/result/steps and
+  Evaluation task/results/audit commit atomically; if any database write fails,
+  the workload remains non-terminal and the next tick retries the whole
+  settlement rather than releasing a half-written terminal state.
 - PostgreSQL startup must still not reset in-progress Run, Evaluation, sync, or
   index rows merely because another replica started: another replica booting
   says nothing about a peer. Recovery of a peer's work is the heartbeat-driven

@@ -66,6 +66,13 @@ export class ScmWorkloadAdmissionError extends Error {
   }
 }
 
+function assertHeartbeatOwnership(hasLostOwnership: () => boolean): void {
+  if (!hasLostOwnership()) return
+  throw new ScmWorkloadAdmissionError(
+    'This instance lost its liveness heartbeat lease and cannot own SCM workloads',
+  )
+}
+
 export function scmWorkloadLeaseId(identity: ScmWorkloadIdentity): string {
   return `${identity.type}:${identity.workloadId}`
 }
@@ -118,11 +125,7 @@ export async function withScmWorkloadAdmission<T>(
   // would put two processes in the same worktree, so refuse at the door — the
   // caller surfaces this as a normal admission failure and the work retries
   // wherever liveness is intact.
-  if (deps.hasLostOwnership?.() ?? hasLostHeartbeatOwnership()) {
-    throw new ScmWorkloadAdmissionError(
-      'This instance cannot renew its liveness heartbeat and is not admitting SCM workloads',
-    )
-  }
+  assertHeartbeatOwnership(deps.hasLostOwnership ?? hasLostHeartbeatOwnership)
   return deps.withMutation(async (tx) => {
     const agent = (
       await tx
@@ -190,7 +193,9 @@ export interface OwnedScmWorkload extends ScmWorkloadIdentity {
 export async function activateScmWorkloadInMutation(
   tx: TransactionHandle,
   input: OwnedScmWorkload,
+  hasLostOwnership: () => boolean = hasLostHeartbeatOwnership,
 ): Promise<boolean> {
+  assertHeartbeatOwnership(hasLostOwnership)
   const lease = await loadLease(tx, input)
   if (!lease) return false
   if (lease.phase === 'active') {
@@ -261,7 +266,13 @@ export async function activateScmWorkload(
   deps: ScmWorkloadLifecycleDeps = defaultDeps,
 ): Promise<void> {
   await deps.withMutation(async (tx) => {
-    if (!(await activateScmWorkloadInMutation(tx, input))) {
+    if (
+      !(await activateScmWorkloadInMutation(
+        tx,
+        input,
+        deps.hasLostOwnership ?? hasLostHeartbeatOwnership,
+      ))
+    ) {
       throw new ScmWorkloadLeaseConflictError(
         `SCM workload "${scmWorkloadLeaseId(input)}" has no durable reservation`,
       )

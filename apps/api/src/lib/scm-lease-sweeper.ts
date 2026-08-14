@@ -1,12 +1,16 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
-import { evaluationTasks, runs, scmWorkloadLeases } from '../db/schema.js'
-import { type TransactionHandle, runExclusive } from '../db/transaction.js'
-import { evaluationQueueDb } from '../engine/evaluation-queue-db.js'
+import {
+  evaluationResults,
+  evaluationTasks,
+  runSteps,
+  runs,
+  scmWorkloadLeases,
+} from '../db/schema.js'
+import type { TransactionHandle } from '../db/transaction.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
-import { logBackgroundAudit } from './audit.js'
+import { writeBackgroundAudit } from './audit.js'
 import {
   type InstanceLivenessMap,
   canJudgePeerLiveness,
@@ -188,15 +192,15 @@ export interface DeadInstanceWorkloadReaperDeps {
   canJudgePeers: () => boolean
   isWorkloadLocallyActive: (identity: ScmWorkloadIdentity) => boolean
   /**
-   * Claim the terminal transition by compare-and-set on the current status.
-   * False means someone else settled the workload first, and this reap must
-   * not proceed — the status read that selected this workload happened before
-   * the write, so a concurrent completion or cancellation can land in between.
+   * Atomically claim and persist the complete database terminal state.
+   * False means someone else settled the workload first. A rejection rolls the
+   * status, results/steps, and Evaluation audit back together so the next tick
+   * can retry instead of observing a terminal-but-incomplete workload.
    */
   claimRun: (runId: string) => Promise<boolean>
   claimEvaluation: (taskId: string) => Promise<boolean>
-  failRun: (runId: string) => Promise<void>
-  failEvaluation: (taskId: string) => Promise<void>
+  /** Synchronize non-transactional external state after the Run settlement commits. */
+  afterRunSettled: (runId: string) => Promise<void>
   now: () => Date
 }
 
@@ -207,39 +211,92 @@ const REAPABLE_RUN_STATUSES = ['running', 'pending', 'queued'] as const
 const REAPABLE_EVALUATION_STATUSES = ['running', 'pending', 'queued'] as const
 
 /**
- * Take ownership of the terminal transition, in one predicated write.
+ * Take ownership and settle the Run's database state in one transaction.
  *
  * `.returning()` row count is the claim result — the two drivers disagree
  * about `changes`/`rowCount`, so it is the only portable answer.
  */
 async function claimRunForReap(runId: string): Promise<boolean> {
-  const claimed = await runExclusive(() =>
-    db
+  const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
+  return withScmPathMutation(async (tx) => {
+    const claimed = await tx
       .update(runs)
-      .set({ status: 'failed', updatedAt: new Date() })
+      .set({ status: 'failed', result: { error: reason }, updatedAt: new Date() })
       .where(and(eq(runs.id, runId), inArray(runs.status, [...REAPABLE_RUN_STATUSES])))
-      .returning({ id: runs.id }),
-  )
-  return claimed.length > 0
+      .returning({ id: runs.id })
+    if (claimed.length === 0) return false
+    await tx
+      .update(runSteps)
+      .set({ status: 'failed', output: { error: reason } })
+      .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
+    return true
+  })
 }
 
 async function claimEvaluationForReap(taskId: string): Promise<boolean> {
-  const claimed = await runExclusive(() =>
-    db
+  return withScmPathMutation(async (tx) => {
+    const task = (
+      await tx
+        .select({
+          agentId: evaluationTasks.agentId,
+          userId: evaluationTasks.userId,
+          configSnapshot: evaluationTasks.configSnapshot,
+          summary: evaluationTasks.summary,
+        })
+        .from(evaluationTasks)
+        .where(eq(evaluationTasks.id, taskId))
+        .limit(1)
+    )[0]
+    const now = new Date()
+    const claimed = await tx
       .update(evaluationTasks)
-      .set({ status: 'failed', updatedAt: new Date() })
+      .set({
+        status: 'failed',
+        error: INSTANCE_STOPPED_EVALUATION_REASON,
+        finishedAt: now,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(evaluationTasks.id, taskId),
           inArray(evaluationTasks.status, [...REAPABLE_EVALUATION_STATUSES]),
         ),
       )
-      .returning({ id: evaluationTasks.id }),
-  )
-  return claimed.length > 0
+      .returning({ id: evaluationTasks.id })
+    if (claimed.length === 0) return false
+    await tx
+      .update(evaluationResults)
+      .set({ status: 'failed', error: INSTANCE_STOPPED_EVALUATION_REASON, updatedAt: now })
+      .where(
+        and(
+          eq(evaluationResults.taskId, taskId),
+          inArray(evaluationResults.status, ['pending', 'running']),
+        ),
+      )
+    await writeBackgroundAudit(
+      {
+        action: 'evaluation_task.execute',
+        resource: 'evaluation_task',
+        resourceId: taskId,
+        userId: task?.userId ?? undefined,
+        details: {
+          agentId: task?.agentId ?? null,
+          status: 'failed',
+          reapedByInstance: processInstanceId,
+          reason: INSTANCE_STOPPED_EVALUATION_REASON,
+          casesRun: task?.summary?.total ?? null,
+          providerId: task?.configSnapshot?.providerId ?? null,
+          providerName: task?.configSnapshot?.providerName ?? null,
+          model: task?.configSnapshot?.model ?? null,
+        },
+      },
+      tx,
+    )
+    return true
+  })
 }
 
-async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
+async function syncReapedRunExternalState(runId: string): Promise<void> {
   const run = (
     await db
       .select({ triggerSource: runs.triggerSource, triggerSessionId: runs.triggerSessionId })
@@ -248,8 +305,6 @@ async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
       .limit(1)
   )[0]
   const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
-  await taskQueueDb.failRunWithStructuredReason(runId, reason)
-  await taskQueueDb.updateRunStatus(runId, 'failed')
   // Same contract as startup recovery: an A2A caller polling tasks/get must
   // see the failure, not a task that stays "working" forever.
   if (run?.triggerSource === 'a2a' && run.triggerSessionId) {
@@ -259,51 +314,6 @@ async function failRunAbandonedByDeadInstance(runId: string): Promise<void> {
   }
 }
 
-/**
- * Settle a reaped evaluation and record the spend.
- *
- * Every terminal path of an evaluation owes an `evaluation_task.execute` audit
- * entry — evaluations deliberately write no `runs` rows, so that entry is the
- * only record the work happened at all (Iron Rule 5, via the Evaluation
- * carve-out). A reap is a terminal path like any other, and settling one
- * silently would leave a task that consumed provider tokens with no trace.
- */
-async function failEvaluationAbandonedByDeadInstance(taskId: string): Promise<void> {
-  await evaluationQueueDb.failTask(taskId, INSTANCE_STOPPED_EVALUATION_REASON)
-  const task = (
-    await db
-      .select({
-        agentId: evaluationTasks.agentId,
-        userId: evaluationTasks.userId,
-        configSnapshot: evaluationTasks.configSnapshot,
-        summary: evaluationTasks.summary,
-      })
-      .from(evaluationTasks)
-      .where(eq(evaluationTasks.id, taskId))
-      .limit(1)
-  )[0]
-  logBackgroundAudit({
-    action: 'evaluation_task.execute',
-    resource: 'evaluation_task',
-    resourceId: taskId,
-    userId: task?.userId ?? undefined,
-    details: {
-      agentId: task?.agentId ?? null,
-      status: 'failed',
-      reapedByInstance: processInstanceId,
-      reason: INSTANCE_STOPPED_EVALUATION_REASON,
-      // The in-process tally died with the owner, so volume is reported from
-      // the persisted summary — what the dead instance had finished and
-      // recorded — rather than guessed.
-      casesRun: task?.summary?.total ?? null,
-      // The frozen config these calls ran on — never credentials.
-      providerId: task?.configSnapshot?.providerId ?? null,
-      providerName: task?.configSnapshot?.providerName ?? null,
-      model: task?.configSnapshot?.model ?? null,
-    },
-  })
-}
-
 const defaultReaperDeps: DeadInstanceWorkloadReaperDeps = {
   db,
   loadLiveness: () => loadInstanceLiveness(db),
@@ -311,8 +321,7 @@ const defaultReaperDeps: DeadInstanceWorkloadReaperDeps = {
   isWorkloadLocallyActive,
   claimRun: claimRunForReap,
   claimEvaluation: claimEvaluationForReap,
-  failRun: failRunAbandonedByDeadInstance,
-  failEvaluation: failEvaluationAbandonedByDeadInstance,
+  afterRunSettled: syncReapedRunExternalState,
   now: () => new Date(),
 }
 
@@ -355,21 +364,18 @@ export async function failScmWorkloadsOfDeadInstances(
     if (deps.isWorkloadLocallyActive(identity)) continue
     if (!isLeaseOwnerDead(lease, liveness, now)) continue
     if (await isWorkloadTerminal(deps.db as WorkloadStatusExecutor, identity)) continue
-    // Re-read liveness immediately before the write. The snapshot above was
-    // taken before the per-workload status queries, and a peer resuming its
-    // heartbeat in that window must cancel the reap — failing a live owner's
-    // workload is exactly the outcome the heartbeat exists to prevent.
+    // Re-read immediately before settlement. Current-version owners fail-stop
+    // one minute before this peer-death threshold and cannot revive that old
+    // ownership, but the second read still avoids acting on an unnecessarily
+    // old snapshot and protects reused instance ids.
     if (!isLeaseOwnerDead(lease, await deps.loadLiveness(), deps.now())) continue
-    // Claim before writing: the terminal check above is a read, and the owner
-    // process (or a cancel request) can settle the row in the window that
-    // follows. Without the claim this would overwrite a genuine completion
-    // with a synthetic failure.
+    // The settlement itself uses a status CAS, because completion or
+    // cancellation may still win between the read above and the transaction.
     if (identity.type === 'run') {
       if (!(await deps.claimRun(identity.workloadId))) continue
-      await deps.failRun(identity.workloadId)
+      await deps.afterRunSettled(identity.workloadId)
     } else {
       if (!(await deps.claimEvaluation(identity.workloadId))) continue
-      await deps.failEvaluation(identity.workloadId)
     }
     reaped.push({ ...identity, agentId: lease.agentId })
   }

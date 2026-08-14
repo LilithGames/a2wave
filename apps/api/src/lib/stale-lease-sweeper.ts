@@ -122,11 +122,11 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
       logger.error({ error }, 'stale-lease-sweeper: instance heartbeat prune failed')
     }
     try {
-      const releasedReservations = await retryPendingWorkspaceRemovalReleases()
-      if (releasedReservations.length > 0) {
+      const settledReservations = await retryPendingWorkspaceRemovalReleases()
+      if (settledReservations.length > 0) {
         logger.info(
-          { released: releasedReservations },
-          'stale-lease-sweeper: released workspace removal reservations after retry',
+          { settled: settledReservations },
+          'stale-lease-sweeper: settled workspace removal reservation writes after retry',
         )
       }
     } catch (error) {

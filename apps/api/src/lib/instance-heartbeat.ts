@@ -26,6 +26,15 @@ export const INSTANCE_HEARTBEAT_INTERVAL_MS = 30_000
 /** ~10 missed beats; generous to GC pauses, event-loop stalls, and clock skew. */
 export const INSTANCE_DEAD_AFTER_MS = 5 * 60_000
 /**
+ * Stop this process one minute before peers may reclaim its marks.
+ *
+ * That margin is intentionally larger than the graceful-shutdown hard timeout:
+ * an expired owner must have stopped every CLI before another replica is
+ * allowed to reuse its checkout. Once crossed, ownership is irrecoverable for
+ * this process lifetime; a later successful write cannot undo a peer's claim.
+ */
+export const INSTANCE_SELF_FENCE_AFTER_MS = INSTANCE_DEAD_AFTER_MS - 60_000
+/**
  * Recovery stays disabled for this long after boot.
  *
  * The dangerous moment is the first minutes of an upgrade: the heartbeat table
@@ -68,17 +77,19 @@ const defaultDeps: InstanceHeartbeatDeps = {
 
 export async function beatInstanceHeartbeat(
   deps: InstanceHeartbeatDeps = defaultDeps,
-): Promise<void> {
+): Promise<Date> {
+  const heartbeatAt = deps.now()
   await deps.write(() =>
     deps.db
       .insert(instanceHeartbeats)
-      .values({ id: deps.instanceId, startedAt: deps.bootTime, heartbeatAt: deps.now() })
+      .values({ id: deps.instanceId, startedAt: deps.bootTime, heartbeatAt })
       .onConflictDoUpdate({
         target: instanceHeartbeats.id,
-        set: { startedAt: deps.bootTime, heartbeatAt: deps.now() },
+        set: { startedAt: deps.bootTime, heartbeatAt },
       })
       .returning({ id: instanceHeartbeats.id }),
   )
+  return heartbeatAt
 }
 
 /**
@@ -87,6 +98,8 @@ export async function beatInstanceHeartbeat(
  */
 interface RenewalState {
   inFlight: boolean
+  lostOwnership: boolean
+  onOwnershipLost?: () => void
   /**
    * Last successful renewal, seeded when the loop starts rather than from
    * `bootTime`: liveness is about *renewal* health, and a long-lived process
@@ -97,29 +110,55 @@ interface RenewalState {
 
 const renewalStates = new WeakMap<InstanceHeartbeatDeps, RenewalState>()
 
-function renewalState(deps: InstanceHeartbeatDeps): RenewalState {
+function renewalState(deps: InstanceHeartbeatDeps, initialSuccessAt?: Date): RenewalState {
   let state = renewalStates.get(deps)
   if (!state) {
-    state = { inFlight: false, lastSuccessAt: deps.now().getTime() }
+    state = {
+      inFlight: false,
+      lostOwnership: false,
+      lastSuccessAt: (initialSuccessAt ?? deps.now()).getTime(),
+    }
     renewalStates.set(deps, state)
   }
   return state
 }
 
+function fenceIfExpired(deps: InstanceHeartbeatDeps, state: RenewalState): boolean {
+  if (state.lostOwnership) return true
+  if (deps.now().getTime() - state.lastSuccessAt <= INSTANCE_SELF_FENCE_AFTER_MS) return false
+  state.lostOwnership = true
+  logger.error(
+    { instanceId: deps.instanceId },
+    'Instance heartbeat lease expired; stopping before peers may reclaim SCM workspaces',
+  )
+  try {
+    state.onOwnershipLost?.()
+  } catch (error) {
+    logger.error({ error }, 'Instance heartbeat ownership-loss handler failed')
+  }
+  return true
+}
+
 /**
- * Has this process failed to renew for long enough that peers will call it dead?
+ * Has this process reached its fail-stop deadline?
  *
- * The owner must reach the same verdict its peers will. Once renewals have been
- * failing past the staleness threshold, a peer is entitled to reclaim this
- * instance's checkouts — so continuing to act as an owner (admitting work,
- * treating its own marks as protected) would mean two processes writing the
- * same worktree. Self-fencing here is what keeps the heartbeat a lease rather
- * than merely a hint.
+ * This deadline is deliberately earlier than the peer-death threshold. The
+ * margin gives graceful shutdown time to terminate every CLI before another
+ * replica may reclaim the checkout. Crossing it is irreversible for this
+ * process lifetime; a later write cannot safely reacquire an ownership peers
+ * may already be preparing to take.
  */
 export function hasLostHeartbeatOwnership(deps: InstanceHeartbeatDeps = defaultDeps): boolean {
   const state = renewalStates.get(deps)
   if (!state) return false
-  return deps.now().getTime() - state.lastSuccessAt > INSTANCE_DEAD_AFTER_MS
+  return fenceIfExpired(deps, state)
+}
+
+export interface StartInstanceHeartbeatOptions {
+  /** Timestamp actually written by the awaited boot heartbeat. */
+  initialSuccessAt?: Date
+  /** Fail-stop hook; production begins graceful shutdown and terminates every CLI. */
+  onOwnershipLost?: () => void
 }
 
 /**
@@ -131,14 +170,22 @@ export function hasLostHeartbeatOwnership(deps: InstanceHeartbeatDeps = defaultD
  * A failed beat is retried by the next tick, and sustained failure trips
  * `hasLostHeartbeatOwnership`.
  */
-export function startInstanceHeartbeat(deps: InstanceHeartbeatDeps = defaultDeps): () => void {
-  const state = renewalState(deps)
+export function startInstanceHeartbeat(
+  deps: InstanceHeartbeatDeps = defaultDeps,
+  options: StartInstanceHeartbeatOptions = {},
+): () => void {
+  const state = renewalState(deps, options.initialSuccessAt)
+  state.onOwnershipLost = options.onOwnershipLost
   const beat = async () => {
+    if (fenceIfExpired(deps, state)) return
     if (state.inFlight) return
     state.inFlight = true
     try {
-      await beatInstanceHeartbeat(deps)
-      state.lastSuccessAt = deps.now().getTime()
+      const heartbeatAt = await beatInstanceHeartbeat(deps)
+      // A write that returned after the lease deadline is too late. A peer may
+      // already be preparing to reclaim, so never revive this process's epoch.
+      if (fenceIfExpired(deps, state)) return
+      state.lastSuccessAt = heartbeatAt.getTime()
     } catch (error) {
       logger.warn({ error }, 'Instance heartbeat write failed; next interval retries')
     } finally {

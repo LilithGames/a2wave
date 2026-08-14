@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   INSTANCE_DEAD_AFTER_MS,
   INSTANCE_HEARTBEAT_INTERVAL_MS,
+  INSTANCE_SELF_FENCE_AFTER_MS,
   type InstanceLivenessMap,
   beatInstanceHeartbeat,
   canJudgePeerLiveness,
@@ -215,9 +216,10 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
     stop()
   })
 
-  it('clears lost ownership after a renewal succeeds again', async () => {
+  it('fails stop before peers may reclaim and never revives the expired ownership', async () => {
     const { dbMock } = mockHeartbeatDb()
     let fail = true
+    const onOwnershipLost = vi.fn()
     const flakyWrite = <T>(fn: () => Promise<T>): Promise<T> =>
       fail ? Promise.reject(new Error('db unreachable')) : fn()
     let clock = NOW.getTime()
@@ -227,17 +229,39 @@ describe('startInstanceHeartbeat — single-flight and self-fencing', () => {
       now: () => new Date(clock),
     })
 
-    const stop = startInstanceHeartbeat(state)
+    const stop = startInstanceHeartbeat(state, { onOwnershipLost })
     await vi.advanceTimersByTimeAsync(0)
-    clock = NOW.getTime() + INSTANCE_DEAD_AFTER_MS + 1
+    clock = NOW.getTime() + INSTANCE_SELF_FENCE_AFTER_MS + 1
     await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
     expect(hasLostHeartbeatOwnership(state)).toBe(true)
+    expect(onOwnershipLost).toHaveBeenCalledTimes(1)
+    expect(INSTANCE_SELF_FENCE_AFTER_MS).toBeLessThan(INSTANCE_DEAD_AFTER_MS)
 
     fail = false
     await vi.advanceTimersByTimeAsync(INSTANCE_HEARTBEAT_INTERVAL_MS)
 
-    expect(hasLostHeartbeatOwnership(state)).toBe(false)
+    expect(hasLostHeartbeatOwnership(state)).toBe(true)
+    expect(onOwnershipLost).toHaveBeenCalledTimes(1)
     stop()
+  })
+
+  it('counts the initial database write from its recorded timestamp, not its return time', async () => {
+    const { dbMock, upserts } = mockHeartbeatDb()
+    const onOwnershipLost = vi.fn()
+    let clock = NOW.getTime() + INSTANCE_SELF_FENCE_AFTER_MS + 1
+    const state = deps(dbMock, { now: () => new Date(clock) })
+
+    const stop = startInstanceHeartbeat(state, {
+      initialSuccessAt: NOW,
+      onOwnershipLost,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(hasLostHeartbeatOwnership(state)).toBe(true)
+    expect(onOwnershipLost).toHaveBeenCalledTimes(1)
+    expect(upserts).toHaveLength(0)
+    stop()
+    clock += 1
   })
 })
 

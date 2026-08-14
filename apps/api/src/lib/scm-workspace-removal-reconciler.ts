@@ -225,13 +225,17 @@ export async function reconcileAbandonedWorkspaceRemovals(
         continue
       }
     }
+    let adoptedToken: string | null = null
+    let reservationSettled = false
     try {
       const nextToken = deps.newToken()
       if (!(await deps.adopt(candidate.id, candidate.attemptToken, nextToken))) continue
+      adoptedToken = nextToken
 
       const blocker = await deps.findBlocker(candidate.scmSourceId, candidate.workspaceName)
       if (blocker) {
         await deps.release(candidate.id, nextToken)
+        reservationSettled = true
         logger.info(
           { reservationId: candidate.id, blocker },
           'workspace-removal-reconciler: released an obsolete reservation',
@@ -252,24 +256,33 @@ export async function reconcileAbandonedWorkspaceRemovals(
           { error, reservationId: candidate.id },
           'workspace-removal-reconciler: removal failed; disowning for the next tick',
         )
-        await deps
-          .handOff(candidate.id, nextToken)
-          .catch((handOffError) =>
-            logger.error(
-              { error: handOffError, reservationId: candidate.id },
-              'workspace-removal-reconciler: failed to disown after a failed removal; the row is adoptable once this instance stops',
-            ),
-          )
         reconciled.push({ reservationId: candidate.id, outcome: 'retry' })
         continue
       }
       await deps.release(candidate.id, nextToken)
+      reservationSettled = true
       reconciled.push({ reservationId: candidate.id, outcome: 'removed' })
     } catch (error) {
       logger.error(
         { error, reservationId: candidate.id },
         'workspace-removal-reconciler: reconciliation failed for one reservation',
       )
+    } finally {
+      // Once this tick adopts a row, every unsuccessful exit must make it
+      // adoptable again. Keeping `owner=self` after a blocker query or release
+      // error would make every later tick skip the row while this process is
+      // healthy. The exact token prevents this cleanup from disowning a newer
+      // attempt if another actor already replaced it.
+      if (adoptedToken && !reservationSettled) {
+        try {
+          await deps.handOff(candidate.id, adoptedToken)
+        } catch (handOffError) {
+          logger.error(
+            { error: handOffError, reservationId: candidate.id },
+            'workspace-removal-reconciler: failed to disown an incomplete attempt',
+          )
+        }
+      }
     }
   }
   return reconciled

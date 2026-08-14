@@ -226,6 +226,33 @@ describe('SCM workload lifecycle', () => {
     expect(rightOwner.deleted).toHaveLength(1)
   })
 
+  it('refuses to activate queued SCM work after this instance self-fences', async () => {
+    const activation = mutationTx([
+      [
+        {
+          id: 'run:run_queued',
+          workloadType: 'run',
+          workloadId: 'run_queued',
+          agentId: 'agt_1',
+          scmSourceId: 'scm_1',
+          phase: 'reserved',
+          ownerInstanceId: null,
+        },
+      ],
+    ])
+
+    await expect(
+      activateScmWorkload(
+        { type: 'run', workloadId: 'run_queued', ownerInstanceId: 'instance-a' },
+        {
+          withMutation: (fn) => withMutation(fn, activation.tx),
+          hasLostOwnership: () => true,
+        },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadAdmissionError)
+    expect(activation.updated).toEqual([])
+  })
+
   it('makes activation idempotent for its owner and rejects a missing or foreign lease', async () => {
     const active = {
       id: 'run:run_1',

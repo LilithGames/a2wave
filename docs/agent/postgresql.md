@@ -87,20 +87,25 @@ now the exception rather than the routine:
 
 - **Recovery of peers is withheld for one staleness window after boot**, so the
   empty heartbeat table right after an upgrade is not read as "everyone died".
-- **A process self-fences.** If its own renewals fail past the threshold it stops
-  admitting SCM workloads and stops judging peers — it has reached the same
-  verdict its peers have, so continuing to own a shared worktree would put two
-  processes in one directory.
-- **Every claim re-verifies liveness inside the transaction that acts on it.**
-  A snapshot read before the lock is a statement about the past; an owner that
-  resumes beating in that window keeps its lease.
+- **A process fail-stops before peers may reclaim it.** Four minutes without a
+  successful renewal irreversibly pauses admission/promotion and starts global
+  graceful shutdown; active CLIs are terminated and the process exits before
+  peers use the five-minute death threshold. A late renewal cannot revive the
+  old ownership. The one-minute margin, rather than a distributed epoch on
+  every filesystem call, is the deliberate operational trade-off.
+- **Recovery re-checks liveness immediately before its guarded claim.** Once an
+  owner reaches the five-minute peer threshold, the earlier fail-stop deadline
+  makes that stale verdict monotonic for the old process lifetime; status and
+  removal-token CAS still arbitrate concurrent recovery replicas.
 
 On that basis a surviving replica automatically:
 
 - fails workloads abandoned by a stopped instance (the Run gets a retryable
   `INSTANCE_STOPPED_DURING_EXEC`, its A2A task is synced, the Evaluation task
   fails with an `evaluation_task.execute` audit entry), then releases their
-  leases;
+  leases. Run status/result/steps and Evaluation task/results/audit settle in
+  one database transaction, so a failed write leaves the workload retryable on
+  the next tick rather than terminal-but-incomplete;
 - adopts workspace-removal reservations with no live owner, re-runs the same
   occupancy decision every remover runs, and either finishes the removal or
   releases the row as obsolete. A failed attempt is disowned again so the next
