@@ -169,8 +169,12 @@ export function OauthAllowedEmails({ emails, onChange, disabled }: OauthAllowedE
       )}
 
       {emails.length === 0 ? (
+        /* `warning-foreground` is the color for text sitting ON a solid warning fill
+           (white in both light themes), so over a 10% tint it rendered white-on-near-white.
+           Match the shared warning-notice recipe used elsewhere: subtle fill, warning
+           hairline, `text-warning` copy with the icon tinted the same. */
         <div
-          className="flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning-foreground"
+          className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning"
           data-testid="oauth-allowed-emails-empty"
         >
           <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />

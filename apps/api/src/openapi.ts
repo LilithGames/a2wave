@@ -129,8 +129,8 @@ export const openApiSpec: OpenAPIV3.Document = {
     title: 'a2wave Invocation API',
     version: '1.1.0',
     description:
-      'API-key Gateway and SSO/OIDC OAuth APIs for invoking published agents, querying run results, and cancelling runs. ' +
-      'HTTP 401 on OAuth paths always refers to the caller SSO token. Agent provider credential failures use PROVIDER_* codes and never HTTP 401.',
+      'API-key Gateway and enterprise OIDC OAuth APIs for invoking published agents, querying run results, and cancelling runs. ' +
+      'HTTP 401 on OAuth paths always refers to the caller JWT issued by the enterprise OIDC provider. Agent provider credential failures use PROVIDER_* codes and never HTTP 401.',
   },
   servers: [{ url: '/api', description: 'a2wave API base path' }],
   components: {
@@ -145,7 +145,7 @@ export const openApiSpec: OpenAPIV3.Document = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description:
-          'Caller SSO/OIDC access token issued by your identity provider. This is independent from the agent execution provider credentials.',
+          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the current effective OIDC channel audience configuration. Settings takes precedence; the environment variable is only a fallback when no valid Settings configuration exists. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. The token must carry an email claim. This is independent from the agent execution provider credentials.',
       },
     },
     parameters: {
@@ -243,7 +243,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             minLength: 1,
             maxLength: 128,
             pattern: '^[A-Za-z0-9._:-]+$',
-            description: 'Caller-chosen session key, isolated by agent and SSO identity.',
+            description: 'Caller-chosen session key, isolated by agent and OIDC caller identity.',
           },
           resetSession: { type: 'boolean', default: false },
           stream: {
@@ -450,7 +450,7 @@ export const openApiSpec: OpenAPIV3.Document = {
     '/oauth/{agentId}/invoke': {
       post: {
         operationId: 'invokeAgentWithOAuth',
-        summary: 'Invoke an agent with a caller SSO token',
+        summary: 'Invoke an agent with a caller OIDC JWT',
         description:
           'Invokes an OAuth-enabled published agent. `stream:true` returns SSE even when `async` is omitted. ' +
           'Caller authentication errors use HTTP 401 and CALLER/AUTH codes. Agent provider authentication failures use HTTP 424 and PROVIDER_* codes.',
@@ -485,10 +485,10 @@ export const openApiSpec: OpenAPIV3.Document = {
           },
           '400': oauthErrorResponse('Malformed JSON or invalid request fields.'),
           '401': oauthErrorResponse(
-            'Caller SSO token is missing, invalid, or expired. Obtain a new caller token.',
+            'Caller OIDC JWT is missing, invalid, or expired. Obtain a new caller token.',
           ),
           '403': oauthErrorResponse(
-            'Caller, network, publication, or OAuth-channel policy denied access.',
+            'Caller, network, publication, or OAuth-channel policy denied access. The token must carry an email claim in every access mode; specified_users additionally requires a verified address on the agent allowlist.',
           ),
           '404': oauthErrorResponse('The requested agent does not exist.'),
           '409': oauthErrorResponse('The session or agent workspace is currently busy.'),
@@ -529,7 +529,7 @@ export const openApiSpec: OpenAPIV3.Document = {
               },
             },
           },
-          '401': oauthErrorResponse('Caller SSO token is missing, invalid, or expired.'),
+          '401': oauthErrorResponse('Caller OIDC JWT is missing, invalid, or expired.'),
           '403': oauthErrorResponse(
             'Caller cannot access this agent or the run belongs to another agent.',
           ),
@@ -557,7 +557,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             },
           },
           '400': oauthErrorResponse('Run has already reached a terminal state.'),
-          '401': oauthErrorResponse('Caller SSO token is missing, invalid, or expired.'),
+          '401': oauthErrorResponse('Caller OIDC JWT is missing, invalid, or expired.'),
           '403': oauthErrorResponse('Caller cannot access this agent or run.'),
           '404': oauthErrorResponse('Agent or run not found.'),
           '503': oauthErrorResponse('Caller authorization dependency is unavailable.'),

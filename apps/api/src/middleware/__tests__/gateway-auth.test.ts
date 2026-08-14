@@ -458,7 +458,7 @@ describe('validateGatewayAuth (oauth + specified users gate)', () => {
 
   /**
    * The default is the *open* mode now, so a row that predates `oauthAccessMode` (NULL) admits
-   * any verified enterprise SSO user. That is only safe because the retired `feishu_scope`
+   * any verified OIDC-authenticated user. That is only safe because the retired `feishu_scope`
    * rows are migrated to `specified_users`, never left to fall through to this default.
    */
   it('defaults to all_idaas_users when the mode is absent', async () => {

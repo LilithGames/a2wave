@@ -242,6 +242,48 @@ describe('CodexAgentEngine buildArgs (CLI flag compatibility)', () => {
     expect(env.PATH).not.toBe('/tmp/unsafe-path')
   })
 
+  it('keeps the built-in A2A router alive past the Agent execution deadline', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new CodexAgentEngine(baseConfig)
+    const p = getExecuteStream(engine)(
+      {
+        taskId: 't-a2a-timeout',
+        workDir: '/tmp',
+        prompt: 'delegate a long-running task',
+        agentConfig: {
+          timeoutMinutes: 30,
+          resolvedMcpServers: [
+            {
+              name: 'a2wave-agent-router',
+              type: 'stdio',
+              command: 'node',
+              args: ['a2wave-agent-router.js'],
+            },
+            {
+              name: 'ordinary-mcp',
+              type: 'stdio',
+              command: 'node',
+              args: ['ordinary.js'],
+            },
+          ],
+        },
+      },
+      'gpt-5-codex',
+    )
+    finishOk(child)
+    await p
+
+    const args = lastSpawnArgs()
+    const override = args[args.indexOf('-c') + 1]
+    expect(override).toContain(
+      'a2wave-agent-router={command="node",args=["a2wave-agent-router.js"],tool_timeout_sec=1810}',
+    )
+    expect(override).toContain(
+      'ordinary-mcp={command="node",args=["ordinary.js"],tool_timeout_sec=660}',
+    )
+  })
+
   it('将 HTTP MCP headers 通过 env_http_headers 注入，避免 header 值进入 argv', async () => {
     const child = new MockChildProcess()
     mockSpawn.mockReturnValue(child)

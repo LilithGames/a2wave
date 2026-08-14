@@ -21,7 +21,7 @@ By participating in this project you agree to abide by our
 
 ## Product Boundaries (the Iron Rules)
 
-Before proposing a feature, check it against these five rules. They define what
+Before proposing a feature, check it against these six rules. They define what
 a2wave deliberately is *not*, and a proposal that crosses one needs maintainer
 discussion **before** you write code — we would rather say so on the issue than
 decline a finished pull request.
@@ -33,6 +33,7 @@ decline a finished pull request.
 | 3 | **Natural-language-driven, not flow-driven** | Agents are configured and orchestrated in natural language — prompts, intents, A2A messages. No drag-and-drop DAG editor, no variable mapping, no conditional-branch primitives. |
 | 4 | **Agent autonomy** | The platform creates, configures, triggers, and monitors Agents; it does not interfere with an Agent's runtime reasoning or tool-call decisions. No step approval or manual checkpoints that break autonomy. |
 | 5 | **Enterprise-grade constraints, scoped by the trust model** | Security, auditability, and operability are hard requirements — never skip authentication, never allow anonymous invocation, never drop an audit entry, never put credentials in audit `details`. But the goal is accountability among trusted colleagues, *not* containment of a hostile insider; see [SECURITY.md](./SECURITY.md). |
+| 6 | **The user's local Agent lowers the barrier, not another platform screen** | If a user can ask Claude Code, Codex, or Cursor Agent on their laptop to generate the prompt, YAML, or configuration and drive the CLI/API, do not add a wizard or form. Build machine-readable surfaces and invest UI effort in platform-only information and capabilities such as runtime, observability, channels, permissions, and audit. |
 
 Full text and rationale: [AGENTS.md](./AGENTS.md#product-identity--iron-rules).
 

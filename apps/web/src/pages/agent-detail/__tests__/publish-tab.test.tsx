@@ -25,6 +25,7 @@ vi.mock('@/lib/antd-static', () => ({
 import {
   PublishTab,
   normalizeSchedulePublishConfigs,
+  oauthEnvErrorKey,
   parseSuggestedQuestions,
   shouldSubmitFeishuConfigForPublish,
 } from '../publish-tab'
@@ -116,6 +117,30 @@ describe('PublishTab — OAuth 渠道卡片', () => {
     expect(await screen.findByTestId('oauth-allowed-emails')).toBeInTheDocument()
     // Empty list denies everyone, so the warning must be visible immediately.
     expect(screen.getByTestId('oauth-allowed-emails-empty')).toBeInTheDocument()
+  })
+
+  // The copied cURL is the first thing an integrator runs, so its placeholder is documentation.
+  // `<SSO_JWT>` was wrong twice over: "SSO" spans OIDC *and* SAML while this channel verifies
+  // OIDC-issued JWTs only, and SAML mints nothing that can sit in an Authorization header.
+  it('uses an OIDC JWT placeholder in the OAuth cURL snippet, not the ambiguous SSO_JWT', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    // `navigator.clipboard` is getter-only in jsdom, so it has to be redefined rather than assigned.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
+    renderWithProviders(<PublishTab {...baseProps()} />)
+    await openChannelConfig(user, 'oauth')
+
+    await user.click(screen.getByRole('button', { name: '复制 cURL' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    const copied = writeText.mock.calls[0][0] as string
+    expect(copied).toContain('/api/oauth/agt_test1/invoke')
+    expect(copied).toContain('Authorization: Bearer <OIDC_JWT>')
+    expect(copied).not.toContain('SSO_JWT')
   })
 
   it('从已发布 Agent 初始化全体企业用户访问范围', async () => {
@@ -759,5 +784,35 @@ describe('PublishTab — 飞书话题提醒对象', () => {
     )
 
     await waitFor(() => expect(dialog.queryByText('回复时提醒')).not.toBeInTheDocument())
+  })
+})
+
+describe('oauthEnvErrorKey', () => {
+  // The OIDC config resolves DB-first. Telling an admin to set environment variables when the
+  // config came from Settings sends them to edit a file the server never reads — they restart
+  // and nothing changes.
+  // The literal must match what the API actually returns (`SsoConfigSource = 'settings' | 'env'`).
+  // An earlier version of this test asserted `'db'` — the same wrong value the implementation
+  // used — so both agreed with each other while the feature was dead in production.
+  it('sends a Settings-sourced incomplete config back to Settings, not to env vars', () => {
+    expect(
+      oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_CHANNEL_AUDIENCES'], source: 'settings' }),
+    ).toBe('agentPublish.oauthEnvIncompleteSettings')
+  })
+
+  it('names the environment variables when the config is env-sourced or absent', () => {
+    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_ISSUER'], source: 'env' })).toBe(
+      'agentPublish.oauthEnvMissing',
+    )
+    expect(oauthEnvErrorKey({ missing: ['A2WAVE_OIDC_ISSUER'], source: null })).toBe(
+      'agentPublish.oauthEnvMissing',
+    )
+  })
+
+  // Nothing missing but still unusable means the issuer itself does not verify.
+  it('reports an unusable issuer when nothing is missing', () => {
+    expect(oauthEnvErrorKey({ missing: [], source: 'settings' })).toBe(
+      'agentPublish.oauthEnvInvalidPublicKey',
+    )
   })
 })

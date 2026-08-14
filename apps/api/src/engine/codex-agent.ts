@@ -48,6 +48,10 @@ import { mapCodexUsage } from './usage.js'
 
 const ENGINE_TYPE = 'codex'
 const CODEX_MCP_TOOL_TIMEOUT_SEC = 660
+const A2WAVE_AGENT_ROUTER_MCP_NAME = 'a2wave-agent-router'
+// Let the parent Run deadline terminate Codex first. The router then has time
+// to forward CancelTask before the CLI process group reaches SIGKILL.
+const A2A_ROUTER_CLEANUP_HEADROOM_SEC = 10
 const PROTECTED_CODEX_ENV_NAMES = new Set([
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
@@ -123,11 +127,18 @@ function withoutProtectedCodexEnv(env?: Record<string, string>): Record<string, 
   )
 }
 
-export function buildCodexMcpInjection(servers: ResolvedMcpServer[]): CodexMcpInjection {
+export function buildCodexMcpInjection(
+  servers: ResolvedMcpServer[],
+  options: { a2aRouterToolTimeoutSec?: number } = {},
+): CodexMcpInjection {
   const entries: string[] = []
   const env: Record<string, string> = {}
   const skipped: CodexMcpInjection['skipped'] = []
   for (const server of servers) {
+    const toolTimeoutSec =
+      server.name === A2WAVE_AGENT_ROUTER_MCP_NAME
+        ? (options.a2aRouterToolTimeoutSec ?? CODEX_MCP_TOOL_TIMEOUT_SEC)
+        : CODEX_MCP_TOOL_TIMEOUT_SEC
     if (server.type === 'stdio' && server.command) {
       const stdioEnv = withoutProtectedCodexEnv(server.env)
       const publicKeys = new Set(server.publicEnvKeys ?? [])
@@ -152,7 +163,7 @@ export function buildCodexMcpInjection(servers: ResolvedMcpServer[]): CodexMcpIn
           ...(server.cwd?.trim() ? { cwd: server.cwd.trim() } : {}),
           ...(Object.keys(inlineEnv).length ? { env: inlineEnv } : {}),
           ...(Object.keys(forwardedEnv).length ? { env_vars: Object.keys(forwardedEnv) } : {}),
-          tool_timeout_sec: CODEX_MCP_TOOL_TIMEOUT_SEC,
+          tool_timeout_sec: toolTimeoutSec,
         })}`,
       )
     } else if (server.type === 'http' && server.url) {
@@ -170,7 +181,7 @@ export function buildCodexMcpInjection(servers: ResolvedMcpServer[]): CodexMcpIn
         `${tomlKey(server.name)}=${tomlValue({
           url: server.url,
           ...(Object.keys(envHttpHeaders).length ? { env_http_headers: envHttpHeaders } : {}),
-          tool_timeout_sec: CODEX_MCP_TOOL_TIMEOUT_SEC,
+          tool_timeout_sec: toolTimeoutSec,
         })}`,
       )
     } else if (server.type === 'sse') {
@@ -408,10 +419,18 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       )
     }
     const resolvedWorkDir = workDir || this.config.defaultWorkDir
+    const streamTimeoutMinutes = agentConfig?.timeoutMinutes ?? this.config.timeoutMinutes
+    const streamTimeoutMs = streamTimeoutMinutes * 60 * 1000
+    const a2aRouterToolTimeoutSec = Math.max(
+      CODEX_MCP_TOOL_TIMEOUT_SEC,
+      Math.ceil(streamTimeoutMinutes * 60) + A2A_ROUTER_CLEANUP_HEADROOM_SEC,
+    )
 
     const mcpInjection =
       agentConfig?.resolvedMcpServers !== undefined
-        ? buildCodexMcpInjection(agentConfig.resolvedMcpServers as ResolvedMcpServer[])
+        ? buildCodexMcpInjection(agentConfig.resolvedMcpServers as ResolvedMcpServer[], {
+            a2aRouterToolTimeoutSec,
+          })
         : undefined
     if (mcpInjection?.skipped.length) {
       logger.warn(
@@ -428,8 +447,6 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
     })
     const execEnv = this.buildEnv(agentEnv, mcpInjection?.env, runtimeEnv, perAgentApiKey, authMode)
     const resolvedApiKey = perAgentApiKey || this.config.apiKey
-    const streamTimeoutMinutes = agentConfig?.timeoutMinutes ?? this.config.timeoutMinutes
-    const streamTimeoutMs = streamTimeoutMinutes * 60 * 1000
     const cleanResult = Boolean(agentConfig?.cleanResult)
 
     const filteredArgs = redactCodexArgs(args).slice(0, -1) // drop last arg (prompt)

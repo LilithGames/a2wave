@@ -100,25 +100,29 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 
 - **限流**：每个 Agent **60 次/分钟**。
 - 队列满返回 `429`；未发布返回 `403`；鉴权失败 `401/403`；worktree 被占用 `409`。
-- 认证：`/api/gateway` 使用 `api_key`（Bearer）/ IP 白名单；企业 SSO JWT 使用独立的 `/api/oauth` 渠道。
+- 认证：`/api/gateway` 使用 `api_key`（Bearer）/ IP 白名单；企业 OIDC 签发的 JWT 使用独立的 `/api/oauth` 渠道。
 
 > [!NOTE]
-> API Key 只能识别调用该接口的集成，不能自动知道集成背后的最终用户，因此运行记录通常只显示 `API`。如果需要把一次直接调用明确归因到某位企业用户，请使用 OAuth 接口并携带该用户自己的 SSO JWT；在 `context` 中自行填写用户名不能替代身份鉴别。
+> API Key 只能识别调用该接口的集成，不能自动知道集成背后的最终用户，因此运行记录通常只显示 `API`。如果需要把一次直接调用明确归因到某位企业用户，请使用 OAuth 接口并携带该用户自己的 OIDC JWT；在 `context` 中自行填写用户名不能替代身份鉴别。
 
 > [!IMPORTANT]
 > 部署在反向代理后时，设置 `TRUSTED_PROXY=true`，并在 `TRUSTED_PROXY_ADDRESSES` 中只填写代理与 a2wave 直接建立 TCP 连接的 IP 或 CIDR。Gateway、OAuth、A2A 会从右向左扫描 `X-Forwarded-For`，取第一个不受信任的节点，统一用于 IP 白名单、审计/渠道上下文和限流。代理必须覆盖 XFF，或按标准逐跳追加；不要保留未经校验的非标准链。
 
 远程 A2A 路由默认支持普通私网、CGNAT 和 ULA 目标，同时保留 URL/DNS 校验、重定向逐跳复检、连接固定，以及对回环、链路本地、云元数据和其他保留地址的硬拒绝。设置 `ALLOW_PRIVATE_ROUTE_TARGETS=false` 可切换为仅公网模式；在该严格模式下，可用 `TRUSTED_A2A_ROUTE_HOSTS` 精确放行受控的私网 DNS 主机名，而不关闭其他保护。
 
-### OAuth（企业 SSO JWT）调用
+### OAuth（企业 OIDC JWT）调用
 
-OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用者自己的 `Authorization: Bearer <SSO_JWT>`；该 token 只证明“调用者是谁”，与 Agent 执行时使用的 Codex / Cursor / Claude Code 凭证相互独立。
+OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用者自己的 `Authorization: Bearer <OIDC_JWT>`；该 token 只证明“调用者是谁”，与 Agent 执行时使用的 Codex / Cursor / Claude Code 凭证相互独立。
+
+> [!IMPORTANT]
+> 本渠道**只接受企业 OIDC 身份提供商签发的 JWT**（通常是 access token），按 IdP 的 JWKS 验签，且 `aud` 必须命中**当前生效的 OIDC 渠道受众配置**。Settings 中的配置优先；仅当 Settings 中没有有效 OIDC 配置时，才回落到 `A2WAVE_OIDC_CHANNEL_AUDIENCES`。SAML 登录走的是浏览器断言流程，不产生可放进 `Authorization` 头的 token，因此**只配置了 SAML 的部署无法使用 OAuth 调用渠道**。
 
 返回错误时优先读取 `error.code`、`error.message`、`error.action`：
 
 | code | 谁需要处理 | 下一步 |
 |------|------------|--------|
-| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | 调用者 | 重新登录并取得新的 SSO token |
+| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | 调用者 | 从调用方自己的 OIDC client 获取面向已配置 a2wave 资源受众的新 JWT |
+| `CALLER_TOKEN_CLAIMS_INVALID` | 调用者 / 平台管理员 | 从已配置的 OIDC provider 获取包含 email claim 的新 JWT；`specified_users` 还要求邮箱已验证 |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | 调用者 + Agent 所有者 | 申请权限或切换允许的网络 |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent 所有者 | 重新登录或更新 Agent 的 Provider 凭证；调用者无需重登 |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent 所有者 | 修复引擎、模型、MCP 或工作区配置；非占用类错误返回 `424` |
@@ -126,7 +130,7 @@ OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用�
 | `OAUTH_NOT_CONFIGURED` / `AUTHORIZATION_CHECK_UNAVAILABLE` | 平台管理员 | 检查平台配置或稍后重试 |
 
 > [!IMPORTANT]
-> OAuth 接口的 HTTP `401` 只表示调用者的 SSO token 无效。若 message 指向 Agent Provider，调用方不应清理自己的登录态。
+> OAuth 接口的 HTTP `401` 只表示调用者的 OIDC JWT 无效。若 message 指向 Agent Provider，调用方不应清理自己的登录态。
 
 ### 公开元信息
 
@@ -280,7 +284,7 @@ curl -X POST ".../api/a2a/<agentId>" -H "Authorization: Bearer <key>" \
 
 Agent Card 同样参与版本协商：请求 A2A 1.0 结构时应携带 `A2A-Version: 1.0`；省略该请求头会有意返回兼容 A2A 0.3 的 Card。
 
-A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别为 `GetTask`、`CancelTask`。异步调用把 `returnImmediately` 设为 `true`，返回 Task 后用 `GetTask` 轮询到终态。A2A 0.3 客户端仍可继续使用 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel`，以及小写的角色与任务状态。鉴权支持 API Key 与 OAuth/企业 SSO JWT。
+A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别为 `GetTask`、`CancelTask`。异步调用把 `returnImmediately` 设为 `true`，返回 Task 后用 `GetTask` 轮询到终态。A2A 0.3 客户端仍可继续使用 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel`，以及小写的角色与任务状态。鉴权使用 Agent 的 A2A API Key（`a2aAuthType` 仅支持 `none` / `api_key`）。OAuth 渠道的 OIDC JWT 在这里**不被接受**，会返回 `401`。
 
 本地也可用 `pnpm a2a-demo -- <agentId> "..."` 脚本快速测试。A2A 消息除文本外还可携带图片/文件；A2A 1.0 与 0.3 的分片字段不同，示例见下方「附件」。
 
@@ -291,7 +295,7 @@ A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别�
 来源扩展通过 Agent Card 协商。使用「Agent Card 发现」的路由会在对端声明支持时自动启用。「直连端点」没有 Agent Card 可供能力发现：选择 A2A 1.0 后，只有确认接收方支持 a2wave 来源扩展时，才显式开启「发送调用来源信息」。该开关默认关闭，直连 A2A 0.3 也不会发送扩展。未支持扩展的 A2A 服务仍可正常互通，只是运行记录会退化为较少层级，最少仍显示 `A2A`。
 
 > [!IMPORTANT]
-> 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 或 OAuth / 企业 SSO JWT 完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
+> 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
 
 ### 调用远程标准 A2A 服务
 
@@ -303,7 +307,15 @@ A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别�
 4. 远端要求 Bearer Key 时填写 API Key。保存后凭据只以掩码显示，不会出现在 Agent Card 或路由结果中。
 
 > [!NOTE]
-> 「直连端点」无法发现远端是否支持流式调用，因此 A2A 1.0 与 0.3 都会有意使用阻塞式 `SendMessage`，不能实时显示远程子 Agent 输出。如需流式输出，并且对方声明支持，请改用「Agent Card 发现」。
+> 「直连端点」无法发现远端能力。直连 A2A 1.0 会保守使用非流式 `SendMessage`；历史 A2A 0.3 路由保留 `message/stream` 兼容路径。如需标准 A2A 1.0 流式输出，并且对方声明支持，请改用「Agent Card 发现」。
+
+### 长任务、超时与取消
+
+A2A 路由不再附加固定 5 分钟执行截止。有效执行时长继承**发起调用的 Agent** 在「配置 → 超时时间」中的单次执行上限；需要允许远程任务运行更久时，请调大发起方 Agent 的该配置（范围 5–120 分钟），而不是修改远程路由。配置了「总超时时间」时，整个 Run（包括重试和多次 Agent 调用）仍受总上限约束。
+
+对于 A2A 1.0，平台会在首次请求中尽早取得 Task ID，然后按 Task 生命周期等待：非流式调用使用 `GetTask` 查询；流式连接在已知 Task ID 后连续 30 秒无事件，或连接意外断开时，先用 `SubscribeToTask` 重订阅，失败后再用 `GetTask` 恢复。恢复只使用已有 Task ID，**不会重发原始消息**，避免远端任务重复执行。断线前已经收到的部分 artifact 分块会保留，并在重连后与后续 append 分块继续合并。工作状态消息只作为进度展示，不会在终态没有正文时被当作最终成功答案；终态历史暂时不可用时，即使重订阅已经成功，也会继续按 `GetTask` 的退避策略重试。
+
+如果父 Run 被取消或达到超时，平台会在已经取得 Task ID 时使用独立的短控制请求发送 `CancelTask`，并在返回结果中说明下游是否确认取消。已知 Task 超出路由结果安全上限，或者重订阅与查询均发生永久失败且最后观测到的 Task 仍在运行时，也会尝试执行同样的下游清理，避免调用方已经收到恢复错误、下游任务却在不可见状态下继续执行。即使底层 Agent CLI 已因超时进入退出流程，平台也会先为路由器保留一个短暂的清理窗口，等待取消请求完成后再终止进程。A2A 生命周期事件会直接显示在运行详情的「执行日志」时间线中，包括目标 Agent、Task ID、状态、重连次数和取消结果；其中不会记录请求正文或凭据。若连接在返回 Task ID 之前就失败，平台没有可安全重连或取消的标识，因此会直接报告失败，也不会猜测性重发。A2A 0.3 路由继续保持原协议兼容并继承父调用的取消信号，但完整的按 ID 重连与取消保证只适用于 A2A 1.0；长任务建议升级到 A2A 1.0。
 
 > [!NOTE]
 > 标准远端 Agent 返回 `INPUT_REQUIRED` 或 `AUTH_REQUIRED` 时，路由会把该状态作为非成功结果返回，并保留 Agent 的状态消息、`taskId` 与 `contextId`。路由工具目前不会自动续接这个远端任务；请在新调用中补充对方要求的上下文，或更新远端凭据后重试。
@@ -428,7 +440,7 @@ environment:
 1. 先把文件上传到对应上传端点（`multipart/form-data`，字段名 `file`），拿到一个 `token`。上传端点按调用方鉴权方式区分：
    - 平台用户（Web 测试界面）：`POST /api/attachments`
    - Gateway（Agent API Key）：`POST /api/gateway/<agentId>/attachments`
-   - OAuth（企业 SSO JWT）：`POST /api/oauth/<agentId>/attachments`
+   - OAuth（企业 OIDC JWT）：`POST /api/oauth/<agentId>/attachments`
 
 ```bash
 curl -X POST ".../api/gateway/<agentId>/attachments" -H "Authorization: Bearer <key>" \

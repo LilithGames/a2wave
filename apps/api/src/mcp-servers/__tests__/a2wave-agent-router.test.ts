@@ -23,19 +23,27 @@ import {
 } from '../../a2a/caller.js'
 import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../../a2a/provenance.js'
 import {
-  collectSSEResult,
+  createRouterInvocationHandlers,
   getAgentCardHandler,
   invokeAgentHandler,
-  invokeAgentsParallelHandler,
-  listAgentsHandler,
-  parseRouteTargets,
   streamSSEWithCallback,
 } from '../a2wave-agent-router.js'
 import type { RouteTarget } from '../a2wave-agent-router.js'
+import { createRouterInvocationRegistry } from '../agent-router-lifecycle.js'
 
 beforeEach(() => {
   vi.restoreAllMocks()
 })
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 function mockFetch(response: {
   ok: boolean
@@ -79,9 +87,9 @@ function standardAgentCard(
   }
 }
 
-function standardArtifactStream(text: string, id = 1) {
-  return [
-    `data: ${JSON.stringify({
+function standardArtifactStream(text: string, id = 1, includeTerminalStatus = true) {
+  const events = [
+    JSON.stringify({
       jsonrpc: '2.0',
       id,
       result: {
@@ -94,135 +102,56 @@ function standardArtifactStream(text: string, id = 1) {
           },
         },
       },
-    })}`,
-    '',
-  ].join('\n')
+    }),
+  ]
+  if (includeTerminalStatus) {
+    events.push(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          statusUpdate: {
+            taskId: 'task-1',
+            contextId: 'context-1',
+            status: { state: 'TASK_STATE_COMPLETED' },
+          },
+        },
+      }),
+    )
+  }
+  return `${events.map((event) => `data: ${event}`).join('\n\n')}\n\n`
 }
 
-describe('listAgentsHandler', () => {
-  it('returns all agents when targets is null (legacy mode)', async () => {
-    const agents = [
+function mockStandardJsonRpcResult(result: Record<string, unknown>) {
+  globalThis.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+    const request = JSON.parse(init?.body as string)
+    const responseResult = request.method === 'GetTask' && 'task' in result ? result.task : result
+    return new Response(
+      JSON.stringify({ jsonrpc: '2.0', id: request.id, result: responseResult }),
       {
-        id: 'agt_1',
-        name: 'Agent A',
-        description: 'desc',
-        publishDescription: null,
-        a2aSkills: [],
+        status: 200,
+        headers: { 'content-type': 'application/json' },
       },
-    ]
-    mockFetch({ ok: true, body: { data: agents } })
+    )
+  }) as unknown as typeof fetch
+}
 
-    const result = await listAgentsHandler(null)
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toEqual(agents)
-  })
-
-  it('returns empty array when no agents in legacy mode', async () => {
-    mockFetch({ ok: true, body: { data: [] } })
-
-    const result = await listAgentsHandler(null)
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toEqual([])
-  })
-
-  it('throws on fetch failure in legacy mode', async () => {
-    mockFetch({ ok: false, status: 500, body: 'Internal error' })
-
-    await expect(listAgentsHandler(null)).rejects.toThrow('HTTP 500')
-  })
-
-  it('returns empty list when routeTargets is empty array', async () => {
-    const result = await listAgentsHandler([])
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toEqual([])
-  })
-
-  it('filters local agents by configured agentId and passes ids param', async () => {
-    const filteredAgents = [
-      { id: 'agt_1', name: 'Agent A' },
-      { id: 'agt_3', name: 'Agent C' },
-    ]
-    mockFetch({ ok: true, body: { data: filteredAgents } })
-
-    const targets: RouteTarget[] = [
-      { type: 'local', agentId: 'agt_1' },
-      { type: 'local', agentId: 'agt_3' },
-    ]
-
-    const result = await listAgentsHandler(targets)
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toHaveLength(2)
-    expect(parsed[0].id).toBe('agt_1')
-    expect(parsed[1].id).toBe('agt_3')
-
-    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(fetchCall[0]).toContain('/api/internal/agents?ids=agt_1,agt_3')
-  })
-
-  it('includes remote agents with remote: prefix ID', async () => {
-    const targets: RouteTarget[] = [
-      {
-        type: 'remote',
-        name: 'external-qa',
-        url: 'https://qa.example.com/a2a',
-        description: 'QA Bot',
-      },
-    ]
-
-    const result = await listAgentsHandler(targets)
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toHaveLength(1)
-    expect(parsed[0]).toEqual({
-      id: 'remote:external-qa',
-      name: 'external-qa',
-      description: 'QA Bot',
-      type: 'remote',
-    })
-  })
-
-  it('combines local and remote agents', async () => {
-    const filteredAgents = [{ id: 'agt_1', name: 'Agent A' }]
-    mockFetch({ ok: true, body: { data: filteredAgents } })
-
-    const targets: RouteTarget[] = [
-      { type: 'local', agentId: 'agt_1' },
-      {
-        type: 'remote',
-        name: 'remote-bot',
-        url: 'https://remote.example.com',
-        description: 'Remote',
-      },
-    ]
-
-    const result = await listAgentsHandler(targets)
-
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toHaveLength(2)
-    expect(parsed[0].id).toBe('agt_1')
-    expect(parsed[1].id).toBe('remote:remote-bot')
-
-    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(fetchCall[0]).toContain('/api/internal/agents?ids=agt_1')
-  })
-
-  it('does not fetch from API when only remote targets configured', async () => {
-    const targets: RouteTarget[] = [{ type: 'remote', name: 'bot', url: 'https://example.com' }]
-
-    const spy = vi.fn()
-    globalThis.fetch = spy as unknown as typeof fetch
-
-    const result = await listAgentsHandler(targets)
-
-    expect(spy).not.toHaveBeenCalled()
-    const parsed = JSON.parse(result.content[0].text)
-    expect(parsed).toHaveLength(1)
-  })
-})
+function completedStandardTask(
+  overrides: {
+    artifacts?: unknown[]
+    history?: unknown[]
+  } = {},
+) {
+  return {
+    task: {
+      id: 'task-local',
+      contextId: 'context-local',
+      status: { state: 'TASK_STATE_COMPLETED' },
+      artifacts: overrides.artifacts ?? [],
+      history: overrides.history ?? [],
+    },
+  }
+}
 
 describe('getAgentCardHandler', () => {
   it('returns agent card for local agent', async () => {
@@ -348,34 +277,128 @@ describe('getAgentCardHandler', () => {
 })
 
 describe('invokeAgentHandler', () => {
-  it('sends message/stream with messageId and kind fields for local agent', async () => {
-    mockFetch({
-      ok: true,
-      body: { result: { artifacts: [], history: [] } },
+  it('inherits the caller signal without adding an independent five-minute local deadline', async () => {
+    const caller = new AbortController()
+    mockStandardJsonRpcResult({
+      message: {
+        messageId: 'message-local',
+        role: 'ROLE_AGENT',
+        parts: [{ text: 'done', mediaType: 'text/plain' }],
+      },
+    })
+
+    await invokeAgentHandler({ agentId: 'agt_1', message: 'long-running work' }, null, {
+      signal: caller.signal,
+    })
+
+    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(fetchCall[1].signal).toBe(caller.signal)
+  })
+
+  it('cancels a known local Task when the parent invocation is canceled', async () => {
+    const methods: string[] = []
+    const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      const state = request.method === 'CancelTask' ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING'
+      const task = {
+        id: 'task-local-cancel',
+        contextId: 'context-local-cancel',
+        status: { state },
+        artifacts: [],
+        history: [],
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: request.method === 'SendMessage' ? { task } : task,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+    const caller = new AbortController()
+    caller.abort(new Error('parent run canceled'))
+
+    const result = await invokeAgentHandler(
+      { agentId: 'agt_1', message: 'stop with the parent' },
+      null,
+      { signal: caller.signal },
+    )
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('task-local-cancel')
+    expect(methods).toEqual(['SendMessage', 'CancelTask'])
+  })
+
+  it('starts a durable local Task with the standard SendMessage method', async () => {
+    mockStandardJsonRpcResult({
+      message: {
+        messageId: 'message-local',
+        role: 'ROLE_AGENT',
+        parts: [{ text: 'done', mediaType: 'text/plain' }],
+      },
     })
 
     await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
     const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     const body = JSON.parse(fetchCall[1].body)
-    expect(body.method).toBe('message/stream')
-    expect(body.params.message.kind).toBe('message')
+    expect(body.method).toBe('SendMessage')
+    expect(body.params.message.role).toBe('ROLE_USER')
     expect(body.params.message.messageId).toBeDefined()
-    expect(body.params.message.parts[0].kind).toBe('text')
+    expect(body.params.message.parts[0].text).toBe('hi')
+    expect(body.params.configuration.returnImmediately).toBe(true)
+  })
+
+  it('rejects an oversized local Task response before the SDK buffers its JSON body', async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            message: {
+              messageId: 'message-oversized-local',
+              role: 'ROLE_AGENT',
+              parts: [
+                { text: 'small body with an oversized declared length', mediaType: 'text/plain' },
+              ],
+            },
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': String(16 * 1024 * 1024 + 1),
+          },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    await expect(
+      invokeAgentHandler({ agentId: 'agt_1', message: 'return a bounded result' }, null),
+    ).rejects.toThrow('Remote A2A result exceeds the 16777216-byte response limit')
   })
 
   it('includes X-Streaming-Card-Id header when env var is set', async () => {
     process.env.A2WAVE_STREAMING_CARD_ID = 'card_test_123'
     try {
-      mockFetch({
-        ok: true,
-        body: { result: { artifacts: [], history: [] } },
+      mockStandardJsonRpcResult({
+        message: {
+          messageId: 'message-local',
+          role: 'ROLE_AGENT',
+          parts: [{ text: 'done', mediaType: 'text/plain' }],
+        },
       })
 
       await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
       const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-      expect(fetchCall[1].headers['X-Streaming-Card-Id']).toBe('card_test_123')
+      expect(new Headers(fetchCall[1].headers).get('X-Streaming-Card-Id')).toBe('card_test_123')
     } finally {
       delete process.env.A2WAVE_STREAMING_CARD_ID
     }
@@ -385,16 +408,19 @@ describe('invokeAgentHandler', () => {
     process.env.A2WAVE_CALLER_AGENT_ID = 'agt_gateway'
     process.env.A2WAVE_CALLER_AGENT_NAME = '网关测试Agent'
     try {
-      mockFetch({
-        ok: true,
-        body: { result: { artifacts: [], history: [] } },
+      mockStandardJsonRpcResult({
+        message: {
+          messageId: 'message-local',
+          role: 'ROLE_AGENT',
+          parts: [{ text: 'done', mediaType: 'text/plain' }],
+        },
       })
 
       await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
       const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-      expect(fetchCall[1].headers['X-A2WAVE-Caller-Agent-Id']).toBe('agt_gateway')
-      expect(fetchCall[1].headers[A2WAVE_CALLER_AGENT_NAME_B64_HEADER]).toBe(
+      expect(new Headers(fetchCall[1].headers).get('X-A2WAVE-Caller-Agent-Id')).toBe('agt_gateway')
+      expect(new Headers(fetchCall[1].headers).get(A2WAVE_CALLER_AGENT_NAME_B64_HEADER)).toBe(
         encodeCallerAgentNameHeader('网关测试Agent'),
       )
     } finally {
@@ -406,26 +432,31 @@ describe('invokeAgentHandler', () => {
   it('does not include X-Streaming-Card-Id header when env var is not set', async () => {
     delete process.env.A2WAVE_STREAMING_CARD_ID
 
-    mockFetch({
-      ok: true,
-      body: { result: { artifacts: [], history: [] } },
+    mockStandardJsonRpcResult({
+      message: {
+        messageId: 'message-local',
+        role: 'ROLE_AGENT',
+        parts: [{ text: 'done', mediaType: 'text/plain' }],
+      },
     })
 
     await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
     const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(fetchCall[1].headers['X-Streaming-Card-Id']).toBeUndefined()
+    expect(new Headers(fetchCall[1].headers).has('X-Streaming-Card-Id')).toBe(false)
   })
 
   it('extracts text from artifacts', async () => {
-    mockFetch({
-      ok: true,
-      body: {
-        result: {
-          artifacts: [{ parts: [{ type: 'text', text: 'Hello from agent' }] }],
-        },
-      },
-    })
+    mockStandardJsonRpcResult(
+      completedStandardTask({
+        artifacts: [
+          {
+            artifactId: 'artifact-local',
+            parts: [{ text: 'Hello from agent', mediaType: 'text/plain' }],
+          },
+        ],
+      }),
+    )
 
     const result = await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
@@ -433,14 +464,16 @@ describe('invokeAgentHandler', () => {
   })
 
   it('extracts text from artifacts using kind field', async () => {
-    mockFetch({
-      ok: true,
-      body: {
-        result: {
-          artifacts: [{ parts: [{ kind: 'text', text: 'Hello via kind' }] }],
-        },
-      },
-    })
+    mockStandardJsonRpcResult(
+      completedStandardTask({
+        artifacts: [
+          {
+            artifactId: 'artifact-kind',
+            parts: [{ kind: 'text', text: 'Hello via kind', mediaType: 'text/plain' }],
+          },
+        ],
+      }),
+    )
 
     const result = await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
@@ -448,18 +481,22 @@ describe('invokeAgentHandler', () => {
   })
 
   it('falls back to history when no artifacts', async () => {
-    mockFetch({
-      ok: true,
-      body: {
-        result: {
-          artifacts: [],
-          history: [
-            { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
-            { role: 'agent', parts: [{ type: 'text', text: 'Response from history' }] },
-          ],
-        },
-      },
-    })
+    mockStandardJsonRpcResult(
+      completedStandardTask({
+        history: [
+          {
+            messageId: 'user-message',
+            role: 'ROLE_USER',
+            parts: [{ text: 'hi', mediaType: 'text/plain' }],
+          },
+          {
+            messageId: 'agent-message',
+            role: 'ROLE_AGENT',
+            parts: [{ text: 'Response from history', mediaType: 'text/plain' }],
+          },
+        ],
+      }),
+    )
 
     const result = await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
@@ -467,20 +504,24 @@ describe('invokeAgentHandler', () => {
   })
 
   it('returns raw result when no text found', async () => {
-    const rawResult = { result: { artifacts: [], history: [] } }
-    mockFetch({ ok: true, body: rawResult })
+    mockStandardJsonRpcResult(completedStandardTask())
 
     const result = await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
 
     const parsed = JSON.parse(result.content[0].text)
-    expect(parsed.result).toBeDefined()
+    expect(parsed.result.task.taskId).toBe('task-local')
   })
 
   it('throws on agent not found for local agent', async () => {
-    mockFetch({ ok: false, status: 404, body: { error: 'Agent not found' } })
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Agent not found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
 
     await expect(invokeAgentHandler({ agentId: 'agt_xxx', message: 'hi' }, null)).rejects.toThrow(
-      'HTTP 404',
+      'Status: 404',
     )
   })
 
@@ -498,11 +539,17 @@ describe('invokeAgentHandler', () => {
       },
     })
 
-    const result = await invokeAgentHandler({ agentId: 'remote:qa-bot', message: 'test' }, targets)
+    const caller = new AbortController()
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:qa-bot', message: 'test' },
+      targets,
+      { signal: caller.signal },
+    )
 
     expect(result.content[0].text).toBe('Remote response')
     const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(fetchCall[0]).toBe('https://qa.example.com/a2a')
+    expect(fetchCall[1].signal).toBe(caller.signal)
   })
 
   it('allows an ordinary private-network endpoint by default', async () => {
@@ -737,17 +784,34 @@ describe('invokeAgentHandler', () => {
         connectionMode: 'agent_card',
       },
     ]
-    const spy = vi.fn().mockImplementation(async (url: string) => {
+    const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/cards/agent.json')) {
         return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
       }
+      const request = JSON.parse(init?.body as string)
+      if (request.method === 'GetTask') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: {
+              id: 'task-empty',
+              contextId: 'context-empty',
+              status: { state: 'TASK_STATE_COMPLETED' },
+              artifacts: [],
+              history: [],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
       return new Response(
         `data: ${JSON.stringify({
           jsonrpc: '2.0',
-          id: 1,
+          id: request.id,
           result: {
             task: {
               id: 'task-empty',
@@ -816,6 +880,959 @@ describe('invokeAgentHandler', () => {
 
     expect(result.content[0].text).toBe('non-streaming response')
     expect(JSON.parse(spy.mock.calls[1][1]?.body as string).method).toBe('SendMessage')
+  })
+
+  it('polls a non-terminal standard Task until it completes without resending the message', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'long-running-v1',
+        url: 'https://direct.example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+      },
+    ]
+    const methods: string[] = []
+    const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      const task =
+        request.method === 'GetTask'
+          ? {
+              id: 'task-long',
+              contextId: 'context-long',
+              status: { state: 'TASK_STATE_COMPLETED' },
+              artifacts: [
+                {
+                  artifactId: 'artifact-long',
+                  parts: [{ text: 'completed after polling', mediaType: 'text/plain' }],
+                },
+              ],
+              history: [],
+            }
+          : {
+              id: 'task-long',
+              contextId: 'context-long',
+              status: { state: 'TASK_STATE_WORKING' },
+              artifacts: [],
+              history: [],
+            }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: request.method === 'SendMessage' ? { task } : task,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:long-running-v1', message: 'take your time' },
+      targets,
+    )
+
+    expect(result.content[0].text).toBe('completed after polling')
+    expect(methods).toEqual(['SendMessage', 'GetTask'])
+  })
+
+  it('recovers by Task ID when a stream closes after only an artifact update', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'artifact-eof-v1',
+        url: 'https://v1.example.com/cards/agent.json',
+        connectionMode: 'agent_card',
+      },
+    ]
+    const methods: string[] = []
+    const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/cards/agent.json')) {
+        return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      if (request.method === 'SendStreamingMessage') {
+        return new Response(standardArtifactStream('partial artifact', request.id, false), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      const task = {
+        id: 'task-1',
+        contextId: 'context-1',
+        status: { state: 'TASK_STATE_COMPLETED' },
+        artifacts: [
+          {
+            artifactId: 'artifact-final',
+            parts: [{ text: 'recovered after clean EOF', mediaType: 'text/plain' }],
+          },
+        ],
+        history: [],
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: task }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:artifact-eof-v1', message: 'finish the Task after this stream' },
+      targets,
+    )
+
+    expect(result.content[0].text).toBe('recovered after clean EOF')
+    expect(methods).toEqual(['SendStreamingMessage', 'GetTask'])
+  })
+
+  it('forwards unchanged polling progress only once', async () => {
+    vi.useFakeTimers()
+    process.env.A2WAVE_STREAMING_CARD_ID = 'card_poll_dedup'
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'poll-progress-v1',
+          url: 'https://direct.example.com/a2a',
+          connectionMode: 'direct',
+          protocolVersion: '1.0',
+        },
+      ]
+      let getTaskCalls = 0
+      const updates: string[] = []
+      const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/internal/streaming-card/')) {
+          if (init?.method === 'PUT') {
+            updates.push(JSON.parse(init.body as string).content)
+          }
+          return new Response('{}', { status: 200 })
+        }
+        const request = JSON.parse(init?.body as string)
+        if (request.method === 'GetTask') getTaskCalls += 1
+        const completed = getTaskCalls >= 2
+        const task = {
+          id: 'task-progress',
+          contextId: 'context-progress',
+          status: {
+            state: completed ? 'TASK_STATE_COMPLETED' : 'TASK_STATE_WORKING',
+            ...(!completed && {
+              message: {
+                messageId: 'progress-message',
+                role: 'ROLE_AGENT',
+                parts: [{ text: 'Still working', mediaType: 'text/plain' }],
+              },
+            }),
+          },
+          artifacts: completed
+            ? [
+                {
+                  artifactId: 'artifact-progress',
+                  parts: [{ text: 'finished', mediaType: 'text/plain' }],
+                },
+              ]
+            : [],
+          history: [],
+        }
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: request.method === 'SendMessage' ? { task } : task,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:poll-progress-v1', message: 'report progress without duplicates' },
+        targets,
+      )
+      await vi.advanceTimersByTimeAsync(1_001)
+      const result = await invocation
+
+      expect(result.content[0].text).toBe('finished')
+      expect(updates).toEqual(['Still working'])
+    } finally {
+      Reflect.deleteProperty(process.env, 'A2WAVE_STREAMING_CARD_ID')
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not write remote error details into lifecycle stderr', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'safe-lifecycle-log-v1',
+          url: 'https://direct.example.com/a2a',
+          connectionMode: 'direct',
+          protocolVersion: '1.0',
+        },
+      ]
+      let getTaskCalls = 0
+      const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        const request = JSON.parse(init?.body as string)
+        if (request.method === 'GetTask') {
+          getTaskCalls += 1
+          if (getTaskCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: request.id,
+                error: { code: -32603, message: 'must-not-log-api-key-or-request-body' },
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            )
+          }
+        }
+        const task = {
+          id: 'task-safe-log',
+          contextId: 'context-safe-log',
+          status: {
+            state: request.method === 'SendMessage' ? 'TASK_STATE_WORKING' : 'TASK_STATE_COMPLETED',
+          },
+          artifacts:
+            request.method === 'SendMessage'
+              ? []
+              : [
+                  {
+                    artifactId: 'artifact-safe-log',
+                    parts: [{ text: 'finished safely', mediaType: 'text/plain' }],
+                  },
+                ],
+          history: [],
+        }
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: request.method === 'SendMessage' ? { task } : task,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:safe-lifecycle-log-v1', message: 'keep this request private' },
+        targets,
+      )
+      await vi.advanceTimersByTimeAsync(1_001)
+      const result = await invocation
+      const emittedStderr = stderr.mock.calls.flat().join('\n')
+
+      expect(result.content[0].text).toBe('finished safely')
+      expect(emittedStderr).toContain('a2a.task.poll_retry')
+      expect(emittedStderr).not.toContain('must-not-log-api-key-or-request-body')
+      expect(emittedStderr).not.toContain('keep this request private')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels a known standard Task when the parent invocation is canceled', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'cancel-v1',
+        url: 'https://direct.example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+      },
+    ]
+    const methods: string[] = []
+    const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      const state = request.method === 'CancelTask' ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING'
+      const task = {
+        id: 'task-cancel',
+        contextId: 'context-cancel',
+        status: { state },
+        artifacts: [],
+        history: [],
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: request.method === 'SendMessage' ? { task } : task,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+    const caller = new AbortController()
+    caller.abort(new Error('parent run canceled'))
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:cancel-v1', message: 'stop with the parent' },
+      targets,
+      { signal: caller.signal },
+    )
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('task-cancel')
+    expect(methods).toEqual(['SendMessage', 'CancelTask'])
+  })
+
+  it('cancels the downstream Task when the parent aborts during polling', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'poll-cancel-v1',
+        url: 'https://direct.example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+      },
+    ]
+    const caller = new AbortController()
+    const methods: string[] = []
+    const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      const task = {
+        id: 'task-poll-cancel',
+        contextId: 'context-poll-cancel',
+        status: {
+          state: request.method === 'CancelTask' ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING',
+        },
+        artifacts: [],
+        history: [],
+      }
+      if (request.method === 'GetTask') {
+        caller.abort(new Error('parent run timed out'))
+        throw new Error('poll interrupted')
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: request.method === 'SendMessage' ? { task } : task,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:poll-cancel-v1', message: 'stop if the parent times out' },
+      targets,
+      { signal: caller.signal },
+    )
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('task-poll-cancel')
+    expect(methods).toEqual(['SendMessage', 'GetTask', 'CancelTask'])
+  })
+
+  it('cancels a known Task when the Agent Router process starts shutting down', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'process-timeout-v1',
+        url: 'https://direct.example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+      },
+    ]
+    const registry = createRouterInvocationRegistry()
+    const handlers = createRouterInvocationHandlers(targets, registry)
+    const methods: string[] = []
+    const pollingStarted = deferred<void>()
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      const task = {
+        id: 'task-process-timeout',
+        contextId: 'context-process-timeout',
+        status: {
+          state: request.method === 'CancelTask' ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING',
+        },
+        artifacts: [],
+        history: [],
+      }
+      if (request.method === 'GetTask') {
+        pollingStarted.resolve()
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason ?? new Error('poll canceled')),
+            { once: true },
+          )
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: request.method === 'SendMessage' ? { task } : task,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+
+    const invocation = handlers.invokeAgent(
+      { agentId: 'remote:process-timeout-v1', message: 'long-running work' },
+      {},
+    )
+    await pollingStarted.promise
+    await registry.shutdown(new Error('Claude Code execution timed out'))
+
+    const result = await invocation
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('task-process-timeout')
+    expect(methods).toEqual(['SendMessage', 'GetTask', 'CancelTask'])
+    expect(timeoutSpy).toHaveBeenCalledWith(3_000)
+  })
+
+  it('stops retrying a permanent Task lifecycle protocol error', async () => {
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'unsupported-task-v1',
+          url: 'https://direct.example.com/a2a',
+          connectionMode: 'direct',
+          protocolVersion: '1.0',
+        },
+      ]
+      const methods: string[] = []
+      const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        const request = JSON.parse(init?.body as string)
+        methods.push(request.method)
+        if (request.method === 'SendMessage') {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                task: {
+                  id: 'task-unsupported',
+                  contextId: 'context-unsupported',
+                  status: { state: 'TASK_STATE_WORKING' },
+                  artifacts: [],
+                  history: [],
+                },
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        const message =
+          request.method === 'CancelTask'
+            ? 'cleanup cancellation failed'
+            : request.method === 'SubscribeToTask'
+              ? 'resubscription is not supported'
+              : 'original Task recovery failure'
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32601, message },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:unsupported-task-v1', message: 'do not retry forever' },
+        targets,
+        { signal: caller.signal },
+      )
+      await vi.advanceTimersByTimeAsync(3_001)
+      caller.abort(new Error('test cleanup'))
+      const result = await invocation
+
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      expect(result.content[0].text).toContain('task-unsupported')
+      expect(result.content[0].text).toContain('original Task recovery failure')
+      expect(result.content[0].text).not.toContain('cleanup cancellation failed')
+      expect(methods).toEqual([
+        'SendMessage',
+        'GetTask',
+        'SubscribeToTask',
+        'GetTask',
+        'CancelTask',
+      ])
+    } finally {
+      caller.abort(new Error('test cleanup'))
+      vi.useRealTimers()
+    }
+  })
+
+  it('recovers instead of polling forever after a malformed Task response', async () => {
+    vi.useFakeTimers()
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'malformed-task-v1',
+          url: 'https://direct.example.com/a2a',
+          connectionMode: 'direct',
+          protocolVersion: '1.0',
+        },
+      ]
+      const methods: string[] = []
+      let getTaskCalls = 0
+      const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        const request = JSON.parse(init?.body as string)
+        methods.push(request.method)
+        if (request.method === 'SendMessage') {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                task: {
+                  id: 'task-malformed',
+                  contextId: 'context-malformed',
+                  status: { state: 'TASK_STATE_WORKING' },
+                  artifacts: [],
+                  history: [],
+                },
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        if (request.method === 'SubscribeToTask') {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              error: { code: -32601, message: 'SubscribeToTask is not supported' },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        getTaskCalls += 1
+        if (getTaskCalls === 1) {
+          return new Response('{not-json', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        const task = {
+          id: 'task-malformed',
+          contextId: 'context-malformed',
+          status: { state: 'TASK_STATE_COMPLETED' },
+          artifacts: [
+            {
+              artifactId: 'artifact-malformed',
+              parts: [{ text: 'recovered after malformed response', mediaType: 'text/plain' }],
+            },
+          ],
+          history: [],
+        }
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: task }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:malformed-task-v1', message: 'recover by Task ID' },
+        targets,
+      )
+      await vi.advanceTimersByTimeAsync(1_001)
+      const result = await invocation
+
+      expect(result.content[0].text).toBe('recovered after malformed response')
+      expect(methods).toEqual(['SendMessage', 'GetTask', 'SubscribeToTask', 'GetTask'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats a valid JSON null Task response as deterministic instead of retrying it', async () => {
+    vi.useFakeTimers()
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'null-task-v1',
+          url: 'https://direct.example.com/a2a',
+          connectionMode: 'direct',
+          protocolVersion: '1.0',
+        },
+      ]
+      const methods: string[] = []
+      let getTaskCalls = 0
+      const spy = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        const request = JSON.parse(init?.body as string)
+        methods.push(request.method)
+        if (request.method === 'SendMessage') {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                task: {
+                  id: 'task-null',
+                  contextId: 'context-null',
+                  status: { state: 'TASK_STATE_WORKING' },
+                  artifacts: [],
+                  history: [],
+                },
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        if (request.method === 'GetTask') {
+          getTaskCalls += 1
+          if (getTaskCalls === 1) {
+            return new Response('null', {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          }
+        }
+        const task = {
+          id: 'task-null',
+          contextId: 'context-null',
+          status: { state: 'TASK_STATE_COMPLETED' },
+          artifacts: [
+            {
+              artifactId: 'artifact-null',
+              parts: [{ text: 'recovered after null response', mediaType: 'text/plain' }],
+            },
+          ],
+          history: [],
+        }
+        if (request.method === 'SubscribeToTask') {
+          return new Response(
+            `data: ${JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: { task },
+            })}\n\n`,
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          )
+        }
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: task }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:null-task-v1', message: 'recover by Task ID' },
+        targets,
+      )
+      await vi.advanceTimersByTimeAsync(1_001)
+      const result = await invocation
+
+      expect(result.content[0].text).toBe('recovered after null response')
+      expect(methods).toEqual(['SendMessage', 'GetTask', 'SubscribeToTask'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('enforces one cumulative event budget across submission and resubscription', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'cumulative-budget-v1',
+        url: 'https://v1.example.com/cards/agent.json',
+        connectionMode: 'agent_card',
+      },
+    ]
+    const methods: string[] = []
+    const encoder = new TextEncoder()
+    const statusEvent = (id: number, state = 'TASK_STATE_WORKING') =>
+      `data: ${JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          statusUpdate: {
+            taskId: 'task-cumulative-budget',
+            contextId: 'context-cumulative-budget',
+            status: { state },
+          },
+        },
+      })}\n\n`
+    const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/cards/agent.json')) {
+        return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const request = JSON.parse(init?.body as string)
+      methods.push(request.method)
+      if (request.method === 'CancelTask') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: {
+              id: 'task-cumulative-budget',
+              contextId: 'context-cumulative-budget',
+              status: { state: 'TASK_STATE_CANCELED' },
+              artifacts: [],
+              history: [],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (request.method === 'SendStreamingMessage') {
+        let sent = false
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sent) {
+                sent = true
+                controller.enqueue(
+                  encoder.encode(
+                    Array.from({ length: 6_000 }, () => statusEvent(request.id)).join(''),
+                  ),
+                )
+                return
+              }
+              controller.error(new Error('connection reset after the initial event budget'))
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        )
+      }
+      const events = Array.from({ length: 5_000 }, () => statusEvent(request.id))
+      events.push(statusEvent(request.id, 'TASK_STATE_COMPLETED'))
+      return new Response(events.join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    })
+    globalThis.fetch = spy as unknown as typeof fetch
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:cumulative-budget-v1', message: 'respect one invocation budget' },
+      targets,
+    )
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('10000-event limit')
+    expect(methods).toEqual(['SendStreamingMessage', 'SubscribeToTask', 'CancelTask'])
+  })
+
+  it('falls back to GetTask when a resubscription stays idle without replaying the message', async () => {
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'reconnect-v1',
+          url: 'https://v1.example.com/cards/agent.json',
+          connectionMode: 'agent_card',
+        },
+      ]
+      const methods: string[] = []
+      const encoder = new TextEncoder()
+      const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/cards/agent.json')) {
+          return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        const request = JSON.parse(init?.body as string)
+        methods.push(request.method)
+        if (request.method === 'SendStreamingMessage') {
+          let sentWorking = false
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (!sentWorking) {
+                  sentWorking = true
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: request.id,
+                        result: {
+                          statusUpdate: {
+                            taskId: 'task-reconnect',
+                            contextId: 'context-reconnect',
+                            status: { state: 'TASK_STATE_WORKING' },
+                          },
+                        },
+                      })}\n\n`,
+                    ),
+                  )
+                  return
+                }
+                controller.error(new Error('connection reset'))
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          )
+        }
+        if (request.method === 'SubscribeToTask') {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                init?.signal?.addEventListener(
+                  'abort',
+                  () => controller.error(new Error('resubscription aborted')),
+                  { once: true },
+                )
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          )
+        }
+        const task = {
+          id: 'task-reconnect',
+          contextId: 'context-reconnect',
+          status: { state: 'TASK_STATE_COMPLETED' },
+          artifacts: [
+            {
+              artifactId: 'artifact-reconnect',
+              parts: [{ text: 'recovered result', mediaType: 'text/plain' }],
+            },
+          ],
+          history: [],
+        }
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: task }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:reconnect-v1', message: 'survive a disconnect' },
+        targets,
+        { signal: caller.signal },
+      )
+      await vi.advanceTimersByTimeAsync(30_001)
+      const observedMethods = [...methods]
+      caller.abort(new Error('test cleanup'))
+      const result = await invocation
+
+      expect(result.content[0].text).toBe('recovered result')
+      expect(observedMethods).toEqual(['SendStreamingMessage', 'SubscribeToTask', 'GetTask'])
+    } finally {
+      caller.abort(new Error('test cleanup'))
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats an idle stream with a known Task ID as a reconnect signal', async () => {
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    try {
+      const targets: RouteTarget[] = [
+        {
+          type: 'remote',
+          name: 'idle-v1',
+          url: 'https://v1.example.com/cards/agent.json',
+          connectionMode: 'agent_card',
+        },
+      ]
+      const methods: string[] = []
+      const encoder = new TextEncoder()
+      const spy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/cards/agent.json')) {
+          return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        const request = JSON.parse(init?.body as string)
+        methods.push(request.method)
+        if (request.method === 'SendStreamingMessage') {
+          let sentWorking = false
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (sentWorking) return
+                sentWorking = true
+                init?.signal?.addEventListener(
+                  'abort',
+                  () => controller.error(new Error('stream aborted')),
+                  { once: true },
+                )
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify({
+                      jsonrpc: '2.0',
+                      id: request.id,
+                      result: {
+                        statusUpdate: {
+                          taskId: 'task-idle',
+                          contextId: 'context-idle',
+                          status: { state: 'TASK_STATE_WORKING' },
+                        },
+                      },
+                    })}\n\n`,
+                  ),
+                )
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          )
+        }
+        return new Response(
+          `data: ${JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: {
+              task: {
+                id: 'task-idle',
+                contextId: 'context-idle',
+                status: { state: 'TASK_STATE_COMPLETED' },
+                artifacts: [
+                  {
+                    artifactId: 'artifact-idle',
+                    parts: [{ text: 'recovered after idle', mediaType: 'text/plain' }],
+                  },
+                ],
+                history: [],
+              },
+            },
+          })}\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        )
+      })
+      globalThis.fetch = spy as unknown as typeof fetch
+
+      const invocation = invokeAgentHandler(
+        { agentId: 'remote:idle-v1', message: 'recover an idle stream' },
+        targets,
+        { signal: caller.signal },
+      )
+      await vi.advanceTimersByTimeAsync(30_001)
+      const observedMethods = [...methods]
+      caller.abort(new Error('test cleanup'))
+      const result = await invocation
+
+      expect(result.content[0].text).toBe('recovered after idle')
+      expect(observedMethods).toEqual(['SendStreamingMessage', 'SubscribeToTask'])
+    } finally {
+      caller.abort(new Error('test cleanup'))
+      vi.useRealTimers()
+    }
   })
 
   it('preserves a non-streaming input-required status as an actionable failure', async () => {
@@ -938,7 +1955,75 @@ describe('invokeAgentHandler', () => {
     expect(cancelSpy).toHaveBeenCalledOnce()
   })
 
-  it('merges standard artifact chunks by artifactId before extracting text', async () => {
+  it('returns a message-only stream result without waiting for stream EOF', async () => {
+    const targets: RouteTarget[] = [
+      {
+        type: 'remote',
+        name: 'message-only-v1',
+        url: 'https://v1.example.com/cards/agent.json',
+        connectionMode: 'agent_card',
+      },
+    ]
+    const cancelSpy = vi.fn()
+    const encoder = new TextEncoder()
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/cards/agent.json')) {
+        return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const request = JSON.parse(init?.body as string)
+      const requestSignal = init?.signal
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          requestSignal?.addEventListener(
+            'abort',
+            () => controller.error(requestSignal.reason ?? new Error('request aborted')),
+            { once: true },
+          )
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                jsonrpc: '2.0',
+                id: request.id,
+                result: {
+                  message: {
+                    messageId: 'message-only-result',
+                    role: 'ROLE_AGENT',
+                    parts: [{ text: 'final message response', mediaType: 'text/plain' }],
+                  },
+                },
+              })}\n\n`,
+            ),
+          )
+        },
+        cancel: cancelSpy,
+      })
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }) as unknown as typeof fetch
+    const caller = new AbortController()
+    const cleanupTimer = setTimeout(
+      () => caller.abort(new Error('message-only regression cleanup')),
+      100,
+    )
+
+    const result = await invokeAgentHandler(
+      { agentId: 'remote:message-only-v1', message: 'return one message' },
+      targets,
+      { signal: caller.signal },
+    )
+    clearTimeout(cleanupTimer)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(result.content[0].text).toBe('final message response')
+    expect(cancelSpy).toHaveBeenCalledOnce()
+  })
+
+  it('merges standard artifact chunks without reserializing accumulated output', async () => {
     const targets: RouteTarget[] = [
       {
         type: 'remote',
@@ -949,9 +2034,11 @@ describe('invokeAgentHandler', () => {
     ]
     const stream = `${[
       'data: {"jsonrpc":"2.0","id":1,"result":{"artifactUpdate":{"taskId":"task-1","contextId":"context-1","artifact":{"artifactId":"artifact-1","parts":[{"text":"Hel","mediaType":"text/plain"}]},"append":false,"lastChunk":false}}}',
-      'data: {"jsonrpc":"2.0","id":1,"result":{"artifactUpdate":{"taskId":"task-1","contextId":"context-1","artifact":{"artifactId":"artifact-1","parts":[{"text":"lo","mediaType":"text/plain"}]},"append":true,"lastChunk":true}}}',
+      'data: {"jsonrpc":"2.0","id":1,"result":{"artifactUpdate":{"taskId":"task-1","contextId":"context-1","artifact":{"artifactId":"artifact-1","parts":[{"text":"lo","mediaType":"text/plain"}]},"append":true,"lastChunk":false}}}',
+      'data: {"jsonrpc":"2.0","id":1,"result":{"artifactUpdate":{"taskId":"task-1","contextId":"context-1","artifact":{"artifactId":"artifact-1","parts":[{"text":"!","mediaType":"text/plain"}]},"append":true,"lastChunk":true}}}',
+      'data: {"jsonrpc":"2.0","id":1,"result":{"statusUpdate":{"taskId":"task-1","contextId":"context-1","status":{"state":"TASK_STATE_COMPLETED"}}}}',
     ].join('\n\n')}\n\n`
-    const spy = vi.fn().mockImplementation(async (url: string) => {
+    const fetchSpy = vi.fn().mockImplementation(async (url: string) => {
       if (url.endsWith('/cards/agent.json')) {
         return new Response(JSON.stringify(standardAgentCard('https://v1.example.com/a2a')), {
           status: 200,
@@ -963,14 +2050,34 @@ describe('invokeAgentHandler', () => {
         headers: { 'content-type': 'text/event-stream' },
       })
     })
-    globalThis.fetch = spy as unknown as typeof fetch
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const serializedArtifactPartCounts: number[] = []
+    const originalStringify = JSON.stringify
+    vi.spyOn(JSON, 'stringify').mockImplementation(((
+      ...args: Parameters<typeof JSON.stringify>
+    ) => {
+      const [value] = args
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'artifactId' in value &&
+        value.artifactId === 'artifact-1' &&
+        'parts' in value &&
+        Array.isArray(value.parts)
+      ) {
+        serializedArtifactPartCounts.push(value.parts.length)
+      }
+      return originalStringify(...args)
+    }) as typeof JSON.stringify)
 
     const result = await invokeAgentHandler(
       { agentId: 'remote:chunked-v1', message: 'hello' },
       targets,
     )
 
-    expect(result.content[0].text).toBe('Hello')
+    expect(result.content[0].text).toBe('Hello!')
+    expect(serializedArtifactPartCounts.length).toBeGreaterThan(0)
+    expect(Math.max(...serializedArtifactPartCounts)).toBe(1)
   })
 
   it('uses configured credentials for same-origin Agent Card discovery and invocation', async () => {
@@ -1031,10 +2138,10 @@ describe('invokeAgentHandler', () => {
       defaultOutputModes: ['text/plain'],
       skills: [],
     }
-    const legacyStream = [
+    const legacyStream = `${[
       'data: {"jsonrpc":"2.0","id":1,"result":{"kind":"artifact-update","taskId":"task-1","contextId":"context-1","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":"legacy response"}]}}}',
-      '',
-    ].join('\n')
+      'data: {"jsonrpc":"2.0","id":1,"result":{"kind":"status-update","taskId":"task-1","contextId":"context-1","status":{"state":"completed"},"final":true}}',
+    ].join('\n\n')}\n\n`
     const spy = vi.fn().mockImplementation(async (url: string) => {
       if (url.includes('agent-card.json')) {
         return new Response(JSON.stringify(legacyCard), {
@@ -1766,360 +2873,5 @@ describe('invokeAgentHandler', () => {
 
     expect((result as any).isError).toBe(true)
     expect(result.content[0].text).toContain('HTTP 503')
-  })
-})
-
-describe('collectSSEResult', () => {
-  function makeResponse(body: string) {
-    return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
-  }
-
-  it('collects artifacts from SSE stream', async () => {
-    const body = [
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"working"}}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"artifact-update","artifact":{"parts":[{"kind":"text","text":"final answer"}]}}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"completed"}}}',
-      '',
-    ].join('\n')
-
-    const result = await collectSSEResult(makeResponse(body))
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts[0].text).toBe('final answer')
-  })
-
-  it('merges chunked legacy artifact updates before extracting text', async () => {
-    const body = [
-      'data: {"jsonrpc":"2.0","result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":"hello"}]},"append":false,"lastChunk":false}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":" world"}]},"append":true,"lastChunk":true}}',
-      '',
-    ].join('\n')
-
-    const result = await collectSSEResult(makeResponse(body))
-    const { extractTextFromA2AResponse } = await import('../a2wave-agent-router.js')
-
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts).toHaveLength(2)
-    expect(extractTextFromA2AResponse(result).content[0].text).toBe('hello world')
-  })
-
-  it('collects working messages as history', async () => {
-    const body = [
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"working","message":{"role":"agent","parts":[{"kind":"text","text":"thinking..."}]}}}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"completed"}}}',
-      '',
-    ].join('\n')
-
-    const result = await collectSSEResult(makeResponse(body))
-    expect(result.result.history).toHaveLength(1)
-    expect(result.result.history[0].parts[0].text).toBe('thinking...')
-  })
-
-  it('returns null for empty SSE stream', async () => {
-    const result = await collectSSEResult(makeResponse(''))
-    expect(result).toBeNull()
-  })
-
-  it('returns error event when present', async () => {
-    const body = [
-      'data: {"jsonrpc":"2.0","error":{"code":-32600,"message":"Bad request"}}',
-      '',
-    ].join('\n')
-
-    const result = await collectSSEResult(makeResponse(body))
-    expect(result.error.code).toBe(-32600)
-  })
-
-  it('skips non-JSON lines', async () => {
-    const body = [
-      ': comment',
-      'data: not-json',
-      'data: {"jsonrpc":"2.0","result":{"kind":"artifact-update","artifact":{"parts":[{"kind":"text","text":"ok"}]}}}',
-      '',
-    ].join('\n')
-
-    const result = await collectSSEResult(makeResponse(body))
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts[0].text).toBe('ok')
-  })
-
-  it('works end-to-end with extractTextFromA2AResponse', async () => {
-    const body = [
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"working"}}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"artifact-update","artifact":{"parts":[{"kind":"text","text":"Hello from agent"}]}}}',
-      'data: {"jsonrpc":"2.0","result":{"kind":"status-update","status":{"state":"completed"}}}',
-      '',
-    ].join('\n')
-
-    const sseResult = await collectSSEResult(makeResponse(body))
-    const { extractTextFromA2AResponse } = await import('../a2wave-agent-router.js')
-    const final = extractTextFromA2AResponse(sseResult)
-    expect(final.content[0].text).toBe('Hello from agent')
-  })
-})
-
-describe('parseRouteTargets', () => {
-  it('returns null when env is undefined', async () => {
-    expect(parseRouteTargets(undefined)).toBeNull()
-  })
-
-  it('returns null when env is empty string', async () => {
-    expect(parseRouteTargets('')).toBeNull()
-  })
-
-  it('parses valid JSON', async () => {
-    const targets = [{ type: 'local', agentId: 'agt_1' }]
-    expect(parseRouteTargets(JSON.stringify(targets))).toEqual(targets)
-  })
-
-  it('returns null and logs error for invalid JSON', async () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(parseRouteTargets('not-json')).toBeNull()
-    expect(spy).toHaveBeenCalledWith(expect.stringContaining('Failed to parse'))
-    spy.mockRestore()
-  })
-})
-
-describe('streamSSEWithCallback', () => {
-  function makeSSEResponse(lines: string[]): Response {
-    const text = `${lines.join('\n')}\n`
-    const encoder = new TextEncoder()
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(text))
-        controller.close()
-      },
-    })
-    return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
-  }
-
-  it('calls onUpdate for each status-update event with text', async () => {
-    const updates: string[] = []
-    const res = makeSSEResponse([
-      'data: {"result":{"kind":"status-update","status":{"state":"working","message":{"kind":"message","role":"agent","parts":[{"kind":"text","text":"hello"}]}}}}',
-      'data: {"result":{"kind":"status-update","status":{"state":"working","message":{"kind":"message","role":"agent","parts":[{"kind":"text","text":"hello world"}]}}}}',
-    ])
-
-    const result = await streamSSEWithCallback(res, (content) => updates.push(content))
-
-    expect(updates).toEqual(['hello', 'hello world'])
-    expect(result.result.history).toHaveLength(2)
-  })
-
-  it('collects artifacts', async () => {
-    const res = makeSSEResponse([
-      'data: {"result":{"kind":"artifact-update","artifact":{"parts":[{"kind":"text","text":"final"}]}}}',
-    ])
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts[0].text).toBe('final')
-  })
-
-  it('merges append chunks for one legacy artifact', async () => {
-    const res = makeSSEResponse([
-      'data: {"result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":"hello"}]},"append":false,"lastChunk":false}}',
-      'data: {"result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":" world"}]},"append":true,"lastChunk":true}}',
-    ])
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts.map((part: { text: string }) => part.text)).toEqual([
-      'hello',
-      ' world',
-    ])
-  })
-
-  it('returns error events', async () => {
-    const res = makeSSEResponse(['data: {"error":{"code":-32000,"message":"fail"}}'])
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.error).toBeDefined()
-  })
-
-  it('returns null when no events', async () => {
-    const res = makeSSEResponse(['', 'not-data-line'])
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result).toBeNull()
-  })
-
-  it('falls back to collectSSEResult when body is null', async () => {
-    const res = {
-      body: null,
-      text: () =>
-        Promise.resolve(
-          [
-            'data: {"result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":"hello"}]},"append":false,"lastChunk":false}}',
-            'data: {"result":{"kind":"artifact-update","artifact":{"artifactId":"artifact-1","parts":[{"kind":"text","text":" world"}]},"append":true,"lastChunk":true}}',
-            '',
-          ].join('\n'),
-        ),
-    } as unknown as Response
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts).toHaveLength(2)
-  })
-
-  it('skips malformed JSON lines without throwing', async () => {
-    const updates: string[] = []
-    const res = makeSSEResponse([
-      'data: not-json',
-      'data: {"result":{"kind":"status-update","status":{"state":"working","message":{"kind":"message","role":"agent","parts":[{"kind":"text","text":"ok"}]}}}}',
-    ])
-
-    const result = await streamSSEWithCallback(res, (c) => updates.push(c))
-
-    expect(updates).toEqual(['ok'])
-    expect(result.result.history).toHaveLength(1)
-  })
-
-  it('processes remaining buffer that lacks trailing newline', async () => {
-    const encoder = new TextEncoder()
-    const chunk =
-      'data: {"result":{"kind":"artifact-update","artifact":{"parts":[{"kind":"text","text":"buffered"}]}}}'
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(chunk))
-        controller.close()
-      },
-    })
-    const res = new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.result.artifacts).toHaveLength(1)
-    expect(result.result.artifacts[0].parts[0].text).toBe('buffered')
-  })
-
-  it('calls onUpdate for status-update in remaining buffer', async () => {
-    const updates: string[] = []
-    const encoder = new TextEncoder()
-    const chunk =
-      'data: {"result":{"kind":"status-update","status":{"state":"working","message":{"kind":"message","role":"agent","parts":[{"kind":"text","text":"final update"}]}}}}'
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(chunk))
-        controller.close()
-      },
-    })
-    const res = new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
-
-    await streamSSEWithCallback(res, (content) => updates.push(content))
-
-    expect(updates).toEqual(['final update'])
-  })
-
-  it('handles error in remaining buffer', async () => {
-    const encoder = new TextEncoder()
-    const chunk = 'data: {"error":{"code":-32000,"message":"oops"}}'
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(chunk))
-        controller.close()
-      },
-    })
-    const res = new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
-
-    const result = await streamSSEWithCallback(res)
-
-    expect(result.error).toBeDefined()
-    expect(result.error.code).toBe(-32000)
-  })
-})
-
-describe('invokeAgentsParallelHandler', () => {
-  it('runs multiple invocations concurrently and returns combined results', async () => {
-    const targets: RouteTarget[] = [
-      { type: 'local', agentId: 'agt_1' },
-      { type: 'local', agentId: 'agt_2' },
-    ]
-
-    // Track call order to verify concurrency
-    const callOrder: string[] = []
-    globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
-      const agentId = url.includes('agt_1') ? 'agt_1' : 'agt_2'
-      callOrder.push(`start:${agentId}`)
-      await new Promise((r) => setTimeout(r, 10))
-      callOrder.push(`end:${agentId}`)
-      return {
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            result: { artifacts: [{ parts: [{ kind: 'text', text: `result from ${agentId}` }] }] },
-          }),
-        text: () => Promise.resolve(''),
-        headers: new Headers({ 'content-type': 'application/json' }),
-      }
-    })
-
-    const result = await invokeAgentsParallelHandler(
-      {
-        invocations: [
-          { agentId: 'agt_1', message: 'hello' },
-          { agentId: 'agt_2', message: 'world' },
-        ],
-      },
-      targets,
-    )
-
-    expect(result.content[0].text).toContain('result from agt_1')
-    expect(result.content[0].text).toContain('result from agt_2')
-    expect((result as any).isError).toBeUndefined()
-  })
-
-  it('sets isError when any invocation fails', async () => {
-    let callCount = 0
-    globalThis.fetch = vi.fn().mockImplementation(async () => {
-      callCount++
-      if (callCount === 1) {
-        return {
-          ok: true,
-          json: () =>
-            Promise.resolve({ result: { artifacts: [{ parts: [{ kind: 'text', text: 'ok' }] }] } }),
-          text: () => Promise.resolve(''),
-          headers: new Headers({ 'content-type': 'application/json' }),
-        }
-      }
-      return {
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('Internal Server Error'),
-        headers: new Headers({ 'content-type': 'text/plain' }),
-      }
-    })
-
-    const result = await invokeAgentsParallelHandler(
-      {
-        invocations: [
-          { agentId: 'agt_1', message: 'hello' },
-          { agentId: 'agt_2', message: 'world' },
-        ],
-      },
-      null,
-    )
-
-    expect((result as any).isError).toBe(true)
-    expect(result.content[0].text).toContain('agt_1')
-    expect(result.content[0].text).toContain('agt_2')
-  })
-
-  it('handles thrown errors gracefully', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('network down'))
-
-    const result = await invokeAgentsParallelHandler(
-      {
-        invocations: [{ agentId: 'agt_1', message: 'hello' }],
-      },
-      null,
-    )
-
-    expect((result as any).isError).toBe(true)
-    expect(result.content[0].text).toContain('Error: network down')
   })
 })

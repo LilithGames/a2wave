@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
 import { logger } from '../lib/logger.js'
 import { getExecutionAbortSignal } from './execution-lease-registry.js'
+import { emitExecutionProcessLogLine } from './execution-process-log.js'
 
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024
 const FORCE_KILL_DELAY_MS = 5_000
@@ -68,14 +69,41 @@ interface LineDecoder {
   flush(): void
 }
 
-function createLineDecoder(onLine: (line: string) => void): LineDecoder {
+interface LineDecoderOptions {
+  maxLineChars?: number
+}
+
+export function createLineDecoder(
+  onLine: (line: string) => void,
+  options: LineDecoderOptions = {},
+): LineDecoder {
   const decoder = new StringDecoder('utf8')
+  const maxLineChars = Math.max(0, options.maxLineChars ?? Number.POSITIVE_INFINITY)
   let remainder = ''
+  let discardingOversizedLine = false
 
   const consume = (text: string) => {
-    const lines = `${remainder}${text}`.split('\n')
-    remainder = lines.pop() ?? ''
-    for (const line of lines) onLine(line)
+    let start = 0
+    while (start <= text.length) {
+      const newline = text.indexOf('\n', start)
+      const completeLine = newline !== -1
+      const fragment = text.slice(start, completeLine ? newline : undefined)
+
+      if (discardingOversizedLine) {
+        if (completeLine) discardingOversizedLine = false
+      } else if (remainder.length + fragment.length > maxLineChars) {
+        remainder = ''
+        discardingOversizedLine = !completeLine
+      } else if (completeLine) {
+        onLine(`${remainder}${fragment}`)
+        remainder = ''
+      } else {
+        remainder += fragment
+      }
+
+      if (!completeLine) break
+      start = newline + 1
+    }
   }
 
   return {
@@ -84,8 +112,9 @@ function createLineDecoder(onLine: (line: string) => void): LineDecoder {
     },
     flush() {
       consume(decoder.end())
-      if (remainder.trim()) onLine(remainder)
+      if (!discardingOversizedLine && remainder.trim()) onLine(remainder)
       remainder = ''
+      discardingOversizedLine = false
     },
   }
 }
@@ -203,6 +232,10 @@ export class CliProcessRunner {
       const stderrDecoder = options.parseStderrLines
         ? createLineDecoder(options.onStdoutLine)
         : undefined
+      const processLogDecoder = createLineDecoder(
+        (line) => emitExecutionProcessLogLine(options.taskId, line),
+        { maxLineChars: 4 * 1024 },
+      )
 
       const timeout = setTimeout(() => {
         logger.warn({ taskId: options.taskId }, `${options.label} stream execution timed out`)
@@ -223,6 +256,7 @@ export class CliProcessRunner {
         if (result.reason !== 'spawn-error') {
           stdoutDecoder.flush()
           stderrDecoder?.flush()
+          processLogDecoder.flush()
         }
         runCleanup(options)
         active.resolveCompletion()
@@ -245,6 +279,7 @@ export class CliProcessRunner {
       child.stderr?.on('data', (value: Buffer | string) => {
         const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
         stderrOutput = appendBoundedTail(stderrOutput, chunk, this.stderrLimitBytes)
+        processLogDecoder.write(chunk)
         logger.debug(
           { taskId: options.taskId },
           `[${options.label} STDERR] ${chunk.toString('utf8', 0, 500)}`,

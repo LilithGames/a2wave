@@ -43,6 +43,34 @@ function defaultDispatcherFactory(addresses: readonly ResolvedPublicAddress[]): 
   return new UndiciAgent({ connect: { lookup: createPinnedLookup(addresses) } })
 }
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+}
+
+function awaitWithAbortSignal<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal | null,
+): Promise<T> {
+  if (!signal) return operation()
+  if (signal.aborted) return Promise.reject(abortReason(signal))
+
+  const pending = operation()
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal))
+    signal.addEventListener('abort', onAbort, { once: true })
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 function releaseResponseWithDispatcher(upstream: Response, dispatcher: PinnedDispatcher): Response {
   let released = false
   const release = () => {
@@ -121,10 +149,14 @@ export function createStreamingSafeFetch(options: StreamingSafeFetchOptions = {}
       const parsed = assertSafeHttpUrl(current, {
         allowPrivateAddresses: options.allowPrivateTargets,
       })
-      const { addresses } = await resolvePublicUrl(current, options.resolveHostname, {
-        allowPrivateAddresses: options.allowPrivateTargets,
-        allowPrivateDnsAnswers: trustedHosts.has(parsed.hostname.toLowerCase()),
-      })
+      const { addresses } = await awaitWithAbortSignal(
+        () =>
+          resolvePublicUrl(current, options.resolveHostname, {
+            allowPrivateAddresses: options.allowPrivateTargets,
+            allowPrivateDnsAnswers: trustedHosts.has(parsed.hostname.toLowerCase()),
+          }),
+        request.signal,
+      )
       const dispatcher = dispatcherFactory(addresses)
       let response: Response
       try {

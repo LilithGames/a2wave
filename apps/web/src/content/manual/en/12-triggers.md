@@ -102,10 +102,10 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 
 - **Rate limit**: **60 requests/minute** per Agent.
 - Full queue returns `429`; unpublished returns `403`; auth failure `401/403`; occupied worktree `409`.
-- Authentication: `/api/gateway` uses `api_key` (Bearer) / IP allowlist; enterprise SSO JWTs use the separate `/api/oauth` channel.
+- Authentication: `/api/gateway` uses `api_key` (Bearer) / IP allowlist; JWTs issued by your enterprise OIDC provider use the separate `/api/oauth` channel.
 
 > [!NOTE]
-> An API key identifies the integration calling the endpoint, not the end user behind that integration, so run history normally shows only `API`. If a direct invocation must be attributed to a specific enterprise user, use the OAuth endpoint with that user's own SSO JWT. Supplying a user name inside `context` is not a substitute for identity verification.
+> An API key identifies the integration calling the endpoint, not the end user behind that integration, so run history normally shows only `API`. If a direct invocation must be attributed to a specific enterprise user, use the OAuth endpoint with that user's own OIDC JWT. Supplying a user name inside `context` is not a substitute for identity verification.
 
 > [!IMPORTANT]
 > Behind a reverse proxy, set `TRUSTED_PROXY=true` and list only the proxy's direct TCP addresses or CIDRs in `TRUSTED_PROXY_ADDRESSES`. Gateway, OAuth, and A2A then use the first untrusted hop found by walking `X-Forwarded-For` from right to left for IP allowlists, audit/channel context, and rate limits. The proxy must overwrite XFF or append every hop; never preserve an unvalidated, non-standard chain.
@@ -116,15 +116,19 @@ metadata, and other reserved ranges remain active. Set `ALLOW_PRIVATE_ROUTE_TARG
 require public targets. In that strict mode, `TRUSTED_A2A_ROUTE_HOSTS` can admit exact controlled
 private DNS hostnames without disabling the remaining protections.
 
-### OAuth (enterprise SSO JWT) invocation
+### OAuth (enterprise OIDC JWT) invocation
 
-The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <SSO_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
+The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <OIDC_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
+
+> [!IMPORTANT]
+> This channel accepts **only JWTs issued by your enterprise OIDC provider** (typically an access token), verified against the IdP JWKS with an `aud` in the **current effective OIDC channel audience configuration**. Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no valid OIDC configuration exists in Settings. SAML login uses a browser-based assertion flow and produces no token that can be placed in an `Authorization` header, so **a SAML-only deployment cannot use the OAuth invocation channel**.
 
 When an error is returned, prefer reading `error.code`, `error.message`, and `error.action`:
 
 | code | Who needs to act | Next step |
 |------|------------|--------|
-| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Log in again and obtain a new SSO token |
+| `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Obtain a fresh JWT from the caller's own OIDC client for the configured a2wave resource audience |
+| `CALLER_TOKEN_CLAIMS_INVALID` | Caller / platform admin | Obtain a new JWT from the configured OIDC provider containing an email claim; `specified_users` additionally requires a verified email |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | Caller + Agent owner | Request permission or switch to an allowed network |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent owner | Re-log in or update the Agent's Provider credentials; the caller does not need to re-log in |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent owner | Fix the engine, model, MCP, or workspace configuration; non-occupancy errors return `424` |
@@ -132,7 +136,7 @@ When an error is returned, prefer reading `error.code`, `error.message`, and `er
 | `OAUTH_NOT_CONFIGURED` / `AUTHORIZATION_CHECK_UNAVAILABLE` | Platform admin | Check the platform configuration or retry later |
 
 > [!IMPORTANT]
-> An HTTP `401` on the OAuth interface only means the caller's SSO token is invalid. If the message points to the Agent Provider, the caller should not clear their own login state.
+> An HTTP `401` on the OAuth interface only means the caller's OIDC JWT is invalid. If the message points to the Agent Provider, the caller should not clear their own login state.
 
 ### Public metadata
 
@@ -286,7 +290,7 @@ curl -X POST ".../api/a2a/<agentId>" -H "Authorization: Bearer <key>" \
 
 The Agent Card is version-negotiated as well: include `A2A-Version: 1.0` when requesting the v1 shape. Omitting the header intentionally returns an A2A 0.3-compatible Card.
 
-For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication supports API Key and OAuth/enterprise SSO JWT.
+For A2A 1.0, the streaming method is `SendStreamingMessage`; task lookup and cancellation are `GetTask` and `CancelTask`. For async operation, set `returnImmediately` to `true`, then poll the returned Task with `GetTask` until it reaches a terminal state. A2A 0.3 clients can continue to use `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`, together with the lowercase role and task-state values. Authentication uses the Agent's A2A API Key (`a2aAuthType` is `none` or `api_key`). The OAuth channel's OIDC JWT is **not** accepted here and returns `401`.
 
 Locally, `pnpm a2a-demo -- <agentId> "..."` provides a quick test. A2A messages can carry images/files as well as text; A2A 1.0 and 0.3 use different part fields, shown under **Attachments** below.
 
@@ -297,7 +301,7 @@ When both the caller and receiver support the A2A provenance extension, a remote
 The extension is negotiated through the Agent Card. Routes using **Agent Card discovery** enable it automatically when the peer advertises support. A **Direct endpoint** has no card for capability discovery: select A2A 1.0 and then explicitly enable **Send caller provenance** only when the receiver supports the a2wave extension. The switch is off by default, and direct A2A 0.3 routes never send the extension. A2A peers without the extension remain fully interoperable; their run history simply falls back to fewer layers, down to `A2A` when only the source is known.
 
 > [!IMPORTANT]
-> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key or OAuth / enterprise SSO JWT authentication, and a receiver must not grant access from a display name in the provenance extension.
+> Provenance names are for audit display, not authorization. The A2A call must still pass real API Key authentication, and a receiver must not grant access from a display name in the provenance extension.
 
 ### Invoke a remote standard A2A service
 
@@ -309,7 +313,15 @@ Open **A2A Route** on the Agent's Configuration tab and add a remote Agent:
 4. If the remote service requires a Bearer key, enter its API Key. After saving, the credential is shown only as a mask and is never included in the Agent Card or routing result.
 
 > [!NOTE]
-> **Direct endpoint** mode cannot discover whether the remote service supports streaming, so it deliberately uses blocking `SendMessage` for both A2A 1.0 and 0.3. Live remote child output is therefore unavailable in Direct mode. Use **Agent Card discovery** when you need streaming and the remote service advertises it.
+> **Direct endpoint** mode cannot discover remote capabilities. Direct A2A 1.0 therefore uses non-streaming `SendMessage` conservatively, while existing A2A 0.3 routes retain the `message/stream` compatibility path. Use **Agent Card discovery** when you need standard A2A 1.0 streaming and the peer advertises it.
+
+### Long tasks, timeouts, and cancellation
+
+A2A routing no longer adds a fixed five-minute execution deadline. The effective execution window inherits the **calling Agent's** single-execution limit under **Configuration → Timeout**. Increase that setting on the calling Agent (5–120 minutes) when a remote task legitimately needs more time; there is no separate route timeout to update. If **Total timeout** is configured, its whole-Run limit still covers retries and multiple Agent calls.
+
+For A2A 1.0, the platform obtains a Task ID as early as possible and then follows that Task's lifecycle. Non-streaming calls use `GetTask`. If a streaming connection with a known Task ID is idle for 30 seconds or disconnects unexpectedly, the router first uses `SubscribeToTask` and falls back to `GetTask`. Recovery uses only the existing Task ID and **never resends the original message**, preventing duplicate remote execution. Partial artifact chunks received before a disconnect remain part of the invocation and are combined with later append chunks after reconnection. Working-state messages remain progress only and are not returned as the successful final answer when a terminal Task has no response body. A temporarily unavailable terminal history read continues with the same `GetTask` backoff policy even after resubscription succeeded.
+
+When the parent Run is canceled or reaches its timeout, the router sends `CancelTask` through an independent short control request whenever a Task ID is known, and reports whether downstream cancellation was confirmed. The same best-effort cleanup is attempted when a known Task exceeds the router's result safety limits, or when both reconnect and polling fail permanently while the last observed Task is still running. This prevents a downstream task from continuing unseen after the caller has received a recovery error. Even when the underlying Agent CLI has begun exiting after a timeout, the platform gives the router a brief cleanup window and waits for the cancellation request before terminating the process. A2A lifecycle events appear directly in the Run detail's **Execution log** timeline, including the target Agent, Task ID, state, reconnect attempts, and cancellation result. They never contain the request body or credentials. A connection that fails before returning a Task ID cannot be safely reconnected or canceled, so the router reports the failure without guessing or replaying the message. A2A 0.3 routes remain protocol-compatible and inherit the parent's cancellation signal, but the full reconnect-and-cancel-by-ID guarantee applies only to A2A 1.0; use A2A 1.0 for long-running work.
 
 > [!NOTE]
 > If a standard remote Agent returns `INPUT_REQUIRED` or `AUTH_REQUIRED`, routing reports a non-success result containing the Agent's status message plus its `taskId` and `contextId`. The route tool does not resume that remote task automatically; provide the requested context in a new invocation, or update the remote credentials before retrying.
@@ -353,7 +365,7 @@ When messaging an Agent you can include images and documents. Feishu, Slack, and
 1. First upload the file to the corresponding upload endpoint (`multipart/form-data`, field name `file`) to get a `token`. The upload endpoint differs by the caller's authentication method:
    - Platform user (Web test UI): `POST /api/attachments`
    - Gateway (Agent API Key): `POST /api/gateway/<agentId>/attachments`
-   - OAuth (enterprise SSO JWT): `POST /api/oauth/<agentId>/attachments`
+   - OAuth (enterprise OIDC JWT): `POST /api/oauth/<agentId>/attachments`
 
 ```bash
 curl -X POST ".../api/gateway/<agentId>/attachments" -H "Authorization: Bearer <key>" \

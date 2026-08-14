@@ -89,10 +89,9 @@ export const ssoOidcConfigSchema = z.object({
    * Audiences accepted on the **OAuth publish channel** (`publishAuthType: 'oauth'`).
    *
    * Separate from `clientId` on purpose. Login verifies `aud === clientId`, because an id_token
-   * minted for this platform must name it. A caller of the OAuth channel is a different service
-   * holding a token from its own client, whose `aud` points at that caller — so reusing `clientId`
-   * there would restrict the channel to "callers already holding an a2wave login token", the
-   * opposite of what the channel is for.
+   * minted for this platform must name it. OAuth-channel callers instead request access tokens
+   * whose `aud` identifies a2wave as the target resource server. The channel therefore needs an
+   * explicit a2wave resource audience, which may differ from the login client's identifier.
    *
    * That does **not** mean any audience goes: without a list, every token the IdP ever signed for
    * any relying party would invoke the Agent. So this is an explicit allowlist, and an empty list

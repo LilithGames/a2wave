@@ -2,8 +2,8 @@
 
 Enterprise SSO is the configuration a2wave uses to verify identities issued by an enterprise identity provider (IdP). It relates to both "backend enterprise login" and "user authenticated access":
 
-- **Backend enterprise login**: after enabling OAuth / enterprise SSO login in "Settings → Enterprise Login", both the CLI and Web can log in via enterprise SSO.
-- **User authenticated access**: after enabling it on the Agent's OAuth card on the Publish tab, an external caller must carry a token issued by the IdP to access `/api/oauth/:agentId/invoke`.
+- **Backend enterprise login**: after enabling OAuth / enterprise SSO login in "Settings → Enterprise Login", Web can use OIDC or SAML, while CLI enterprise login uses OIDC (or local password login as a fallback).
+- **User authenticated access**: after enabling it on the Agent's OAuth card on the Publish tab, an external caller must carry a JWT issued by your enterprise OIDC provider (typically an access token) to access `/api/oauth/:agentId/invoke` (this channel does not support SAML — see below).
 
 Two standard protocols are supported: **OIDC (authorization code + PKCE)** and **SAML 2.0**. Either one can be enabled once fully configured, and the corresponding button appears automatically on the login page; the master switch is "Settings → Enterprise Login → Enable OAuth / enterprise SSO login".
 
@@ -13,7 +13,7 @@ Two standard protocols are supported: **OIDC (authorization code + PKCE)** and *
 > [!IMPORTANT]
 > **The OAuth publish channel reuses the OIDC config.** When an Agent is published with `oauth` auth, caller tokens are verified against this same enterprise OIDC — signing keys come from the IdP's JWKS and rotate automatically, so there is no separate key to maintain. Two things differ from login:
 >
-> - **The channel has its own audience (`aud`) allowlist.** Login requires `aud = Client ID`, but an external service calling an Agent holds a token from its own client, whose `aud` names that caller. So the channel admits the values in `A2WAVE_OIDC_CHANNEL_AUDIENCES`. **Client ID is not added automatically** — otherwise "can sign in to the console" would mean "can invoke every Agent". Leaving it empty disables the channel (fail closed); it never means "allow everything".
+> - **The channel has its own audience (`aud`) allowlist.** Login requires `aud = Client ID`, which a caller integrating its own service does not hold, so the channel uses the current effective OIDC channel audience configuration instead. Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no valid OIDC configuration exists in Settings. **List the audience your IdP mints for a2wave** — for a JWT access token `aud` names the *target resource server* (this service), and the resource server must confirm it is in that audience ([RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)). Each caller requests it via the IdP's resource/audience parameter. **Do not list other applications' audiences**: such a token was never issued for a2wave, and accepting it makes this channel a confused deputy for that service's tokens — per-caller separation comes from the access scope and email allowlist, not from `aud`. **Client ID is not added automatically** — otherwise "can sign in to the console" would mean "can invoke every Agent". An empty effective audience configuration disables the channel (fail closed); it never means "allow everything".
 > - **Turning off OIDC login does not stop the channel.** The login toggle only controls the sign-in button; already-published oauth Agents keep verifying callers, so forcing password-only sign-in does not break every external integration at once.
 >
 > When OIDC is not configured at all, the channel returns `503 OAuth not configured`.
@@ -30,7 +30,7 @@ Configure it in the "Settings → Enterprise Login → OIDC" panel; the environm
 | `A2WAVE_OIDC_CLIENT_ID` | The client_id registered with the IdP |
 | `A2WAVE_OIDC_CLIENT_SECRET` | Optional. Treated as a PKCE public client when omitted |
 | `A2WAVE_OIDC_SCOPES` | Optional. Defaults to `openid profile email` |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | Required for the OAuth channel (comma-separated): the allowed caller token `aud` values. Client ID is not added automatically; empty = channel disabled |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | Environment fallback for the OAuth channel (comma-separated): the a2wave resource audience identifiers. Settings wins when configured. Client ID is not added automatically; when the environment is the active fallback, empty = channel disabled |
 
 Once configured and with OAuth enabled in "Settings → Enterprise Login", the login page shows a **"Log in with OIDC"** button. Clicking it does a full-page redirect to the IdP to complete authentication, then automatically returns into the site after success; the verification public key uses JWKS auto-rotation, with no need to manually paste a public key. On login failure, the login page shows the specific reason (e.g. login session expired, email domain not on the allowlist, etc.). If the IdP's ID token does not contain an email (some IdPs only return the email at the userinfo endpoint), a2wave automatically fetches it from the userinfo endpoint, with no extra configuration needed on the IdP side.
 
@@ -42,6 +42,9 @@ When registering the app on the IdP side, set the callback address (Redirect URI
 ## SAML 2.0 login
 
 For enterprise IdPs that only offer SAML (e.g. ADFS, some legacy IAM), a2wave can connect as a **SAML 2.0 SP**.
+
+> [!IMPORTANT]
+> **SAML covers login only — it cannot be used for the OAuth invocation channel.** A SAML assertion is a one-shot credential form-POSTed to the ACS endpoint; it issues no token that can be placed in an `Authorization: Bearer` header. The OAuth invocation channel verifies **OIDC-issued JWTs** exclusively. In a SAML-only deployment users can sign in to the **Web** console normally, but an Agent's OAuth channel is unavailable (it returns `503 OAuth not configured`), and **CLI** enterprise login is unavailable too — `a2wave login` uses the OIDC flow, leaving `a2wave login --password` as the only CLI option. Configure OIDC as well if you need either.
 
 Configure it in the "Settings → Enterprise Login → SAML" panel; the environment variables below act as a fallback (an API restart is required after changing them):
 
@@ -91,10 +94,10 @@ Two access scopes are supported:
 
 | Access scope | Description |
 |--------------|-------------|
-| All enterprise users | Any employee who completes enterprise SSO can invoke it. |
+| All enterprise users | Any employee holding a JWT issued by enterprise OIDC whose `aud` is on the allowlist, **and that carries an email claim**, can invoke it. |
 | Specific enterprise users | Only the listed addresses can invoke it; everyone else is denied. Search for colleagues to add them, or type an address directly. |
 
-Under **Specific enterprise users** an empty list means **nobody** can invoke the Agent (it denies rather than allows), so add at least one member before publishing. Entries are matched case-insensitively against the `email` claim in the SSO token.
+Under **Specific enterprise users** an empty list means **nobody** can invoke the Agent (it denies rather than allows), so add at least one member before publishing. Entries are matched case-insensitively against the `email` claim in the OIDC JWT.
 
 > [!NOTE]
 > The former "Feishu app visibility scope" has been retired. On upgrade, Agents that used it **and publish the OAuth channel** are migrated to **Specific enterprise users** with an empty list — they deny every call until the Agent owner fills the list in. This keeps an upgrade from silently opening a deliberately restricted Agent to every employee. Agents without an OAuth channel simply land on the new "All enterprise users" default and are unaffected.
@@ -107,7 +110,7 @@ Under **Specific enterprise users** an empty list means **nobody** can invoke th
 |------|------|
 | The settings-page OAuth switch turns on, but SSO doesn't work | Neither OIDC nor SAML is fully configured, or both are disabled; hit "Test" on the relevant panel to see the exact reason |
 | Red text appears after enabling OAuth authorization on the publish page | Enterprise OIDC is not configured (the channel returns `503`). Note this is unrelated to the OIDC *login* toggle — turning login off does not stop the channel |
-| A newly onboarded caller always gets 401 | Usually its token's `aud` is not on the channel allowlist. Decode the token, read `aud`, and add that value under "OAuth channel audiences" — do not "fix" it by disabling the audience check |
+| A newly onboarded caller always gets 401 | Usually the caller obtained a token for the wrong resource. Ask it to request a token issued for the configured a2wave audience; do not copy an arbitrary observed `aud` into the allowlist, because that token may have been issued for another service |
 | Every caller returns 503 "identity provider unavailable" at once | a2wave cannot reach the IdP (discovery / JWKS fetch failed). Caller credentials are fine and need no re-issuing; check egress, DNS and proxy |
 | Sending `/api/oauth/:agentId/invoke` directly to someone else still won't work for them | The other party must first authenticate at the enterprise IdP to obtain a token, and must be within that Agent's permission boundary |
 

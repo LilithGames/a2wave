@@ -148,6 +148,70 @@ describe('SqliteTaskStore', () => {
     })
   })
 
+  it('strips NUL from the persisted envelope, which PostgreSQL jsonb cannot hold', async () => {
+    // A2A message text is caller-supplied. `JSON.stringify` renders U+0000 as a
+    // valid \\u0000 escape that SQLite stores happily, but jsonb holds unescaped
+    // text and has no NUL, so `(data)::jsonb` fails with 22P05 — verified on
+    // PostgreSQL 14. Because `list()` casts the WHOLE envelope to filter on
+    // scope.tenant, one NUL in one task's text breaks tasks/list for every task
+    // in that scope, including tasks that contain none.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const nul = String.fromCharCode(0)
+    // contextId round-trips through the SDK codec verbatim, so the NUL is
+    // still present in the serialised envelope unless it is stripped.
+    const withNul = task('task_nul', undefined, `before${nul}after`)
+
+    await store.save(withNul, callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(persisted).not.toContain(nul)
+    expect(persisted).not.toContain('\\u0000')
+    // Still valid JSON, and the surrounding text survives intact.
+    expect(JSON.stringify(JSON.parse(persisted))).toContain('beforeafter')
+  })
+
+  it('preserves text that literally spells out a unicode escape', async () => {
+    // The strip runs on the SERIALISED form, so it must not corrupt a user who
+    // typed the six characters backslash-u-0-0-0-0 into a message: stringify escapes that as
+    // \\u0000, and the negative lookbehind keeps it. Getting this wrong would
+    // silently rewrite caller content — worse than the bug being fixed.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const literal = 'a\\u0000b'
+
+    await store.save(task('task_literal', undefined, literal), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(JSON.parse(persisted).task.contextId).toBe(literal)
+  })
+
+  it('strips a lone surrogate, which PostgreSQL jsonb also rejects', async () => {
+    // Same failure class as NUL and the same whole-scope blast radius, but it
+    // arrives by accident far more easily: truncating a UTF-16 string mid-emoji
+    // leaves an unpaired half. Verified on PostgreSQL 14 —
+    // `'{"t":"<lone high surrogate>"}'::jsonb` raises 22P02 "Unicode low
+    // surrogate must follow a high surrogate".
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const loneHigh = String.fromCharCode(0xd800)
+
+    await store.save(task('task_sur', undefined, `before${loneHigh}after`), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(persisted).not.toMatch(/[\uD800-\uDFFF]/)
+    expect(JSON.parse(persisted).task.contextId).toBe('beforeafter')
+  })
+
+  it('keeps a valid surrogate pair, which is an ordinary astral character', async () => {
+    // The strip must remove only UNPAIRED halves. An emoji is a legitimate pair
+    // and round-trips through jsonb, so removing it would corrupt caller text.
+    vi.spyOn(store, 'cleanup').mockResolvedValue(0)
+    const emoji = String.fromCodePoint(0x1f600)
+
+    await store.save(task('task_emoji', undefined, `a${emoji}b`), callContext())
+
+    const persisted = mockInsertValues.mock.calls[0][0].data
+    expect(JSON.parse(persisted).task.contextId).toBe(`a${emoji}b`)
+  })
+
   it('rejects an update when the task ID belongs to another scope', async () => {
     mockSelectGet.mockReturnValue({
       id: 'task_shared',

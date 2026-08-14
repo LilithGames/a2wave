@@ -2,8 +2,8 @@
 
 企业 SSO 是 a2wave 用来校验企业身份提供方（IdP）签发身份的配置。它和「后台企业登录」「用户鉴权访问」都有关：
 
-- **后台企业登录**：在「设置 → 企业登录」开启 OAuth / 企业 SSO 登录后，CLI 与 Web 可以走企业 SSO 登录。
-- **用户鉴权访问**：在 Agent「发布」页的「OAuth 授权」卡片上开启后，外部调用方需要携带 IdP 签发的 token 访问 `/api/oauth/:agentId/invoke`。
+- **后台企业登录**：在「设置 → 企业登录」开启 OAuth / 企业 SSO 登录后，Web 可使用 OIDC 或 SAML，CLI 企业登录则只使用 OIDC（也可回落到本地密码登录）。
+- **用户鉴权访问**：在 Agent「发布」页的「OAuth 授权」卡片上开启后，外部调用方需要携带企业 OIDC 签发的 JWT（通常是 access token）访问 `/api/oauth/:agentId/invoke`（该渠道不支持 SAML，详见下文）。
 
 支持两种标准协议：**OIDC（授权码 + PKCE）** 与 **SAML 2.0**。任一配置齐全并启用，登录页就会出现对应按钮；总开关是「设置 → 企业登录 → 启用 OAuth / 企业 SSO 登录」。
 
@@ -13,7 +13,7 @@
 > [!IMPORTANT]
 > **OAuth 发布渠道复用 OIDC 配置。** Agent 以 `oauth` 方式发布时，调用方 token 的验签走的就是这里的企业 OIDC——签名公钥由 IdP 的 JWKS 自动提供并轮换，无需单独维护密钥。两点与登录不同：
 >
-> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`；而外部服务调 Agent 时拿的是它自己那条客户端链路签发的 token，`aud` 指向调用方。因此渠道按 `A2WAVE_OIDC_CHANNEL_AUDIENCES` 放行。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。留空即关闭该渠道（fail closed），绝不代表放行全部。
+> - **渠道有自己的受众（aud）白名单。** 登录必须 `aud = Client ID`，而接入自有服务的调用方并不持有它，因此渠道改按当前生效的 OIDC 渠道受众配置放行。Settings 中的配置优先；仅当 Settings 中没有有效 OIDC 配置时，才回落到 `A2WAVE_OIDC_CHANNEL_AUDIENCES`。**这里要填 IdP 为 a2wave 签发的受众**——JWT access token 的 `aud` 标识的是*目标资源服务器*（即本服务），且资源服务器必须确认自己在该受众内（[RFC 9068 §3](https://www.rfc-editor.org/rfc/rfc9068#section-3)）；各调用方通过 IdP 的 resource/audience 参数申请。**不要把其它应用的受众加进来**：那种 token 根本不是为 a2wave 签发的，放行它会让本渠道沦为那个服务 token 的 confused deputy——按调用方区分权限靠访问范围与邮箱名单，不是靠 `aud`。**Client ID 不会被自动加进来**——否则「能登录控制台」就等于「能调用每个 Agent」。当前生效的受众配置为空时即关闭该渠道（fail closed），绝不代表放行全部。
 > - **关闭 OIDC 登录不会停掉渠道。** 登录方式的开关只管登录页出不出按钮；已发布的 oauth Agent 继续正常验签，避免「为了强制密码登录而顺手关掉 OIDC」把所有对外集成一起打断。
 >
 > OIDC 完全未配置时，渠道返回 `503 OAuth not configured`。
@@ -30,7 +30,7 @@
 | `A2WAVE_OIDC_CLIENT_ID` | 在 IdP 注册的 client_id |
 | `A2WAVE_OIDC_CLIENT_SECRET` | 可选。缺省按 PKCE 公共客户端处理 |
 | `A2WAVE_OIDC_SCOPES` | 可选。默认 `openid profile email` |
-| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | 用 OAuth 渠道时必填（逗号分隔）：允许的调用方 token `aud`。Client ID 不会自动加入；留空 = 渠道关闭 |
+| `A2WAVE_OIDC_CHANNEL_AUDIENCES` | OAuth 渠道的环境变量兜底（逗号分隔）：填 a2wave 资源的受众标识。Settings 已配置时以 Settings 为准。Client ID 不会自动加入；仅当环境变量是当前生效的回退配置时，留空才会关闭渠道 |
 
 配置好并在「设置 → 企业登录」开启 OAuth 后，登录页会出现 **「使用 OIDC 登录」** 按钮。点击后浏览器整页跳转到 IdP 完成认证，成功后自动回到站内；验签公钥走 JWKS 自动轮换，无需手动粘贴公钥。登录失败时登录页会显示具体原因（如登录会话过期、邮箱域名不在白名单等）。若 IdP 的 ID token 中不含邮箱（部分 IdP 只在 userinfo 端点返回邮箱），a2wave 会自动向 userinfo 端点补取，无需 IdP 侧额外配置。
 
@@ -42,6 +42,9 @@
 ## SAML 2.0 登录
 
 面向只提供 SAML 的企业 IdP（如 ADFS、部分老牌 IAM），a2wave 可以作为 **SAML 2.0 SP** 接入。
+
+> [!IMPORTANT]
+> **SAML 只用于登录，不能用于 OAuth 调用渠道。** SAML 断言是浏览器表单 POST 到 ACS 的一次性凭据，不会签发可以长期放进 `Authorization: Bearer` 头的 token；OAuth 调用渠道只验签 **OIDC 签发的 JWT**。因此只配置了 SAML 的部署，用户可以正常登录 **Web 控制台**，但 Agent 的「OAuth 授权」渠道不可用（返回 `503 OAuth not configured`）；**CLI 的企业登录同样不可用**——`a2wave login` 走的是 OIDC 流程，此时只能用 `a2wave login --password` 本地密码登录。需要这两者时必须额外配置 OIDC。
 
 推荐在「设置 → 企业登录 → SAML」面板填写；也可用以下环境变量配置（改后需重启 API）：
 
@@ -110,16 +113,16 @@
 
 ## 访问范围
 
-企业 SSO 负责证明“调用者是谁”；Agent 发布页里的 **访问范围** 决定“谁能调用这个 Agent”。
+企业 OIDC 负责证明“调用者是谁”；Agent 发布页里的 **访问范围** 决定“谁能调用这个 Agent”。
 
 当前支持两种访问范围：
 
 | 访问范围 | 说明 |
 |----------|------|
-| 全体企业用户 | 任何完成企业 SSO 登录的员工都能调用。 |
+| 全体企业用户 | 任何持有企业 OIDC 签发、`aud` 在白名单内、**且带有邮箱声明**的 JWT 的员工都能调用。 |
 | 指定企业用户 | 只有名单内的邮箱能调用，其余一律拒绝。名单可以搜索同事添加，也可以直接输入邮箱。 |
 
-选择 **指定企业用户** 时，名单为空表示**没有人**能调用（拒绝而不是放行），所以发布前至少要添加一个成员。名单按邮箱比对 SSO 令牌里的 `email`，大小写不敏感。
+选择 **指定企业用户** 时，名单为空表示**没有人**能调用（拒绝而不是放行），所以发布前至少要添加一个成员。名单按邮箱比对 OIDC JWT 里的 `email`，大小写不敏感。
 
 > [!NOTE]
 > 旧版本的「飞书应用可见范围」已下线。升级后，**已发布 OAuth 渠道**且用该范围的 Agent 会被迁移成 **指定企业用户** 且名单为空——也就是暂时拒绝所有调用，需要由 Agent 负责人补齐名单。这样做是为了避免升级把原本受限的 Agent 悄悄放开给全体员工。没有发布 OAuth 渠道的 Agent 则落到新默认值「全体企业用户」，不受影响。
@@ -132,7 +135,7 @@
 |------|------|
 | 设置页 OAuth 开关能打开，但 SSO 不能用 | OIDC / SAML 都还没配置齐全，或都被停用；在对应面板点「测试」可看到具体原因 |
 | 发布页 OAuth 授权打开后出现红字 | 企业 OIDC 未配置（渠道会返回 `503`）。注意这与「OIDC 登录开关」无关——关掉登录不会停掉渠道 |
-| 新接入方一直 401 | 多半是它的 token `aud` 不在渠道白名单里。解码 token 看 `aud`，把该值加进「OAuth 渠道受众」即可；不要靠关掉受众校验来「解决」 |
+| 新接入方一直 401 | 多半是调用方拿到了面向错误资源的 token。让调用方申请一枚面向已配置 a2wave 受众的 token；不要把观察到的任意 `aud` 照抄进白名单，因为该 token 可能原本是为其它服务签发的 |
 | 某段时间所有调用方一起 503「身份提供方不可用」 | a2wave 连不上 IdP（discovery / JWKS 拉取失败），不是调用方凭据的问题，无需重新签发 token；排查出网、DNS、代理即可 |
 | `/api/oauth/:agentId/invoke` 直接发给别人后无法调用 | 对方还需要先在企业 IdP 完成认证拿到 token，并且必须在该 Agent 的权限边界内 |
 

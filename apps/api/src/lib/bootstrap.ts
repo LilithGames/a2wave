@@ -227,8 +227,11 @@ async function warnOauthChannelUnavailable(): Promise<void> {
     logger.warn(
       { issuer: oidc.issuer, source: oidc.source },
       'Enterprise OIDC is configured but the OAuth channel audience allowlist is empty, so the ' +
-        'channel is disabled (fail closed). Set A2WAVE_OIDC_CHANNEL_AUDIENCES (or oidcConfig.' +
-        'channelAudiences) to the `aud` values your callers present.',
+        'channel is disabled (fail closed). Configure one or more a2wave resource audience ' +
+        'identifiers in Settings → Enterprise login → OIDC, or use ' +
+        'A2WAVE_OIDC_CHANNEL_AUDIENCES when the environment is the active fallback. Callers ' +
+        'must request tokens issued for that configured audience; do not trust an arbitrary ' +
+        '`aud` merely because it appears in a rejected token.',
     )
   }
 }

@@ -17,6 +17,7 @@ vi.mock('../../lib/settings.js', () => ({
   getSetting: vi.fn().mockReturnValue('15'),
 }))
 
+import { emitExecutionProcessLogLine } from '../../engine/execution-process-log.js'
 import { engineRegistry } from '../../engine/index.js'
 import { executeInWorker } from '../executor.js'
 
@@ -309,6 +310,27 @@ describe('executeInWorker', () => {
     const entry = { type: 'system' as const, subtype: 'init', ts: Date.now() }
     callArg.onLogEntry?.(entry)
     expect(onLogEntry).toHaveBeenCalledWith(entry)
+  })
+
+  it('registers the Run log callback for Agent Router child-process events', async () => {
+    mockEngine.executeStream.mockImplementation(async () => {
+      emitExecutionProcessLogLine(
+        'task_1',
+        '[agent-router] {"event":"a2a.task.cancel_result","target":"payment","taskId":"task-remote","state":"TASK_STATE_CANCELED"}',
+      )
+      return { success: true, output: 'ok', durationMs: 50 }
+    })
+    const onLogEntry = vi.fn()
+
+    await executeInWorker('task_1', makePayload(), { onLogEntry })
+
+    expect(onLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'system',
+        subtype: 'a2a.task.cancel_result',
+        metadata: expect.objectContaining({ taskId: 'task-remote', state: 'TASK_STATE_CANCELED' }),
+      }),
+    )
   })
 
   it('uses agentConfig.timeoutMinutes for timeout resolution', async () => {

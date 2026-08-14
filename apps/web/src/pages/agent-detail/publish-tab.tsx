@@ -42,6 +42,7 @@ import {
   type GitTriggerCliStatus,
   type GitTriggerEvent,
   type GitTriggerProvider,
+  type SsoConfigSource,
   isSupportedScheduleCron,
 } from '@a2wave/shared'
 import { useQuery } from '@tanstack/react-query'
@@ -282,6 +283,31 @@ interface PublishTabProps {
 type OauthEnvStatus = {
   configured: boolean
   missing: string[]
+  /**
+   * Where the OIDC config was actually read from. Settings wins over the environment, so a
+   * message naming env vars sends an admin to edit a file that will not be consulted.
+   *
+   * Typed from the shared `SsoConfigSource` rather than a hand-written literal: the value is
+   * `'settings'`, and spelling it `'db'` here silently disabled the branch below while a test
+   * asserting the same wrong literal still passed.
+   */
+  source?: SsoConfigSource | null
+}
+
+/**
+ * Which "OAuth channel unavailable" message to show.
+ *
+ * The OIDC config resolves **Settings-first**: when it came from Settings, telling the admin to
+ * add environment variables points them at a file the server will not consult — they would edit
+ * it, restart, and see no change. Only an env-sourced (or entirely absent) config gets the
+ * env-var wording; a Settings-sourced one that is merely incomplete (empty audience allowlist)
+ * is sent back to Settings.
+ */
+export function oauthEnvErrorKey(status: Pick<OauthEnvStatus, 'missing' | 'source'>): string {
+  if (status.missing.length === 0) return 'agentPublish.oauthEnvInvalidPublicKey'
+  return status.source === 'settings'
+    ? 'agentPublish.oauthEnvIncompleteSettings'
+    : 'agentPublish.oauthEnvMissing'
 }
 
 /**
@@ -1592,7 +1618,7 @@ export function PublishTab({
                   <span className="border-l border-border pl-2 flex items-center gap-1 text-muted-foreground">
                     <span className="text-xs">cURL</span>
                     <CopyButton
-                      text={`curl -X POST ${oauthInvokeUrl} -H "Content-Type: application/json" -H "Authorization: Bearer <SSO_JWT>" -d '{"message": "Hello", "stream": false}'`}
+                      text={`curl -X POST ${oauthInvokeUrl} -H "Content-Type: application/json" -H "Authorization: Bearer <OIDC_JWT>" -d '{"message": "Hello", "stream": false}'`}
                       label={t('agentPublish.copyCurl')}
                     />
                   </span>
@@ -1638,11 +1664,7 @@ export function PublishTab({
               {oauthEnvStatus.data && !oauthEnvStatus.data.configured && (
                 <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>
-                    {oauthEnvStatus.data.missing.length > 0
-                      ? t('agentPublish.oauthEnvMissing')
-                      : t('agentPublish.oauthEnvInvalidPublicKey')}
-                  </span>
+                  <span>{t(oauthEnvErrorKey(oauthEnvStatus.data))}</span>
                 </div>
               )}
 

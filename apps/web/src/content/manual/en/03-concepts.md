@@ -41,7 +41,7 @@ Every trigger generates a [Run](/wiki/runs). Regardless of which channel it come
 > [!TIP]
 > Selection mnemonic: use [MCP](/wiki/mcp-servers) to call external systems/tools; use [Skill](/wiki/skills) to package a workflow or knowledge; use the [Knowledge Base](/wiki/knowledge-base) for retrievable factual material; use [Long-term Memory](/wiki/memory) for cross-session preferences and history.
 
-## The Five Iron Rules
+## The Six Iron Rules
 
 These are the platform's hard boundaries; no feature will ever cross them — understanding them helps you avoid detours:
 
@@ -52,6 +52,7 @@ These are the platform's hard boundaries; no feature will ever cross them — un
 | 3 | **Natural-language-driven** | Agents are configured through prompts and intent; no drag-and-drop DAG |
 | 4 | **Agent autonomy** | The platform doesn't intervene in runtime reasoning/tool decisions; no "step approval" checkpoints |
 | 5 | **Enterprise-grade first** | Authentication, rate limiting, and auditing are hard requirements; anonymous invocation is not supported. The goal is accountability and least privilege among trusted colleagues, not defense against a malicious insider |
+| 6 | **Your local Agent lowers the barrier, not another screen** | Anything you can ask Claude Code / Codex / Cursor Agent on your own machine to do — write a prompt, fill in a config, generate Agent YAML, drive the CLI — the platform won't wrap in a wizard. It invests instead in what only the platform can give you: runtime, run records and diagnosis, fault tolerance, channels, permissions and audit |
 
 ## Related
 

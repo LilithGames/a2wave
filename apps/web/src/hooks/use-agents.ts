@@ -473,6 +473,13 @@ export type StreamLogEntry =
       model?: string
       providerName?: string
       nextProviderName?: string
+      metadata?: {
+        target?: string
+        taskId?: string
+        contextId?: string
+        state?: string
+        attempt?: number
+      }
       /** log_file_size_capped / log_file_entries_dropped 标记携带的丢弃条数 */
       dropped?: number
       ts: number

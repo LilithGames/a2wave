@@ -268,6 +268,13 @@ describe('url-safety', () => {
     })
 
     it('fails closed when DNS resolution fails', async () => {
+      const resolution = resolvePublicUrl('https://provider.example.com', async () => {
+        throw new Error('DNS unavailable')
+      })
+
+      await expect(resolution).rejects.toMatchObject({
+        code: 'dns_resolution_failed',
+      })
       await expect(
         resolvePublicUrl('https://provider.example.com', async () => {
           throw new Error('DNS unavailable')
