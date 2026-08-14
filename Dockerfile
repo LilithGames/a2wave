@@ -171,7 +171,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 # checksum verification the build used to perform.
 # Positioned after the production install on purpose: the lock's pins move on
 # their own review cadence, and a bump must not invalidate the node_modules layer.
-COPY provider-cli-lock.json scripts/provider-clis/install.mjs scripts/provider-clis/provider-cli-lock.schema.json /app/provider-clis/
+# Kept as one COPY per source rather than a single multi-source form: the
+# provider-CLI contract test asserts each path individually, and collapsing them
+# saved only two near-empty metadata layers while breaking that check.
+COPY provider-cli-lock.json /app/provider-clis/provider-cli-lock.json
+COPY scripts/provider-clis/install.mjs /app/provider-clis/install.mjs
+COPY scripts/provider-clis/provider-cli-lock.schema.json /app/provider-clis/provider-cli-lock.schema.json
 
 COPY --chown=appuser:appuser LICENSE NOTICE README.md CHANGELOG.md ./
 # The OFL requires the font's license to travel with the font binaries, which the web
