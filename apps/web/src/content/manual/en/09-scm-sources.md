@@ -29,11 +29,32 @@ Key fields: `p4port`, `p4user`, `p4passwd`, `p4client`, optional `depotPath`, pl
 ## Creating and Connecting
 
 1. Go to the "SCM Sources" page, click "Create source", and choose Git or P4 in the dialog.
-2. Enter the repository address and authentication information on the "Config" tab.
+2. For Git, keep **Managed storage (recommended)** to let a2wave allocate the checkout on its persistent SCM volume. For P4, enter an absolute mounted path covered by that Client's server-side `Root` or `AltRoots`.
 3. Once the connection fields are filled in, click **Test Connection** below that section (**Test All Repos** in multi-repo mode) to verify connectivity. It probes using the values **currently in the form** and saves nothing, so you can test before creating the source; multi-repo results list each repository's pass/fail with its own reason.
-4. After saving, reopen the source: the dialog gains a "Sync & Workspaces" tab where you use **Check connection** to re-verify the **saved** configuration and trigger a **sync** (the workspaces/worktree list is managed on that tab too).
+4. After saving an enabled source, a2wave starts its initial sync in the background immediately. **Auto Sync** controls later interval refreshes, not the first checkout. Reopen the source to view its status in "Sync & Workspaces", re-verify the **saved** configuration with **Check connection**, or click **Sync now** (the workspaces/worktree list is managed there too).
+
+You can also create a managed Git source from the CLI. Omit `--local-path` to use
+platform-managed storage:
+
+```bash
+a2wave scm create --name repo --type git --repo-url https://git.example.com/team/repo.git
+```
+
+Pass `--local-path` only for a custom Git checkout or a P4 source; it is always required for P4.
 
 > When editing an existing source, the PAT / P4 password are shown masked. As long as you leave them untouched, Test Connection probes with the real stored credential.
+
+The managed Git checkout is stored under `SCM_STORAGE_ROOT/sources/<sourceId>`. In Docker
+this is normally `/data/workspace/sources/<sourceId>` on persistent mounted storage. The
+repository Compose file preserves its historical host bind for upgrades; CLI-created fresh
+deployments use the dedicated `a2wave-workspace` volume.
+Git worktrees use the separate `SCM_STORAGE_ROOT/workspaces/<sourceId>` tree.
+
+> **P4 Client Root:** a2wave does not rewrite the server-side Client Spec and does not
+> allocate a random managed P4 path. Enter an already-mounted absolute path covered by the
+> client's `Root` or an `AltRoots` entry. **Check connection** displays the detected root;
+> if the Client Spec cannot be read, connectivity remains healthy but root verification is
+> shown as a separate warning. Existing P4 sources can repair this path in the edit dialog.
 
 ## CodeGraph Indexing
 
@@ -49,8 +70,9 @@ Once CodeGraph is enabled, a2wave maintains the index automatically after the SC
 ## Sync and Initial-Sync Constraints
 
 - **Manual sync / sync status**: `idle` / `syncing` / `error`.
+- **Automatic initial sync**: every enabled source starts or resumes its first sync immediately after create, repair, enable, or service restart. Restart recovery runs at most two initial checkouts concurrently. `autoSync` controls only recurring refreshes.
 - ⚠️ **Important constraint**: an SCM Source can only be selected by an Agent **after its initial sync succeeds** (writing `initialSyncCompletedAt`). Before that, creating/updating an Agent bound to the source is rejected.
-- **Cannot change the repo path/config mid-sync**: changing `localPath` or `config` while a sync is in progress returns **409**. Those fields reset the sync bookkeeping, and resetting during a running sync would corrupt it. Wait for the sync to finish first.
+- **Editing or deleting during sync**: a2wave cancels and waits for its own background initial checkout before applying a repair or deletion. Manual syncs, recurring syncs, and indexing still return **409** while they hold the checkout.
 
 ## Workspace (worktree) Management
 
@@ -59,7 +81,7 @@ Once CodeGraph is enabled, a2wave maintains the index automatically after the SC
 
 - **List workspaces**: view all worktrees under the source and whether each is in use (`occupied`).
 - **Delete a workspace**: delete a specified worktree; if it is in use, it returns **409** and must be released first.
-- **Custom root directory workspacesPath**: an optional absolute path that overrides the default `~/.a2wave/workspaces/<sourceIdSuffix>`. It must be globally unique. Non-admin users must choose a path under a root approved by the deployment operator through `SCM_WORKSPACES_ALLOWED_ROOTS`; admins may select another dedicated absolute root. The Docker Compose deployment approves its dedicated `/data/workspace` mount by default. Database, Skill, knowledge base, memory, log, attachment, and artifact storage cannot be used as workspace roots for any role. A legacy row saved before these checks remains visible for migration, but source updates/status and workspace resolution/list/create/delete are rejected until its path is moved to an approved dedicated root. The owner's current admin and active status is rechecked on every workspace use.
+- **Custom root directory workspacesPath**: an optional absolute path that overrides the default `SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>`. It must be globally unique. Non-admin users must choose a path under a root approved by the deployment operator through `SCM_WORKSPACES_ALLOWED_ROOTS`; admins may select another dedicated absolute root. For upgraded rows with no saved override, a2wave reuses the exact historical `~/.a2wave/workspaces/<sourceIdSuffix>` directory when it still exists. Database, Skill, knowledge base, memory, log, attachment, and artifact storage cannot be used as workspace roots for any role. Other legacy custom roots remain visible for migration, but source updates/status and workspace resolution/list/create/delete are rejected until moved to an approved dedicated root. The owner's current admin and active status is rechecked on every workspace use.
 
 > The worktree cleanup policy for a single invocation (ephemeral / ttl / persistent) is determined by the `worktree` parameter at trigger time; see [Trigger Methods](/wiki/triggers) and [Runs](/wiki/runs).
 
@@ -67,8 +89,9 @@ Once CodeGraph is enabled, a2wave maintains the index automatically after the SC
 
 | Symptom | Possible Cause | Fix |
 |------|---------|------|
-| Agent can't select the SCM Source | Initial sync not completed | Sync successfully once first |
+| Agent can't select the SCM Source | Initial sync is still running or failed | Check its sync status and retry with **Sync now** after correcting the reported error |
 | Sync error | Credentials/network/branch doesn't exist | Investigate with "Check connection", confirm the PAT and branch |
+| P4 Client Root does not cover local path | The stored path is not covered by the server-side P4 Client Spec | Edit the source to use an already-mounted path under `Root`/`AltRoots`, or update the Client Spec to cover that path |
 | Deleting a worktree returns 409 | It is in use | Wait for the corresponding Run to finish or release it, then delete |
 | workspacesPath not taking effect | Not absolute, outside `SCM_WORKSPACES_ALLOWED_ROOTS`, overlaps protected platform storage, or conflicts with another source | Use a unique path under the default workspaces directory or ask the operator to approve a dedicated worktree volume |
 | `Unsafe saved workspacesPath` on an upgraded source | A legacy custom root is no longer authorized for its current owner | Update the source to the default directory or an operator-approved dedicated root before using workspaces |

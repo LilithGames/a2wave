@@ -24,6 +24,7 @@ vi.mock('../../db/client.js', async () => {
     agents: agentsTable,
     runs: runsTable,
     scmSources: scmSourcesTable,
+    scmWorkloadLeases: scmWorkloadLeasesTable,
   } = await import('../../db/schema.sqlite.js')
   const columnsOf = (table: Parameters<typeof getTableConfig>[0]) =>
     getTableConfig(table)
@@ -39,6 +40,7 @@ vi.mock('../../db/client.js', async () => {
   // Decides whether an SCM Agent's evaluation gets a worktree: only git
   // implements one, so the source row's type drives workspace isolation.
   sqlite.exec(`CREATE TABLE scm_sources (${columnsOf(scmSourcesTable)});`)
+  sqlite.exec(`CREATE TABLE scm_workload_leases (${columnsOf(scmWorkloadLeasesTable)});`)
   sqlite.exec(`
     -- email/display_name feed the RunChannelContext a gateway-enabled Agent
     -- needs to sign its per-run token.
@@ -148,6 +150,7 @@ vi.mock('../../lib/agent-helpers.js', () => ({
 }))
 
 const removeWorkspaceMock = vi.fn(async () => {})
+const removeOwnedSourceWorkspaceGuardedMock = vi.fn(async () => {})
 
 vi.mock('../../lib/scm-source.js', () => ({
   createScmSource: vi.fn(() => ({
@@ -156,12 +159,24 @@ vi.mock('../../lib/scm-source.js', () => ({
   })),
 }))
 
+vi.mock('../../lib/scm-workspace-removal.js', () => ({
+  removeOwnedSourceWorkspaceGuarded: (...args: unknown[]) =>
+    removeOwnedSourceWorkspaceGuardedMock(...(args as [])),
+}))
+
 import { db } from '../../db/client.js'
-import { evaluationResults, evaluationSets, evaluationTasks, runs } from '../../db/schema.js'
+import {
+  evaluationResults,
+  evaluationSets,
+  evaluationTasks,
+  runs,
+  scmWorkloadLeases,
+} from '../../db/schema.js'
 import { EVALUATION_MAX_QUEUE_LENGTH } from '../../engine/evaluation-queue.js'
 import { resolveWorkDir } from '../../lib/agent-helpers.js'
 import { logAudit, logBackgroundAudit } from '../../lib/audit.js'
 import { AppError } from '../../lib/errors.js'
+import { buildStoredEvaluationSnapshot } from '../../lib/evaluation-snapshot.js'
 import evaluationRoutes from '../evaluation.js'
 
 const OWNER = 'usr_owner'
@@ -272,6 +287,7 @@ beforeEach(() => {
   replayCaseMock.mockReset()
   replayCaseMock.mockImplementation(replayCaseDefault)
   removeWorkspaceMock.mockClear()
+  removeOwnedSourceWorkspaceGuardedMock.mockClear()
   // Cleared so `auditFor()` only ever sees entries from the current test. The
   // assertions match by resourceId rather than position (see auditFor), because
   // clearing alone is not enough: tasks are fire-and-forget, so an earlier
@@ -317,6 +333,55 @@ describe('POST /:agentId/evaluation-tasks', () => {
 
     const results = db.select().from(evaluationResults).all()
     expect(results).toHaveLength(3)
+  })
+
+  it('rolls back the task when any result snapshot cannot be persisted', async () => {
+    const app = appAs(OWNER)
+    const setId = await seedSet(app, AGENT_ID, 2)
+    db.run(sql`
+      CREATE TRIGGER fail_evaluation_result_snapshot
+      BEFORE INSERT ON evaluation_results
+      BEGIN
+        SELECT RAISE(ABORT, 'result snapshot failure');
+      END
+    `)
+
+    try {
+      await expect(createTask(app, AGENT_ID, { setId })).rejects.toThrow('result snapshot failure')
+    } finally {
+      db.run(sql`DROP TRIGGER fail_evaluation_result_snapshot`)
+    }
+
+    expect(db.select().from(evaluationTasks).all()).toHaveLength(0)
+    expect(db.select().from(evaluationResults).all()).toHaveLength(0)
+  })
+
+  it('rolls back the SCM lease when the Agent binding changes before admission', async () => {
+    const app = appAs(OWNER)
+    const setId = await seedSet(app, AGENT_ID, 1)
+    db.run(
+      sql`INSERT INTO scm_sources (id, name, type, config, local_path)
+          VALUES ('scm_late', 'late repo', 'git', '{}', '/tmp/late-checkout')`,
+    )
+    vi.mocked(buildStoredEvaluationSnapshot).mockImplementationOnce(async () => {
+      db.run(
+        sql`UPDATE agents SET workspace_type = 'scm', scm_source_id = 'scm_late'
+            WHERE id = ${AGENT_ID}`,
+      )
+      return {
+        providerId: 'prv_1',
+        providerName: 'Claude Code',
+        model: 'claude-opus-4-8',
+        systemPrompt: 'You are helpful.',
+        capturedAt: '2026-07-20T00:00:00.000Z',
+      }
+    })
+
+    const response = await createTask(app, AGENT_ID, { setId })
+
+    expect(response.status).toBe(409)
+    expect(db.select().from(evaluationTasks).all()).toHaveLength(0)
+    expect(db.select().from(scmWorkloadLeases).all()).toHaveLength(0)
   })
 
   /**
@@ -603,16 +668,25 @@ describe('execution honours the frozen snapshot and a real workspace', () => {
     expect(replayCaseMock.mock.calls[0]?.[0].workDir).toBe(`/tmp/worktrees/eval-${task.id}`)
   })
 
-  it('removes the worktree through the SCM source, never with rm -rf', async () => {
+  it('removes the worktree through the durable guarded-removal protocol', async () => {
     linkGitScmSource('scm_git_2')
     const app = appAs(OWNER)
     const setId = await seedSet(app, AGENT_ID, 1)
     const task = (await (await createTask(app, AGENT_ID, { setId })).json()).data as { id: string }
-    await waitFor(() => removeWorkspaceMock.mock.calls.length > 0, 'the worktree cleanup')
+    await waitFor(
+      () => removeOwnedSourceWorkspaceGuardedMock.mock.calls.length > 0,
+      'the guarded worktree cleanup',
+    )
 
     // `rm -rf` on a worktree leaves the parent repo holding a stale admin entry
     // that blocks the next checkout of that branch until `git worktree prune`.
-    expect(removeWorkspaceMock).toHaveBeenCalledWith(`eval-${task.id}`)
+    expect(removeOwnedSourceWorkspaceGuardedMock).toHaveBeenCalledWith({
+      sourceId: 'scm_git_2',
+      name: `eval-${task.id}`,
+      scm: expect.anything(),
+      workload: expect.objectContaining({ type: 'evaluation', workloadId: task.id }),
+    })
+    expect(removeWorkspaceMock).not.toHaveBeenCalled()
   })
 
   it('fails the task when its worktree cannot be created', async () => {
@@ -666,7 +740,8 @@ describe('execution is audited without writing to the runs table', () => {
 
     // Evaluation writes no `runs` row on purpose, so this entry is the only
     // record that real Agent work was done (Iron Rule 5).
-    const entry = auditFor(task.id)!
+    const entry = auditFor(task.id)
+    if (!entry) throw new Error('Expected the evaluation execution audit entry')
     expect(entry.action).toBe('evaluation_task.execute')
     expect(entry.resourceId).toBe(task.id)
     expect(entry.userId).toBe(OWNER)
@@ -692,7 +767,8 @@ describe('execution is audited without writing to the runs table', () => {
     await waitFor(() => auditFor(task.id) !== undefined, 'the audit entry')
 
     // A task that burned calls before dying is exactly the one an auditor needs.
-    const entry = auditFor(task.id)!
+    const entry = auditFor(task.id)
+    if (!entry) throw new Error('Expected the failed evaluation audit entry')
     expect(entry.details).toMatchObject({ status: 'failed' })
   })
 

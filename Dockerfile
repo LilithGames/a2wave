@@ -63,12 +63,38 @@ ARG TARGETARCH
 # bubblewrap: Claude Code native sandbox on Linux; ripgrep: fast repository search
 # gosu: drop privileges from root to appuser in docker-entrypoint.sh (UID remap pattern, see docker-entrypoint.sh)
 RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates sqlite3 procps tini bubblewrap ripgrep socat gosu && rm -rf /var/lib/apt/lists/* && \
+    # `r24.2` is a release SERIES, not a version. Perforce ships patches into
+    # the same path — the binary served here identifies itself as
+    # `P4/LINUX26X86_64/2024.2/<changelist>`, and that changelist moves while
+    # the URL does not. Their CDN has no per-changelist directory to pin
+    # instead (only rNN.N series), so a fixed checksum against a moving target
+    # WILL fail again, by design rather than by accident.
+    #
+    # That is the intended trade: an unannounced upstream swap stops the build
+    # instead of silently shipping an unreviewed binary. When it fires, re-read
+    # both values from the vendor's own SHA256SUMS next to each binary
+    # (bin.linux26x86_64/SHA256SUMS, bin.linux26aarch64/SHA256SUMS) and update
+    # them here — never from `sha256sum` of whatever the build just downloaded,
+    # which would make the check a formality. Last re-read 2026-08-14.
+    #
+    # Use `filehost`, NOT `cdist2`: the two hosts are not always in sync, and
+    # when they diverge the SHA256SUMS/.asc pair tracks `filehost`. On
+    # 2026-08-14 `cdist2` served a stale x86_64 build (changelist 2877946,
+    # dated 2026-01-14) while its own co-located SHA256SUMS — and both arches
+    # on `filehost` — had already moved to 3030719. The pin was correct and
+    # the artifact was not, so the mismatch was a stale mirror rather than the
+    # tampering this check exists to catch. If it fires again, diff the
+    # `Comment:` changelist in p4.asc against `strings <binary> | grep P4/`
+    # and GPG-verify (key: package.perforce.com/perforce.pubkey) BEFORE
+    # touching the checksums above: a stale mirror needs a host fix, not a
+    # new hash.
     case "${TARGETARCH}" in \
-      amd64) P4_ARCH="x86_64"; P4_SHA256="5132fc1fc81c1911700924f18375558eec30d0aa7c82e80f8397da0b9f352a86" ;; \
-      arm64) P4_ARCH="aarch64"; P4_SHA256="a3813fc18cca541d347f38874d8c835b370d11478d6430a07a23eeb17268bb9f" ;; \
-      *)     P4_ARCH="x86_64"; P4_SHA256="5132fc1fc81c1911700924f18375558eec30d0aa7c82e80f8397da0b9f352a86" ;; \
+      amd64) P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
+      arm64) P4_ARCH="aarch64"; P4_SHA256="2b4df86bab5a72950fdd93d92ef865c0e2d6b378a6bc8bde62b86511cfc6d669" ;; \
+      *)     P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
     esac && \
-    curl -fsSL "https://cdist2.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+      "https://filehost.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
       -o /usr/local/bin/p4 && \
     # Verify the binary against Perforce's published SHA256SUMS so a poisoned CDN
     # or MITM (esp. builds routed through a proxy) cannot slip in a backdoored p4.
@@ -209,6 +235,10 @@ ENV LOGNAME=appuser
 # in an extra layer purely to flip the executable bit.
 COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --chmod=0755 scripts/ensure-container-auth-secret.sh /usr/local/bin/ensure-container-auth-secret.sh
+# Sourced by docker-entrypoint.sh, not executed directly, so it needs no
+# executable bit: it decides which SCM storage subtrees the UID remap may take
+# ownership of.
+COPY scripts/entrypoint-scm-paths.sh /usr/local/bin/entrypoint-scm-paths.sh
 
 EXPOSE 3502
 

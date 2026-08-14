@@ -366,6 +366,7 @@ export interface ScmSourceSummary {
   id: string
   name: string
   type: string
+  localPath: string
 }
 
 export async function listScmSources(token: string): Promise<ScmSourceSummary[]> {
@@ -375,6 +376,14 @@ export async function listScmSources(token: string): Promise<ScmSourceSummary[]>
   if (!res.ok) throw new Error(`listScmSources failed: ${res.status}`)
   const body = (await res.json()) as { data: ScmSourceSummary[] }
   return body.data ?? []
+}
+
+export async function deleteScmSource(token: string, id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/scm-sources/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`deleteScmSource failed: ${res.status}`)
 }
 
 export interface CreatedUser {

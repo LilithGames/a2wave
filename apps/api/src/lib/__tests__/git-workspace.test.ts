@@ -1,26 +1,30 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { stat, utimes } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  WORKSPACE_STATE_FILE,
-  WorktreeBranchLockedError,
-  WorktreeDirtyError,
   cleanupStaleWorkspaces,
   createGitWorkspace,
   defaultWorkspacesPath,
   listGitWorkspaces,
   readWorkspaceState,
   removeGitWorkspace,
+  WORKSPACE_STATE_FILE,
+  WorktreeBranchLockedError,
+  WorktreeDirtyError,
   writeWorkspaceState,
 } from '../git-workspace.js'
 import { logger } from '../logger.js'
 import { createScmSource } from '../scm-source.js'
+
+vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../scm-workspace-safety.js')>()),
+  assertStoredScmWorkspacesRoot: vi.fn().mockResolvedValue(undefined),
+}))
 
 const execFileAsync = promisify(execFile)
 
@@ -82,6 +86,17 @@ describe('git-workspace', () => {
       expect(a).not.toBe(b)
       expect(a).toMatch(/\/ABC_XYZ$/)
       expect(b).toMatch(/\/DEF_XYZ$/)
+    })
+
+    it('recovers the historical default when that per-source directory still exists', () => {
+      const legacyPath = defaultWorkspacesPath('scm_legacy', () => true)
+      expect(legacyPath).toMatch(/\.a2wave\/workspaces\/legacy$/)
+    })
+
+    it('uses managed storage when no historical per-source directory exists', () => {
+      const managedPath = defaultWorkspacesPath('scm_fresh', () => false)
+      expect(managedPath).toContain('workspaces')
+      expect(managedPath).toMatch(/\/fresh$/)
     })
   })
 
@@ -898,6 +913,50 @@ describe('git-workspace', () => {
       // No error thrown
     })
 
+    // beforeRemove is the caller's authoritative occupancy re-check, executed
+    // inside the workspace mutex immediately before any filesystem work. A
+    // throw must abort the removal with the worktree untouched.
+    it('aborts with nothing removed when beforeRemove throws', async () => {
+      const result = await createGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig)
+      expect(existsSync(result.path)).toBe(true)
+
+      const beforeRemove = vi.fn().mockRejectedValue(new Error('workspace is occupied'))
+      await expect(
+        removeGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig, { beforeRemove }),
+      ).rejects.toThrow('workspace is occupied')
+
+      expect(beforeRemove).toHaveBeenCalledTimes(1)
+      expect(existsSync(result.path)).toBe(true)
+
+      await removeGitWorkspace(REPO_DIR, WS_ROOT, 'guarded', singleRepoConfig)
+    })
+
+    // Creation and removal of the same worktree must never interleave: the
+    // shared mutex key makes a removal issued mid-create wait for the create
+    // to settle (and vice versa), instead of `git worktree remove --force`
+    // racing `git worktree add` on the same path.
+    it('serializes removal behind an in-flight create on the same worktree', async () => {
+      // Issued concurrently, with the removal queued while the create is
+      // mid-flight. If the mutex holds, beforeRemove observes a COMPLETE
+      // worktree (git registration finished), never a half-created one.
+      let worktreeCompleteAtRecheck: boolean | undefined
+      const createPromise = createGitWorkspace(REPO_DIR, WS_ROOT, 'serial', singleRepoConfig)
+      const removePromise = removeGitWorkspace(REPO_DIR, WS_ROOT, 'serial', singleRepoConfig, {
+        beforeRemove: async () => {
+          const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], {
+            cwd: REPO_DIR,
+          })
+          worktreeCompleteAtRecheck =
+            existsSync(join(WS_ROOT, 'serial')) && stdout.includes(join(WS_ROOT, 'serial'))
+        },
+      })
+
+      await Promise.all([createPromise, removePromise])
+
+      expect(worktreeCompleteAtRecheck).toBe(true)
+      expect(existsSync(join(WS_ROOT, 'serial'))).toBe(false)
+    })
+
     it('deletes the local branch when removing a worktree that checked out a branch', async () => {
       // 语义：workspace 是云端 Agent 的一次性环境，未 push 的提交随清理一并丢弃。
       // 这样同名 branch 下次复用不会拿到陈旧代码。
@@ -1420,34 +1479,37 @@ describe('git-workspace', () => {
     })
 
     /**
-     * End-to-end 验证 ephemeral 清理路径：
-     *   createScmSource(git) → scm.createWorkspace → scm.removeWorkspace
-     * 整条链走真 git 命令，证明 worktree 注册 + 卸载闭环。
+     * Exercises the complete ephemeral cleanup path through real Git commands:
+     * createScmSource(git) -> createWorkspace -> removeWorkspace.
+     * The stored-path database assertion is injected because unit tests never
+     * connect to a real database; its behavior is covered by its own tests.
      */
-    it('creates and removes a worktree via scm-source wrapper (no mocks)', async () => {
+    it('creates and removes a worktree via scm-source wrapper without mocking Git', async () => {
       const source = await createScmSource({
         id: `scm__round-trip-${Date.now()}`,
         type: 'git',
         localPath: REPO_DIR,
+        workspacesPath: WS_ROOT,
         name: 'round-trip',
         config: singleRepoConfig as unknown as Record<string, unknown>,
       })
       expect(source).not.toBeNull()
+      if (!source) throw new Error('Expected a Git SCM source')
 
-      const created = await source!.createWorkspace('ephemeral-ws')
+      const created = await source.createWorkspace('ephemeral-ws')
       expect(created.created).toBe(true)
       expect(existsSync(created.path)).toBe(true)
 
-      // git worktree list 中应包含新 worktree
+      // The new worktree must be registered with Git.
       const { stdout: beforeRemove } = await execFileAsync('git', ['worktree', 'list'], {
         cwd: REPO_DIR,
       })
       expect(beforeRemove).toContain('ephemeral-ws')
 
-      await source!.removeWorkspace('ephemeral-ws')
+      await source.removeWorkspace('ephemeral-ws')
       expect(existsSync(created.path)).toBe(false)
 
-      // git worktree list 中也不应再出现
+      // Removal must also clear the Git worktree registration.
       const { stdout: afterRemove } = await execFileAsync('git', ['worktree', 'list'], {
         cwd: REPO_DIR,
       })
@@ -1573,6 +1635,36 @@ describe('git-workspace', () => {
       })
       expect(removed).toContain('stale')
       expect(existsSync(join(WS_ROOT, 'stale'))).toBe(false)
+    })
+
+    // The caller-supplied removal executor is the guarded protocol (durable
+    // reservation + fresh occupancy re-check): activePaths is a snapshot, and
+    // a workload can claim a candidate AFTER it was taken. A throw from the
+    // guard means "occupied now" and must degrade to a skip, not a failure.
+    it('delegates removal to opts.removeWorkspace and records a thrown block as a skip', async () => {
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'guarded-stale', singleRepoConfig)
+      await writeWorkspaceState(join(WS_ROOT, 'guarded-stale'), { cleanup: 'ttl' })
+      const past = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      await utimes(join(WS_ROOT, 'guarded-stale', WORKSPACE_STATE_FILE), past, past)
+
+      const blockedRemove = vi.fn().mockRejectedValue(new Error('claimed after snapshot'))
+      const blockedRun = await cleanupStaleWorkspaces(REPO_DIR, WS_ROOT, singleRepoConfig, {
+        activePaths: new Set(),
+        removeWorkspace: blockedRemove,
+      })
+      expect(blockedRemove).toHaveBeenCalledWith('guarded-stale')
+      expect(blockedRun).toEqual([])
+      expect(existsSync(join(WS_ROOT, 'guarded-stale'))).toBe(true)
+
+      const allowedRemove = vi.fn((name: string) =>
+        removeGitWorkspace(REPO_DIR, WS_ROOT, name, singleRepoConfig),
+      )
+      const allowedRun = await cleanupStaleWorkspaces(REPO_DIR, WS_ROOT, singleRepoConfig, {
+        activePaths: new Set(),
+        removeWorkspace: allowedRemove,
+      })
+      expect(allowedRun).toContain('guarded-stale')
+      expect(existsSync(join(WS_ROOT, 'guarded-stale'))).toBe(false)
     })
 
     it('persistent / 无状态文件 / 新 ttl 都不删', async () => {

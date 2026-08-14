@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
@@ -15,6 +15,7 @@ const mockBuildAgentConfig = vi.hoisted(() =>
   vi.fn().mockReturnValue({ engineType: 'cursor', maxRetries: 0 }),
 )
 const mockValidateAgentProviderConfiguration = vi.hoisted(() => vi.fn())
+const mockFindActiveAgentScmWorkload = vi.hoisted(() => vi.fn().mockResolvedValue(null))
 const mockResolveEngineType = vi.hoisted(() =>
   vi.fn(
     (agentConfig: { engineType?: string }, agentType?: string | null) =>
@@ -55,6 +56,10 @@ vi.mock('../../engine/index.js', () => ({
 
 vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+}))
+
+vi.mock('../../lib/scm-workload-guard.js', () => ({
+  findActiveAgentScmWorkload: (...args: unknown[]) => mockFindActiveAgentScmWorkload(...args),
 }))
 
 vi.mock('../../worker/index.js', () => ({
@@ -292,16 +297,15 @@ function makeDeleteChain() {
 import { db } from '../../db/client.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
 import {
-  WorktreeOccupiedError,
   resolveCleanupWorkDirs,
   resolveWorkDir,
+  WorktreeOccupiedError,
 } from '../../lib/agent-helpers.js'
 import { AppError, ProviderMcpUnsupportedError } from '../../lib/errors.js'
 import { WorktreeBranchLockedError } from '../../lib/git-workspace.js'
 import { MEMORY_OVERRIDE_MARKER } from '../../lib/memory-storage.js'
-import { executeInWorker } from '../../worker/index.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { executeInWorker } from '../../worker/index.js'
 
 /**
  * Build the test app with the same global onError shape as `apps/api/src/index.ts`
@@ -345,6 +349,7 @@ const mockScheduleNext = scheduleNext as unknown as Mock
 beforeEach(() => {
   mockBuildAgentConfig.mockReturnValue({ engineType: 'cursor', maxRetries: 0 })
   mockValidateAgentProviderConfiguration.mockReturnValue(undefined)
+  mockFindActiveAgentScmWorkload.mockResolvedValue(null)
   mockResolveEngineType.mockImplementation(
     (agentConfig: { engineType?: string }, agentType?: string | null) =>
       agentConfig.engineType || agentType || 'cursor',
@@ -440,6 +445,28 @@ describe('POST /agents', () => {
     expect(res.status).toBe(201)
     expect(inserted.authMode).toBe('localSession')
   })
+
+  it('does not bind when deletion is reserved after the initial SCM validation', async () => {
+    const { createAgentInput } = await import('@a2wave/shared')
+    vi.mocked(createAgentInput.safeParse).mockReturnValueOnce({
+      success: true,
+      data: { name: 'SCM Agent', workspaceType: 'scm', scmSourceId: 'scm_1' },
+    } as ReturnType<typeof createAgentInput.safeParse>)
+    const readySource = { id: 'scm_1', initialSyncCompletedAt: new Date() }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(readySource))
+      // Authoritative lookup under the lifecycle lock observes the reservation.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'SCM Agent' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.insert).not.toHaveBeenCalled()
+  })
 })
 
 describe('POST /agents/:id/clone', () => {
@@ -479,6 +506,18 @@ describe('POST /agents/:id/clone', () => {
     expect(data.id).toBe('agt_test1')
   })
 
+  it('does not clone an Agent after its SCM source enters deletion', async () => {
+    const sourceAgent = { ...SAMPLE_AGENT, skills: [], skillGroupIds: [], mcpServerIds: [] }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(sourceAgent))
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original/clone', { method: 'POST' })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.insert).not.toHaveBeenCalled()
+  })
+
   /**
    * Drizzle binds the column's TS-side default into the INSERT, so omitting `oauthAccessMode`
    * writes the retired `feishu_scope`, which reads normalize to the *open* mode — a clone of a
@@ -487,9 +526,6 @@ describe('POST /agents/:id/clone', () => {
   it.each([
     { mode: 'specified_users', expected: 'specified_users' },
     { mode: 'all_idaas_users', expected: 'all_idaas_users' },
-    // Only an explicit `all_idaas_users` clones as open. The retired value's real boundary
-    // lived in Feishu and cannot be read here, so the tier is unclear → restricted. The copy
-    // must also never resurrect the retired value itself.
     { mode: 'feishu_scope', expected: 'specified_users' },
   ])(
     'clones access mode $mode as $expected, with an empty allowlist',
@@ -514,8 +550,6 @@ describe('POST /agents/:id/clone', () => {
       expect(res.status).toBe(201)
       expect(inserted.oauthAccessMode).toBe(expected)
       expect(inserted.oauthAccessMode).not.toBe('feishu_scope')
-      // Never inherited: the copy starts deny-all and its new owner enters their own roster,
-      // which OAUTH_ALLOWED_EMAILS_REQUIRED then forces before the oauth channel can publish.
       expect(inserted.oauthAllowedEmails).toBeNull()
     },
   )
@@ -550,8 +584,6 @@ describe('POST /agents/:id/clone', () => {
   })
 
   it('copies config fields from original agent', async () => {
-    // Admin clone so the MCP ownership/stdio filter keeps everything — this test
-    // asserts field copy-through, not MCP filtering (covered separately).
     const adminApp = makeAgentsApp((await import('../agents.js')).default, {
       userId: 'usr_admin',
       role: 'admin',
@@ -599,7 +631,6 @@ describe('POST /agents/:id/clone', () => {
   })
 
   it('strips secrets so editor cannot walk away with the original credentials', async () => {
-    // Source has a sensitive env entry, an api key, base url, and an oauth token.
     const SOURCE = {
       ...SAMPLE_AGENT,
       providerApiKey: 'provider-key-XYZ',
@@ -634,21 +665,14 @@ describe('POST /agents/:id/clone', () => {
     expect(capturedValues.providerApiKey).toBeNull()
     expect(capturedValues.providerBaseUrl).toBeNull()
     expect(capturedValues.providerOauthToken).toBeNull()
-    // sensitive env value is empty; non-sensitive value passes through.
     expect(capturedValues.env).toEqual({
       TOKEN: { value: '', sensitive: true },
       NODE_ENV: { value: 'production', sensitive: false },
     })
-    // authMode preserved so the caller knows which credential to refill.
     expect(capturedValues.authMode).toBe(SOURCE.authMode)
   })
 
   it('drops admin-only / stdio MCP the non-admin cloner could not bind themselves', async () => {
-    // Clone hands the new agent to the caller. If it copied a stdio (host-RCE) or
-    // adminOnly MCP verbatim, a non-admin editor would keep executing it even
-    // after their editor membership is revoked — mirrors the provider-secret strip.
-    // Caller OWNS the source (userId matches) so requireAgentWrite resolves on the
-    // fast path with a single agent select; the next select is the MCP filter.
     const editorApp = makeAgentsApp((await import('../agents.js')).default, {
       userId: 'usr_owner',
       role: 'user',
@@ -659,8 +683,6 @@ describe('POST /agents/:id/clone', () => {
       mcpServerIds: ['mcp_stdio', 'mcp_sse'],
     }
 
-    // Both owned by the caller; the stdio one is admin-only (dropped), the sse one
-    // is all-users (kept).
     const mcpCandidates = [
       {
         id: 'mcp_stdio',
@@ -680,8 +702,6 @@ describe('POST /agents/:id/clone', () => {
     let selectCall = 0
     mockDb.select.mockImplementation(() => {
       selectCall++
-      // 1st select → requireAgentWrite loads the source agent (.get()).
-      // 2nd select → the clone MCP filter loads candidate rows (.all()).
       if (selectCall === 1) return makeSelectChain(SOURCE)
       return {
         from: () => asyncQuery({ where: () => asyncQuery({ all: () => mcpCandidates }) }),
@@ -706,7 +726,6 @@ describe('POST /agents/:id/clone', () => {
 
     const res = await editorApp.request('/agents/agt_original/clone', { method: 'POST' })
     expect(res.status).toBe(201)
-    // stdio dropped, sse kept.
     expect(capturedValues.mcpServerIds).toEqual(['mcp_sse'])
   })
 
@@ -735,19 +754,14 @@ describe('POST /agents/:id/clone', () => {
     )
 
     await adminApp.request('/agents/agt_original/clone', { method: 'POST' })
-    // Admin keeps everything — no MCP filter query is even needed.
     expect(capturedValues.mcpServerIds).toEqual(['mcp_stdio', 'mcp_sse'])
   })
 
   it("drops another owner's sse MCP when a non-admin clones a shared agent (IDOR)", async () => {
-    // A viewer/editor of a SHARED agent clones it. The clone is theirs, so it must
-    // not carry an sse MCP owned by someone else — otherwise it would resolve that
-    // owner's private URL/headers/credentials permanently, even after unshare.
     const editorApp = makeAgentsApp((await import('../agents.js')).default, {
       userId: 'usr_bob',
       role: 'user',
     })
-    // Bob is a member (editor) of an agent owned by Alice.
     const SOURCE = {
       ...SAMPLE_AGENT,
       userId: 'usr_alice',
@@ -757,10 +771,7 @@ describe('POST /agents/:id/clone', () => {
     mockDb.select.mockImplementation(() => {
       selectCall++
       if (selectCall === 1) return makeSelectChain(SOURCE) // requireAgentWrite
-      if (selectCall === 2)
-        // membership lookup (editor) → non-undefined member row
-        return makeSelectChain({ role: 'editor' })
-      // clone MCP filter candidates
+      if (selectCall === 2) return makeSelectChain({ role: 'editor' })
       return {
         from: () =>
           asyncQuery({
@@ -805,7 +816,6 @@ describe('POST /agents/:id/clone', () => {
 
     const res = await editorApp.request('/agents/agt_original/clone', { method: 'POST' })
     expect(res.status).toBe(201)
-    // Alice's MCP dropped, Bob's own kept.
     expect(capturedValues.mcpServerIds).toEqual(['mcp_bob_sse'])
   })
 
@@ -865,7 +875,6 @@ describe('POST /agents/:id/chat queue handling', () => {
       result: { chatId: 'chat_123' },
     }
 
-    // 捕获所有 update().set() 载荷，验证复用 run 被还原回原 intent/executionMetadata。
     const setCalls: Record<string, unknown>[] = []
     const capturingUpdate = {
       set: vi.fn((payload: Record<string, unknown>) => {
@@ -888,8 +897,6 @@ describe('POST /agents/:id/chat queue handling', () => {
 
     expect(res.status).toBe(429)
     expect(mockDb.delete).not.toHaveBeenCalled()
-    // queue_full 时复用 run 必须被还原：intent 回到原值、executionMetadata 回到原值——
-    // 否则一条从未执行的新消息污染会话历史（review [P2]）。
     const restore = setCalls.find((p) => p.intent === 'prev message')
     expect(restore).toBeDefined()
     expect(restore?.executionMetadata).toEqual({ some: 'prior' })
@@ -1612,6 +1619,90 @@ describe('PATCH /agents/:id - published execution-config preflight', () => {
     expect(mockDb.update).not.toHaveBeenCalled()
   })
 
+  it('does not rebind when deletion is reserved after the initial SCM validation', async () => {
+    const existing = {
+      ...SAMPLE_AGENT,
+      publishStatus: 'draft' as const,
+      workspaceType: 'temp' as const,
+      scmSourceId: null,
+      skills: [],
+      skillGroupIds: [],
+      mcpServerIds: [],
+      kbDocumentIds: [],
+    }
+    const readySource = { id: 'scm_1', initialSyncCompletedAt: new Date() }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(existing))
+      .mockReturnValueOnce(makeSelectChain(readySource))
+      // Authoritative lookup under the lifecycle lock observes the reservation.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceType: 'scm', scmSourceId: 'scm_1' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.update).not.toHaveBeenCalled()
+  })
+
+  it('locks a temp-to-SCM transition that reuses an already stored source id', async () => {
+    const existing = {
+      ...SAMPLE_AGENT,
+      publishStatus: 'draft' as const,
+      workspaceType: 'temp' as const,
+      scmSourceId: 'scm_1',
+      skills: [],
+      skillGroupIds: [],
+      mcpServerIds: [],
+      kbDocumentIds: [],
+    }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(existing))
+      // The lifecycle-locked lookup must run even though scmSourceId is omitted.
+      .mockReturnValueOnce(makeSelectChain(undefined))
+
+    const res = await app.request('/agents/agt_original', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceType: 'scm' }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockDb.update).not.toHaveBeenCalled()
+  })
+
+  it('refuses to release an SCM binding while a Run still uses its storage', async () => {
+    const existing = {
+      ...SAMPLE_AGENT,
+      publishStatus: 'draft' as const,
+      skills: [],
+      skillGroupIds: [],
+      mcpServerIds: [],
+      kbDocumentIds: [],
+    }
+    mockDb.select.mockReturnValueOnce(makeSelectChain(existing)).mockReturnValueOnce(
+      makeSelectChain({
+        workspaceType: existing.workspaceType,
+        scmSourceId: existing.scmSourceId,
+      }),
+    )
+    mockFindActiveAgentScmWorkload.mockResolvedValueOnce({ type: 'run', id: 'run_active' })
+
+    const res = await app.request('/agents/agt_original', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceType: 'temp', scmSourceId: null }),
+    })
+
+    expect(res.status).toBe(409)
+    expect((await res.json()) as Json).toEqual({
+      error: 'Cannot change the SCM binding while Run run_active is active',
+    })
+    expect(mockDb.update).not.toHaveBeenCalled()
+  })
+
   it('removes legacy memory overrides after disabling memory successfully', async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'a2wave-agent-patch-'))
     const instructionFiles = ['CLAUDE.md', 'AGENTS.md', '.cursorrules']
@@ -1799,8 +1890,7 @@ describe('DELETE /agents/:id - connection cleanup', () => {
     const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
     const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
 
-    // 删除加固：published agent 会被 409 拦在 cleanup 之前（须先停用）。
-    // 本用例验证的是「可删除态删除时停掉两类连接」，故用 stopped 态 fixture。
+    // A stopped fixture reaches connection cleanup; published Agents return 409 earlier.
     mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'stopped' }))
     mockDb.update.mockReturnValue(makeUpdateChain())
     mockDb.delete.mockReturnValue(makeDeleteChain())
@@ -1815,7 +1905,7 @@ describe('DELETE /agents/:id - connection cleanup', () => {
     const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
     const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
 
-    // 删除加固契约：published 必须先停用，409 拦截且不触达任何 cleanup / 实际删除。
+    // Published Agents must be stopped before deletion; 409 must skip every cleanup.
     mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'published' }))
 
     const res = await app.request('/agents/agt_original', { method: 'DELETE' })
@@ -1823,6 +1913,24 @@ describe('DELETE /agents/:id - connection cleanup', () => {
     expect(res.status).toBe(409)
     expect(feishuConnectionManager.stop).not.toHaveBeenCalled()
     expect(scheduleTriggerManager.stop).not.toHaveBeenCalled()
+    expect(mockDb.delete).not.toHaveBeenCalled()
+  })
+
+  it('blocks deleting a stopped SCM Agent while an Evaluation uses its checkout', async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'stopped' as const }),
+    )
+    mockFindActiveAgentScmWorkload.mockResolvedValueOnce({
+      type: 'evaluation',
+      id: 'evt_active',
+    })
+
+    const res = await app.request('/agents/agt_original', { method: 'DELETE' })
+
+    expect(res.status).toBe(409)
+    expect((await res.json()) as Json).toEqual({
+      error: 'Cannot delete the Agent while Evaluation evt_active is active',
+    })
     expect(mockDb.delete).not.toHaveBeenCalled()
   })
 })
@@ -1898,9 +2006,6 @@ describe('GET /agents/:id/diagnose', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Chat execution — shared agent fixture (temp workspace, no SCM check)
-// ---------------------------------------------------------------------------
 const CHAT_AGENT = {
   ...SAMPLE_AGENT,
   id: 'agt_chat',
@@ -1976,6 +2081,31 @@ describe('POST /agents/:id/chat — sync execution', () => {
 
     const res = await chatRequest({ message: 'hi' })
     expect(res.status).toBe(500)
+  })
+
+  it('restores the run and advances the queue when turn persistence fails', async () => {
+    mockDb.select.mockReturnValue(makeSelectChain(CHAT_AGENT))
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockDb.delete.mockReturnValue(makeDeleteChain())
+    mockDb.insert
+      .mockReturnValueOnce(makeInsertChain())
+      .mockReturnValueOnce(makeInsertChain())
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue(
+          asyncQuery({
+            run: vi.fn(() => {
+              throw new Error('message insert failed')
+            }),
+          }),
+        ),
+      })
+
+    const res = await chatRequest({ message: 'hi' })
+
+    expect(res.status).toBe(500)
+    expect(mockDb.delete).toHaveBeenCalled()
+    expect(mockScheduleNext).toHaveBeenCalled()
+    expect(mockExecuteInWorker).not.toHaveBeenCalled()
   })
 
   it('returns 404 when agent does not exist', async () => {
@@ -2265,8 +2395,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
   }
 
   // ── PATCH /agents/:id ──
-  // 注：PATCH 使用 shared 的 updateAgentInput（未 passthrough），旧字段会被 zod 剥离。
-  // 因此 PATCH 测试验证新格式 + normalizeFeishuConfig 补齐默认值的场景。
+  // PATCH strips legacy fields, so cover normalization of the current partial shape.
 
   it('PATCH: 新格式不完整 payload 经 normalizeFeishuConfig 补齐默认值后写入 DB', async () => {
     const { getCaptured } = mockDbForUpdate(SAMPLE_AGENT)
@@ -2288,7 +2417,6 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
     const saved = getCaptured().feishuConfig as Record<string, unknown>
     expect(saved.groupTriggerOnAt).toBe(false)
     expect(saved.groupReplyMode).toBe('new')
-    // normalizeFeishuConfig 补齐的默认值
     expect(saved.topicTriggerOnAt).toBe(true)
     expect(saved.topicTriggerOnNewTopic).toBe(false)
     expect(saved.topicReplyMode).toBe('topic_reply')

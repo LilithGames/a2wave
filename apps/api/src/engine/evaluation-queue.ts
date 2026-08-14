@@ -15,6 +15,17 @@
 
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 
+let promotionsPaused = false
+
+/** Stop terminal callbacks from starting new evaluations during shutdown. */
+export function pauseEvaluationQueuePromotions(): void {
+  promotionsPaused = true
+}
+
+export function _resumeEvaluationQueuePromotionsForTests(): void {
+  promotionsPaused = false
+}
+
 export const EVALUATION_MAX_QUEUE_LENGTH = 50
 
 /** Recorded on tasks that were mid-flight when the process went down. */
@@ -38,6 +49,8 @@ export interface EvaluationQueueDb {
   /** Marks the task failed and stamps the reason; also settles its result rows. */
   failTask(taskId: string, reason: string): Promise<void>
   getAgentIdsWithQueuedTasks(): Promise<string[]>
+  /** Atomically claim every currently available slot across DB replicas. */
+  claimQueuedTasks(agentId: string): Promise<EvaluationTaskRow[]>
 }
 
 export type EvaluationSlotResult = 'acquired' | 'queued' | 'queue_full'
@@ -53,6 +66,7 @@ export async function tryAcquireEvaluationSlot(
   agentId: string,
   taskId: string,
 ): Promise<EvaluationSlotResult> {
+  if (promotionsPaused) return 'queue_full'
   // Serialised per agent. The count and the claim are separated by an await, so
   // without this two concurrent submissions both read 0 running and both take
   // the single per-agent slot — for a P4-backed Agent that means two evaluation
@@ -66,10 +80,10 @@ export async function tryAcquireEvaluationSlot(
   // narrowest thing that answers it, and matches how the rest of the repo
   // serialises cross-row invariants in-process.
   //
-  // Single-process scope, like every other `withKeyedLock` here. A multi-replica
-  // deployment needs the DB to hold this instead (a partial unique index on
-  // agent_id WHERE status = 'running'); noted in docs/agent/postgresql.md
-  // alongside the other per-process caveats.
+  // This fallback is for in-memory/test adapters. Production creation performs
+  // admission in the cross-dialect SCM mutation transaction, and production
+  // queue promotion uses `claimQueuedTasks` below for the same replica-safe
+  // serialization.
   return await withKeyedLock(`eval-slot:${agentId}`, async () => {
     const running = await db.countTasksByStatus(agentId, 'running')
     if (running < db.getMaxConcurrency()) {
@@ -97,42 +111,17 @@ export async function scheduleNextEvaluation(
   agentId: string,
   onExecute: (taskId: string, agentId: string) => void,
 ): Promise<number> {
+  if (promotionsPaused) return 0
   try {
-    return await promoteQueuedEvaluations(db, agentId, onExecute)
+    const claimed = await db.claimQueuedTasks(agentId)
+    for (const task of claimed) onExecute(task.id, task.agentId)
+    return claimed.length
   } catch (error) {
     // Callers fire this without awaiting; a rejection would become an unhandled
     // rejection and terminate the process. See scheduleNext in task-queue.ts.
     console.error(`[scheduleNextEvaluation] promotion failed for agent ${agentId}:`, error)
     return 0
   }
-}
-
-async function promoteQueuedEvaluations(
-  db: EvaluationQueueDb,
-  agentId: string,
-  onExecute: (taskId: string, agentId: string) => void,
-): Promise<number> {
-  const maxConcurrency = db.getMaxConcurrency()
-  let promoted = 0
-
-  // Guards against a data inconsistency (e.g. a status the scheduler cannot
-  // move) turning promotion into an infinite loop.
-  const maxIterations = EVALUATION_MAX_QUEUE_LENGTH + maxConcurrency
-
-  for (let i = 0; i < maxIterations; i++) {
-    if ((await db.countTasksByStatus(agentId, 'running')) >= maxConcurrency) break
-    const next = await db.getOldestQueuedTask(agentId)
-    if (!next) break
-
-    // Conditional claim, not a blind write — two concurrent nudges read the same
-    // oldest task, so only the winner of the UPDATE may execute it.
-    const claimed = await db.tryTransitionTaskStatus(next.id, 'queued', 'running')
-    if (!claimed) continue
-    onExecute(next.id, next.agentId)
-    promoted++
-  }
-
-  return promoted
 }
 
 export interface EvaluationRecoveryStats {
@@ -153,6 +142,10 @@ export interface EvaluationRecoveryStats {
 export async function recoverEvaluationsOnStartup(
   db: EvaluationQueueDb,
   onExecute: (taskId: string, agentId: string) => void,
+  options: {
+    recoverInFlight?: boolean
+    onTaskFailed?: (task: EvaluationTaskRow) => Promise<void> | void
+  } = {},
 ): Promise<EvaluationRecoveryStats> {
   const stats: EvaluationRecoveryStats = {
     runningAborted: 0,
@@ -160,16 +153,28 @@ export async function recoverEvaluationsOnStartup(
     queuedPromoted: 0,
   }
 
-  for (const task of await db.getTasksByStatus('running')) {
-    await db.failTask(task.id, EVALUATION_RESTART_REASON)
-    stats.runningAborted++
-  }
+  if (options.recoverInFlight !== false) {
+    for (const task of await db.getTasksByStatus('running')) {
+      await db.failTask(task.id, EVALUATION_RESTART_REASON)
+      try {
+        await options.onTaskFailed?.(task)
+      } catch {
+        // The task state is authoritative; retain the lease on cleanup failure.
+      }
+      stats.runningAborted++
+    }
 
-  // `pending` is the gap between insert and scheduling. After a restart nothing
-  // is left to pick these up, so they are stranded exactly like `running` ones.
-  for (const task of await db.getTasksByStatus('pending')) {
-    await db.failTask(task.id, EVALUATION_RESTART_REASON)
-    stats.pendingAborted++
+    // `pending` is the gap between insert and scheduling. After a restart nothing
+    // is left to pick these up, so they are stranded exactly like `running` ones.
+    for (const task of await db.getTasksByStatus('pending')) {
+      await db.failTask(task.id, EVALUATION_RESTART_REASON)
+      try {
+        await options.onTaskFailed?.(task)
+      } catch {
+        // The task state is authoritative; retain the lease on cleanup failure.
+      }
+      stats.pendingAborted++
+    }
   }
 
   for (const agentId of await db.getAgentIdsWithQueuedTasks()) {

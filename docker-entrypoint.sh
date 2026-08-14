@@ -60,6 +60,39 @@ else
   REASON="no mount + no override → keep default"
 fi
 
+# Preserve whether the variable existed before applying the fallback. Legacy
+# CLI-generated Compose files omit it entirely; that absence is the evidence
+# that ~/.a2wave/workspaces belongs to a2wave and may receive the new marker.
+SCM_STORAGE_ROOT_WAS_SET="${SCM_STORAGE_ROOT+x}"
+# Resolved once, above the remap block that sweeps it and the provisioning block
+# that creates it — two copies of this default is how they would drift apart.
+SCM_STORAGE_ROOT="${SCM_STORAGE_ROOT:-/home/appuser/.a2wave}"
+# Sourced (not executed): supplies scm_chown_targets, which decides which SCM
+# subtrees the remap below may take ownership of.
+. /usr/local/bin/entrypoint-scm-paths.sh
+SCM_HAS_LEGACY_CLI_HOME_MARKER=false
+if scm_cli_home_marker_is_valid "$CLI_HOME_OWNER_MARKER"; then
+  SCM_HAS_LEGACY_CLI_HOME_MARKER=true
+fi
+SCM_LEGACY_STORAGE_ADOPTION="$(
+  scm_legacy_storage_adoption \
+    "$SCM_STORAGE_ROOT" \
+    "$SCM_STORAGE_ROOT_WAS_SET" \
+    "$SCM_HAS_LEGACY_CLI_HOME_MARKER"
+)"
+
+# Complete every filesystem preflight before UID remap or ownership changes.
+# Besides symlinks, this refuses pre-upgrade operator directories named
+# `sources` or `workspaces` unless the mount carries a2wave's ownership marker.
+if ! scm_prepare_managed_storage "$SCM_STORAGE_ROOT" "$SCM_LEGACY_STORAGE_ADOPTION"; then
+  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT is not an a2wave-managed SCM storage root" >&2
+  exit 1
+fi
+if ! scm_prepare_reclaim_root "$SCM_STORAGE_ROOT"; then
+  echo "[entrypoint] refusing to start: $SCM_STORAGE_ROOT/$SCM_RECLAIM_SUBDIR is not an a2wave-owned reclaim root" >&2
+  exit 1
+fi
+
 # === Remap only when needed, to avoid chowning large directories on every boot ===
 if [ "$TARGET_UID" != "$CURRENT_UID" ] || [ "$TARGET_GID" != "$CURRENT_GID" ]; then
   if [ "$TARGET_UID" = "0" ]; then
@@ -79,21 +112,40 @@ if [ "$TARGET_UID" != "$CURRENT_UID" ] || [ "$TARGET_GID" != "$CURRENT_GID" ]; t
   chown -R "$TARGET_UID:$TARGET_GID" /app
   chown "$TARGET_UID:$TARGET_GID" /home/appuser
 
-  # SCM workspace: the /data/workspace bind mount holds repositories cloned by a2wave SCM sync
-  # (written under the old UID). But that host path may also be used by the host OS user directly
-  # (dev working directories, cursor config, their own git repos) — a blanket chown -R would
-  # pollute the host development environment.
-  # So this is surgical: chown only files whose owner differs from TARGET_UID.
-  #   - The host user's own files (UID 1000 = TARGET_UID) are skipped by find → left alone
-  #   - Files left by an older a2wave under UID 10001 → taken over as TARGET_UID
-  #   - Files a2wave writes from now on are already TARGET_UID → skipped (idempotent)
-  # -h keeps chown from dereferencing a symlink and altering its target outside the tree.
-  if [ -d /data/workspace ]; then
-    find /data/workspace -not -uid "$TARGET_UID" -exec chown -h "$TARGET_UID:$TARGET_GID" {} + 2>/dev/null || true
-  fi
+  # SCM storage: these subtrees hold repositories cloned by a2wave SCM sync, written under the
+  # old UID and unreadable after the remap unless taken over here.
+  #
+  # Scoped to the subtrees a2wave itself allocates (sources/, workspaces/) rather than the whole
+  # mount. On the shipped Compose defaults SCM_STORAGE_ROOT *is* the /data/workspace bind mount,
+  # and that host path is routinely used by the operator directly — dev working directories,
+  # a colleague's checkout on a shared box, a root-owned tool cache, files restored from a backup
+  # under their original owner. Sweeping the mount handed every one of those to appuser, and
+  # chowned the mount root itself, which is exactly what the SCM_STORAGE_ROOT block below
+  # deliberately refuses to do.
+  #
+  # Within those subtrees the sweep stays surgical, skipping files already owned by TARGET_UID so
+  # repeat boots are cheap. -h keeps chown from dereferencing a symlink and altering its target
+  # outside the tree.
+  scm_chown_targets "$SCM_STORAGE_ROOT" | while IFS= read -r scm_target; do
+    find "$scm_target" -not -uid "$TARGET_UID" -exec chown -h "$TARGET_UID:$TARGET_GID" {} + 2>/dev/null || true
+  done
 else
   echo "[entrypoint] appuser UID/GID already ${CURRENT_UID}:${CURRENT_GID}, no remap needed"
 fi
+
+# Own only the already-preflighted managed children. The root may be a host bind
+# used directly by the operator, so changing its owner would pollute the host.
+for scm_subdir in $SCM_MANAGED_SUBDIRS; do
+  scm_dir="$SCM_STORAGE_ROOT/$scm_subdir"
+  chown -h "$TARGET_UID:$TARGET_GID" "$scm_dir"
+done
+
+# The reclaim root is different from the ordinary managed children: its marker
+# is the proof that a2wave owns it. Never adopt or chown a pre-existing unmarked
+# directory, even when empty; it may be operator data using the same name.
+scm_reclaim_root="$SCM_STORAGE_ROOT/$SCM_RECLAIM_SUBDIR"
+chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root"
+chown -h "$TARGET_UID:$TARGET_GID" "$scm_reclaim_root/$SCM_RECLAIM_MARKER"
 
 # Runtime install root for Provider CLIs (see the A2WAVE_CLI_INSTALL_ROOT comment in the Dockerfile).
 # These are chowned here rather than relying on the ownership repair below: that block is guarded by

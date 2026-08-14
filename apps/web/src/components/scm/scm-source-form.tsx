@@ -1,3 +1,31 @@
+import type { ScmSourceConfig } from '@a2wave/shared'
+import { Dropdown, Segmented, Tooltip } from 'antd'
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  FolderGit2,
+  FolderOpen,
+  GitBranch,
+  HardDrive,
+  HelpCircle,
+  Loader2,
+  MoreHorizontal,
+  PlugZap,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+  X,
+  XCircle,
+} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useFieldArray, useForm } from 'react-hook-form'
+import { useTranslation } from 'react-i18next'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -28,32 +56,6 @@ import { formatApiError } from '@/lib/api-error'
 import { confirm } from '@/lib/confirm'
 import { idSuffix } from '@/lib/id-suffix'
 import { cn, formatRelativeTime } from '@/lib/utils'
-import type { ScmSourceConfig } from '@a2wave/shared'
-import { Dropdown, Segmented, Tooltip } from 'antd'
-import {
-  AlertCircle,
-  AlertTriangle,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Eye,
-  EyeOff,
-  FolderGit2,
-  GitBranch,
-  HelpCircle,
-  Loader2,
-  MoreHorizontal,
-  PlugZap,
-  Plus,
-  RefreshCw,
-  Save,
-  Trash2,
-  X,
-  XCircle,
-} from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { useFieldArray, useForm } from 'react-hook-form'
-import { useTranslation } from 'react-i18next'
 
 /** Strip the Node.js execFile "Command failed: p4/git ..." wrapper, keep the real error. */
 function formatSyncError(msg: string): string {
@@ -137,6 +139,7 @@ const codegraphStatusLabelKeys: Record<string, string> = {
 type FormData = {
   name: string
   description: string
+  storageMode: 'managed' | 'custom'
   localPath: string
   workspacesPath: string
   isEnabled: boolean
@@ -234,6 +237,7 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
     defaultValues: {
       name: '',
       description: '',
+      storageMode: 'managed',
       localPath: '',
       workspacesPath: '',
       isEnabled: true,
@@ -276,6 +280,7 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
       reset({
         name: source.name,
         description: source.description ?? '',
+        storageMode: 'custom',
         localPath: source.localPath,
         workspacesPath: source.workspacesPath ?? '',
         isEnabled: source.isEnabled ?? true,
@@ -339,7 +344,9 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
       // Trimmed to match what the validator checked: it tests `value.trim()`, so
       // submitting the raw value let "  /srv/repo" pass the form and then fail
       // the API's node:path.isAbsolute with a 400.
-      localPath: data.localPath.trim(),
+      ...(!isCreateMode || data.storageMode === 'custom'
+        ? { localPath: data.localPath.trim() }
+        : {}),
       workspacesPath: scmType === 'git' ? data.workspacesPath.trim() || null : null,
       isEnabled: data.isEnabled,
     }
@@ -410,9 +417,17 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
     } else if (!data.p4port.trim() || !data.p4user.trim() || !data.p4client.trim()) {
       setProbeValidationError(t('scmSources.detail.probeNeedsP4Fields'))
       return
+    } else if (!data.localPath.trim()) {
+      setProbeValidationError(t('scmSources.detail.localPathRequired'))
+      return
     }
 
-    probeSource.mutate({ type: scmType, config: buildConfig(data), sourceId })
+    probeSource.mutate({
+      type: scmType,
+      config: buildConfig(data),
+      sourceId,
+      ...(scmType === 'p4' ? { localPath: data.localPath.trim() } : {}),
+    })
   }
 
   const handleSync = () => {
@@ -458,6 +473,7 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
   // Only one of the two can be active for a given mode, so the first message wins.
   const saveError = createSource.error ?? updateSource.error ?? null
   const codegraphEnabled = watch('codegraphEnabled')
+  const storageMode = watch('storageMode')
 
   // A result describes the exact connection parameters that were probed, so any
   // change to them invalidates it — clear rather than leave a stale ✓ next to
@@ -479,6 +495,11 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
     watch('p4user'),
     watch('p4passwd'),
     watch('p4client'),
+    // A probed parameter, not merely a saved one: a P4 probe verifies the client
+    // Root/AltRoots actually cover this path. Leaving it out let a green check
+    // for path A survive an edit to path B, which is the state that then gets
+    // saved untested.
+    watch('localPath'),
   ])
   const probeReset = probeSource.reset
   const probedShapeRef = useRef<string | null>(null)
@@ -574,6 +595,15 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             </span>
           </div>
 
+          {probeResult.clientRoot && (
+            <p className="font-mono text-xs text-muted-foreground">
+              {t('scmSources.detail.p4ClientRoot')}: {probeResult.clientRoot}
+            </p>
+          )}
+          {probeResult.clientRootWarning && (
+            <p className="text-xs text-warning">{probeResult.clientRootWarning}</p>
+          )}
+
           {/* Per-repo breakdown: the aggregate message only counts passes, so this
               is what tells you which repo failed and why. Gated on multi-repo mode
               rather than on the count — a one-repo multi-repo source aggregates to
@@ -619,19 +649,22 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
     <div className="space-y-6">
       {/* Basic Info */}
       <section className="space-y-4">
-        <div className="space-y-1">
-          <h3 className="text-base font-semibold text-foreground">
-            {t('scmSources.detail.basicInfo')}
-          </h3>
-          <p className="text-sm text-muted-foreground">{t('scmSources.detail.basicInfoDesc')}</p>
-        </div>
+        <h3 className="text-base font-semibold text-foreground">
+          {t('scmSources.detail.basicInfo')}
+        </h3>
         {/* Type Selector (create mode only) */}
         {isCreateMode && (
           <div className="flex flex-col items-start gap-1.5">
             <Label required>{t('scmSources.detail.sourceTypeLabel')}</Label>
             <Segmented
               value={scmType}
-              onChange={(v) => setScmType(v as ScmType)}
+              onChange={(v) => {
+                const nextType = v as ScmType
+                setScmType(nextType)
+                setValue('storageMode', nextType === 'git' ? 'managed' : 'custom', {
+                  shouldDirty: true,
+                })
+              }}
               options={[
                 {
                   value: 'git',
@@ -677,7 +710,7 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             </div>
           </div>
         )}
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className={cn('grid gap-4', !isCreateMode && 'sm:grid-cols-2')}>
           <div className="space-y-2">
             <Label htmlFor="name" required>
               {t('scmSources.detail.nameLabel')}
@@ -693,28 +726,117 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             />
             {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
           </div>
+          {!isCreateMode && (
+            <div className="space-y-1.5">
+              <Label htmlFor="localPath" className="text-sm">
+                {t('scmSources.detail.localPathLabel')}
+              </Label>
+              <Input
+                id="localPath"
+                placeholder={source?.type === 'p4' ? '/data/p4/client' : '/data/repos/repository'}
+                readOnly={source?.type === 'git'}
+                className={cn('font-mono text-sm', source?.type === 'git' && 'bg-muted')}
+                {...register('localPath', {
+                  required:
+                    source?.type === 'p4' ? t('scmSources.detail.localPathRequired') : false,
+                  validate: (value) =>
+                    source?.type !== 'p4' ||
+                    isAbsolutePath(value) ||
+                    t('scmSources.detail.localPathAbsolute'),
+                })}
+              />
+              <p className="text-xs text-muted-foreground">
+                {source?.type === 'p4'
+                  ? t('scmSources.detail.p4LocalPathHint')
+                  : t('scmSources.detail.savedPathHint')}
+              </p>
+              {errors.localPath && (
+                <p className="text-xs text-destructive">{errors.localPath.message}</p>
+              )}
+            </div>
+          )}
+        </div>
+        {isCreateMode && scmType === 'git' && (
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium leading-none text-foreground">
+              {t('scmSources.detail.storageModeLabel')}
+            </legend>
+            <Segmented
+              value={storageMode}
+              onChange={(value) =>
+                setValue('storageMode', value as 'managed' | 'custom', {
+                  shouldDirty: true,
+                })
+              }
+              options={[
+                {
+                  value: 'managed',
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <HardDrive className="h-4 w-4" />
+                      {t('scmSources.detail.storageManaged')}
+                    </span>
+                  ),
+                },
+                {
+                  value: 'custom',
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <FolderOpen className="h-4 w-4" />
+                      {t('scmSources.detail.storageCustom')}
+                    </span>
+                  ),
+                },
+              ]}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">
+              {storageMode === 'managed'
+                ? `${t('scmSources.detail.storageManagedHint')} ${t('scmSources.detail.storageRecommended')}`
+                : t('scmSources.detail.storageCustomHint')}
+            </p>
+            {storageMode === 'custom' && (
+              <div data-storage-choice="custom" className="max-w-xl">
+                <Input
+                  id="localPath"
+                  aria-label={t('scmSources.detail.localPathLabel')}
+                  placeholder="/data/workspace/sources/my-repo"
+                  className="font-mono text-sm"
+                  {...register('localPath', {
+                    required: t('scmSources.detail.localPathRequired'),
+                    validate: (value) =>
+                      isAbsolutePath(value) || t('scmSources.detail.localPathAbsolute'),
+                  })}
+                />
+                {errors.localPath && (
+                  <p className="mt-1 text-xs text-destructive">{errors.localPath.message}</p>
+                )}
+              </div>
+            )}
+          </fieldset>
+        )}
+        {isCreateMode && scmType === 'p4' && (
           <div className="space-y-2">
             <Label htmlFor="localPath" required>
               {t('scmSources.detail.localPathLabel')}
             </Label>
             <Input
               id="localPath"
-              placeholder="/path/to/workspace"
+              placeholder="/data/workspace/p4-client"
               className="font-mono text-sm"
               {...register('localPath', {
                 required: t('scmSources.detail.localPathRequired'),
-                // The API rejects a relative path too, but only in English and
-                // only after a round-trip. Catch it here so the message is
-                // translated and lands on the field that caused it.
                 validate: (value) =>
                   isAbsolutePath(value) || t('scmSources.detail.localPathAbsolute'),
               })}
             />
+            <p className="text-xs text-muted-foreground">
+              {t('scmSources.detail.p4LocalPathHint')}
+            </p>
             {errors.localPath && (
               <p className="text-xs text-destructive">{errors.localPath.message}</p>
             )}
           </div>
-        </div>
+        )}
         <div className="space-y-2">
           <Label htmlFor="description">{t('scmSources.detail.descriptionLabel')}</Label>
           <Textarea
@@ -1139,20 +1261,30 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
       {checkSource.data?.data && (
         <div
           className={cn(
-            'rounded-lg border px-4 py-3 flex items-center gap-2 text-sm',
+            'rounded-lg border px-4 py-3 space-y-1 text-sm',
             checkSource.data.data.ok ? 'border-success/30' : 'border-destructive/30',
           )}
         >
-          {checkSource.data.data.ok ? (
-            <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
-          ) : (
-            <XCircle className="h-4 w-4 text-destructive shrink-0" />
+          <div className="flex items-center gap-2">
+            {checkSource.data.data.ok ? (
+              <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
+            ) : (
+              <XCircle className="h-4 w-4 text-destructive shrink-0" />
+            )}
+            <span>{checkSource.data.data.message}</span>
+            {checkSource.data.data.serverVersion && (
+              <span className="text-muted-foreground ml-2">
+                ({checkSource.data.data.serverVersion})
+              </span>
+            )}
+          </div>
+          {checkSource.data.data.clientRoot && (
+            <p className="pl-6 font-mono text-xs text-muted-foreground">
+              {t('scmSources.detail.p4ClientRoot')}: {checkSource.data.data.clientRoot}
+            </p>
           )}
-          <span>{checkSource.data.data.message}</span>
-          {checkSource.data.data.serverVersion && (
-            <span className="text-muted-foreground ml-2">
-              ({checkSource.data.data.serverVersion})
-            </span>
+          {checkSource.data.data.clientRootWarning && (
+            <p className="pl-6 text-xs text-warning">{checkSource.data.data.clientRootWarning}</p>
           )}
         </div>
       )}

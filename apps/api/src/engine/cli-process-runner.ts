@@ -13,7 +13,8 @@ import {
 } from './windows-process-tree.js'
 
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024
-const FORCE_KILL_DELAY_MS = 5_000
+/** SIGTERM → SIGKILL grace for one agent CLI. Part of the fail-stop budget. */
+export const FORCE_KILL_DELAY_MS = 5_000
 
 export type CliProcessExitReason = 'completed' | 'timeout' | 'cancelled' | 'spawn-error'
 
@@ -34,6 +35,8 @@ export interface CliProcessRunOptions {
   cwd: string
   timeoutMs: number
   label: string
+  /** Complete UTF-8 input written after spawn, then stdin is closed. */
+  stdin?: string
   onStdoutLine: (line: string) => void
   parseStderrLines?: boolean
   onSpawned?: () => void
@@ -213,7 +216,7 @@ export class CliProcessRunner {
       child = this.spawnProcess(options.command, options.args, {
         cwd: options.cwd,
         env: options.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         detached: this.useProcessGroups,
       })
     } catch (error) {
@@ -281,7 +284,14 @@ export class CliProcessRunner {
         if (abortSignal.aborted) active.abortListener()
       }
 
-      child.once('spawn', () => options.onSpawned?.())
+      child.stdin?.on('error', (error) => {
+        logger.debug({ taskId: options.taskId, error }, `${options.label} stdin closed early`)
+      })
+
+      child.once('spawn', () => {
+        options.onSpawned?.()
+        if (options.stdin !== undefined) child.stdin?.end(options.stdin)
+      })
 
       child.stdout?.on('data', (value: Buffer | string) => {
         stdoutDecoder.write(Buffer.isBuffer(value) ? value : Buffer.from(value))

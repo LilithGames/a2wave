@@ -5,10 +5,10 @@ import { agents, chatMessages, runSteps, runs, scmSources } from '../db/schema.j
 import { withTransaction } from '../db/transaction.js'
 import { completeExecutionLease } from '../engine/execution-lease-registry.js'
 import { buildTaskId } from '../engine/task-id.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
 import { scheduleNext } from '../engine/task-queue.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
 import type { WorkerTaskPayload } from '../worker/index.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from './agent-helpers.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from './agent-helpers.js'
 import {
   type AttachmentSource,
   cleanupMaterializedRoot,
@@ -21,7 +21,9 @@ import { logger } from './logger.js'
 import { resolveNativeChatAttachments } from './native-chat-attachments.js'
 import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
+import { retryUntilSuccess } from './retry-until-success.js'
 import { runWithLifecycle } from './run-launcher.js'
+import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
 
 /**
  * Execute a chat run (used for both immediate execution and queued run scheduling).
@@ -329,34 +331,48 @@ async function cleanupPreparedExecution(
   agentId: string,
   rootDir?: string | null,
 ): Promise<void> {
-  try {
-    if (rootDir) await cleanupMaterializedRoot(rootDir).catch(() => {})
-    const { cleanupWorktreeIfEphemeral } = await import('./run-lifecycle.js')
-    await cleanupWorktreeIfEphemeral(runId, agentId).catch((err) =>
-      logger.warn({ err, runId }, 'Worktree ephemeral cleanup failed'),
-    )
-  } finally {
-    completeExecutionLease(runId)
-  }
+  if (rootDir) await cleanupMaterializedRoot(rootDir).catch(() => {})
+  const { cleanupWorktreeIfEphemeral } = await import('./run-lifecycle.js')
+  await cleanupWorkspaceOrHandOff(() => cleanupWorktreeIfEphemeral(runId, agentId), {
+    context: { type: 'run', runId, agentId, phase: 'pre-execution' },
+  })
+  completeExecutionLease(runId)
 }
 
-async function failRunBeforeLifecycle(
+export async function failRunBeforeLifecycle(
   runId: string,
   agentId: string,
   error: string,
   rootDir?: string | null,
 ): Promise<void> {
   let ownsTerminalTransition = false
-  try {
-    const transition = await db
-      .update(runs)
-      .set({ status: 'failed', result: { error }, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
-      .returning({ id: runs.id })
-    ownsTerminalTransition = didChangeOneRow(transition)
-  } catch (updateError) {
-    logger.error({ agentId, runId, err: updateError }, 'Failed to mark prepared run as failed')
-  }
+  await retryUntilSuccess(
+    async () => {
+      const transition = await db
+        .update(runs)
+        .set({ status: 'failed', result: { error }, updatedAt: new Date() })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .returning({ id: runs.id })
+      ownsTerminalTransition = didChangeOneRow(transition)
+      if (ownsTerminalTransition) return
+
+      const current = (
+        await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1)
+      )[0]
+      if (!current || current.status !== 'running') return
+      throw new Error('Run is still running after the preparation-failure transition')
+    },
+    {
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      onFailure: (transitionError, retryDelayMs) => {
+        logger.error(
+          { err: transitionError, runId, agentId, retryDelayMs },
+          'Failed to terminalize run preparation; retaining the workload lease and retrying',
+        )
+      },
+    },
+  )
 
   await cleanupPreparedExecution(runId, agentId, rootDir)
   if (ownsTerminalTransition) {

@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+> ⚠️ **This release is not rolling-upgrade safe. Stop every API replica before
+> applying its migrations, then start only the upgraded version.** Two
+> independent reasons, either sufficient on its own, and both fail silently:
+>
+> 1. A pre-upgrade replica deletes workspace-removal reservations by id alone,
+>    erasing the newer attempt-token fence.
+> 2. A pre-upgrade replica writes no `instance_heartbeats` row, so an upgraded
+>    peer reads it as dead and may reclaim leases and Git worktrees out from
+>    under a process that is still running.
+>
+> Single-container SQLite deployments are unaffected in practice — there is only
+> one replica — but the migrations still apply.
+
+- **Managed SCM storage for Git sources**: `localPath` is now optional for Git and allocated under the managed storage root; P4 still requires an explicit path covered by its client `Root`. Existing bind mounts, source paths and legacy worktree roots survive the upgrade.
+- **Cross-replica workspace recovery**: a crashed or unreachable replica no longer strands its checkouts. Processes publish a liveness heartbeat, and a surviving replica settles the abandoned workload, releases its lease, and converges the leftover worktree removal — work that previously required an operator to run SQL by hand. An instance that cannot renew its own heartbeat stops itself before peers may reclaim its workspaces.
+- **PostgreSQL deployment path**: `a2wave setup` can provision a PostgreSQL 16 sidecar or point at an external server. Still experimental and not recommended for production; there is no SQLite → PostgreSQL data migration.
+
 ## v0.7.2
 
 - **`a2wave setup` now works with no flags**: `--image` is optional and defaults to the published image matching the CLI's own version (`ghcr.io/lilithgames/a2wave:<cli-version>`), so `npm i -g a2wave && a2wave setup` installs a running platform without cloning or building anything. Pass the flag only for a locally built or mirrored image.

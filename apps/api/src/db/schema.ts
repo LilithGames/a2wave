@@ -25,6 +25,7 @@ import * as sqlite from './schema.sqlite.js'
 const active = (isPostgresRuntime() ? pg : sqlite) as unknown as typeof sqlite
 
 export const users = active.users
+export const userInvitations = active.userInvitations
 export const auditLogs = active.auditLogs
 export const providers = active.providers
 export const mcpServers = active.mcpServers
@@ -47,6 +48,9 @@ export const agentMembers = active.agentMembers
 export const evaluationSets = active.evaluationSets
 export const evaluationCases = active.evaluationCases
 export const evaluationTasks = active.evaluationTasks
+export const scmWorkloadLeases = active.scmWorkloadLeases
+export const scmWorkspaceRemovals = active.scmWorkspaceRemovals
+export const instanceHeartbeats = active.instanceHeartbeats
 export const evaluationResults = active.evaluationResults
 export const cliInstallations = active.cliInstallations
 export const gitTriggerStates = active.gitTriggerStates

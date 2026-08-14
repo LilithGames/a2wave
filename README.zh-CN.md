@@ -84,6 +84,28 @@ npm i -g a2wave
 a2wave setup
 ```
 
+如需同时部署内置 PostgreSQL 容器：
+
+```bash
+a2wave setup \
+  --yes \
+  --with-postgres \
+  --dir "$HOME/a2wave-pg" \
+  --port 3512
+```
+
+CLI 会自动选择与自身版本一致的版本化镜像。升级时应继续使用同一个安装目录：版本号属于
+CLI 和镜像，不应写进 `$HOME/a2wave-pg`。PostgreSQL 目前仍是实验性功能，生产环境使用前请先阅读
+[数据库后端](#数据库后端)。
+
+生成的部署会包含独立的 `a2wave-workspace` 命名卷。新建 Git 代码源时，a2wave 会自动在该卷中
+分配托管路径，无需进入容器创建或猜测目录。P4 代码源则必须填写已挂载的绝对路径，并确保该路径
+被现有 P4 Client 的 `Root` 或 `AltRoots` 覆盖。
+
+> [!NOTE]
+> PostgreSQL 部署参数是在 CLI v0.7.2 之后加入的，已发布的 `a2wave@0.7.2` 包中并不包含。
+> 执行上述命令前，请先确认 `a2wave setup --help` 已列出 `--with-postgres`。
+
 ## 快速开始（Docker）
 
 从仓库克隆并自行构建镜像：
@@ -106,8 +128,9 @@ docker pull ghcr.io/lilithgames/a2wave:latest
 > 它可以关闭这个窗口。
 
 > [!IMPORTANT]
-> **macOS 用户**请先把以下配置加入 `.env`。Docker Desktop 会把 bind mount 报告为 root
-> 所有，entrypoint 拒绝接管，不加这些配置容器会反复重启。
+> **macOS 用户**请先把以下配置加入 `.env`。`/data/workspace` 不在 Docker Desktop 默认
+> 共享的宿主机路径中，因此需要改为用户目录下的路径；同时固定容器 UID/GID，避免 VirtioFS
+> 将宿主机 bind mount 报告为 root 所有。
 >
 > ```bash
 > A2WAVE_WORKSPACE_DIR=$HOME/a2wave-workspace

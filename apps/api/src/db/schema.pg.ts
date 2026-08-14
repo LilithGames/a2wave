@@ -7,9 +7,6 @@
 // ============================================================
 import {
   type A2ARouteTarget,
-  PROVIDER_KINDS,
-  type RemoteSkillSource,
-  SKILL_DEFAULTS,
   type artifactPolicySchema,
   type chatAppConfigSchema,
   type discordConfigSchema,
@@ -17,6 +14,9 @@ import {
   type ghTriggerConfigSchema,
   type gitTriggerRepoStateSchema,
   type glabTriggerConfigSchema,
+  PROVIDER_KINDS,
+  type RemoteSkillSource,
+  SKILL_DEFAULTS,
   type scheduleConfigSchema,
   type slackConfigSchema,
 } from '@a2wave/shared'
@@ -120,6 +120,65 @@ export const users = pgTable(
       table.idaasIssuer,
       table.idaasSub,
     ),
+  }),
+)
+
+// ============================================================
+// User Invitations - invite links that let a new colleague create their own account
+// ============================================================
+/**
+ * An administrator issues an invitation instead of typing someone else's password.
+ *
+ * The row is the single source of truth for whether a link still works, so it records both
+ * of the terminal transitions explicitly (`acceptedAt`, `revokedAt`) rather than deleting
+ * itself: a consumed or withdrawn invitation must stay auditable, and the accept path needs
+ * to tell "already used" apart from "never existed" to give the invitee an actionable
+ * message.
+ *
+ * Status is *derived*, never stored — a stored `expired` would only become true when some
+ * sweeper happened to run, so a link would keep working past its deadline until then.
+ */
+export const userInvitations = pgTable(
+  'user_invitations',
+  {
+    id: text('id').primaryKey(), // inv_xxx
+    /**
+     * The secret in the invite URL. Unique so the lookup is a single indexed read, and
+     * generated with 32 bytes of CSPRNG entropy — it is a bearer credential for account
+     * creation, and the accept endpoint is unauthenticated by design.
+     */
+    code: text('code').notNull().unique(),
+    /**
+     * Address the invitation is pinned to, lowercased. Null means the admin issued an
+     * unpinned link and the invitee supplies their own address. When set, accept refuses a
+     * different address, so forwarding the link does not silently transfer the invitation.
+     */
+    email: text('email'),
+    /** Role the created account receives. Only an admin can choose it, at issue time. */
+    role: text('role', { enum: ['admin', 'user'] })
+      .notNull()
+      .default('user'),
+    /** Free-form admin memo ("contractor, Q3 project"). Never rendered to the invitee. */
+    note: text('note'),
+    /** Administrator who issued it. Nullable so deleting that admin does not delete history. */
+    invitedBy: text('invited_by').references(() => users.id, { onDelete: 'set null' }),
+    /** Account created by accepting it; null while pending. */
+    acceptedUserId: text('accepted_user_id').references(() => users.id, { onDelete: 'set null' }),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true, mode: 'date' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The admin list orders by created_at DESC with a LIMIT; the pending-duplicate check
+    // filters by email. Both would otherwise scan a table that only ever grows.
+    createdAtIdx: index('user_invitations_created_at_idx').on(table.createdAt),
+    emailIdx: index('user_invitations_email_idx').on(table.email),
   }),
 )
 
@@ -380,6 +439,12 @@ export const scmSources = pgTable('scm_sources', {
   workspacesPath: text('workspaces_path').unique(),
   /** Whether enabled */
   isEnabled: boolean('is_enabled').notNull().default(true),
+  /** Durable first phase of an SCM source deletion. */
+  deletionRequestedAt: timestamp('deletion_requested_at', { withTimezone: true, mode: 'date' }),
+  /** User who requested deletion, retained for crash-recovery audit attribution. */
+  deletionRequestedBy: text('deletion_requested_by').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   /** Owning user */
   userId: text('user_id').references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
@@ -473,7 +538,7 @@ export const agents = pgTable(
      * otherwise. Changing a SQLite column default requires a full table rebuild, which for this
      * table is unsafe under the live foreign keys `db/client.ts` enables (see 0100's header).
      *
-     * ! **This default is not inert.** Drizzle binds it into every INSERT as a parameter, so
+     * ⚠️ **This default is not inert.** Drizzle binds it into every INSERT as a parameter, so
      * omitting the column from an insert writes `'feishu_scope'` — it does not fall through to
      * SQLite. Reads normalize that to the *open* mode, so an insert path that forgets this
      * column silently downgrades an Agent's access tier to "all enterprise users". The clone
@@ -1210,6 +1275,118 @@ export const evaluationTasks = pgTable(
     statusIdx: index('evaluation_tasks_status_idx').on(table.status),
   }),
 )
+
+// ============================================================
+// SCM Workload Leases - durable checkout-use reservations
+// ============================================================
+export const scmWorkloadLeases = pgTable(
+  'scm_workload_leases',
+  {
+    /** Stable identity: `<workloadType>:<workloadId>`. */
+    id: text('id').primaryKey(),
+    workloadType: text('workload_type', { enum: ['run', 'evaluation'] }).notNull(),
+    workloadId: text('workload_id').notNull(),
+    /** The actual executing Agent, which may differ from a Run's initiator. */
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    /** Binding snapshot reserved atomically with workload admission. */
+    scmSourceId: text('scm_source_id')
+      .notNull()
+      .references(() => scmSources.id),
+    /** Reserved work may be queued; active work owns a live process/cleanup lifecycle. */
+    phase: text('phase', { enum: ['reserved', 'active'] })
+      .notNull()
+      .default('reserved'),
+    /** Process instance responsible for releasing an active lease after cleanup. */
+    ownerInstanceId: text('owner_instance_id'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    workloadUnique: uniqueIndex('scm_workload_leases_workload_unique').on(
+      table.workloadType,
+      table.workloadId,
+    ),
+    agentIdIdx: index('scm_workload_leases_agent_id_idx').on(table.agentId),
+    scmSourceIdIdx: index('scm_workload_leases_scm_source_id_idx').on(table.scmSourceId),
+  }),
+)
+
+// ============================================================
+// SCM Workspace Removals - durable worktree-removal reservations
+// ============================================================
+/**
+ * A committed row means "this worktree is being removed right now". It is the
+ * cross-replica counterpart of the workload lease: the lease says a workload
+ * may be using a directory, this says a remover is about to delete one. Every
+ * worktree creation path, run admission (for an explicitly named worktree),
+ * path PATCH, source DELETE, and env bootstrap consults it; the two marks are
+ * both written before their action under the SCM mutation lock, so any
+ * interleaving sees at least one of them. SQLite clears leaked rows before it
+ * starts listening after a restart. PostgreSQL retains an uncertain row: age
+ * cannot prove that a peer's filesystem operation has stopped.
+ */
+export const scmWorkspaceRemovals = pgTable(
+  'scm_workspace_removals',
+  {
+    /** Stable target identity: `<scmSourceId>:<workspaceName>`. */
+    id: text('id').primaryKey(),
+    scmSourceId: text('scm_source_id')
+      .notNull()
+      .references(() => scmSources.id),
+    workspaceName: text('workspace_name').notNull(),
+    /**
+     * Process instance currently attempting the removal. NULL means the row was
+     * explicitly handed off — its owner exhausted its bounded retries and left
+     * the reservation for the reconciler to adopt. A non-NULL owner whose
+     * heartbeat stopped is adopted the same way; only a beating owner's
+     * reservation is left alone.
+     */
+    ownerInstanceId: text('owner_instance_id'),
+    /** Opaque attempt fence; final release must match it to avoid ABA deletion. */
+    attemptToken: text('attempt_token').notNull().default('legacy'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    /** Refreshed on every adoption, so liveness is judged per attempt, not per target. */
+    attemptStartedAt: timestamp('attempt_started_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    scmSourceIdIdx: index('scm_workspace_removals_scm_source_id_idx').on(table.scmSourceId),
+    targetUnique: uniqueIndex('scm_workspace_removals_target_unique').on(
+      table.scmSourceId,
+      table.workspaceName,
+    ),
+  }),
+)
+
+// ============================================================
+// Instance Heartbeats - process liveness for cross-replica recovery
+// ============================================================
+/**
+ * One row per live API process, renewed on an interval. Liveness is what
+ * durable SCM marks (workload leases, workspace-removal reservations) cannot
+ * carry themselves: the age of a mark proves nothing — a multi-repository Git
+ * operation can outlive any timeout — but a stopped heartbeat does prove its
+ * owner is gone. `started_at` is this process's boot instant: instance ids are
+ * reused across container restarts (HOSTNAME, a pinned A2WAVE_INSTANCE_ID), so
+ * a mark written before its owner's current boot belongs to a dead previous
+ * life even while the heartbeat looks fresh.
+ */
+export const instanceHeartbeats = pgTable('instance_heartbeats', {
+  /** Process instance id (`processInstanceId`). */
+  id: text('id').primaryKey(),
+  /** Boot instant of the current life; overwritten when a reused id restarts. */
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
+  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true, mode: 'date' }).notNull(),
+})
 
 // ============================================================
 // Evaluation Results - per-case execution result + manual review, isolated by cascade on taskId

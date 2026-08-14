@@ -50,13 +50,6 @@ const AGENT_QUICKSTART = `AGENT QUICKSTART
 
   Human first-time setup: a2wave setup, then a2wave login.`
 
-// Silent alias: rewrite the legacy `upgrade` to `update` without registering a
-// second entry in subCommands — avoids two identical update commands in help.
-// citty has no hidden mechanism, so this is the cleanest workaround.
-if (process.argv[2] === 'upgrade') {
-  process.argv[2] = 'update'
-}
-
 const rootCommand = defineCommand({
   meta: {
     name: 'a2wave',
@@ -164,8 +157,8 @@ export function handleError(err: unknown): never {
  *     ERROR  Not logged in. Run: a2wave login
  *
  * Owning the try/catch is the only way to make the error contract real. The
- * `--help` / `--version` branches are citty's own, reproduced here because they
- * live inside the function being replaced.
+ * `--help` branch is citty's own, reproduced here because it lives inside the
+ * function being replaced; `--version` is handled a level up, in `runCli`.
  */
 type CommandNode = {
   subCommands?: Record<string, CommandNode>
@@ -212,15 +205,10 @@ function isCittyRoutingError(err: unknown): err is Error {
   return err instanceof Error && err.name === 'CLIError'
 }
 
-async function main(): Promise<void> {
-  const rawArgs = process.argv.slice(2)
+async function dispatch(rawArgs: string[]): Promise<void> {
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     const [cmd, parent] = resolveForUsage(rootCommand as CommandNode, rawArgs)
     await showUsageWithRisk(cmd, parent)
-    return
-  }
-  if (rawArgs.length === 1 && rawArgs[0] === '--version') {
-    console.log(getVersion())
     return
   }
   try {
@@ -238,4 +226,23 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(handleError)
+export function runCli(rawArgs: string[]): void {
+  // citty only recognizes --version when it is the sole raw argument. Preserve
+  // the documented compatibility form `a2wave setup --version` without
+  // scanning option values such as `chat send -m "--version"`.
+  if (
+    (rawArgs.length === 1 && rawArgs[0] === '--version') ||
+    (rawArgs.length === 2 && rawArgs[0] === 'setup' && rawArgs[1] === '--version')
+  ) {
+    console.log(getVersion())
+    return
+  }
+
+  // Silent alias: rewrite the legacy `upgrade` to `update` without registering
+  // a duplicate command in help output. Rewriting the argv copy rather than
+  // `process.argv` keeps the entry point free of global mutation.
+  const normalizedArgs = rawArgs[0] === 'upgrade' ? ['update', ...rawArgs.slice(1)] : rawArgs
+  dispatch(normalizedArgs).catch(handleError)
+}
+
+runCli(process.argv.slice(2))

@@ -1,6 +1,6 @@
 import { type SQL, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
-import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import type { runs } from '../../db/schema.js'
 
 type Json = Record<string, unknown>
@@ -51,6 +51,22 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   bindExecutionLeaseTask: vi.fn(),
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
+  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
+  activateScmWorkload: vi.fn().mockResolvedValue(undefined),
+  releaseReservedScmWorkload: vi.fn().mockResolvedValue(false),
+  releaseReservedScmWorkloadInMutation: vi.fn().mockResolvedValue(false),
+  withScmWorkloadAdmission: vi.fn(async (_input, callback) => {
+    const { db } = await import('../../db/client.js')
+    return callback(db, {
+      workspaceType: 'temp',
+      scmSourceId: null,
+      leaseId: null,
+      alreadyReserved: false,
+    })
+  }),
 }))
 
 const mockTryAcquireSlot = vi.hoisted(() => vi.fn().mockReturnValue('acquired'))

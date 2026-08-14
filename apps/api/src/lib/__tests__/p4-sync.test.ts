@@ -1,44 +1,58 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { P4Config } from '@a2wave/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { env } from '../../env.js'
 
 // Chainable DB mock
-const { mockDb, mockNotifyScmSyncError, mockExecuteGitSync, mockRunCodegraphIndex } = vi.hoisted(
-  () => {
-    const setResult = { run: vi.fn() }
-    const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
-    const setFn = vi.fn(() => whereResult)
-    const updateResult = { set: setFn, where: vi.fn(() => setResult) }
-    // Make set().where() work as chain
-    setFn.mockImplementation((() => ({ where: vi.fn(() => setResult) })) as any)
+const {
+  mockDb,
+  mockNotifyScmSyncError,
+  mockExecuteGitSync,
+  mockRunCodegraphIndex,
+  mockWriteBackgroundAudit,
+  mockIsolateManagedScmStorage,
+} = vi.hoisted(() => {
+  const setResult = { run: vi.fn() }
+  const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
+  const setFn = vi.fn(() => whereResult)
+  const updateResult = { set: setFn, where: vi.fn(() => setResult) }
+  // Make set().where() work as chain
+  setFn.mockImplementation((() => ({ where: vi.fn(() => setResult) })) as any)
 
-    const selectChain = {
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          get: vi.fn(() => undefined),
-          all: vi.fn(() => []),
-        })),
+  const selectChain = {
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        get: vi.fn(() => undefined),
+        all: vi.fn(() => []),
       })),
-    }
+    })),
+  }
 
-    const db = {
-      select: vi.fn(() => selectChain),
-      update: vi.fn(() => updateResult),
-      _selectChain: selectChain,
-      _updateResult: updateResult,
-      _setResult: setResult,
-    }
+  const db = {
+    select: vi.fn(() => selectChain),
+    update: vi.fn(() => updateResult),
+    delete: vi.fn(),
+    _selectChain: selectChain,
+    _updateResult: updateResult,
+    _setResult: setResult,
+  }
 
-    return {
-      mockDb: db,
-      mockNotifyScmSyncError: vi.fn().mockResolvedValue(undefined),
-      mockExecuteGitSync: vi.fn(),
-      mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
-    }
-  },
-)
-vi.mock('../../db/client.js', () => ({ db: mockDb }))
+  return {
+    mockDb: db,
+    mockNotifyScmSyncError: vi.fn().mockResolvedValue(undefined),
+    mockExecuteGitSync: vi.fn(),
+    mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
+    mockWriteBackgroundAudit: vi.fn().mockResolvedValue(undefined),
+    mockIsolateManagedScmStorage: vi.fn().mockResolvedValue({
+      isolated: [],
+      blocked: [],
+      commit: vi.fn().mockResolvedValue([]),
+    }),
+  }
+})
+vi.mock('../../db/client.js', () => ({ db: mockDb, isPostgres: false }))
 vi.mock('../../db/schema.js', () => ({ scmSources: 'scmSources' }))
 // `sanitizeCredentials` is deliberately NOT mocked: redaction of p4 error text
 // is the behaviour under test, and a stubbed pass-through would make the
@@ -53,6 +67,14 @@ vi.mock('../codegraph-index.js', () => ({
   runCodegraphIndex: mockRunCodegraphIndex,
 }))
 vi.mock('../webhook-notifier.js', () => ({ notifyScmSyncError: mockNotifyScmSyncError }))
+vi.mock('../audit.js', () => ({ writeBackgroundAudit: mockWriteBackgroundAudit }))
+vi.mock('../scm-storage-reclaim.js', () => ({
+  isolateManagedScmStorage: mockIsolateManagedScmStorage,
+}))
+vi.mock('../scm-path-plan.js', () => ({
+  selectScmPathPeers: vi.fn().mockResolvedValue([]),
+  withScmPathMutation: (fn: (executor: typeof mockDb) => unknown) => fn(mockDb),
+}))
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -63,6 +85,9 @@ vi.mock('node:fs', () => ({
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
   realpathSync: vi.fn((p: string) => (p === '/tmp' ? '/private/tmp' : p)),
+  // Reached via the startup isolation sweep, which pulls in the path-identity
+  // helpers in scm-workspace-safety.
+  statSync: vi.fn(() => ({ dev: 1, ino: 1 })),
 }))
 
 vi.mock('../logger.js', () => ({
@@ -70,7 +95,10 @@ vi.mock('../logger.js', () => ({
 }))
 
 import { asyncQuery } from '../../test/async-query.js'
+import { p4ClientRootCoversPath, parseP4ClientRoots } from '../p4-client-root.js'
+import type { ScmSyncResult } from '../p4-sync.js'
 import {
+  cancelInitialScmSync,
   checkP4Connection,
   executeP4Sync,
   initAutoSyncSchedulers,
@@ -78,11 +106,37 @@ import {
   p4Login,
   releaseCheckout,
   startAutoSync,
+  startInitialScmSync,
+  startInitialSyncRecovery,
   stopAllAutoSync,
   stopAutoSync,
   syncScmSource,
   tryAcquireCheckout,
 } from '../p4-sync.js'
+import { legacyScmReclaimRoot } from '../scm-storage.js'
+
+describe('P4 client roots', () => {
+  it('parses Root and AltRoots from a client spec', () => {
+    expect(
+      parseP4ClientRoots(
+        'Client: c\nRoot: /data/workspace/sources/main\nAltRoots:\n\t/mnt/p4\n\t/opt/p4\nView:\n\t//depot/... //c/...\n',
+      ),
+    ).toEqual(['/data/workspace/sources/main', '/mnt/p4', '/opt/p4'])
+  })
+
+  it('keeps the first AltRoot when it appears on the label line', () => {
+    expect(
+      parseP4ClientRoots(
+        'Client: c\nRoot: /data/p4\nAltRoots:\t/mnt/p4a\n\t/mnt/p4b\nView:\n\t//depot/... //c/...\n',
+      ),
+    ).toEqual(['/data/p4', '/mnt/p4a', '/mnt/p4b'])
+  })
+
+  it('accepts a checkout inside Root and rejects an unrelated container path', () => {
+    expect(p4ClientRootCoversPath('/data/workspace/sources/main', ['/data/workspace'])).toBe(true)
+    expect(p4ClientRootCoversPath('/data/workspace/sources/main', ['/srv/p4'])).toBe(false)
+  })
+})
 
 // Cast to a loose shape — execFile has multiple overloads, so the typed
 // mockImplementation rejects the generic (...args: unknown[]) adapter used
@@ -245,8 +299,67 @@ describe('executeP4Sync', () => {
     expect(result.filesUpdated).toBe(2)
     expect(mockSpawn).toHaveBeenCalled()
     expect(mockExecFile).toHaveBeenCalled()
-    expect(mockExecFile.mock.calls[0][0]).toBe('p4')
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['sync'])
+    // Indexing by content, not position: a Root-coverage preflight runs first.
+    const syncCall = mockExecFile.mock.calls.find(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === 'sync',
+    )
+    expect(syncCall?.[0]).toBe('p4')
+    expect(syncCall?.[1]).toEqual(['sync'])
+  })
+
+  it('continues to the real sync when managed-path root verification is unavailable', async () => {
+    const originalRoot = env.SCM_STORAGE_ROOT
+    env.SCM_STORAGE_ROOT = '/managed'
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const commandArgs = args[1] as string[]
+      const cb = args[args.length - 1] as (
+        err: Error | null,
+        result?: { stdout: string; stderr: string },
+      ) => void
+      if (commandArgs[0] === 'client') cb(new Error('client spec timed out'))
+      else cb(null, { stdout: '', stderr: '' })
+    })
+
+    const result = await executeP4Sync(
+      { ...p4ConfigDefaults, p4port: 'p4:1666', p4user: 'u', p4client: 'c' },
+      '/managed/sources/source-a',
+    )
+
+    env.SCM_STORAGE_ROOT = originalRoot
+    expect(result.ok).toBe(true)
+    expect(mockExecFile.mock.calls.some((call) => (call[1] as string[])[0] === 'sync')).toBe(true)
+  })
+
+  it('reports an unknown managed P4 client instead of inspecting its template Root', async () => {
+    const originalRoot = env.SCM_STORAGE_ROOT
+    env.SCM_STORAGE_ROOT = '/managed'
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const commandArgs = args[1] as string[]
+      const cb = args[args.length - 1] as (
+        err: Error | null,
+        result?: { stdout: string; stderr: string },
+      ) => void
+      if (commandArgs[0] === 'info') {
+        cb(null, { stdout: 'Server address: p4:1666\nClient unknown.\n', stderr: '' })
+      } else if (commandArgs[0] === 'client') {
+        cb(null, { stdout: 'Root:\t/app\n', stderr: '' })
+      } else {
+        cb(null, { stdout: '', stderr: '' })
+      }
+    })
+
+    const result = await executeP4Sync(
+      { ...p4ConfigDefaults, p4port: 'p4:1666', p4user: 'u', p4client: 'missing-client' },
+      '/managed/sources/source-a',
+    )
+
+    env.SCM_STORAGE_ROOT = originalRoot
+    expect(result).toMatchObject({ ok: false })
+    expect(result.message).toContain('does not exist yet')
+    expect(mockExecFile.mock.calls.some((call) => (call[1] as string[])[0] === 'client')).toBe(
+      false,
+    )
+    expect(mockExecFile.mock.calls.some((call) => (call[1] as string[])[0] === 'sync')).toBe(false)
   })
 
   it('creates localPath directory if it does not exist', async () => {
@@ -290,7 +403,11 @@ describe('executeP4Sync', () => {
       depotPath: '//depot/main/',
     }
     await executeP4Sync(config, '/repo')
-    expect(mockExecFile.mock.calls[0][1]).toEqual(['sync', '//depot/main/...'])
+    // Indexing by content, not position: a Root-coverage preflight runs first.
+    const syncCall = mockExecFile.mock.calls.find(
+      (call) => Array.isArray(call[1]) && (call[1] as string[])[0] === 'sync',
+    )
+    expect(syncCall?.[1]).toEqual(['sync', '//depot/main/...'])
   })
 
   it('returns "Already up-to-date" when no files updated', async () => {
@@ -396,7 +513,10 @@ function mockDbSelectAll(rows: unknown[]) {
 function mockDbUpdate({
   acquired = true,
   acquiredRow,
-}: { acquired?: boolean; acquiredRow?: unknown } = {}) {
+}: {
+  acquired?: boolean
+  acquiredRow?: unknown
+} = {}) {
   const runFn = vi.fn()
   // The atomic acquire ends in .returning().get() and its result is taken as the
   // authoritative source snapshot; the terminal status write is awaited directly.
@@ -490,6 +610,91 @@ describe('syncScmSource', () => {
     expect(mockExecuteGitSync).toHaveBeenCalled()
   })
 
+  it('refuses to sync a stored source from the legacy-volume reclaim root', async () => {
+    const source = {
+      id: 's1',
+      name: 'legacy reclaim collision',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: join(legacyScmReclaimRoot(), 'parked-checkout'),
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('reclaim root')
+    expect(mockExecuteGitSync).not.toHaveBeenCalled()
+  })
+
+  it('aborts and waits for a cancellable automatic initial sync', async () => {
+    const source = {
+      id: 's1',
+      name: 'initial',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.com/repo.git', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: null,
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+    let receivedSignal: AbortSignal | undefined
+    mockExecuteGitSync.mockImplementation(
+      (_config: unknown, _path: string, _timeout: number, signal?: AbortSignal) => {
+        receivedSignal = signal
+        return new Promise((resolve) => {
+          signal?.addEventListener('abort', () =>
+            resolve({ ok: false, message: 'Git sync cancelled' }),
+          )
+        })
+      },
+    )
+
+    const running = startInitialScmSync('s1')
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined())
+    await expect(cancelInitialScmSync('s1')).resolves.toBe(true)
+    await expect(running).resolves.toMatchObject({ ok: false })
+    expect(receivedSignal?.aborted).toBe(true)
+    expect(isCheckoutBusy('s1')).toBe(false)
+    expect(mockNotifyScmSyncError).not.toHaveBeenCalled()
+  })
+
+  // An abort that lands AFTER a genuine failure must not erase it. Reading
+  // signal.aborted once the sync body had already returned made a real error
+  // (bad credentials) settle as a clean 'idle' with no lastSyncError and no
+  // webhook, leaving a healthy-looking source agents cannot use.
+  it('keeps a genuine sync failure when the signal aborts after it settles', async () => {
+    const source = {
+      id: 's1',
+      name: 'initial',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.com/repo.git', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: null,
+    }
+    mockDbSelectGet(source)
+    const updateChain = mockDbUpdate()
+    mockExecuteGitSync.mockImplementation(async () => {
+      // The real failure is produced first. The cancellation then lands while
+      // the caller sits between the sync body and the terminal status write —
+      // exactly the window where sampling signal.aborted erased the error.
+      const result = { ok: false, message: 'Git sync failed: Authentication failed' }
+      queueMicrotask(() => void cancelInitialScmSync('s1'))
+      return result
+    })
+
+    await expect(startInitialScmSync('s1')).resolves.toMatchObject({ ok: false })
+
+    const written = updateChain.setFn.mock.calls.at(-1)?.[0] as {
+      syncStatus?: string
+      lastSyncError?: string | null
+    }
+    expect(written?.syncStatus).toBe('error')
+    expect(written?.lastSyncError).toMatch(/Authentication failed/)
+  })
+
   it('starts CodeGraph indexing after successful sync when enabled', async () => {
     const source = {
       id: 's1',
@@ -510,7 +715,7 @@ describe('syncScmSource', () => {
 
     await syncScmSource('s1')
 
-    expect(mockRunCodegraphIndex).toHaveBeenCalledWith('s1')
+    expect(mockRunCodegraphIndex).toHaveBeenCalledWith('s1', { alreadyAcquired: true })
   })
 
   it('does not start CodeGraph indexing when sync fails', async () => {
@@ -1165,6 +1370,123 @@ describe('initAutoSyncSchedulers', () => {
 
     stopAutoSync('s1')
   })
+
+  it('atomically attributes recovered deletion to the original requester', async () => {
+    const pendingSource = {
+      id: 'scm_pending',
+      name: 'Pending source',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.test/repo.git' },
+      localPath: '/data/workspace/sources/pending',
+      workspacesPath: '/data/workspace/workspaces/pending',
+      deletionRequestedAt: new Date(),
+      deletionRequestedBy: 'usr_admin_requester',
+      userId: 'usr_source_owner',
+    }
+    let selectCall = 0
+    mockDb.select.mockImplementation(
+      () =>
+        asyncQuery({
+          from: vi.fn(() =>
+            asyncQuery({
+              where: vi.fn(() => {
+                selectCall++
+                if (selectCall <= 2) return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+                if (selectCall === 3) {
+                  return asyncQuery({ all: vi.fn(() => [pendingSource]), get: vi.fn() })
+                }
+                return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+              }),
+            }),
+          ),
+        }) as any,
+    )
+    mockDb.delete.mockReturnValue({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([pendingSource]) })),
+    })
+
+    await initAutoSyncSchedulers()
+
+    expect(mockWriteBackgroundAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'scm_source.delete',
+        userId: 'usr_admin_requester',
+      }),
+      mockDb,
+    )
+  })
+
+  // Same rule as the DELETE route: finalizing a deletion whose managed path a
+  // surviving peer still occupies orphans that directory forever — the row is
+  // its only name. Recovery must hold the reservation until the peer is gone.
+  it('keeps a recovered deletion reservation when a managed path is blocked by a peer', async () => {
+    const pendingSource = {
+      id: 'scm_pending',
+      name: 'Pending source',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://example.test/repo.git' },
+      localPath: '/data/workspace/sources/pending',
+      workspacesPath: '/data/workspace/workspaces/pending',
+      deletionRequestedAt: new Date(),
+      deletionRequestedBy: 'usr_admin_requester',
+      userId: 'usr_source_owner',
+    }
+    let selectCall = 0
+    mockDb.select.mockImplementation(
+      () =>
+        asyncQuery({
+          from: vi.fn(() =>
+            asyncQuery({
+              where: vi.fn(() => {
+                selectCall++
+                if (selectCall <= 2) return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+                if (selectCall === 3) {
+                  return asyncQuery({ all: vi.fn(() => [pendingSource]), get: vi.fn() })
+                }
+                return asyncQuery({ all: vi.fn(() => []), get: vi.fn() })
+              }),
+            }),
+          ),
+        }) as any,
+    )
+    const commit = vi.fn().mockResolvedValue([])
+    mockIsolateManagedScmStorage.mockResolvedValueOnce({
+      isolated: [],
+      blocked: [{ path: pendingSource.localPath, peerId: 'scm_peer' }],
+      commit,
+    })
+
+    await initAutoSyncSchedulers()
+
+    expect(commit).not.toHaveBeenCalled()
+    expect(mockDb.delete).not.toHaveBeenCalled()
+    expect(mockWriteBackgroundAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'scm_source.delete' }),
+      mockDb,
+    )
+  })
+})
+
+describe('startInitialSyncRecovery', () => {
+  beforeEach(() => stopAllAutoSync())
+  afterEach(() => stopAllAutoSync())
+
+  it('limits restart recovery to two concurrent initial checkouts', async () => {
+    const releases: Array<() => void> = []
+    const startSync = vi.fn(
+      (_sourceId: string) =>
+        new Promise<ScmSyncResult>((resolve) => {
+          releases.push(() => resolve({ ok: true, message: 'done' }))
+        }),
+    )
+
+    startInitialSyncRecovery(['s1', 's2', 's3', 's4'], startSync)
+    await vi.waitFor(() => expect(startSync).toHaveBeenCalledTimes(2))
+
+    releases.shift()?.()
+    await vi.waitFor(() => expect(startSync).toHaveBeenCalledTimes(3))
+    expect(startSync.mock.calls[2]?.[0]).toBe('s3')
+  })
 })
 
 describe('checkP4Connection — edge cases', () => {
@@ -1237,5 +1559,72 @@ describe('checkP4Connection — edge cases', () => {
     const result = await checkP4Connection(config)
     expect(result.ok).toBe(false)
     expect(result.message).toContain('Connection refused')
+  })
+
+  it('keeps a healthy connection when the client spec cannot be read', async () => {
+    makeSpawnMock(0)
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const commandArgs = args[1] as string[]
+      const cb = args[args.length - 1] as (
+        err: Error | null,
+        result?: { stdout: string; stderr: string },
+      ) => void
+      if (commandArgs[0] === 'info') {
+        cb(null, {
+          stdout: 'Server address: p4.example.com:1666\nServer version: P4D/LINUX/2025.1',
+          stderr: '',
+        })
+        return
+      }
+      cb(new Error('P4PASSWD=hunter2: permission denied for client -o'))
+    })
+
+    const result = await checkP4Connection({
+      ...p4ConfigDefaults,
+      p4port: 'ssl:p4.example.com:1666',
+      p4user: 'builder',
+      p4passwd: 'hunter2',
+      p4client: 'builder-client',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe('P4 connection is healthy')
+    expect(result.clientRootWarning).toContain('could not be verified')
+    expect(result.clientRootWarning).not.toContain('hunter2')
+  })
+
+  it('treats an unknown client as a healthy connection with a setup warning', async () => {
+    makeSpawnMock(0)
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const commandArgs = args[1] as string[]
+      const cb = args[args.length - 1] as (
+        err: Error | null,
+        result?: { stdout: string; stderr: string },
+      ) => void
+      if (commandArgs[0] === 'info') {
+        cb(null, {
+          stdout:
+            'Server address: p4.example.com:1666\nServer version: P4D/LINUX/2025.1\nClient unknown.\n',
+          stderr: '',
+        })
+      } else {
+        cb(null, { stdout: 'Root: /app', stderr: '' })
+      }
+    })
+
+    const result = await checkP4Connection(
+      {
+        ...p4ConfigDefaults,
+        p4port: 'ssl:p4.example.com:1666',
+        p4user: 'builder',
+        p4client: 'not-created-yet',
+      },
+      '/data/workspace/main',
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.clientRoot).toBeUndefined()
+    expect(result.clientRootWarning).toContain('not-created-yet')
+    expect(mockExecFile.mock.calls).toHaveLength(1)
   })
 })

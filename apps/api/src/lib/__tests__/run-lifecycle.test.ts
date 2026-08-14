@@ -159,6 +159,7 @@ const {
   mockDbRun,
   mockDbInsertRun,
   mockCreateScmSource,
+  mockRemoveOwnedSourceWorkspaceGuarded,
   mockNotifyRunError,
 } = vi.hoisted(() => ({
   whereCalls: [] as unknown[],
@@ -173,6 +174,7 @@ const {
   mockDbRun: vi.fn().mockReturnValue({ changes: 1 }),
   mockDbInsertRun: vi.fn(),
   mockCreateScmSource: vi.fn(),
+  mockRemoveOwnedSourceWorkspaceGuarded: vi.fn().mockResolvedValue(undefined),
   mockNotifyRunError: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -246,6 +248,10 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
 
 vi.mock('../scm-source.js', () => ({
   createScmSource: mockCreateScmSource,
+}))
+
+vi.mock('../scm-workspace-removal.js', () => ({
+  removeOwnedSourceWorkspaceGuarded: mockRemoveOwnedSourceWorkspaceGuarded,
 }))
 
 vi.mock('../webhook-notifier.js', () => ({
@@ -572,7 +578,8 @@ describe('finishRunSuccess', () => {
     expect(mockScanAndRegisterArtifacts).not.toHaveBeenCalled()
     expect(vi.mocked(scheduleNext)).not.toHaveBeenCalled()
     expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)
-    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+    expect(mockRemoveOwnedSourceWorkspaceGuarded).toHaveBeenCalled()
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
   it.each(['completed', 'failed'])(
@@ -683,7 +690,8 @@ describe('finishRunSuccess', () => {
 
     expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)
     expect(vi.mocked(scheduleNext)).toHaveBeenCalledOnce()
-    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+    expect(mockRemoveOwnedSourceWorkspaceGuarded).toHaveBeenCalled()
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
   it('success=false: step output 包含 error 字段', async () => {
@@ -779,7 +787,8 @@ describe('finishRunSuccess', () => {
 
     // 扫描完成后，cleanup 才执行
     expect(scanResolved).toBe(true)
-    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+    expect(mockRemoveOwnedSourceWorkspaceGuarded).toHaveBeenCalled()
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
   it('artifact links in chat message use getArtifactDownloadUrl', async () => {
@@ -1234,7 +1243,7 @@ describe('cleanupWorktreeIfEphemeral', () => {
     expect(mockCreateScmSource).toHaveBeenCalled()
   })
 
-  it('calls removeWorkspace when ephemeral and not occupied', async () => {
+  it('uses the durable guarded-removal protocol when ephemeral and not occupied', async () => {
     const source = { id: 'scm_1', type: 'git' }
     mockDbGet
       .mockReturnValueOnce({
@@ -1249,7 +1258,13 @@ describe('cleanupWorktreeIfEphemeral', () => {
     mockCreateScmSource.mockReturnValueOnce({ removeWorkspace, wsRoot: '/ws' })
 
     await cleanupWorktreeIfEphemeral('run_1', 'agt_1')
-    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+    expect(mockRemoveOwnedSourceWorkspaceGuarded).toHaveBeenCalledWith({
+      sourceId: 'scm_1',
+      name: 'fix',
+      scm: expect.objectContaining({ wsRoot: '/ws' }),
+      workload: expect.objectContaining({ type: 'run', workloadId: 'run_1' }),
+    })
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
   it('never removes the per-agent worktree, even with a legacy ephemeral config', async () => {
@@ -1305,7 +1320,7 @@ describe('cleanupWorktreeIfEphemeral', () => {
     expect(removeWorkspace).not.toHaveBeenCalled()
   })
 
-  it('removes via matching path when wsRoot+name equals run.workDir', async () => {
+  it('removes via the guarded protocol when wsRoot+name equals run.workDir', async () => {
     const source = { id: 'scm_1', type: 'git' }
     mockDbGet
       .mockReturnValueOnce({
@@ -1320,6 +1335,12 @@ describe('cleanupWorktreeIfEphemeral', () => {
     mockCreateScmSource.mockReturnValueOnce({ removeWorkspace, wsRoot: '/ws' })
 
     await cleanupWorktreeIfEphemeral('run_1', 'agt_1')
-    expect(removeWorkspace).toHaveBeenCalledWith('fix')
+    expect(mockRemoveOwnedSourceWorkspaceGuarded).toHaveBeenCalledWith({
+      sourceId: 'scm_1',
+      name: 'fix',
+      scm: expect.objectContaining({ wsRoot: '/ws' }),
+      workload: expect.objectContaining({ type: 'run', workloadId: 'run_1' }),
+    })
+    expect(removeWorkspace).not.toHaveBeenCalled()
   })
 })

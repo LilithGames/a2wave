@@ -190,6 +190,32 @@ Each new `action` / `resource` also needs zh + en copy in `apps/web/src/locales/
 
 Full conventions, examples, and a pre-merge checklist: [docs/agent/audit-logging.md](../../docs/agent/audit-logging.md).
 
+## SCM Storage Changes
+
+SCM paths are a cross-cutting persistence boundary, not a route-local detail.
+Before changing source creation, bootstrap, sync, deletion, workspace cleanup,
+or container ownership, read and preserve the complete invariant set in
+[SCM Storage Invariants](../../docs/agent/scm-storage-invariants.md). Every
+affected create/PATCH/DELETE/startup/bootstrap and Git/P4 path must be checked;
+the SQLite/PostgreSQL and volume/bind integration gate is
+`pnpm test:scm-storage`.
+
+Two rules that catch most mistakes in this area:
+
+- **Every recovery decision has two semantics, not one.** SQLite is a single
+  process, so a restart proves its predecessor is dead and it may clean up
+  synchronously. PostgreSQL cannot infer that — a booting replica says nothing
+  about a peer — so recovery there waits on `instance_heartbeats`. Code that
+  reclaims anything must be correct under both; `if (!isPostgres)` guards mark
+  the places where they genuinely differ.
+- **A liveness verdict must be re-checked inside the transaction that acts on
+  it.** Reading the heartbeat table before taking the lock is a check-then-act:
+  the owner can resume beating in between, and the reclaim would then evict a
+  live process. Anything long-running that touches a checkout (sync, indexing,
+  an evaluation's per-case loop, workspace removal) also consults
+  `hasLostHeartbeatOwnership()` itself — admission-time checks alone do not
+  make the fail-stop guarantee true.
+
 ## Testing Conventions
 
 Framework: **Vitest**; test files live in a `__tests__/` directory next to the file under test.

@@ -9,16 +9,16 @@ import { join } from 'node:path'
  * reached by guessing the path.
  */
 import {
-  REVIEWABLE_RESULT_STATUSES,
-  type RunChannelContext,
   createEvaluationCaseInput,
   createEvaluationSetInput,
   createEvaluationTaskInput,
+  REVIEWABLE_RESULT_STATUSES,
+  type RunChannelContext,
   reviewEvaluationResultInput,
   updateEvaluationCaseInput,
   updateEvaluationSetInput,
 } from '@a2wave/shared'
-import { and, asc, desc, eq, inArray } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { db } from '../db/client.js'
 import {
@@ -28,10 +28,12 @@ import {
   evaluationSets,
   evaluationTasks,
   scmSources,
+  scmWorkloadLeases,
   users,
 } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
+import { EVALUATION_MAX_QUEUE_LENGTH, scheduleNextEvaluation } from '../engine/evaluation-queue.js'
 import { evaluationQueueDb } from '../engine/evaluation-queue-db.js'
-import { scheduleNextEvaluation, tryAcquireEvaluationSlot } from '../engine/evaluation-queue.js'
 import { requireAgentRead, requireAgentWrite } from '../lib/agent-access.js'
 import { buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
 import { logAudit, logBackgroundAudit } from '../lib/audit.js'
@@ -42,12 +44,29 @@ import {
   buildStoredEvaluationSnapshot,
 } from '../lib/evaluation-snapshot.js'
 import { createId } from '../lib/id.js'
+import { hasLostHeartbeatOwnership } from '../lib/instance-heartbeat.js'
 import { logger } from '../lib/logger.js'
 import { getCurrentUserId } from '../lib/owner-filter.js'
+import { processInstanceId } from '../lib/process-instance.js'
 import { buildDebugChannel } from '../lib/run-channel.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { createScmSource } from '../lib/scm-source.js'
+import { registerScmEvaluationWorkload } from '../lib/scm-workload-guard.js'
+import {
+  activateScmWorkload,
+  releaseReservedScmWorkloadInMutation,
+  retryScmWorkloadReleaseUntilSuccess,
+  withScmWorkloadAdmission,
+} from '../lib/scm-workload-lifecycle.js'
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
+import { removeOwnedSourceWorkspaceGuarded } from '../lib/scm-workspace-removal.js'
+import { cleanupWorkspaceOrHandOff } from '../lib/workspace-cleanup-retry.js'
 
 const app = new Hono()
+const activeEvaluationExecutions = new Set<Promise<void>>()
+
+class EvaluationQueueFullError extends Error {}
+class EvaluationWorkspaceChangedError extends Error {}
 
 /** Loads a set, enforcing that it really belongs to the agent in the path. */
 async function loadSetOrThrow(agentId: string, setId: string) {
@@ -251,6 +270,11 @@ app.delete('/:agentId/evaluation-sets/:setId/cases/:caseId', async (c) => {
  * the replacement the delete already promoted into its slot.
  */
 async function shouldStopTask(taskId: string): Promise<boolean> {
+  // Losing the liveness lease stops the loop too. A replay can span many cases
+  // and thus many minutes, so an admission-time check alone would let a fenced
+  // instance keep spawning CLIs against a worktree peers may already have
+  // reclaimed. This is the per-iteration floor the fail-stop promise needs.
+  if (hasLostHeartbeatOwnership()) return true
   const row = (
     await db
       .select({ cancelRequestedAt: evaluationTasks.cancelRequestedAt })
@@ -311,15 +335,20 @@ async function settleUnfinishedResults(
   status: 'cancelled' | 'failed',
   error?: string,
 ): Promise<void> {
-  await db
-    .update(evaluationResults)
-    .set({ status, error: error ?? null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(evaluationResults.taskId, taskId),
-        inArray(evaluationResults.status, ['pending', 'running']),
-      ),
-    )
+  // runExclusive, not a bare write: this runs detached from any request, so a
+  // write absorbed into a stranger's SQLite transaction and rolled back with it
+  // would never be retried — the cases would spin forever in the UI.
+  await runExclusive(async () => {
+    await db
+      .update(evaluationResults)
+      .set({ status, error: error ?? null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(evaluationResults.taskId, taskId),
+          inArray(evaluationResults.status, ['pending', 'running']),
+        ),
+      )
+  })
 }
 
 /** Recomputes and persists the task summary from its current result rows. */
@@ -329,10 +358,12 @@ async function refreshTaskSummary(taskId: string): Promise<void> {
     .from(evaluationResults)
     .where(eq(evaluationResults.taskId, taskId))
 
-  await db
-    .update(evaluationTasks)
-    .set({ summary: summarizeResults(rows), updatedAt: new Date() })
-    .where(eq(evaluationTasks.id, taskId))
+  await runExclusive(async () => {
+    await db
+      .update(evaluationTasks)
+      .set({ summary: summarizeResults(rows), updatedAt: new Date() })
+      .where(eq(evaluationTasks.id, taskId))
+  })
 }
 
 /**
@@ -446,8 +477,28 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     casesRun: 0,
     turnsReplayed: 0,
   }
+  const releaseWorkload = await withAgentScmWorkloadLock(agentId, async () =>
+    registerScmEvaluationWorkload(taskId, agentId),
+  )
+  let hasDurableLease = false
 
   try {
+    hasDurableLease = Boolean(
+      (
+        await db
+          .select({ id: scmWorkloadLeases.id })
+          .from(scmWorkloadLeases)
+          .where(eq(scmWorkloadLeases.id, `evaluation:${taskId}`))
+          .limit(1)
+      )[0],
+    )
+    if (hasDurableLease) {
+      await activateScmWorkload({
+        type: 'evaluation',
+        workloadId: taskId,
+        ownerInstanceId: processInstanceId,
+      })
+    }
     const agent = (
       await db.select().from(agentsTable).where(eq(agentsTable.id, agentId)).limit(1)
     )[0]
@@ -462,10 +513,15 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     // A task cancelled while queued must not start: the queue promoted it to
     // `running`, but the user's intent predates that promotion.
     if (await isCancelRequested(taskId)) {
-      await db
-        .update(evaluationTasks)
-        .set({ status: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
-        .where(eq(evaluationTasks.id, taskId))
+      // Terminal writes in this detached loop go through runExclusive: nothing
+      // retries them, so joining a stranger's rolled-back SQLite transaction
+      // would wedge the task in `running` permanently.
+      await runExclusive(async () => {
+        await db
+          .update(evaluationTasks)
+          .set({ status: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
+          .where(eq(evaluationTasks.id, taskId))
+      })
       await settleUnfinishedResults(taskId, 'cancelled')
       await refreshTaskSummary(taskId)
       return
@@ -480,10 +536,12 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     workspace = await prepareEvaluationWorkspace(agent, taskId)
     const workDir = workspace.workDir
 
-    await db
-      .update(evaluationTasks)
-      .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
+        .where(eq(evaluationTasks.id, taskId))
+    })
 
     const results = await db
       .select()
@@ -494,10 +552,12 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     for (const row of results) {
       if (await shouldStopTask(taskId)) break
 
-      await db
-        .update(evaluationResults)
-        .set({ status: 'running', updatedAt: new Date() })
-        .where(eq(evaluationResults.id, row.id))
+      await runExclusive(async () => {
+        await db
+          .update(evaluationResults)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(eq(evaluationResults.id, row.id))
+      })
 
       const replay = await replayCase({
         taskId,
@@ -512,16 +572,18 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
       execution.casesRun += 1
       execution.turnsReplayed += replay.actualTurns.length
 
-      await db
-        .update(evaluationResults)
-        .set({
-          status: replay.status,
-          actualTurns: replay.actualTurns,
-          error: replay.error,
-          durationMs: replay.durationMs,
-          updatedAt: new Date(),
-        })
-        .where(eq(evaluationResults.id, row.id))
+      await runExclusive(async () => {
+        await db
+          .update(evaluationResults)
+          .set({
+            status: replay.status,
+            actualTurns: replay.actualTurns,
+            error: replay.error,
+            durationMs: replay.durationMs,
+            updatedAt: new Date(),
+          })
+          .where(eq(evaluationResults.id, row.id))
+      })
     }
 
     // Deleted mid-run: the row and its results are already gone, and writing a
@@ -529,14 +591,16 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
     if (!(await taskExists(taskId))) return
 
     const cancelled = await isCancelRequested(taskId)
-    await db
-      .update(evaluationTasks)
-      .set({
-        status: cancelled ? 'cancelled' : 'completed',
-        finishedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({
+          status: cancelled ? 'cancelled' : 'completed',
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(evaluationTasks.id, taskId))
+    })
 
     // The loop breaks on cancel with cases still untouched behind it.
     if (cancelled) await settleUnfinishedResults(taskId, 'cancelled')
@@ -545,27 +609,36 @@ async function executeTask(taskId: string, agentId: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error({ err, taskId, agentId }, 'Evaluation task failed')
-    await db
-      .update(evaluationTasks)
-      .set({
-        status: 'failed',
-        error: message,
-        finishedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(evaluationTasks.id, taskId))
+    await runExclusive(async () => {
+      await db
+        .update(evaluationTasks)
+        .set({
+          status: 'failed',
+          error: message,
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(evaluationTasks.id, taskId))
+    })
     await settleUnfinishedResults(taskId, 'failed', message)
     await refreshTaskSummary(taskId)
   } finally {
-    await auditEvaluationExecution(taskId, agentId, execution)
-
-    // Per-task scratch directories would otherwise accumulate one per task
-    // forever, each holding a synced copy of the Agent's skills and MCP config.
-    await discardEvaluationWorkspace(workspace, taskId)
-
-    // The slot is only free now. Skipping this on any terminal path — including
-    // the error one — would leave the agent's queue stalled with work in it.
-    await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
+    try {
+      await auditEvaluationExecution(taskId, agentId, execution)
+      await cleanupWorkspaceOrHandOff(() => discardEvaluationWorkspace(workspace, taskId), {
+        context: { type: 'evaluation', taskId, agentId },
+      })
+    } finally {
+      releaseWorkload()
+      if (hasDurableLease) {
+        await retryScmWorkloadReleaseUntilSuccess({
+          type: 'evaluation',
+          workloadId: taskId,
+          ownerInstanceId: processInstanceId,
+        })
+      }
+      await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
+    }
   }
 }
 
@@ -651,26 +724,29 @@ async function discardEvaluationWorkspace(
 ): Promise<void> {
   if (!workspace || workspace.cleanup === 'none') return
 
-  try {
-    if (workspace.cleanup === 'remove-worktree') {
-      const source = (
-        await db.select().from(scmSources).where(eq(scmSources.id, workspace.sourceId)).limit(1)
-      )[0]
-      // `rm -rf` would leave the parent repo holding a stale admin entry that
-      // blocks the next checkout of that branch until `git worktree prune`.
-      const scm = source ? await createScmSource(source) : null
-      if (scm) await scm.removeWorkspace(workspace.worktreeName)
-      return
+  if (workspace.cleanup === 'remove-worktree') {
+    const source = (
+      await db.select().from(scmSources).where(eq(scmSources.id, workspace.sourceId)).limit(1)
+    )[0]
+    // `rm -rf` would leave the parent repo holding a stale admin entry that
+    // blocks the next checkout of that branch until `git worktree prune`.
+    const scm = source ? await createScmSource(source) : null
+    if (scm) {
+      await removeOwnedSourceWorkspaceGuarded({
+        sourceId: workspace.sourceId,
+        name: workspace.worktreeName,
+        scm,
+        workload: {
+          type: 'evaluation',
+          workloadId: taskId,
+          ownerInstanceId: processInstanceId,
+        },
+      })
     }
-
-    await rm(workspace.workDir, { recursive: true, force: true })
-  } catch (err) {
-    // Best-effort: a leftover workspace is untidy, not incorrect.
-    logger.warn(
-      { err, taskId, workDir: workspace.workDir },
-      'Failed to clean up evaluation workspace',
-    )
+    return
   }
+
+  await rm(workspace.workDir, { recursive: true, force: true })
 }
 
 /**
@@ -678,7 +754,17 @@ async function discardEvaluationWorkspace(
  * tasks that were still queued when the process went down.
  */
 export function runEvaluationTask(taskId: string, agentId: string): void {
-  void executeTask(taskId, agentId)
+  const execution = executeTask(taskId, agentId)
+    .catch((error) => logger.error({ error, taskId, agentId }, 'Evaluation lifecycle failed'))
+    .finally(() => activeEvaluationExecutions.delete(execution))
+  activeEvaluationExecutions.add(execution)
+}
+
+/** Wait for process exit, audit, workspace cleanup, and durable lease release. */
+export async function drainActiveEvaluationTasks(): Promise<void> {
+  while (activeEvaluationExecutions.size > 0) {
+    await Promise.all([...activeEvaluationExecutions])
+  }
 }
 
 /** GET /:agentId/evaluation-tasks */
@@ -718,41 +804,91 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
   }
 
   const taskId = createId('evt')
-  const task = (
-    await db
-      .insert(evaluationTasks)
-      .values({
-        id: taskId,
-        agentId,
-        setId: set.id,
-        // Denormalized so the task stays readable after the set is deleted.
-        setName: set.name,
-        name: parsed.data.name ?? null,
-        status: 'pending',
-        configSnapshot: await buildStoredEvaluationSnapshot(agent),
-        userId: getCurrentUserId(c),
-      })
-      .returning()
-  )[0]
+  const configSnapshot = await buildStoredEvaluationSnapshot(agent)
+  let task: typeof evaluationTasks.$inferSelect | null
+  try {
+    task = await withAgentScmWorkloadLock(agentId, () =>
+      withScmWorkloadAdmission(
+        { type: 'evaluation', workloadId: taskId, agentId },
+        async (tx, admission) => {
+          const snapshotWorkspaceType = agent.workspaceType ?? 'temp'
+          const snapshotSourceId = snapshotWorkspaceType === 'scm' ? agent.scmSourceId : null
+          if (
+            admission.workspaceType !== snapshotWorkspaceType ||
+            admission.scmSourceId !== snapshotSourceId
+          ) {
+            throw new EvaluationWorkspaceChangedError()
+          }
 
-  for (const [index, evalCase] of cases.entries()) {
-    await db.insert(evaluationResults).values({
-      id: createId('evr'),
-      taskId,
-      caseId: evalCase.id,
-      caseName: evalCase.name,
-      turnsSnapshot: evalCase.turns,
-      status: 'pending',
-      sortOrder: index,
-    })
-  }
+          // The same cross-dialect mutation transaction serializes the count,
+          // task state and SCM reservation across replicas. A process-local
+          // queue lock cannot protect P4's shared checkout in PostgreSQL.
+          const running =
+            (
+              await tx
+                .select({ value: count() })
+                .from(evaluationTasks)
+                .where(
+                  and(eq(evaluationTasks.agentId, agentId), eq(evaluationTasks.status, 'running')),
+                )
+                .limit(1)
+            )[0]?.value ?? 0
+          const status = running === 0 ? 'running' : 'queued'
+          if (status === 'queued') {
+            const queued =
+              (
+                await tx
+                  .select({ value: count() })
+                  .from(evaluationTasks)
+                  .where(
+                    and(eq(evaluationTasks.agentId, agentId), eq(evaluationTasks.status, 'queued')),
+                  )
+                  .limit(1)
+              )[0]?.value ?? 0
+            if (queued >= EVALUATION_MAX_QUEUE_LENGTH) throw new EvaluationQueueFullError()
+          }
 
-  // Queued per agent: an evaluation task fans out into N sequential agent
-  // invocations, so letting every submission run at once would swamp the box.
-  const slot = tryAcquireEvaluationSlot(evaluationQueueDb, agentId, taskId)
-  if ((await slot) === 'queue_full') {
-    await db.delete(evaluationTasks).where(eq(evaluationTasks.id, taskId))
-    return c.json({ error: 'EVALUATION_QUEUE_FULL' }, 429)
+          const insertedTask = (
+            await tx
+              .insert(evaluationTasks)
+              .values({
+                id: taskId,
+                agentId,
+                setId: set.id,
+                // Denormalized so the task stays readable after the set is deleted.
+                setName: set.name,
+                name: parsed.data.name ?? null,
+                status,
+                configSnapshot,
+                userId: getCurrentUserId(c),
+              })
+              .returning()
+          )[0]
+
+          await tx.insert(evaluationResults).values(
+            cases.map((evalCase, index) => ({
+              id: createId('evr'),
+              taskId,
+              caseId: evalCase.id,
+              caseName: evalCase.name,
+              turnsSnapshot: evalCase.turns,
+              status: 'pending' as const,
+              sortOrder: index,
+            })),
+          )
+
+          return insertedTask
+        },
+      ),
+    )
+  } catch (error) {
+    if (error instanceof EvaluationQueueFullError) {
+      return c.json({ error: 'EVALUATION_QUEUE_FULL' }, 429)
+    }
+    if (error instanceof EvaluationWorkspaceChangedError) {
+      return c.json({ error: 'Agent workspace changed; retry the evaluation' }, 409)
+    }
+    throw error
   }
 
   // Audited only once the task is certain to survive: the queue-full path above
@@ -760,7 +896,7 @@ app.post('/:agentId/evaluation-tasks', async (c) => {
   // leaves an auditor reconciling create events against phantom rows.
   logAudit(c, { action: 'evaluation_task.create', resource: 'evaluation_task', resourceId: taskId })
 
-  if ((await slot) === 'acquired') void executeTask(taskId, agentId)
+  if (task.status === 'running') runEvaluationTask(taskId, agentId)
 
   // Re-read so the client sees the scheduled status rather than the stale
   // `pending` captured at insert time.
@@ -837,27 +973,45 @@ app.patch('/:agentId/evaluation-tasks/:taskId/results/:resultId', async (c) => {
 app.post('/:agentId/evaluation-tasks/:taskId/cancel', async (c) => {
   const { agentId, taskId } = c.req.param()
   await requireAgentWrite(c, agentId)
-  const task = await loadTaskOrThrow(agentId, taskId)
-
-  const cancellable = ['pending', 'queued', 'running']
-  if (!cancellable.includes(task.status)) {
-    return c.json({ error: 'EVALUATION_TASK_NOT_RUNNING' }, 409)
-  }
+  await loadTaskOrThrow(agentId, taskId)
 
   const now = new Date()
-  await db
-    .update(evaluationTasks)
-    .set({ cancelRequestedAt: now, updatedAt: now })
-    .where(eq(evaluationTasks.id, taskId))
+  const cancelledStatus = await withScmPathMutation(async (tx) => {
+    const current = (
+      await tx
+        .select({ status: evaluationTasks.status })
+        .from(evaluationTasks)
+        .where(and(eq(evaluationTasks.id, taskId), eq(evaluationTasks.agentId, agentId)))
+        .limit(1)
+    )[0]
+    if (!current || !['pending', 'queued', 'running'].includes(current.status)) return null
+
+    const settlesImmediately = current.status === 'queued' || current.status === 'pending'
+    await tx
+      .update(evaluationTasks)
+      .set({
+        cancelRequestedAt: now,
+        updatedAt: now,
+        ...(settlesImmediately ? { status: 'cancelled' as const, finishedAt: now } : {}),
+      })
+      .where(eq(evaluationTasks.id, taskId))
+    if (settlesImmediately) {
+      await releaseReservedScmWorkloadInMutation(tx, {
+        type: 'evaluation',
+        workloadId: taskId,
+      })
+    }
+    return current.status
+  })
+
+  if (!cancelledStatus) {
+    return c.json({ error: 'EVALUATION_TASK_NOT_RUNNING' }, 409)
+  }
 
   // A queued task has no loop running to notice the flag, so it is settled here
   // and its slot offered to whatever is behind it. A running one is left to its
   // own loop, which checks between cases and finishes the case in flight.
-  if (task.status === 'queued' || task.status === 'pending') {
-    await db
-      .update(evaluationTasks)
-      .set({ status: 'cancelled', finishedAt: now, updatedAt: now })
-      .where(eq(evaluationTasks.id, taskId))
+  if (cancelledStatus === 'queued' || cancelledStatus === 'pending') {
     await settleUnfinishedResults(taskId, 'cancelled')
     await refreshTaskSummary(taskId)
     await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
@@ -871,28 +1025,43 @@ app.post('/:agentId/evaluation-tasks/:taskId/cancel', async (c) => {
 app.delete('/:agentId/evaluation-tasks/:taskId', async (c) => {
   const { agentId, taskId } = c.req.param()
   await requireAgentWrite(c, agentId)
-  const task = await loadTaskOrThrow(agentId, taskId)
+  await loadTaskOrThrow(agentId, taskId)
 
   // A running task cannot be deleted outright. Slots are counted from rows with
   // status `running`, so removing the row frees the slot while the subprocess it
   // stands for is still alive — the next submission then starts immediately and
   // the agent runs over its configured concurrency. Cancel first: that settles
   // the row only once the loop has actually stopped.
-  if (task.status === 'running') {
+  const deletion = await withScmPathMutation(async (tx) => {
+    const current = (
+      await tx
+        .select()
+        .from(evaluationTasks)
+        .where(and(eq(evaluationTasks.id, taskId), eq(evaluationTasks.agentId, agentId)))
+        .limit(1)
+    )[0]
+    if (!current || current.status === 'running') return { task: current, data: undefined }
+    const data = (
+      await tx.delete(evaluationTasks).where(eq(evaluationTasks.id, taskId)).returning()
+    )[0]
+    await releaseReservedScmWorkloadInMutation(tx, {
+      type: 'evaluation',
+      workloadId: taskId,
+    })
+    return { task: current, data }
+  })
+
+  if (!deletion.task || deletion.task.status === 'running') {
     return c.json({ error: 'EVALUATION_TASK_RUNNING' }, 409)
   }
 
-  const data = (
-    await db.delete(evaluationTasks).where(eq(evaluationTasks.id, taskId)).returning()
-  )[0]
-
   // A queued task never started, so its place in line is free immediately.
-  if (task.status === 'queued') {
+  if (deletion.task.status === 'queued') {
     await scheduleNextEvaluation(evaluationQueueDb, agentId, runEvaluationTask)
   }
 
   logAudit(c, { action: 'evaluation_task.delete', resource: 'evaluation_task', resourceId: taskId })
-  return c.json({ data })
+  return c.json({ data: deletion.data })
 })
 
 export default app

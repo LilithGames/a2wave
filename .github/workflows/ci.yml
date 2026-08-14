@@ -131,6 +131,28 @@ jobs:
   # The release is pinned and checksum-verified, matching how scripts/provider-clis/install.mjs
   # fetches third-party binaries — an unpinned download would let a moved tag change what runs.
   # Bump VERSION and SHA256 together; the checksum comes from the release's tarball.
+  # Hygiene gate: a PR description must report gate RESULTS, not pasted terminal
+  # output. pnpm prints each package's absolute path before every script it runs,
+  # so a pasted run log leaks the author's home directory (PR #28 carried 131
+  # copies of it across ~3,800 lines) and buries the actual verdict.
+  #
+  # Uses the `pull_request` event's own payload rather than the API, so it keeps
+  # the workflow's read-only token and never runs untrusted code from a fork.
+  pr-description:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # Via the environment, not an inline expression: a body containing shell
+      # metacharacters must never be interpolated into the run script.
+      - name: Check PR description hygiene
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" | node scripts/gates/check-pr-body.mjs -
+
   secret-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -346,6 +368,7 @@ jobs:
       - test-cli
       - test-api
       - pgschema
+      - scm-storage-integration
       - review-labels
     if: always()
     runs-on: ubuntu-latest
@@ -387,3 +410,64 @@ jobs:
             gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
               --jq '.jobs[] | select(.conclusion != null) | [.name, (((.completed_at | fromdate) - (.started_at | fromdate)) | tostring + "s"), .conclusion] | "| \(.[0]) | \(.[1]) | \(.[2]) |"'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────
+  # scm-storage: cross-boundary gate. Unit mocks cannot prove transaction-lock
+  # behavior across real drivers, nor Linux bind-mount ownership semantics.
+  # Gated on the api lane because every SCM storage path lives under apps/api.
+  # ───────────────────────────────────────────────────────────────────────
+  scm-storage-integration:
+    needs: detect
+    if: needs.detect.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: a2wave
+          POSTGRES_PASSWORD: a2wave
+          POSTGRES_DB: a2wave_scm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U a2wave -d a2wave_scm_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      SCM_STORAGE_POSTGRES_URL: postgres://a2wave:a2wave@127.0.0.1:5432/a2wave_scm_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      # Install explicitly, WITHOUT --ignore-scripts: this suite opens a real
+      # SQLite database, so better-sqlite3 must build its native addon. A setup
+      # path that skips install scripts fails every case on a missing addon
+      # rather than on anything this gate is meant to catch.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @a2wave/shared build
+      - uses: docker/setup-buildx-action@v3
+      # Build here rather than inside the script so the layers can be cached
+      # between runs. A fresh runner has no layer cache, so every run was
+      # re-downloading the pinned p4 binary from the Perforce CDN — 20MB of
+      # third-party availability standing between this gate and a verdict about
+      # our own storage code. `--load` puts the image in the local daemon, which
+      # is where the script's ownership matrix looks for it.
+      - name: Build the image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: a2wave:scm-storage-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: pnpm test:scm-storage
+        env:
+          # Already built above, with cache.
+          SCM_STORAGE_BUILD_IMAGE: 'false'

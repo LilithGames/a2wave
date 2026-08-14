@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs'
 import {
   lstat,
   mkdir,
-  readFile,
   readdir,
+  readFile,
   realpath,
   rename,
   rm,
@@ -17,7 +17,9 @@ import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
+import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
+import { defaultScmWorkspacesPath } from './scm-storage.js'
 import { platformWorkspaceEntries, platformWorkspacePaths } from './workspace-platform-entries.js'
 
 const execFileAsyncRaw = promisify(execFile)
@@ -119,11 +121,12 @@ export class WorktreeDirtyError extends Error {
 // ============================================================
 
 /**
- * 默认 workspacesPath：~/.a2wave/workspaces/<sourceIdSuffix>
+ * Default workspacesPath: SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>
  *
- * 取 sourceId 第一个 '_' 之后的完整随机段（`scm_` 前缀去掉）。
- * 用 slice 而不是 split('_').pop()，因为 createId 的 base64url 字母表含 '_'，
- * pop 会丢失前缀之外的前几段熵、造成跨 source 的 wsRoot 冲突。
+ * Keep the complete random suffix after the first underscore (drop `scm_`).
+ * Use slice rather than split('_').pop(): createId's base64url alphabet
+ * includes underscores, so pop would discard entropy and could make wsRoot
+ * collide across sources.
  */
 export function idSuffix(id: string): string {
   const underscoreIdx = id.indexOf('_')
@@ -131,8 +134,17 @@ export function idSuffix(id: string): string {
   return suffix || id
 }
 
-export function defaultWorkspacesPath(sourceId: string): string {
-  return join(homedir(), '.a2wave', 'workspaces', idSuffix(sourceId))
+/**
+ * Managed storage decides this, with one exception: a source whose legacy
+ * `~/.a2wave/workspaces/<suffix>` directory still exists keeps it, so an
+ * upgrade never strands worktrees the previous release created.
+ */
+export function defaultWorkspacesPath(
+  sourceId: string,
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  const legacyPath = join(homedir(), '.a2wave', 'workspaces', idSuffix(sourceId))
+  return pathExists(legacyPath) ? legacyPath : defaultScmWorkspacesPath(sourceId)
 }
 
 /**
@@ -174,7 +186,30 @@ export function isPerAgentWorkspaceName(name: string): boolean {
  *
  * @returns `{ path, created }` — created=false 表示复用已有 worktree
  */
+/**
+ * One mutex key per worktree path: creation and removal of the same worktree
+ * must never interleave in this process. Cross-replica, Git's own admin lock
+ * files on the shared volume arbitrate the raw operations, and the durable
+ * workload lease (written before any creation) is what a removal's
+ * `beforeRemove` re-check observes.
+ */
+export function workspaceMutexKey(wsRoot: string, name: string): string {
+  return `scm-worktree:${join(wsRoot, name)}`
+}
+
 export async function createGitWorkspace(
+  localPath: string,
+  wsRoot: string,
+  name: string,
+  config: GitConfig,
+  options?: { branch?: string; followSource?: boolean; advance?: boolean },
+): Promise<{ path: string; created: boolean }> {
+  return withKeyedLock(workspaceMutexKey(wsRoot, name), () =>
+    createGitWorkspaceUnlocked(localPath, wsRoot, name, config, options),
+  )
+}
+
+async function createGitWorkspaceUnlocked(
   localPath: string,
   wsRoot: string,
   name: string,
@@ -196,12 +231,14 @@ export async function createGitWorkspace(
         { wsPath, incompleteRepos },
         'Workspace is incomplete (missing sub-repo dirs), rebuilding',
       )
+      // Unlocked variant: this call site already holds the workspace mutex.
+      //
       // followSource branches are long-lived and may carry unmerged agent
       // commits — a rebuild must never destroy them; the fresh create below
       // re-attaches them via buildFollowSourceAddArgs. The name test covers the
       // other caller: a legacy sticky config reaches a per-agent worktree
       // through the explicit path, which never sets followSource.
-      await removeGitWorkspace(localPath, wsRoot, name, config, {
+      await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, {
         keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
       })
       // fall through to fresh create below
@@ -270,7 +307,8 @@ export async function createGitWorkspace(
       // earlier run, and the explicit path that a legacy sticky config takes
       // never sets followSource.
       try {
-        await removeGitWorkspace(localPath, wsRoot, name, config, {
+        // Unlocked variant: this call site already holds the workspace mutex.
+        await removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, {
           keepBranches: Boolean(options?.followSource) || isPerAgentWorkspaceName(name),
         })
       } catch (rollbackErr) {
@@ -927,13 +965,48 @@ async function assertWorkspaceWithinRoot(wsRoot: string, workspacePath: string):
  *   1. 残留 branch 在主 repo 里越堆越多
  *   2. 下次同名 branch 创建 worktree 时误复用陈旧的 local ref（而不是从配置的
  *      baseBranch 分叉）
+ *
+ * `options.beforeRemove` runs inside the workspace mutex, immediately before
+ * any filesystem work. It is the caller's authoritative occupancy re-check:
+ * a workload admitted between the caller's earlier decision and this lock
+ * acquisition has already written its durable lease (admission precedes
+ * worktree creation on every replica), so a re-check here observes it. Throw
+ * from the callback to abort the removal with nothing touched.
  */
+export interface RemoveGitWorkspaceOptions {
+  /**
+   * Re-check the removal decision immediately before touching the filesystem,
+   * inside the per-worktree mutex. Throw to abort with nothing touched.
+   */
+  beforeRemove?: () => Promise<void>
+  /**
+   * Keep the worktree's local branch. Required for a per-Agent worktree: it is
+   * long-lived and runs on its own branch, so that branch can hold unpushed
+   * commits from an earlier run. Deleting it reclaims the directory *and*
+   * discards that work.
+   */
+  keepBranches?: boolean
+}
+
 export async function removeGitWorkspace(
   localPath: string,
   wsRoot: string,
   name: string,
   config: GitConfig,
-  options?: { keepBranches?: boolean },
+  options?: RemoveGitWorkspaceOptions,
+): Promise<void> {
+  return withKeyedLock(workspaceMutexKey(wsRoot, name), async () => {
+    await options?.beforeRemove?.()
+    return removeGitWorkspaceUnlocked(localPath, wsRoot, name, config, options)
+  })
+}
+
+async function removeGitWorkspaceUnlocked(
+  localPath: string,
+  wsRoot: string,
+  name: string,
+  config: GitConfig,
+  options?: Pick<RemoveGitWorkspaceOptions, 'keepBranches'>,
 ): Promise<void> {
   if (!WORKTREE_NAME_REGEX.test(name)) {
     throw new Error(`Invalid workspace name: ${name}`)
@@ -1202,6 +1275,15 @@ export interface CleanupOptions {
   idleDays?: number
   lruCap?: number
   now?: number // 注入 now 便于测试
+  /**
+   * Removal executor. `activePaths` is a snapshot taken before the scan, so a
+   * workload can claim a candidate AFTER the snapshot — the caller supplies
+   * the guarded removal protocol (durable reservation + fresh occupancy
+   * re-check inside the workspace mutex) and this function treats a thrown
+   * block as "skip", not a failure. Falls back to a bare removeGitWorkspace
+   * only when absent (tests exercising pure fs behavior).
+   */
+  removeWorkspace?: (name: string) => Promise<void>
 }
 
 /**
@@ -1217,6 +1299,15 @@ export async function cleanupStaleWorkspaces(
   const idleDays = opts.idleDays ?? TTL_IDLE_DAYS
   const lruCap = opts.lruCap ?? TTL_LRU_CAP
   const now = opts.now ?? Date.now()
+  const removeWorkspaceImpl =
+    opts.removeWorkspace ??
+    ((name: string) =>
+      removeGitWorkspace(localPath, wsRoot, name, config, {
+        // Defense in depth: a per-agent workspace should never carry `ttl`, but
+        // if a legacy state file says so, its branch may still hold the only
+        // copy of unpushed work — reclaim the directory, keep the refs.
+        keepBranches: isPerAgentWorkspaceName(name),
+      }))
   const idleThreshold = now - idleDays * 24 * 60 * 60 * 1000
 
   const all = await listGitWorkspaces(localPath, wsRoot, config)
@@ -1238,12 +1329,10 @@ export async function cleanupStaleWorkspaces(
     }
     if (ws.lastActivityAt != null && ws.lastActivityAt < idleThreshold) {
       try {
-        // Defense in depth: a per-agent workspace should never carry `ttl`, but if
-        // a legacy state file says so, its branch may still hold the only copy of
-        // unpushed work — reclaim the directory, keep the refs.
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config, {
-          keepBranches: isPerAgentWorkspaceName(ws.name),
-        })
+        // Goes through the guarded protocol the caller injected (durable
+        // reservation + fresh occupancy re-check); its fallback carries the
+        // same keepBranches rule.
+        await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info(
           { wsPath: ws.path, lastActivityAt: ws.lastActivityAt },
@@ -1266,12 +1355,10 @@ export async function cleanupStaleWorkspaces(
       if (opts.activePaths.has(ws.path)) continue
       if (await isWorkspaceDirty(ws, config)) continue
       try {
-        // Defense in depth: a per-agent workspace should never carry `ttl`, but if
-        // a legacy state file says so, its branch may still hold the only copy of
-        // unpushed work — reclaim the directory, keep the refs.
-        await removeGitWorkspace(localPath, wsRoot, ws.name, config, {
-          keepBranches: isPerAgentWorkspaceName(ws.name),
-        })
+        // Goes through the guarded protocol the caller injected (durable
+        // reservation + fresh occupancy re-check); its fallback carries the
+        // same keepBranches rule.
+        await removeWorkspaceImpl(ws.name)
         removed.push(ws.name)
         logger.info({ wsPath: ws.path }, 'TTL cleanup: removed LRU excess workspace')
       } catch (err) {

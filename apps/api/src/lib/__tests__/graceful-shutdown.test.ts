@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { runGracefulShutdownSequence } from '../graceful-shutdown.js'
+import { runGracefulShutdownSequence, SHUTDOWN_HARD_TIMEOUT_MS } from '../graceful-shutdown.js'
 
 describe('runGracefulShutdownSequence', () => {
   function makeDeps() {
@@ -17,8 +17,17 @@ describe('runGracefulShutdownSequence', () => {
         stopSlack: vi.fn(() => calls.push('stopSlack')),
         stopDiscord: vi.fn(() => calls.push('stopDiscord')),
         stopSchedules: vi.fn(() => calls.push('stopSchedules')),
+        drainExecutionLeases: vi.fn(async () => {
+          calls.push('drainExecutionLeases')
+        }),
+        drainWorkspaceRemovalReleases: vi.fn(async () => {
+          calls.push('drainWorkspaceRemovalReleases')
+        }),
         drainAuditWrites: vi.fn(async () => {
           calls.push('drainAuditWrites')
+        }),
+        releaseInstanceHeartbeat: vi.fn(async () => {
+          calls.push('releaseInstanceHeartbeat')
         }),
         // Typed void (not the number `push` returns) so the async variants the
         // PostgreSQL path needs can be substituted in individual tests.
@@ -40,21 +49,40 @@ describe('runGracefulShutdownSequence', () => {
     expect(calls.indexOf('shutdownEngines:end')).toBeLessThan(calls.indexOf('closeDatabase'))
   })
 
-  it('runs the full sequence in order: engines → feishu/schedule → database', async () => {
+  it('runs the full sequence in order: producers → engines → drains → database', async () => {
     const { calls, deps } = makeDeps()
 
     await runGracefulShutdownSequence(deps)
 
     expect(calls).toEqual([
-      'shutdownEngines:start',
-      'shutdownEngines:end',
       'stopFeishu',
       'stopSlack',
       'stopDiscord',
       'stopSchedules',
+      'shutdownEngines:start',
+      'shutdownEngines:end',
+      'drainExecutionLeases',
+      'drainWorkspaceRemovalReleases',
       'drainAuditWrites',
+      'releaseInstanceHeartbeat',
       'closeDatabase',
     ])
+  })
+
+  it('releases the instance heartbeat only after every drain, before the database closes', async () => {
+    // The heartbeat row is what tells a surviving replica "do not touch my
+    // marks". Deleting it before the drains would let a peer reap a lease this
+    // process is still about to release itself; deleting it after means any
+    // mark a failed drain leaked becomes instantly recoverable — by this point
+    // the engines have exited, so nothing here still uses a checkout.
+    const { calls, deps } = makeDeps()
+
+    await runGracefulShutdownSequence(deps)
+
+    const release = calls.indexOf('releaseInstanceHeartbeat')
+    expect(release).toBeGreaterThan(calls.indexOf('drainExecutionLeases'))
+    expect(release).toBeGreaterThan(calls.indexOf('drainWorkspaceRemovalReleases'))
+    expect(release).toBeLessThan(calls.indexOf('closeDatabase'))
   })
 
   it('drains in-flight audit writes BEFORE closing the database', async () => {
@@ -67,6 +95,16 @@ describe('runGracefulShutdownSequence', () => {
     await runGracefulShutdownSequence(deps)
 
     expect(calls.indexOf('drainAuditWrites')).toBeLessThan(calls.indexOf('closeDatabase'))
+  })
+
+  it('drains fenced workspace-removal releases before closing the database', async () => {
+    const { calls, deps } = makeDeps()
+
+    await runGracefulShutdownSequence(deps)
+
+    expect(calls.indexOf('drainWorkspaceRemovalReleases')).toBeLessThan(
+      calls.indexOf('closeDatabase'),
+    )
   })
 
   it('still closes the database when the audit drain fails', async () => {
@@ -124,5 +162,13 @@ describe('runGracefulShutdownSequence', () => {
 
     // A failure reaping children must not strand the DB open / skip cleanup.
     expect(calls).toContain('closeDatabase')
+  })
+})
+
+describe('SHUTDOWN_HARD_TIMEOUT_MS', () => {
+  it('is exported so the fail-stop timing budget can assert against it', () => {
+    // The budget lives in fail-stop-timing.test.ts; this only guards the export
+    // that makes it checkable rather than a comment-only claim.
+    expect(SHUTDOWN_HARD_TIMEOUT_MS).toBeGreaterThan(0)
   })
 })

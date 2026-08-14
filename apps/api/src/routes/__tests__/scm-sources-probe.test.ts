@@ -8,9 +8,8 @@
  * else's source id cannot be used to borrow their credentials.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createTestApp } from '../../test/test-app.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { createTestApp } from '../../test/test-app.js'
 
 const { mockCheckGit, mockCheckP4, mockSourceRow, lastWhere } = vi.hoisted(() => ({
   mockCheckGit: vi.fn(),
@@ -60,10 +59,12 @@ function conditionColumns(condition: unknown): string[] {
 vi.mock('../../lib/git-sync.js', () => ({ checkGitConnection: mockCheckGit }))
 
 vi.mock('../../lib/p4-sync.js', () => ({
+  cancelInitialScmSync: vi.fn(() => Promise.resolve(false)),
   checkP4Connection: mockCheckP4,
   isCheckoutBusy: vi.fn(() => false),
   releaseCheckout: vi.fn(),
   startAutoSync: vi.fn(),
+  startInitialScmSync: vi.fn(),
   stopAutoSync: vi.fn(),
   syncScmSource: vi.fn(),
   tryAcquireCheckout: vi.fn(() => true),
@@ -128,6 +129,7 @@ describe('POST /scm-sources/probe', () => {
     const app = await buildApp()
     const res = await probe(app, {
       type: 'p4',
+      localPath: '/data/p4/client-a',
       config: {
         type: 'p4',
         p4port: 'ssl:perforce:1666',
@@ -138,7 +140,46 @@ describe('POST /scm-sources/probe', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(mockCheckP4).toHaveBeenCalledWith(expect.objectContaining({ p4user: 'alice' }))
+    expect(mockCheckP4).toHaveBeenCalledWith(
+      expect.objectContaining({ p4user: 'alice' }),
+      '/data/p4/client-a',
+    )
+  })
+
+  /**
+   * The P4 Root/AltRoots coverage check is the whole point of probing a P4
+   * source before saving it: syncing into a directory the client Root does not
+   * cover fails at `p4 sync` time, after the source looks healthy. That check
+   * needs `localPath`, and an absent one was passed through as `''`, which the
+   * verifier cannot compare — so the probe reported a clean bill of health for a
+   * path it never examined. The web form always sends it; the route is a public
+   * API surface a hand-rolled client reaches directly.
+   */
+  it('rejects a p4 probe with no localPath rather than skipping the root check', async () => {
+    // Distinct user: the probe rate limit is keyed per user and this file is
+    // already close to the 20/min cap, so a shared identity turns an unrelated
+    // later test red with a 429.
+    const app = await buildApp({ userId: 'usr_p4_root_check', role: 'user' })
+    const res = await probe(app, {
+      type: 'p4',
+      config: {
+        type: 'p4',
+        p4port: 'ssl:perforce:1666',
+        p4user: 'alice',
+        p4passwd: 'pw',
+        p4client: 'client-a',
+      },
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockCheckP4).not.toHaveBeenCalled()
+  })
+
+  it('still allows a git probe with no localPath', async () => {
+    const app = await buildApp({ userId: 'usr_git_no_path', role: 'user' })
+    const res = await probe(app, GIT_BODY)
+
+    expect(res.status).toBe(200)
   })
 
   it('resolves a masked pat from the stored source instead of dialing "********"', async () => {
@@ -522,6 +563,7 @@ describe('POST /scm-sources/probe', () => {
     const res = await probe(app, {
       type: 'p4',
       sourceId: 'scm_1',
+      localPath: '/data/p4/c',
       config: {
         type: 'p4',
         p4port: 'perforce:1666',

@@ -4,18 +4,19 @@ const cancelMock = vi.hoisted(() => vi.fn())
 const scheduleNextMock = vi.hoisted(() => vi.fn())
 const loggerWarnMock = vi.hoisted(() => vi.fn())
 const cancelExecutionLeaseMock = vi.hoisted(() => vi.fn())
-const claimRunResultMock = vi.hoisted(() => vi.fn().mockReturnValue({ changes: 1 }))
+const claimRunResultMock = vi.hoisted(() => vi.fn().mockReturnValue([{ id: 'run_1' }]))
+const releaseReservedRunMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 
 vi.mock('../../db/client.js', () => ({
   db: {
-    update: vi.fn(() =>
-      asyncQuery({
-        set: vi.fn(() => ({
-          where: vi.fn(() => asyncQuery({ run: claimRunResultMock })),
-        })),
-      }),
-    ),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: claimRunResultMock })),
+      })),
+    })),
   },
+  isPostgres: false,
+  sqliteDatabase: { inTransaction: false, exec: vi.fn() },
 }))
 
 vi.mock('../../engine/index.js', () => ({
@@ -28,6 +29,10 @@ vi.mock('../../engine/task-queue.js', () => ({
 
 vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
+}))
+
+vi.mock('../scm-workload-lifecycle.js', () => ({
+  releaseReservedScmWorkloadInMutation: releaseReservedRunMock,
 }))
 
 vi.mock('../execute-chat-run.js', () => ({
@@ -43,8 +48,6 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
 }))
 
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../run-cancellation.js'
-
-import { asyncQuery } from '../../test/async-query.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -65,14 +68,26 @@ describe('cancelRunningTasksInBackground', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     cancelExecutionLeaseMock.mockReturnValue(null)
-    claimRunResultMock.mockReturnValue({ changes: 1 })
+    claimRunResultMock.mockReturnValue([{ id: 'run_1' }])
   })
 
   it('claims cancellation only when the expected status still owns the run', async () => {
     expect(await claimRunCancellation('run_1', 'running')).toBe(true)
 
-    claimRunResultMock.mockReturnValueOnce({ changes: 0 })
+    claimRunResultMock.mockReturnValueOnce([])
     expect(await claimRunCancellation('run_1', 'running')).toBe(false)
+  })
+
+  it('releases a queued reservation but keeps a running execution lease', async () => {
+    expect(await claimRunCancellation('run_queued', 'queued')).toBe(true)
+    expect(releaseReservedRunMock).toHaveBeenCalledWith(expect.anything(), {
+      type: 'run',
+      workloadId: 'run_queued',
+    })
+
+    releaseReservedRunMock.mockClear()
+    expect(await claimRunCancellation('run_active', 'running')).toBe(true)
+    expect(releaseReservedRunMock).not.toHaveBeenCalled()
   })
 
   it('requests cancellation immediately without waiting for process exit', async () => {

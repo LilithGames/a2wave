@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { PG_SCHEMA_PATH, renderPgSchema } from '../schema-transform.js'
 import * as pgSchema from '../schema.pg.js'
 import * as sqliteSchema from '../schema.sqlite.js'
+import { PG_SCHEMA_PATH, renderPgSchema } from '../schema-transform.js'
 
 /**
  * The guard that makes generation trustworthy.
@@ -12,13 +12,36 @@ import * as sqliteSchema from '../schema.sqlite.js'
  * `pnpm db:generate:pg` leaves a stale PostgreSQL schema that typechecks fine
  * and fails only at runtime, on the backend fewer developers run locally.
  */
+/**
+ * Import members are compared as a set, not a sequence.
+ *
+ * The generator copies the import block from schema.sqlite.ts verbatim, and the
+ * checked-in file is then formatted — so the member order is whatever the local
+ * biome produces. A byte comparison therefore turns a formatter difference
+ * between environments into "the schema is stale", which is a claim about the
+ * tables and was false every time it fired. Sorting the members keeps the
+ * assertion pointed at what it exists to catch: an edit to schema.sqlite.ts
+ * that was never regenerated.
+ */
+function normalizeImportOrder(source: string): string {
+  return source.replace(/import \{\n([^}]*)\n\} from/g, (_match, members: string) => {
+    const sorted = members
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .sort()
+      .join('\n')
+    return `import {\n${sorted}\n} from`
+  })
+}
+
 describe('schema.pg.ts is in sync with schema.sqlite.ts', () => {
   it('matches a fresh generation from the current sqlite schema', async () => {
     const checkedIn = readFileSync(PG_SCHEMA_PATH, 'utf-8')
     expect(
-      checkedIn,
+      normalizeImportOrder(checkedIn),
       'schema.pg.ts is stale — run `pnpm db:generate:pg` after editing schema.sqlite.ts',
-    ).toBe(renderPgSchema())
+    ).toBe(normalizeImportOrder(renderPgSchema()))
   })
 })
 

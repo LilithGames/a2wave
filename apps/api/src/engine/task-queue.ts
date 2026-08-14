@@ -1,6 +1,22 @@
 import type { FailureReason } from '../lib/run-failure-reasons.js'
 import { FAILURE_REASONS } from '../lib/run-failure-reasons.js'
-import { countActiveExecutionLeases, reserveExecutionLease } from './execution-lease-registry.js'
+import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
+import {
+  completeExecutionLease,
+  countActiveExecutionLeases,
+  reserveExecutionLease,
+} from './execution-lease-registry.js'
+
+let promotionsPaused = false
+
+/** Stop terminal callbacks from starting new work during graceful shutdown. */
+export function pauseTaskQueuePromotions(): void {
+  promotionsPaused = true
+}
+
+export function _resumeTaskQueuePromotionsForTests(): void {
+  promotionsPaused = false
+}
 
 export const MAX_QUEUE_LENGTH = 50
 export const DEFAULT_PENDING_ORPHAN_TIMEOUT_MS = 30_000
@@ -30,10 +46,30 @@ export interface RunRow {
  */
 export interface TaskQueueDb {
   countRunsByStatus(agentId: string, status: string): Promise<number>
+  /**
+   * Occupied concurrency slots, unioned by run id across every occupancy view
+   * (`running` rows, in-process execution leases, durable active SCM leases).
+   * Promotion must use this rather than max()-ing the per-view counts: the
+   * views overlap but none subsumes another, so max() undercounts and
+   * over-promotes past maxConcurrency.
+   */
+  countOccupiedSlots?(agentId: string): Promise<number>
   /** Current status of a single run, or undefined if it no longer exists. */
   getRunStatus(runId: string): Promise<string | undefined>
   getAgentMaxConcurrency(agentId: string): Promise<number | undefined>
   updateRunStatus(runId: string, status: string): Promise<void>
+  /** Decide capacity, persist status and reserve the SCM binding atomically. */
+  admitRun?(
+    agentId: string,
+    runId: string,
+    maxConcurrency: number,
+  ): Promise<{ slot: SlotResult; hasScmLease: boolean; scmLeaseActivated?: boolean }>
+  /** Mark a reserved SCM workload as owned by this process before execution. */
+  activateRun?(runId: string): Promise<void>
+  /** Atomically re-check capacity, claim queued status, and activate its durable SCM lease. */
+  promoteQueuedRun?(agentId: string, runId: string, maxConcurrency: number): Promise<boolean>
+  /** Release a queued reservation that never started. */
+  releaseReservedRun?(runId: string): Promise<boolean>
   /**
    * Conditional status transition: flip `runId` to `to` only if it is currently
    * `from`, reporting whether THIS call made the change.
@@ -116,91 +152,64 @@ export async function tryAcquireSlot(
   runId: string,
   maxConcurrency: number,
 ): Promise<SlotResult> {
-  const runningInDb = await db.countRunsByStatus(agentId, 'running')
-  // Re-read the lease count AFTER the await: a caller that started during it
-  // may have taken a slot, and the pre-await value would miss that.
-  const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
-  if (running < maxConcurrency) {
-    // Lease first, then persist. The lease is the concurrency guard, and taking
-    // it before yielding to the DB write closes the window in which a
-    // concurrent caller could observe the slot as still free.
-    reserveExecutionLease(runId, agentId)
-    await db.updateRunStatus(runId, 'running')
-    return 'acquired'
-  }
-  const queued = await db.countRunsByStatus(agentId, 'queued')
-  if (queued >= MAX_QUEUE_LENGTH) {
-    return 'queue_full'
-  }
-  await db.updateRunStatus(runId, 'queued')
-  return 'queued'
+  if (promotionsPaused) return 'queue_full'
+  return withAgentScmWorkloadLock(agentId, async () => {
+    if (db.admitRun) {
+      const admission = await db.admitRun(agentId, runId, maxConcurrency)
+      if (admission.slot === 'acquired') {
+        reserveExecutionLease(runId, agentId)
+        try {
+          if (admission.hasScmLease && !admission.scmLeaseActivated) {
+            await db.activateRun?.(runId)
+          }
+        } catch (error) {
+          completeExecutionLease(runId)
+          throw error
+        }
+      }
+      return admission.slot
+    }
+
+    const runningInDb = await db.countRunsByStatus(agentId, 'running')
+    const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
+    if (running < maxConcurrency) {
+      reserveExecutionLease(runId, agentId)
+      await db.updateRunStatus(runId, 'running')
+      return 'acquired'
+    }
+    const queued = await db.countRunsByStatus(agentId, 'queued')
+    if (queued >= MAX_QUEUE_LENGTH) return 'queue_full'
+    await db.updateRunStatus(runId, 'queued')
+    return 'queued'
+  })
 }
 
-const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled'])
-
-/** A terminal run legitimately holds its lease during post-run cleanup (artifact
- * scan, worktree removal, side effects). Only treat a terminal-run lease as
- * leaked once it's older than this — normal cleanup finishes in seconds. */
-export const LEASE_TERMINAL_GRACE_MS = 5 * 60 * 1000
-
 /**
- * Reconcile in-memory execution leases against DB run status. A lease is the
- * concurrency counter; if its owner throws on an un-guarded early-return path
- * before finishing it, the lease leaks and `countActiveExecutionLeases` stays
- * permanently ≥ maxConcurrency, so the agent's queue never drains until restart.
+ * Reconcile in-memory execution leases against DB run existence.
  *
  * Release rules (deliberately conservative to avoid dropping a LIVE lease during
  * legitimate post-run cleanup):
  *   - run no longer exists (deleted) → release immediately; nothing can finish it.
- *   - run terminal for longer than the grace period → release (leaked).
- *   - run terminal but only recently so → LEAVE IT; cleanup is likely in flight.
- *   - run non-terminal → leave it (and forget any earlier terminal observation).
+ *   - any existing run → leave it. A terminal status is written before process
+ *     exit and cleanup, so age can never prove the checkout is unused.
  *
- * The grace window is measured from when the run was FIRST OBSERVED terminal
- * (tracked in `firstSeenTerminalAt`), NOT from lease reservation — a run that
- * executed for longer than the grace period would otherwise have its lease
- * dropped the instant it went terminal, while cleanup was still running.
- *
- * `now`/`finish`/`firstSeenTerminalAt` are injected so this is a pure,
- * unit-testable function. Returns the released leases.
+ * Status age is intentionally irrelevant: cancellation and terminal status are
+ * persisted before the process exits, so only row disappearance is proof that
+ * no execution owner can finish the lease. Returns the released leases.
  */
 export async function sweepStaleLeases(
   db: Pick<TaskQueueDb, 'getRunStatus'>,
   leases: Array<{ runId: string; agentId?: string }>,
   finish: (runId: string) => void,
-  now: number,
-  firstSeenTerminalAt: Map<string, number>,
-  graceMs: number = LEASE_TERMINAL_GRACE_MS,
 ): Promise<Array<{ runId: string; agentId?: string }>> {
   const released: Array<{ runId: string; agentId?: string }> = []
-  const liveRunIds = new Set<string>()
   for (const { runId, agentId } of leases) {
-    liveRunIds.add(runId)
     const status = await db.getRunStatus(runId)
     if (status === undefined) {
       // Run deleted — nothing can ever finish this lease.
       finish(runId)
       released.push({ runId, agentId })
-      firstSeenTerminalAt.delete(runId)
-      continue
     }
-    if (!TERMINAL_RUN_STATUSES.has(status)) {
-      // Non-terminal (still running / re-queued): reset any stale observation.
-      firstSeenTerminalAt.delete(runId)
-      continue
-    }
-    // Terminal: start (or continue) the grace clock from first observation.
-    const seenAt = firstSeenTerminalAt.get(runId) ?? now
-    if (!firstSeenTerminalAt.has(runId)) firstSeenTerminalAt.set(runId, now)
-    if (now - seenAt >= graceMs) {
-      finish(runId)
-      released.push({ runId, agentId })
-      firstSeenTerminalAt.delete(runId)
-    }
-  }
-  // Drop bookkeeping for leases that are gone (finished normally).
-  for (const runId of firstSeenTerminalAt.keys()) {
-    if (!liveRunIds.has(runId)) firstSeenTerminalAt.delete(runId)
   }
   return released
 }
@@ -224,6 +233,7 @@ export async function scheduleNext(
   agentId: string,
   onExecute: (runId: string, agentId: string) => void,
 ): Promise<number> {
+  if (promotionsPaused) return 0
   try {
     return await promoteQueuedRuns(db, agentId, onExecute)
   } catch (error) {
@@ -233,6 +243,14 @@ export async function scheduleNext(
 }
 
 async function promoteQueuedRuns(
+  db: TaskQueueDb,
+  agentId: string,
+  onExecute: (runId: string, agentId: string) => void,
+): Promise<number> {
+  return withAgentScmWorkloadLock(agentId, () => promoteQueuedRunsLocked(db, agentId, onExecute))
+}
+
+async function promoteQueuedRunsLocked(
   db: TaskQueueDb,
   agentId: string,
   onExecute: (runId: string, agentId: string) => void,
@@ -255,8 +273,17 @@ async function promoteQueuedRuns(
       break
     }
 
-    const runningInDb = await db.countRunsByStatus(agentId, 'running')
-    const running = Math.max(runningInDb, countActiveExecutionLeases(agentId))
+    // Prefer the full occupancy union: max() of the per-view counts misses a
+    // peer replica's cleanup-window lease when a different run is `running`
+    // here, and promotes a run past maxConcurrency. The max() fallback exists
+    // only for TaskQueueDb fakes that predate countOccupiedSlots.
+    const running =
+      db.countOccupiedSlots !== undefined
+        ? await db.countOccupiedSlots(agentId)
+        : Math.max(
+            await db.countRunsByStatus(agentId, 'running'),
+            countActiveExecutionLeases(agentId),
+          )
     if (running >= maxConcurrency) break
     const next = await db.getOldestQueuedRun(agentId)
     if (!next) break
@@ -268,9 +295,19 @@ async function promoteQueuedRuns(
     // reserveExecutionLease is idempotent by runId — the second reservation is a
     // silent no-op, the lease count stays at 1, and both callers would proceed to
     // spawn a CLI against one run and one workspace.
-    const claimed = await db.tryTransitionRunStatus(next.id, 'queued', 'running')
+    const claimed = db.promoteQueuedRun
+      ? await db.promoteQueuedRun(agentId, next.id, maxConcurrency)
+      : await db.tryTransitionRunStatus(next.id, 'queued', 'running')
     if (!claimed) continue
     reserveExecutionLease(next.id, agentId)
+    if (!db.promoteQueuedRun) {
+      try {
+        await db.activateRun?.(next.id)
+      } catch (error) {
+        completeExecutionLease(next.id)
+        throw error
+      }
+    }
     onExecute(next.id, agentId)
     promoted++
   }
@@ -281,6 +318,8 @@ async function promoteQueuedRuns(
 export interface RecoveryHooks {
   /** Invoked for every run that recovery marks as failed. Use to sync external stores (e.g. a2aTasks). */
   onRunFailed?: (run: RunRow, reason: FailureReason) => Promise<void> | void
+  /** False on PostgreSQL, where in-flight rows may belong to a healthy peer. */
+  recoverInFlight?: boolean
 }
 
 export interface RecoveryStats {
@@ -319,29 +358,31 @@ export async function recoverOnStartup(
   }
 
   for (const agentId of activeAgentIds) {
-    const runningRuns = await db.getRunsByStatus(agentId, 'running')
-    for (const run of runningRuns) {
-      await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
-      stats.runningAborted++
-    }
+    if (hooks.recoverInFlight !== false) {
+      const runningRuns = await db.getRunsByStatus(agentId, 'running')
+      for (const run of runningRuns) {
+        await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
+        stats.runningAborted++
+      }
 
-    const pendingOrphans = await db.getOrphanedPendingRuns(agentId, pendingCutoff)
-    for (const run of pendingOrphans) {
-      await applyFailure(run, FAILURE_REASONS.PENDING_ORPHAN_ON_STARTUP)
-      stats.pendingOrphaned++
-    }
+      const pendingOrphans = await db.getOrphanedPendingRuns(agentId, pendingCutoff)
+      for (const run of pendingOrphans) {
+        await applyFailure(run, FAILURE_REASONS.PENDING_ORPHAN_ON_STARTUP)
+        stats.pendingOrphaned++
+      }
 
-    // Feishu queued runs lose their in-memory closure (reply target,
-    // streaming card registration, quote context) on restart. The DB-backed
-    // feishu_pending_messages row is replayed separately after Feishu
-    // connections come back. Fail the stale queued rows here so scheduleNext
-    // does NOT promote them via the generic executeChatRun path (which would
-    // run without Feishu context and then block replay).
-    const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
-    for (const run of queuedRuns) {
-      if (run.triggerSource === 'feishu') {
-        await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
-        stats.feishuQueuedReset++
+      // Feishu queued runs lose their in-memory closure (reply target,
+      // streaming card registration, quote context) on restart. The DB-backed
+      // feishu_pending_messages row is replayed separately after Feishu
+      // connections come back. Fail the stale queued rows here so scheduleNext
+      // does NOT promote them via the generic executeChatRun path (which would
+      // run without Feishu context and then block replay).
+      const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
+      for (const run of queuedRuns) {
+        if (run.triggerSource === 'feishu') {
+          await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
+          stats.feishuQueuedReset++
+        }
       }
     }
 

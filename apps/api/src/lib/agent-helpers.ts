@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { PROVIDER_CHAIN_MAX, providerKindSchema } from '@a2wave/shared'
 import type {
   AuthHeaderStyle,
   GitConfig,
@@ -12,6 +11,7 @@ import type {
   ProviderMcpDelivery,
   WorktreeCallParams,
 } from '@a2wave/shared'
+import { PROVIDER_CHAIN_MAX, providerKindSchema } from '@a2wave/shared'
 import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import {
@@ -40,19 +40,23 @@ import {
   UnusableProviderChainError,
 } from './errors.js'
 import {
-  WORKTREE_NAME_REGEX,
-  WorktreeBranchLockedError,
-  WorktreeDirtyError,
   isPerAgentWorkspaceName,
   perAgentWorkspaceName,
   readWorkspaceState,
+  WORKTREE_NAME_REGEX,
+  WorktreeBranchLockedError,
+  WorktreeDirtyError,
 } from './git-workspace.js'
-import { INTERNAL_ADMIN_TOKEN_ENV, getInternalAdminToken } from './internal-admin-auth.js'
+import { getInternalAdminToken, INTERNAL_ADMIN_TOKEN_ENV } from './internal-admin-auth.js'
 import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
 import { cleanupLegacyRuntimeGroupConfig } from './runtime-group-config.js'
-import { type CreateWorkspaceResult, type ScmSource, createScmSource } from './scm-source.js'
+import { type CreateWorkspaceResult, createScmSource, type ScmSource } from './scm-source.js'
+import {
+  findPendingWorkspaceRemoval,
+  removeSourceWorkspaceGuarded,
+} from './scm-workspace-removal.js'
 import {
   isControlPlaneOnlyBuiltinMcp,
   isOwnerSafeBuiltinMcp,
@@ -1112,7 +1116,17 @@ async function triggerTtlCleanup(sourceId: string, scm: ScmSource): Promise<void
     .where(inArray(runs.status, ['running', 'pending', 'queued']))
   const activePaths = new Set(activeRuns.map((r) => r.workDir).filter((p): p is string => !!p))
 
-  const removed = await scm.cleanupStale({ activePaths })
+  // activePaths is only a prefilter — it is a snapshot, and a workload can
+  // claim a candidate after it was taken (or occupy it invisibly: an
+  // Evaluation writes no runs row, a terminal Run's cleanup outlives its
+  // status). Authority is the guarded protocol: durable removal reservation
+  // plus a fresh occupancy re-check inside the workspace mutex, the same one
+  // the manual DELETE route uses. A candidate that became occupied throws,
+  // which cleanupStale records as a skip.
+  const removed = await scm.cleanupStale({
+    activePaths,
+    removeWorkspace: (name) => removeSourceWorkspaceGuarded({ sourceId, name, scm }),
+  })
   if (removed.length > 0) {
     logger.info({ sourceId, removed }, 'TTL cleanup removed stale workspaces')
   }
@@ -1431,6 +1445,22 @@ export async function resolveWorkDir(
   runId?: string,
   agentEnv?: Record<string, string>,
 ): Promise<string> {
+  // Re-read the binding before resolving anything: the snapshot this call was
+  // given predates admission, and a PATCH may have rebound the Agent since.
+  // Resolving against the stale snapshot would mount another source's checkout.
+  if (runId && agent.workspaceType === 'scm' && agent.scmSourceId) {
+    const current = (
+      await db
+        .select({ workspaceType: agents.workspaceType, scmSourceId: agents.scmSourceId })
+        .from(agents)
+        .where(eq(agents.id, agent.id))
+        .limit(1)
+    )[0]
+    if (!current || current.workspaceType !== 'scm' || current.scmSourceId !== agent.scmSourceId) {
+      throw new Error('Agent SCM binding changed before workload admission')
+    }
+  }
+
   const explicitWorktree = normalizeWorktreeParams(agent, worktreeParams)
 
   // SCM + worktree 模式
@@ -1472,6 +1502,22 @@ export async function resolveWorkDir(
       )[0]
       if (occupied) {
         throw new WorktreeOccupiedError(wsPath)
+      }
+      // Cross-replica removal gate: a remover commits its durable reservation
+      // BEFORE touching the filesystem, so a reservation visible here means
+      // this exact worktree may be mid-deletion on another replica. Creating
+      // or reusing it now hands the run a directory about to disappear. This
+      // read and the workDir claim below are one transaction, mirroring how
+      // the removal protocol pairs its re-check with the reservation.
+      const pendingRemoval = await findPendingWorkspaceRemoval(
+        tx,
+        agent.scmSourceId as string,
+        worktreeParams.name,
+      )
+      if (pendingRemoval) {
+        throw new Error(
+          `Worktree '${worktreeParams.name}' is currently being removed; retry shortly`,
+        )
       }
       if (runId) {
         await tx.update(runs).set({ workDir: wsPath }).where(eq(runs.id, runId))

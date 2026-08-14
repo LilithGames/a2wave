@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetExecutionLeasesForTests,
   beginExecutionLease,
@@ -6,9 +6,12 @@ import {
   cancelExecutionLease,
   completeExecutionLease,
   countActiveExecutionLeases,
+  drainActiveExecutionLeases,
+  drainDurableExecutionLeaseReleases,
   getExecutionAbortSignal,
   hasExecutionLease,
   reserveExecutionLease,
+  setDurableExecutionLeaseReleaseHandler,
 } from '../execution-lease-registry.js'
 
 describe('execution lease registry', () => {
@@ -70,5 +73,44 @@ describe('execution lease registry', () => {
     expect(getExecutionAbortSignal('task_1')).toBe(reserved.signal)
 
     reserved.finish()
+  })
+
+  it('drains the durable release triggered by process cleanup', async () => {
+    let completeRelease: (() => void) | undefined
+    const release = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          completeRelease = resolve
+        }),
+    )
+    setDurableExecutionLeaseReleaseHandler(release)
+    const lease = reserveExecutionLease('run_1', 'agt_1')
+
+    lease.finish()
+    let drained = false
+    const draining = drainDurableExecutionLeaseReleases().then(() => {
+      drained = true
+    })
+    await Promise.resolve()
+
+    expect(release).toHaveBeenCalledWith('run_1', 'agt_1')
+    expect(drained).toBe(false)
+    completeRelease?.()
+    await draining
+    expect(drained).toBe(true)
+  })
+
+  it('waits for active process cleanup before shutdown may close the database', async () => {
+    const lease = reserveExecutionLease('run_1', 'agt_1')
+    let drained = false
+    const draining = drainActiveExecutionLeases().then(() => {
+      drained = true
+    })
+    await Promise.resolve()
+
+    expect(drained).toBe(false)
+    lease.finish()
+    await draining
+    expect(drained).toBe(true)
   })
 })

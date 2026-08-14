@@ -12,6 +12,12 @@ describe('scm-source input schema — workspacesPath normalization', () => {
     config: { type: 'git' as const, repoUrl: 'https://x', branch: 'main' },
   }
 
+  it('create: localPath may be omitted for managed storage allocation', () => {
+    const { localPath: _localPath, ...withoutPath } = baseCreate
+    const parsed = createScmSourceInput.parse(withoutPath)
+    expect(parsed.localPath).toBeUndefined()
+  })
+
   it('create: empty string workspacesPath becomes null', async () => {
     const parsed = createScmSourceInput.parse({ ...baseCreate, workspacesPath: '' })
     expect(parsed.workspacesPath).toBeNull()

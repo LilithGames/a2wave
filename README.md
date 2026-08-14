@@ -95,6 +95,31 @@ npm i -g a2wave
 a2wave setup
 ```
 
+To deploy with the bundled PostgreSQL container:
+
+```bash
+a2wave setup \
+  --yes \
+  --with-postgres \
+  --dir "$HOME/a2wave-pg" \
+  --port 3512
+```
+
+The CLI automatically selects the versioned image matching its own release. Keep
+the install directory stable across upgrades: the version belongs in the CLI and
+image, not in `$HOME/a2wave-pg`. PostgreSQL support is currently experimental; see
+[Database Backend](#database-backend) before using it in production.
+
+The generated deployment includes a dedicated `a2wave-workspace` volume. New Git
+sources use managed paths there automatically, so nobody needs to create or guess a
+directory inside the container. P4 sources instead require an absolute mounted path
+covered by the existing P4 Client `Root` or `AltRoots`.
+
+> [!NOTE]
+> PostgreSQL setup flags were added after CLI v0.7.2 and are not present in the
+> published `a2wave@0.7.2` package. Before using this command, verify that
+> `a2wave setup --help` lists `--with-postgres`.
+
 ## Quick Start (Docker)
 
 From a clone, building the image yourself:
@@ -117,9 +142,9 @@ publish it — the in-app manual at `/wiki` walks through the first one end to e
 > the admin account. Set it in `.env` to close that window.
 
 > [!IMPORTANT]
-> **On macOS**, add this to `.env` first — Docker Desktop reports bind mounts as
-> root-owned, which the entrypoint refuses to adopt, so the container crash-loops
-> without it.
+> **On macOS**, add this to `.env` first. `/data/workspace` is outside Docker
+> Desktop's shared host paths, so use a directory under your home folder. Pinning
+> the container UID/GID also avoids VirtioFS reporting host binds as root-owned.
 >
 > ```bash
 > A2WAVE_WORKSPACE_DIR=$HOME/a2wave-workspace

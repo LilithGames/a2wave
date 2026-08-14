@@ -45,11 +45,31 @@ Use `a2wave <command> --help` for command-specific options.
 
 ## Local platform setup
 
-The CLI can create and manage a Docker-based local deployment. A container image reference is required until a public image registry is available:
+The CLI can create and manage a Docker-based local deployment. It defaults to the
+published GHCR image matching the CLI's own version:
 
 ```bash
-a2wave setup --image <a2wave-image-reference>
+a2wave setup
 ```
+
+To bundle a PostgreSQL 16 sidecar instead of using the default SQLite database:
+
+```bash
+a2wave setup --with-postgres
+```
+
+PostgreSQL support is experimental and starts from an empty database; there is no
+SQLite-to-PostgreSQL data migration path. Use `--image` only for a locally built or
+mirrored image reference.
+
+Every generated deployment also mounts a dedicated `a2wave-workspace` volume at
+`/data/workspace`. The web UI allocates Git checkout paths there automatically;
+users do not need to enter the container or create directories. P4 sources use
+an explicit operator-mounted path covered by the Client `Root` or `AltRoots`.
+
+The PostgreSQL setup flags were added after CLI v0.7.2 and are not present in the
+published `a2wave@0.7.2` package. Confirm that `a2wave setup --help` lists
+`--with-postgres` before using it.
 
 Run `a2wave setup --help` before installation to review directory, port, upgrade, backup, and removal options.
 

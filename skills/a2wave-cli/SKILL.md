@@ -42,6 +42,7 @@ a2wave setup --reset-password               # forgot the admin password: reset i
 - `--reset-password` recovers a forgotten admin password from an existing install: it runs the in-image recovery script via `docker compose exec` against the running container, so the new password is typed **inside the container**, never through the CLI process, argv, or the environment — there is deliberately no `--admin-password` flag. Takes effect immediately, no restart. Mutually exclusive with `--down`. **Do not** try to recover via the `ADMIN_PASSWORD` env var — it only bootstraps an admin that has no password yet and is silently ignored once one is set.
 - The CLI config is saved only after the health check passes, and the login token is kept only when the instance URL is unchanged (a token is never sent to a different host).
 - `--database-url` / `--with-postgres` select the **EXPERIMENTAL PostgreSQL backend** (SQLite stays the default; there is **no SQLite → PostgreSQL data migration** — the install starts from an empty database). `--database-url` must be a `postgres://`/`postgresql://` URL and points at an external server; `--with-postgres` instead adds a `postgres:16-alpine` sidecar to the generated compose file and derives `DATABASE_URL` with a generated hex password kept only in the 0600 `.env`. The two flags are mutually exclusive, and both are rejected with `--upgrade` (an upgrade never rewrites `.env`). To switch an existing install, edit `DATABASE_URL` in `.env` and `docker compose up -d` — the generated compose reads `${DATABASE_URL:-/app/data/a2wave.db}`. Warn users that a localhost database URL is unreachable from inside the container (use `host.docker.internal` or the host IP), and that on a PostgreSQL install the pre-upgrade backup covers only the data volume, **not** the database — suggest `pg_dump` first.
+- `setup` rejects unrecognized options before Docker preflight or file generation. The PostgreSQL flags were added after CLI v0.7.2 and are absent from the published `a2wave@0.7.2` package; confirm `a2wave setup --help` lists them. If a documented flag is unknown, install a newer CLI; never assume the option was applied or continue with the default backend.
 - `--base-url` is for LAN/reverse-proxy access (drives `CORS_ORIGIN` and cookie security); the health check always probes `http://localhost:<port>`.
 - `--down` destroys the container, the data volume, and the install directory irreversibly. Interactive confirmation demands typing the directory path; non-interactive use demands the explicit `--yes-destroy-all-data` flag (`--yes` alone never bypasses it). It refuses directories missing the `.a2wave-install` marker.
 - `--reset-password` recovers a forgotten admin password from an existing install: it runs the in-image recovery script via `docker compose exec --user appuser`, so the new password is typed **inside the container**, never through the CLI process, argv, or the environment — there is deliberately no `--admin-password` flag. It bumps the admin's `tokenVersion`, so every existing session/token is revoked and everyone must log in again. Takes effect immediately, no restart. Requires an interactive terminal; rejects `--yes` and is mutually exclusive with `--down`. **Do not** try to recover via the `ADMIN_PASSWORD` env var — it only bootstraps an admin that has no password yet and is silently ignored once one is set.
@@ -169,7 +170,8 @@ a2wave mcp tools <mcp-id-or-name>                # Connect and list the tools ex
 ```bash
 a2wave scm list
 a2wave scm get <scm-id-or-name>
-a2wave scm create --name repo --type git --local-path /data/repo --repo-url https://git/x.git --branch main
+a2wave scm create --name repo --type git --repo-url https://git/x.git --branch main
+a2wave scm create --name custom-repo --type git --local-path /data/repo --repo-url https://git/x.git
 a2wave scm create --name p4src --type p4 --local-path /data/p4 --p4port host:1666 --p4user u --p4client ws
 a2wave scm update <scm-id-or-name> --enabled
 a2wave scm delete <scm-id-or-name>
@@ -178,7 +180,9 @@ a2wave scm check <scm-id-or-name>                # Check connectivity
 a2wave scm status <scm-id-or-name>               # Sync / CodeGraph status
 ```
 
-> For complex structures such as git multi-repo, fall back to `--config-file <json>`.
+> Git uses platform-managed storage when `--local-path` is omitted. P4 always requires
+> `--local-path`. For complex structures such as git multi-repo, fall back to
+> `--config-file <json>`.
 
 ## Knowledge Base (KB Document) Management
 

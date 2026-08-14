@@ -29,11 +29,28 @@ Git 代码源可以为执行创建独立的 **worktree（工作区）**，从而
 ## 创建与连接
 
 1. 进入「代码源」页面，点击「创建代码源」，在弹窗里选 Git 或 P4。
-2. 在「配置」标签页填仓库地址与认证信息。
+2. Git 可保持 **托管存储（推荐）**，由 a2wave 在持久化 SCM 卷中自动分配 checkout。P4 必须填写已挂载的绝对路径，并确保该路径被对应 Client 在服务端配置的 `Root` 或 `AltRoots` 覆盖。
 3. 填完连接信息后，点该区块下方的 **测试连接**（多仓库模式为 **测试所有仓库**）验证连通性。它使用**当前表单里的值**探测、不会保存配置，因此新建时也能先测再存；多仓库会逐个列出每个仓库的成功/失败与失败原因。
-4. 保存后再次打开该代码源，弹窗会出现「同步与工作区」标签页：用 **检测连接** 复核**已保存**的配置，并触发一次 **同步**（工作区/worktree 列表也在此标签页管理）。
+4. 保存已启用的代码源后，a2wave 会立即在后台执行初次同步。**自动同步**只控制后续周期刷新，不控制第一次 checkout。再次打开该代码源，弹窗会出现「同步与工作区」标签页，可查看同步状态、用 **检测连接** 复核**已保存**的配置，或点击 **立即同步**（工作区/worktree 列表也在此标签页管理）。
+
+也可以用 CLI 创建托管 Git 代码源；省略 `--local-path` 即使用平台托管存储：
+
+```bash
+a2wave scm create --name repo --type git --repo-url https://git.example.com/team/repo.git
+```
+
+只有自定义 Git checkout 或 P4 代码源才传 `--local-path`；P4 中该参数始终必填。
 
 > 编辑已有代码源时，PAT / P4 密码在界面上显示为掩码。只要你没有改动它们，测试连接会自动使用已保存的真实凭据。
+
+托管 Git checkout 位于 `SCM_STORAGE_ROOT/sources/<sourceId>`。Docker 中通常对应持久化挂载
+里的 `/data/workspace/sources/<sourceId>`：仓库自带 Compose 为兼容升级保留历史宿主机 bind，
+CLI 新部署则使用独立的 `a2wave-workspace` 卷。Git worktree 独立放在 `SCM_STORAGE_ROOT/workspaces/<sourceId>`。
+
+> **P4 Client Root**：a2wave 不会修改服务端 Client Spec，也不会为 P4 随机分配托管路径。
+> 请填写已挂载、且被 Client 的 `Root` 或某个 `AltRoots` 覆盖的绝对路径。「检查连接」会显示
+> 检测到的根路径；若无权读取 Client Spec，连接仍保持健康，但会单独提示无法验证根路径。
+> 已有 P4 代码源可直接在编辑弹窗中修正该路径。
 
 ## CodeGraph 索引
 
@@ -49,8 +66,9 @@ Git 代码源可以为执行创建独立的 **worktree（工作区）**，从而
 ## 同步与初次同步约束
 
 - **手动同步 / 同步状态**：`idle` / `syncing` / `error`。
+- **自动初次同步**：已启用的代码源会在创建、修复配置、重新启用或服务重启后立即开始或恢复第一次同步；重启恢复最多并发执行两个初次 checkout；`autoSync` 只控制周期刷新。
 - ⚠️ **重要约束**：代码源**只有在初次同步成功后**（写入 `initialSyncCompletedAt`）才能被 Agent 选用。在此之前创建/更新绑定该源的 Agent 会被拒绝。
-- **同步进行中不可改仓库路径/配置**：当一次同步正在进行时，修改 `localPath` 或 `config` 会返回 **409**。这些字段会重置同步记录，若在同步运行中重置会破坏正在进行的同步。请等同步结束后再改。
+- **同步期间编辑或删除**：a2wave 自己启动的后台初次同步可以被取消，并会等待其退出后再应用修复或删除；手动同步、周期同步或索引占用 checkout 时仍返回 **409**。
 
 ## 工作区（worktree）管理
 
@@ -59,7 +77,7 @@ Git 代码源可以为执行创建独立的 **worktree（工作区）**，从而
 
 - **列出工作区**：查看该源下所有 worktree，并标识是否被占用（`occupied`）。
 - **删除工作区**：删除指定 worktree；被占用时返回 **409**，需先释放。
-- **自定义根目录 workspacesPath**：可选绝对路径，覆盖默认 `~/.a2wave/workspaces/<sourceIdSuffix>`，且必须全局唯一。普通用户必须选择部署管理员通过 `SCM_WORKSPACES_ALLOWED_ROOTS` 批准的根目录；管理员可选择其他专用绝对路径。Docker Compose 默认批准专用挂载 `/data/workspace`。任何角色都不能把数据库、Skill、知识库、记忆、日志、附件或产物目录作为 workspace 根目录。在这些检查上线前保存的旧记录仍可查看和迁移，但更新/状态查询以及 workspace 的解析、列出、创建、删除都会被拒绝，直到改为批准的专用根目录；每次使用 workspace 时都会重新检查属主当前是否仍是启用状态的管理员。
+- **自定义根目录 workspacesPath**：可选绝对路径，覆盖默认 `SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>`，且必须全局唯一。普通用户必须选择部署管理员通过 `SCM_WORKSPACES_ALLOWED_ROOTS` 批准的根目录；管理员可选择其他专用绝对路径。对于未保存覆盖路径的升级数据，只要对应的 `~/.a2wave/workspaces/<sourceIdSuffix>` 历史目录仍存在，a2wave 就会继续使用它。任何角色都不能把数据库、Skill、知识库、记忆、日志、附件或产物目录作为 workspace 根目录。其他未批准的旧自定义根目录仍可查看和迁移，但更新/状态查询以及 workspace 的解析、列出、创建、删除都会被拒绝，直到改为批准的专用根目录；每次使用 workspace 时都会重新检查属主当前是否仍是启用状态的管理员。
 
 > 单次调用的 worktree 清理策略（ephemeral / ttl / persistent）由触发时的 `worktree` 参数决定，详见 [触发方式](/wiki/triggers) 与 [运行记录](/wiki/runs)。
 
@@ -67,8 +85,9 @@ Git 代码源可以为执行创建独立的 **worktree（工作区）**，从而
 
 | 症状 | 可能原因 | 解决 |
 |------|---------|------|
-| Agent 选不到代码源 | 未完成初次同步 | 先成功 sync 一次 |
+| Agent 选不到代码源 | 初次同步尚未完成或失败 | 查看同步状态，修正报错后点击「立即同步」重试 |
 | 同步报错 | 凭证/网络/分支不存在 | 用「检测连接」排查，确认 PAT 与分支 |
+| P4 Client Root 未覆盖本地路径 | 已保存路径不在服务端 P4 Client Spec 覆盖范围内 | 编辑代码源，改为 `Root`/`AltRoots` 下已挂载的路径，或修改 Client Spec 使其覆盖该路径 |
 | 删 worktree 返回 409 | 正被占用 | 等对应 Run 结束或释放后再删 |
 | workspacesPath 不生效 | 非绝对路径、超出 `SCM_WORKSPACES_ALLOWED_ROOTS`、与平台受保护存储重叠，或与别的源冲突 | 使用默认 workspace 目录下的唯一路径，或请部署管理员批准专用 worktree 卷 |
 | 升级后的代码源提示 `Unsafe saved workspacesPath` | 旧自定义根目录对当前属主不再授权 | 先把代码源改为默认目录或部署管理员批准的专用根目录，再使用 workspace |

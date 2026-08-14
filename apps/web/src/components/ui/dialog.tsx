@@ -1,15 +1,15 @@
-import i18n from '@/i18n'
-import { cn } from '@/lib/utils'
 import { Modal } from 'antd'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
+import i18n from '@/i18n'
+import { cn } from '@/lib/utils'
 
 interface DialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   children: ReactNode
   width?: number
-  /** 内容区内边距（px），默认 12；叠加在 antd Modal container 自身 padding（上下 20 / 左右 24）之上 */
+  /** Content padding in px (default 12), applied on top of the antd Modal container's own padding (20 vertical / 24 horizontal) */
   padding?: number
   /**
    * Set when the modal body scrolls. Zeroes antd's `.ant-modal-content` padding
@@ -115,7 +115,13 @@ function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h2 className={cn('text-base font-semibold text-foreground', className)} {...props} />
+  // `text-dialog-title` is 1.4rem (22.4px) — 1.4x the 1rem this rendered at
+  // under `text-base`. A named rung rather than `text-[1.4rem]`: this component
+  // backs every modal in the app, so an arbitrary value would put ~36 dialogs
+  // outside the type scale. See --text-dialog-title in globals.css.
+  return (
+    <h2 className={cn('text-dialog-title font-semibold text-foreground', className)} {...props} />
+  )
 }
 
 function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
@@ -126,4 +132,4 @@ function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
   return <div className={cn('mt-5 flex justify-end gap-2', className)} {...props} />
 }
 
-export { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter }
+export { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle }

@@ -36,6 +36,7 @@ import {
 
 /** Heartbeat interval for in-flight tool calls (ms). */
 const TOOL_HEARTBEAT_INTERVAL_MS = 20_000
+
 import type {
   ExecuteResult,
   ListModelsOptions,
@@ -68,6 +69,13 @@ const PROTECTED_CODEX_ENV_NAMES = new Set([
 
 function truncate(s: string, maxLen = 200): string {
   return s.length <= maxLen ? s : `${s.slice(0, maxLen)}...`
+}
+
+export function buildCodexPromptTransport(
+  prompt: string,
+  platform: NodeJS.Platform = process.platform,
+): { promptArg: string; stdin?: string } {
+  return platform === 'win32' ? { promptArg: '-', stdin: prompt } : { promptArg: prompt }
 }
 
 const EXIT_CODE_MESSAGES: Record<number, string> = {
@@ -439,7 +447,8 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       )
     }
 
-    const args = this.buildArgs(prompt, model, inputChatId, {
+    const promptTransport = buildCodexPromptTransport(prompt)
+    const args = this.buildArgs(promptTransport.promptArg, model, inputChatId, {
       readOnly: agentConfig?.readOnly !== undefined ? Boolean(agentConfig.readOnly) : undefined,
       force: agentConfig?.force !== undefined ? Boolean(agentConfig.force) : undefined,
       mcpConfigOverride: mcpInjection?.configOverride,
@@ -602,6 +611,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       env: execEnv,
       cwd: resolvedWorkDir,
       timeoutMs: streamTimeoutMs,
+      stdin: promptTransport.stdin,
       onStdoutLine: parseLine,
       // Codex's main event stream is on stdout in --json mode, but some error
       // messages land on stderr; parse those lines too (matching cursor-agent).

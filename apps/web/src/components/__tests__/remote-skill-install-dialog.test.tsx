@@ -1,6 +1,6 @@
-import { renderWithProviders, screen } from '@/test/render'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen } from '@/test/render'
 import { RemoteSkillInstallDialog } from '../remote-skill-install-dialog'
 
 const { inspectMutateAsync, installMutateAsync, inspectReset, installReset } = vi.hoisted(() => ({
@@ -50,13 +50,8 @@ vi.mock('antd', () => ({
       }}
     />
   ),
-  Modal: ({
-    open,
-    children,
-  }: {
-    open: boolean
-    children: React.ReactNode
-  }) => (open ? <dialog open>{children}</dialog> : null),
+  Modal: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
+    open ? <dialog open>{children}</dialog> : null,
   Select: ({
     id,
     value,

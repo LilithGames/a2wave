@@ -1,7 +1,3 @@
-import { Pagination } from '@/components/ui/pagination'
-import { useUrlParam } from '@/hooks/use-url-state'
-import { DATE_PRESETS_WITH_ALL, type DatePreset, getPresetDateRange } from '@/lib/date-presets'
-import { idSuffix } from '@/lib/id-suffix'
 import type { PaginatedResponse } from '@a2wave/shared'
 import { CalendarOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
@@ -11,6 +7,10 @@ import { ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
+import { Pagination } from '@/components/ui/pagination'
+import { useUrlParam } from '@/hooks/use-url-state'
+import { DATE_PRESETS_WITH_ALL, type DatePreset, getPresetDateRange } from '@/lib/date-presets'
+import { idSuffix } from '@/lib/id-suffix'
 
 interface AuditLog {
   id: string
@@ -46,7 +46,10 @@ function getActionColor(action: string): string {
 function AuditLogDetailsToggle({
   expanded,
   onToggle,
-}: { expanded: boolean; onToggle: () => void }) {
+}: {
+  expanded: boolean
+  onToggle: () => void
+}) {
   const { t } = useTranslation()
 
   return (

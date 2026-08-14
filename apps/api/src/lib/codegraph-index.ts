@@ -5,8 +5,10 @@ import type { ScmSourceConfig } from '@a2wave/shared'
 import { and, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { scmSources } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { execCli } from '../engine/cli-spawn.js'
 import { sanitizeCredentials } from './git-sync.js'
+import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 
 const CODEGRAPH_TIMEOUT_MS = 10 * 60 * 1000
@@ -94,10 +96,12 @@ async function finalizePreAcquiredIndex(
   status: 'idle' | 'error',
   message: string | null,
 ): Promise<void> {
-  await db
-    .update(scmSources)
-    .set({ codegraphStatus: status, codegraphLastError: message, updatedAt: new Date() })
-    .where(eq(scmSources.id, sourceId))
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({ codegraphStatus: status, codegraphLastError: message, updatedAt: new Date() })
+      .where(eq(scmSources.id, sourceId))
+  })
 }
 
 export async function runCodegraphForPath(localPath: string): Promise<CodegraphIndexResult> {
@@ -122,6 +126,15 @@ export async function runCodegraphIndex(
   sourceId: string,
   options: { alreadyAcquired?: boolean } = {},
 ): Promise<CodegraphIndexResult> {
+  // Indexing reads the shared checkout for up to its full timeout, which is
+  // well past the point where peers may reclaim a fenced instance's workspace.
+  // Same gate as sync, for the same reason.
+  if (hasLostHeartbeatOwnership()) {
+    if (options.alreadyAcquired) {
+      await finalizePreAcquiredIndex(sourceId, 'idle', null)
+    }
+    return { ok: false, message: 'This instance lost its liveness lease', skipped: true }
+  }
   const source = await (
     await db.select().from(scmSources).where(eq(scmSources.id, sourceId)).limit(1)
   )[0]
@@ -140,13 +153,21 @@ export async function runCodegraphIndex(
   }
 
   if (!options.alreadyAcquired) {
-    const acquired = await (
-      await db
-        .update(scmSources)
-        .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
-        .where(and(eq(scmSources.id, sourceId), ne(scmSources.codegraphStatus, 'indexing')))
-        .returning()
-    )[0]
+    const acquired = await runExclusive(async () => {
+      return (
+        await db
+          .update(scmSources)
+          .set({ codegraphStatus: 'indexing', codegraphLastError: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(scmSources.id, sourceId),
+              ne(scmSources.codegraphStatus, 'indexing'),
+              ne(scmSources.syncStatus, 'syncing'),
+            ),
+          )
+          .returning()
+      )[0]
+    })
 
     if (!acquired) {
       return {
@@ -161,15 +182,17 @@ export async function runCodegraphIndex(
   logger.info({ sourceId, localPath: source.localPath }, 'Starting CodeGraph indexing')
   const result = await runCodegraphForPath(source.localPath)
 
-  await db
-    .update(scmSources)
-    .set({
-      codegraphStatus: result.ok ? 'idle' : 'error',
-      codegraphLastIndexedAt: result.ok ? new Date() : source.codegraphLastIndexedAt,
-      codegraphLastError: result.ok ? null : result.message,
-      updatedAt: new Date(),
-    })
-    .where(eq(scmSources.id, sourceId))
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({
+        codegraphStatus: result.ok ? 'idle' : 'error',
+        codegraphLastIndexedAt: result.ok ? new Date() : source.codegraphLastIndexedAt,
+        codegraphLastError: result.ok ? null : result.message,
+        updatedAt: new Date(),
+      })
+      .where(eq(scmSources.id, sourceId))
+  })
 
   if (result.ok) {
     logger.info({ sourceId, mode: result.mode }, 'CodeGraph indexing completed')

@@ -3,9 +3,9 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  type CliProcessRunOptions,
   CliProcessRunner,
   type CliProcessRunnerOptions,
+  type CliProcessRunOptions,
   createLineDecoder,
 } from '../cli-process-runner.js'
 import {
@@ -20,6 +20,7 @@ vi.mock('../../lib/logger.js', () => ({
 }))
 
 class FakeChildProcess extends EventEmitter {
+  readonly stdin = new PassThrough()
   readonly stdout = new PassThrough()
   readonly stderr = new PassThrough()
   readonly kill = vi.fn((_signal?: NodeJS.Signals | number) => true)
@@ -64,6 +65,33 @@ afterEach(() => {
 })
 
 describe('CliProcessRunner contract', () => {
+  it('writes the complete provided input to child stdin after spawn', async () => {
+    const input = '<system>\r\nfirst line\r\nsecond line\r\n</system>'
+    const { runner, spawnProcess, children, options } = createHarness({ stdin: input })
+    const received: Buffer[] = []
+
+    const execution = runner.run(options)
+    const child = children[0]
+    const stdinEnded = new Promise<void>((resolve) => {
+      child.stdin.once('end', resolve)
+    })
+    child.stdin.on('data', (chunk: Buffer) => received.push(chunk))
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'example-cli',
+      [],
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
+    )
+    expect(received).toHaveLength(0)
+
+    child.emit('spawn')
+    await stdinEnded
+    expect(Buffer.concat(received).toString('utf8')).toBe(input)
+
+    child.emit('close', 0)
+    await execution
+  })
+
   it('drops an overlong unterminated line before retaining later process-log lines', () => {
     const lines: string[] = []
     const decoder = createLineDecoder((line) => lines.push(line), { maxLineChars: 64 })

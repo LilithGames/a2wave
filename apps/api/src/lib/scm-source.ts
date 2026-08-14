@@ -1,20 +1,21 @@
 /**
- * SCM Source 抽象 — 每个 SCM Source 记录对应一个实例，
- * 封装 config / localPath / wsRoot 等状态，调用方无需关心实现细节。
+ * SCM Source abstraction — one instance per SCM Source row, wrapping its
+ * config / localPath / wsRoot so callers need not know the implementation.
  *
- * 本期只抽象 workspace 相关方法，sync / check 等后续迁入。
+ * Only workspace-related methods are abstracted for now; sync / check follow.
  */
 import { join } from 'node:path'
 import type { GitConfig } from '@a2wave/shared'
 import {
   type CleanupOptions,
-  type WorkspaceInfo,
-  type WorkspaceState,
   cleanupStaleWorkspaces,
   createGitWorkspace,
   defaultWorkspacesPath,
   listGitWorkspaces,
+  type RemoveGitWorkspaceOptions,
   removeGitWorkspace,
+  type WorkspaceInfo,
+  type WorkspaceState,
   writeWorkspaceState,
 } from './git-workspace.js'
 import { assertStoredScmWorkspacesRoot } from './scm-workspace-safety.js'
@@ -37,7 +38,12 @@ export interface ScmSource {
     name: string,
     options?: { branch?: string; followSource?: boolean; advance?: boolean },
   ): Promise<CreateWorkspaceResult>
-  removeWorkspace(name: string, options?: { keepBranches?: boolean }): Promise<void>
+  /**
+   * `beforeRemove` runs inside the workspace mutex; throw from it to abort.
+   * `keepBranches` preserves the worktree's branch — mandatory for a per-Agent
+   * worktree, whose branch can hold unpushed commits.
+   */
+  removeWorkspace(name: string, options?: RemoveGitWorkspaceOptions): Promise<void>
   listWorkspaces(): Promise<WorkspaceInfo[]>
   writeWorkspaceState(name: string, state: WorkspaceState): Promise<void>
   cleanupStale(opts: CleanupOptions): Promise<string[]>
@@ -79,7 +85,7 @@ class GitScmSource implements ScmSource {
     return createGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 
-  removeWorkspace(name: string, options?: { keepBranches?: boolean }): Promise<void> {
+  removeWorkspace(name: string, options?: RemoveGitWorkspaceOptions): Promise<void> {
     return removeGitWorkspace(this.localPath, this.wsRoot, name, this.config, options)
   }
 
@@ -101,11 +107,15 @@ class GitScmSource implements ScmSource {
 // ============================================================
 
 /**
- * 根据 SCM Source 记录创建实例。
- * 如果类型不支持 workspace，返回 null。
+ * Build an instance from an SCM Source row.
+ * Returns null when the type does not support workspaces.
  *
  * Async because the git branch asserts the stored workspaces root first, and
- * that check reads the owner's live role from the database.
+ * that check reads the owner's live role plus every peer source's paths from
+ * the database. Two small reads on a hot path (every run that mounts a git
+ * workspace lands here): accepted because the `scm_sources` table holds tens of
+ * rows, and skipping the check is what let one source's worktree root sit on
+ * top of another's checkout.
  */
 export async function createScmSource(source: ScmSourceRow): Promise<ScmSource | null> {
   if (source.type === 'git') {
@@ -117,6 +127,6 @@ export async function createScmSource(source: ScmSourceRow): Promise<ScmSource |
     await assertStoredScmWorkspacesRoot(source)
     return new GitScmSource(source)
   }
-  // P4 暂不支持 workspace
+  // P4 does not support workspaces yet
   return null
 }

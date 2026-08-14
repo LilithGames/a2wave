@@ -2,17 +2,17 @@ import { A2A_VERSION_HEADER, Extensions, HTTP_EXTENSION_HEADER } from '@a2a-js/s
 import { isLegacyJsonRpcMethod, isV1JsonRpcMethod } from '@a2a-js/sdk/compat/v0_3'
 import { LegacyJsonRpcTransportHandler } from '@a2a-js/sdk/compat/v0_3/server'
 import { RequestMalformedError } from '@a2a-js/sdk/errors'
+import type { TaskStore, User } from '@a2a-js/sdk/server'
 import {
   DefaultRequestHandler,
   JsonRpcTransportHandler,
   ServerCallContext,
   validateVersion,
 } from '@a2a-js/sdk/server'
-import type { TaskStore, User } from '@a2a-js/sdk/server'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { agents } from '../db/schema.js'
-import { buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
+import { buildAgentConfig } from '../lib/agent-helpers.js'
 import { ProviderConfigurationError } from '../lib/errors.js'
 import {
   getStreamingCard,
@@ -26,8 +26,8 @@ import {
 } from '../middleware/gateway-auth.js'
 import { buildAgentCard } from './agent-card.js'
 import { createScopedEventBusManager } from './event-bus-manager.js'
-import { A2waveAgentExecutor } from './executor.js'
 import type { A2waveExecutorConfig, CancelFn, ExecuteFn } from './executor.js'
+import { A2waveAgentExecutor } from './executor.js'
 
 type AgentRow = typeof agents.$inferSelect
 
@@ -202,10 +202,8 @@ export async function handleA2ARequest(
     if (preflightError) return c.json(preflightError)
 
     let agentConfig: Awaited<ReturnType<typeof buildAgentConfig>>
-    let resolvedWorkDir: string
     try {
       agentConfig = await buildAgentConfig(agent)
-      resolvedWorkDir = await resolveWorkDir(agent, undefined, undefined, agentConfig.agentEnv)
     } catch (err) {
       if (err instanceof ProviderConfigurationError) {
         return c.json({
@@ -222,7 +220,6 @@ export async function handleA2ARequest(
     }
     executorConfig = {
       agentConfig,
-      workDir: resolvedWorkDir,
       model: agentConfig.model || undefined,
     }
 

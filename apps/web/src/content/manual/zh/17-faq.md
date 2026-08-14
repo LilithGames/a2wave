@@ -170,6 +170,9 @@ a2wave setup --with-postgres
 
 两个参数互斥，也不能与 `--upgrade` 同用。已装好的实例要切换后端，编辑安装目录 `.env` 里的 `DATABASE_URL` 再 `docker compose up -d` 即可（同样从空库开始）。
 
+> [!IMPORTANT]
+> 这些参数是在 CLI v0.7.2 之后加入的，已发布的 `a2wave@0.7.2` 包中并不包含。安装前请先确认 `a2wave setup --help` 已列出这些参数；如果其中任一参数未知，请安装更新版本的 CLI 再重试，不要继续使用已经生成的部署，因为后端仍会采用默认的 SQLite。
+
 > [!WARNING]
 > 数据库地址不要写 `localhost`——容器里的 localhost 是容器自己。数据库跑在宿主机上时，用 `host.docker.internal`（Docker Desktop）或宿主机 IP。另外，PostgreSQL 实例升级时的自动备份只覆盖数据卷、**不包含数据库本身**，升级前请先自行 `pg_dump`。
 

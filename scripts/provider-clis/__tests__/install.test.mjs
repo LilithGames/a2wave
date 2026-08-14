@@ -6,8 +6,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -311,6 +311,27 @@ test('Dockerfile keeps the Linux dependency for Claude Code native sandboxing', 
   assert.match(dockerfile, /apt-get install[^\n]*\bbubblewrap\b/)
 })
 
+test('Dockerfile retries the pinned Perforce download on transient network failures', () => {
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
+
+  assert.match(
+    dockerfile,
+    /curl -fsSL --retry 5 --retry-all-errors --retry-delay 2\s+\\\s+"https:\/\/filehost\.perforce\.com\/perforce\/r24\.2/,
+  )
+})
+
+test('Dockerfile fetches p4 from the host the pinned checksums track', () => {
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
+
+  // Not a style preference: `cdist2` and `filehost` can serve different builds
+  // of the same r24.2 path. On 2026-08-14 `cdist2` was still serving x86_64
+  // changelist 2877946 while the published SHA256SUMS (and both arches on
+  // `filehost`) had moved to 3030719, so the pinned hash failed to verify a
+  // binary that was merely stale. Reverting the host silently reintroduces
+  // that build break.
+  assert.doesNotMatch(dockerfile, /cdist2\.perforce\.com\/perforce\/[^\n]*\/p4"/)
+})
+
 test('Dockerfile points the service at the flattened installer directory', () => {
   const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
 
@@ -352,6 +373,71 @@ test('entrypoint creates the install root without relying on the cached ownershi
   // follow a planted symlink (which would chown a target outside the volume).
   assert.match(entrypoint, /if \[ -L "\$cli_path" \]; then/)
   assert.match(entrypoint, /refusing to start: \$cli_path is a symlink/)
+})
+
+test('entrypoint owns only managed SCM subdirectories, never a host mount root', () => {
+  const entrypoint = readFileSync(resolve(root, 'docker-entrypoint.sh'), 'utf8')
+  const preflight = entrypoint.indexOf('scm_prepare_managed_storage "$SCM_STORAGE_ROOT"')
+  const noRemap = entrypoint.indexOf('no remap needed')
+  const ownership = entrypoint.indexOf('for scm_subdir in $SCM_MANAGED_SUBDIRS; do')
+  assert.ok(preflight !== -1 && preflight < noRemap, 'SCM preflight must precede UID handling')
+  assert.ok(ownership > noRemap, 'SCM ownership repair must run after both UID branches')
+
+  // The default is resolved ONCE, above the remap block, because both that block
+  // and the provisioning below it read the variable. Two `${SCM_STORAGE_ROOT:-…}`
+  // fallbacks is how the sweep and the provisioning would drift onto different
+  // roots.
+  const defaults = entrypoint.match(/SCM_STORAGE_ROOT="\$\{SCM_STORAGE_ROOT:-/g) ?? []
+  assert.equal(defaults.length, 1, 'SCM_STORAGE_ROOT default must be defined exactly once')
+
+  assert.match(entrypoint, /scm_prepare_managed_storage "\$SCM_STORAGE_ROOT"/)
+  // Provisioning iterates the same list the chown sweep uses, so a subtree can
+  // never be created here yet missed by the remap.
+  assert.match(entrypoint, /for scm_subdir in \$SCM_MANAGED_SUBDIRS; do/)
+  assert.match(entrypoint, /scm_dir="\$SCM_STORAGE_ROOT\/\$scm_subdir"/)
+  assert.match(entrypoint, /chown -h "\$TARGET_UID:\$TARGET_GID" "\$scm_dir"/)
+  assert.doesNotMatch(
+    entrypoint,
+    /chown -h "\$TARGET_UID:\$TARGET_GID" "\$SCM_STORAGE_ROOT"(?:\s|$)/,
+  )
+  assert.match(entrypoint, /is not an a2wave-managed SCM storage root/)
+})
+
+/**
+ * The UID remap must not sweep the whole storage root. On the shipped Compose
+ * defaults that root IS the /data/workspace bind mount, so a blanket
+ * `find /data/workspace ... -exec chown` handed every operator-owned file under
+ * it to appuser — and chowned the mount root itself, the one thing the
+ * provisioning block deliberately refuses to touch.
+ */
+test('entrypoint UID remap sweeps only the managed SCM subtrees', () => {
+  const entrypoint = readFileSync(resolve(root, 'docker-entrypoint.sh'), 'utf8')
+
+  assert.doesNotMatch(entrypoint, /find \/data\/workspace/)
+  assert.match(entrypoint, /scm_chown_targets "\$SCM_STORAGE_ROOT"/)
+  assert.match(entrypoint, /\. \/usr\/local\/bin\/entrypoint-scm-paths\.sh/)
+
+  // The symlinked-root refusal must precede the sweep. Behind a symlink whose
+  // target holds sources/ or workspaces/, sweeping first chowns real directories
+  // outside the mount and only then exits 1 — too late to matter.
+  const symlinkRefusal = entrypoint.indexOf('scm_prepare_managed_storage "$SCM_STORAGE_ROOT"')
+  const sweep = entrypoint.indexOf('scm_chown_targets "$SCM_STORAGE_ROOT"')
+  assert.ok(symlinkRefusal !== -1 && sweep !== -1)
+  assert.ok(symlinkRefusal < sweep, 'symlinked-root check must run before the chown sweep')
+
+  // The helper is sourced, so it has to be in the image.
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8')
+  assert.match(
+    dockerfile,
+    /COPY scripts\/entrypoint-scm-paths\.sh \/usr\/local\/bin\/entrypoint-scm-paths\.sh/,
+  )
+})
+
+test('root Compose does not pass host ownership policy into the container', () => {
+  const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8')
+
+  assert.doesNotMatch(compose, /A2WAVE_MANAGED_SCM_VOLUME/)
+  assert.doesNotMatch(compose, /A2WAVE_SCM_BIND_SOURCE/)
 })
 
 // ---------------------------------------------------------------------------

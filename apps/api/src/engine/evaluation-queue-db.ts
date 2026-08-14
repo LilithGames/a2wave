@@ -1,6 +1,7 @@
 import { and, asc, count, eq, inArray } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { evaluationResults, evaluationTasks } from '../db/schema.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import type { EvaluationQueueDb, EvaluationTaskRow } from './evaluation-queue.js'
 
 const VALID_TASK_STATUSES = [
@@ -47,6 +48,38 @@ export const evaluationQueueDb: EvaluationQueueDb = {
 
   getMaxConcurrency(): number {
     return EVALUATION_MAX_CONCURRENCY
+  },
+
+  async claimQueuedTasks(agentId: string): Promise<EvaluationTaskRow[]> {
+    return withScmPathMutation(async (tx) => {
+      const running =
+        (
+          await tx
+            .select({ value: count() })
+            .from(evaluationTasks)
+            .where(and(eq(evaluationTasks.agentId, agentId), eq(evaluationTasks.status, 'running')))
+            .limit(1)
+        )[0]?.value ?? 0
+      const available = EVALUATION_MAX_CONCURRENCY - running
+      if (available <= 0) return []
+
+      const queued = await tx
+        .select({ id: evaluationTasks.id, agentId: evaluationTasks.agentId })
+        .from(evaluationTasks)
+        .where(and(eq(evaluationTasks.agentId, agentId), eq(evaluationTasks.status, 'queued')))
+        .orderBy(asc(evaluationTasks.createdAt))
+        .limit(available)
+      const claimed: EvaluationTaskRow[] = []
+      for (const task of queued) {
+        const updated = await tx
+          .update(evaluationTasks)
+          .set({ status: 'running', updatedAt: new Date() })
+          .where(and(eq(evaluationTasks.id, task.id), eq(evaluationTasks.status, 'queued')))
+          .returning({ id: evaluationTasks.id })
+        if (updated.length > 0) claimed.push(task)
+      }
+      return claimed
+    })
   },
 
   async updateTaskStatus(taskId: string, status: string): Promise<void> {

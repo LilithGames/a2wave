@@ -40,6 +40,13 @@ vi.mock('../../lib/execute-with-retry.js', () => ({
   executeWithRetry: vi.fn(),
 }))
 
+// Workspace freshness is covered by the route-level A2A regression tests.
+// Keep this recording-unit suite isolated from the settings and filesystem
+// dependencies pulled in by the real workspace resolver.
+vi.mock('../../lib/agent-helpers.js', () => ({
+  resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
+}))
+
 vi.mock('../../lib/run-lifecycle.js', () => ({
   finishRunSuccess: vi.fn(),
   finishRunError: vi.fn().mockReturnValue('error message'),
@@ -166,9 +173,8 @@ import { tryAcquireSlot } from '../../engine/task-queue.js'
 import { executeWithRetry } from '../../lib/execute-with-retry.js'
 import { buildGatewayChannel } from '../../lib/run-channel.js'
 import { finishRunError, finishRunSuccess } from '../../lib/run-lifecycle.js'
-import { createRecordedA2ACancelFn, createRecordedA2AExecuteFn } from '../run-recording.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { createRecordedA2ACancelFn, createRecordedA2AExecuteFn } from '../run-recording.js'
 
 const mockDb = db as unknown as {
   insert: ReturnType<typeof vi.fn>

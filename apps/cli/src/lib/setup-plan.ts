@@ -69,7 +69,7 @@ export function generateProjectName(): string {
 // Docker image reference charset (name[:tag][@digest]). Anything outside this
 // (newlines, spaces, quotes, '#') could inject extra compose directives when
 // interpolated into the generated YAML.
-const IMAGE_REF_PATTERN = /^[a-z0-9]+(?:[._\-/:][a-zA-Z0-9._\-]+)*(?:@sha256:[a-f0-9]+)?$/
+const IMAGE_REF_PATTERN = /^[a-z0-9]+(?:[._\-/:][a-zA-Z0-9._-]+)*(?:@sha256:[a-f0-9]+)?$/
 
 /** Reject image refs that are not a plain docker reference (YAML-injection guard). */
 export function validateImageRef(ref: string): void {
@@ -329,8 +329,11 @@ export function buildComposeFile(input: ComposeFileInput): string {
     // DATABASE_URL added to .env silently inert.
     '      - DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}',
     '      - A2WAVE_SKILLS_STORAGE=/app/data/skills',
+    '      - SCM_STORAGE_ROOT=${SCM_STORAGE_ROOT:-/data/workspace}',
+    '      - SCM_WORKSPACES_ALLOWED_ROOTS=${SCM_WORKSPACES_ALLOWED_ROOTS:-/data/workspace/workspaces}',
     '    volumes:',
     '      - a2wave-data:/app/data',
+    '      - a2wave-workspace:/data/workspace',
     // Provider CLIs (Cursor / Codex / Claude Code / ...) persist localSession
     // state under the service HOME; without this volume every container
     // rebuild wipes those logins.
@@ -367,6 +370,7 @@ export function buildComposeFile(input: ComposeFileInput): string {
     '',
     'volumes:',
     '  a2wave-data:',
+    '  a2wave-workspace:',
     '  a2wave-cli-home:',
     ...(input.withPostgres ? ['  a2wave-postgres:'] : []),
     '',

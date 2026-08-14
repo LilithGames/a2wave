@@ -116,7 +116,7 @@ export const scmSourceSchema = z.object({
   config: scmSourceConfigSchema,
   /** Local working directory — absolute, globally unique */
   localPath: z.string().min(1),
-  /** Worktree root — absolute, optional. Defaults to ~/.a2wave/workspaces/<sourceIdSuffix> when empty. */
+  /** Worktree root — absolute, optional. Defaults under SCM_STORAGE_ROOT when empty. */
   workspacesPath: z.string().nullable().optional(),
   /** Sync status */
   syncStatus: syncStatusEnum.default('idle'),
@@ -159,7 +159,8 @@ export const createScmSourceInput = z.object({
   type: scmSourceTypeEnum,
   description: z.string().nullable().optional(),
   config: scmSourceConfigSchema,
-  localPath: z.string().min(1),
+  /** Omit to let the server allocate a managed persistent path. */
+  localPath: z.string().min(1).optional(),
   workspacesPath: optionalWorkspacesPath,
   isEnabled: z.boolean().optional(),
 })

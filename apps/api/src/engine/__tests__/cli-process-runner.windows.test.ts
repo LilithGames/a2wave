@@ -39,3 +39,34 @@ it.skipIf(process.platform !== 'win32')(
     expect(output).toEqual(['hello & goodbye'])
   },
 )
+
+it.skipIf(process.platform !== 'win32')(
+  'streams multiline input through an npm-style .cmd shim without truncation',
+  async () => {
+    testRoot = mkdtempSync(join(tmpdir(), 'a2wave-cli-stdin-'))
+    const binDir = join(testRoot, 'bin with spaces')
+    mkdirSync(binDir)
+    writeFileSync(
+      join(binDir, 'fixture-cli.cmd'),
+      '@echo off\r\n"%~1" -e "process.stdin.pipe(process.stdout)"\r\n',
+    )
+
+    const input = '<system>\r\nfirst line\r\nsecond line\r\n</system>'
+    const output: string[] = []
+    const runner = new CliProcessRunner()
+    const result = await runner.run({
+      taskId: 'windows_cmd_stdin_fixture',
+      command: 'fixture-cli',
+      args: [process.execPath],
+      stdin: input,
+      cwd: testRoot,
+      env: { ...process.env, PATH: `${binDir};${process.env.PATH ?? ''}` },
+      timeoutMs: 10_000,
+      label: 'Windows cmd stdin fixture',
+      onStdoutLine: (line) => output.push(line),
+    })
+
+    expect(result).toMatchObject({ reason: 'completed', exitCode: 0 })
+    expect(output).toEqual(['<system>\r', 'first line\r', 'second line\r', '</system>'])
+  },
+)

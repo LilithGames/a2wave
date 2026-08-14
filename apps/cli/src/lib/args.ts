@@ -3,6 +3,48 @@ import { createInterface } from 'node:readline/promises'
 import { CliError } from '../errors.js'
 import type { CommandRisk } from './agent-meta.js'
 
+type OptionDefinition = {
+  alias?: string | string[]
+}
+
+/**
+ * citty 0.1 accepts unknown options and exposes them on `ctx.args`. That is
+ * dangerous for commands with operational side effects: an older CLI can
+ * silently ignore a newer option and continue with its default behavior.
+ * Validate the raw argv before any preflight or write takes place.
+ */
+export function assertKnownOptions(
+  rawArgs: string[],
+  definitions: Record<string, OptionDefinition>,
+): void {
+  const known = new Set<string>()
+  for (const [name, definition] of Object.entries(definitions)) {
+    known.add(name)
+    const aliases = Array.isArray(definition.alias)
+      ? definition.alias
+      : definition.alias
+        ? [definition.alias]
+        : []
+    for (const alias of aliases) known.add(alias)
+  }
+
+  for (const token of rawArgs) {
+    if (token === '--') return
+    if (token === '-' || !token.startsWith('-')) continue
+
+    if (token.startsWith('--')) {
+      const option = token.slice(2).split('=', 1)[0]
+      const name = option.startsWith('no-') ? option.slice(3) : option
+      if (!known.has(name)) throw new CliError(`Unknown option: --${option}`)
+      continue
+    }
+
+    for (const alias of token.slice(1).split('=', 1)[0]) {
+      if (!known.has(alias)) throw new CliError(`Unknown option: -${alias}`)
+    }
+  }
+}
+
 /**
  * Read the JSON file pointed to by `--config-file` and parse it into an object. Read failures
  * and invalid JSON are wrapped into a CliError carrying the flag name (instead of throwing the

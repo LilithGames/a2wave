@@ -1,5 +1,3 @@
-import type { StreamLogEntry } from '@/hooks/use-agents'
-import { formatTokens } from '@/lib/format-tokens'
 import {
   AlertCircle,
   Bot,
@@ -13,6 +11,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { StreamLogEntry } from '@/hooks/use-agents'
+import { formatTokens } from '@/lib/format-tokens'
 
 /** Format a timestamp relative to a base time */
 export function formatRelativeTs(ts: number, baseTs?: number): string {
@@ -45,7 +45,10 @@ const A2A_TASK_EVENT_LABELS: Record<string, string> = {
 function AssistantEntry({
   entry,
   timeLabel,
-}: { entry: Extract<StreamLogEntry, { type: 'assistant' }>; timeLabel: string }) {
+}: {
+  entry: Extract<StreamLogEntry, { type: 'assistant' }>
+  timeLabel: string
+}) {
   const [open, setOpen] = useState(false)
   const text = entry.text.trim()
   const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text
@@ -78,7 +81,10 @@ function AssistantEntry({
 function ToolCallEntry({
   entry,
   timeLabel,
-}: { entry: Extract<StreamLogEntry, { type: 'tool_call' }>; timeLabel: string }) {
+}: {
+  entry: Extract<StreamLogEntry, { type: 'tool_call' }>
+  timeLabel: string
+}) {
   const [open, setOpen] = useState(false)
   const hasInput = entry.input && Object.keys(entry.input).length > 0
 

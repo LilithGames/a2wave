@@ -7,12 +7,13 @@
  * rather than the stored ones, and a multi-repo failure names the repo that
  * failed instead of only reporting a count.
  */
-import i18n from '@/i18n'
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '@/i18n'
 
 const idleMutation = () => ({
   mutate: vi.fn(),
@@ -46,6 +47,18 @@ const MULTI_REPO_SOURCE = {
     repos: [{ repoUrl: 'https://example.com/a.git', branch: 'main', directory: '' }],
   },
 }
+const P4_SOURCE = {
+  ...GIT_SOURCE,
+  type: 'p4',
+  localPath: '/data/p4/client',
+  config: {
+    type: 'p4',
+    p4port: 'ssl:p4.example.com:1666',
+    p4user: 'builder',
+    p4passwd: '********',
+    p4client: 'builder-client',
+  },
+}
 
 /**
  * `useScmSource`'s result feeds a `useEffect([source, reset])` that resets the
@@ -55,9 +68,11 @@ const MULTI_REPO_SOURCE = {
  */
 const GIT_RESULT = { data: GIT_SOURCE, isPending: false, error: null }
 const MULTI_REPO_RESULT = { data: MULTI_REPO_SOURCE, isPending: false, error: null }
+const P4_RESULT = { data: P4_SOURCE, isPending: false, error: null }
 const EMPTY_RESULT = { data: undefined, isPending: false, error: null }
 
 const probeMock = vi.fn(idleMutation)
+const createMock = vi.fn(idleMutation)
 const sourceMock = vi.fn(() => GIT_RESULT)
 
 vi.mock('@/hooks/use-scm-sources', () => ({
@@ -68,7 +83,7 @@ vi.mock('@/hooks/use-scm-sources', () => ({
     isLoading: false,
     refetch: vi.fn(),
   })),
-  useCreateScmSource: vi.fn(() => idleMutation()),
+  useCreateScmSource: (...args: unknown[]) => createMock(...(args as [])),
   useUpdateScmSource: vi.fn(() => idleMutation()),
   useDeleteScmSource: vi.fn(() => idleMutation()),
   useSyncScmSource: vi.fn(() => idleMutation()),
@@ -96,10 +111,107 @@ beforeEach(async () => {
   await i18n.changeLanguage('en')
   vi.clearAllMocks()
   probeMock.mockImplementation(idleMutation)
+  createMock.mockImplementation(idleMutation)
   sourceMock.mockImplementation(() => GIT_RESULT)
 })
 
 describe('ScmSourceForm — connection probe', () => {
+  it('uses managed storage by default and submits no localPath', async () => {
+    sourceMock.mockImplementation(() => EMPTY_RESULT as never)
+    const mutate = vi.fn()
+    createMock.mockImplementation(() => ({ ...idleMutation(), mutate }))
+    const user = userEvent.setup()
+    renderForm(undefined)
+
+    expect(screen.getByText(/Managed storage/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText('Basic source information and local path configuration'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/^Local Path/i)).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText(/^Name/i), 'Managed repo')
+    await user.type(screen.getByLabelText(/Repository URL/i), 'https://example.com/new.git')
+    await user.click(screen.getByRole('button', { name: /^Create$/i }))
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.not.objectContaining({ localPath: expect.anything() }),
+      expect.anything(),
+    )
+  })
+
+  it('keeps the custom path input inside the custom storage choice', async () => {
+    sourceMock.mockImplementation(() => EMPTY_RESULT as never)
+    renderForm(undefined)
+
+    const customStorage = screen.getByRole('radio', { name: /Custom path/i })
+    expect(customStorage.closest('.ant-segmented')).not.toBeNull()
+    fireEvent.click(customStorage)
+
+    const customStorageRow = screen
+      .getByLabelText(/^Local Path/i)
+      .closest('[data-storage-choice="custom"]')
+    expect(customStorageRow).not.toBeNull()
+    expect(screen.getByLabelText(/^Local Path/i)).toBeInTheDocument()
+    expect(customStorageRow).toContainElement(screen.getByLabelText(/^Local Path/i))
+  })
+
+  it('requires a custom local path for a new P4 source', async () => {
+    sourceMock.mockImplementation(() => EMPTY_RESULT as never)
+    const user = userEvent.setup()
+    renderForm(undefined)
+
+    await user.click(screen.getByText('Perforce (P4)'))
+
+    expect(screen.queryByText(/Managed storage/i)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/^Local Path/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Create$/i }))
+    expect(screen.getByText('Local path is required')).toBeInTheDocument()
+  })
+
+  it('probes P4 root coverage using the current local path', async () => {
+    sourceMock.mockImplementation(() => EMPTY_RESULT as never)
+    const mutate = vi.fn()
+    probeMock.mockImplementation(() => ({ ...idleMutation(), mutate }))
+    const user = userEvent.setup()
+    renderForm(undefined)
+
+    await user.click(screen.getByText('Perforce (P4)'))
+    await user.type(screen.getByLabelText(/^Local Path/i), '/data/p4/client-a')
+    await user.type(screen.getByLabelText(/P4PORT/i), 'ssl:p4.example.com:1666')
+    await user.type(screen.getByLabelText(/P4USER/i), 'builder')
+    await user.type(screen.getByLabelText(/P4CLIENT/i), 'client-a')
+    await user.click(screen.getByRole('button', { name: /Test Connection/i }))
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'p4', localPath: '/data/p4/client-a' }),
+    )
+  })
+
+  it('allows an existing P4 source path to be repaired in place', () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    renderForm('scm_p4')
+
+    expect(screen.getByLabelText(/^Local Path/i)).not.toHaveAttribute('readonly')
+  })
+
+  it('uses the standard field rhythm and placeholder for an existing P4 path', () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    renderForm('scm_p4')
+
+    const input = screen.getByLabelText(/^Local Path/i)
+    expect(input).toHaveAttribute('placeholder', '/data/p4/client')
+    expect(input.parentElement).toHaveClass('space-y-1.5')
+    expect(screen.getByText(/^Local Path$/i)).toHaveClass('text-sm')
+  })
+
+  it('keeps the same standard field contract for a read-only Git path', () => {
+    renderForm('scm_1')
+
+    const input = screen.getByLabelText(/^Local Path/i)
+    expect(input).toHaveAttribute('placeholder', '/data/repos/repository')
+    expect(input).toHaveAttribute('readonly')
+    expect(input.parentElement).toHaveClass('space-y-1.5')
+  })
+
   it('offers the probe button in create mode, before a source exists', () => {
     sourceMock.mockImplementation(() => EMPTY_RESULT as never)
     renderForm(undefined)
@@ -272,6 +384,33 @@ describe('ScmSourceForm — connection probe', () => {
     expect(reset).toHaveBeenCalled()
   })
 
+  /**
+   * `localPath` is a probed parameter for P4, not just a saved field: the probe
+   * verifies the client Root/AltRoots actually cover it. It was missing from the
+   * invalidation snapshot, which watched only the credential/URL fields — so
+   * probing path A, then editing the path to B, left the green check sitting
+   * next to an untested B.
+   */
+  it('clears a probe result once the P4 local path is edited', async () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    const reset = vi.fn()
+    probeMock.mockImplementation(() => ({
+      ...idleMutation(),
+      reset,
+      data: { data: { ok: true, message: 'P4 connection is healthy' } },
+    }))
+    renderForm('scm_1')
+
+    // Loading a P4 row flips `scmType`, which legitimately invalidates once.
+    // The delta across the edit is what this test is about.
+    const beforeEdit = reset.mock.calls.length
+
+    const pathInput = screen.getByLabelText(/local path/i)
+    await userEvent.type(pathInput, '-edited')
+
+    expect(reset.mock.calls.length).toBeGreaterThan(beforeEdit)
+  })
+
   it('shows a successful probe result', () => {
     probeMock.mockImplementation(() => ({
       ...idleMutation(),
@@ -280,6 +419,26 @@ describe('ScmSourceForm — connection probe', () => {
     renderForm('scm_1')
 
     expect(screen.getByText(/2\/2 repos connected/i)).toBeInTheDocument()
+  })
+
+  it('shows the detected P4 root and a separate verification warning', () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    probeMock.mockImplementation(() => ({
+      ...idleMutation(),
+      data: {
+        data: {
+          ok: true,
+          message: 'P4 connection is healthy',
+          clientRoot: '/data/p4/client',
+          clientRootWarning: 'P4 client Root could not be verified',
+        },
+      },
+    }))
+
+    renderForm('scm_p4')
+
+    expect(screen.getByText(/P4 Client Root: \/data\/p4\/client/)).toBeInTheDocument()
+    expect(screen.getByText(/could not be verified/)).toBeInTheDocument()
   })
 
   it('surfaces a rejected probe request rather than failing silently', () => {

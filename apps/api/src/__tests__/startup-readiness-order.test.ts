@@ -65,6 +65,18 @@ describe('startup readiness ordering', () => {
     )
   })
 
+  it('clears leaked SQLite workspace-removal reservations before the port opens', () => {
+    // Once the port accepts mutations, a new removal may own a fresh row. A
+    // later wholesale startup clear cannot distinguish that live attempt from
+    // a row leaked by the previous process.
+    expect(callIndex('await clearWorkspaceRemovalsOnStartup()')).toBeLessThan(
+      callIndex('server = startListening()'),
+    )
+    expect(callIndex('await clearWorkspaceRemovalsOnStartup()')).toBeLessThan(
+      callIndex('await bootstrapFromEnv()'),
+    )
+  })
+
   it('keeps auto-sync scheduler init off the readiness path but handles its rejection', () => {
     // Deliberately after markReady(): it only re-arms timers and settles rows
     // from a previous process, so it does not change how a fresh request is

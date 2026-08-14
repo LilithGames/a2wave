@@ -11,7 +11,11 @@ vi.mock('node:child_process', () => ({
   spawn: mockSpawn,
 }))
 
-import { CodexAgentEngine, buildCodexMcpInjection } from '../codex-agent.js'
+import {
+  buildCodexMcpInjection,
+  buildCodexPromptTransport,
+  CodexAgentEngine,
+} from '../codex-agent.js'
 import type { ResolvedMcpServer } from '../mcp-sync.js'
 
 const baseConfig = {
@@ -24,6 +28,7 @@ const baseConfig = {
 }
 
 class MockChildProcess extends EventEmitter {
+  stdin = new PassThrough()
   stdout = new PassThrough()
   stderr = new PassThrough()
   pid = 9000
@@ -68,12 +73,17 @@ describe('CodexAgentEngine buildArgs (CLI flag compatibility)', () => {
 
   it('首次 exec: 传 --json --skip-git-repo-check --model + --sandbox workspace-write（默认非 force）', async () => {
     const child = new MockChildProcess()
+    let stdin = ''
+    child.stdin.on('data', (chunk: Buffer) => {
+      stdin += chunk.toString('utf8')
+    })
     mockSpawn.mockReturnValue(child)
     const engine = new CodexAgentEngine(baseConfig)
     const p = getExecuteStream(engine)(
       { taskId: 't', workDir: '/tmp/w', prompt: 'hi', agentConfig: {} },
       'gpt-5-codex',
     )
+    child.emit('spawn')
     finishOk(child)
     await p
     const args = lastSpawnArgs()
@@ -87,8 +97,9 @@ describe('CodexAgentEngine buildArgs (CLI flag compatibility)', () => {
     expect(args).not.toContain('--cd')
     // cwd 走 spawn options
     expect(lastSpawnCwd()).toBe('/tmp/w')
-    // prompt 是最后一个位置参数
-    expect(args[args.length - 1]).toBe('hi')
+    // Windows reads the prompt from stdin; POSIX keeps the positional argument.
+    expect(args[args.length - 1]).toBe(process.platform === 'win32' ? '-' : 'hi')
+    expect(stdin).toBe(process.platform === 'win32' ? 'hi' : '')
   })
 
   it('readOnly 模式: --sandbox read-only 且无 bypass', async () => {
@@ -435,6 +446,26 @@ describe('CodexAgentEngine buildArgs (CLI flag compatibility)', () => {
     expect(args.slice(0, 3)).toEqual(['exec', 'resume', 'thr_1'])
     expect(args).toContain('--dangerously-bypass-approvals-and-sandbox')
     expect(args).not.toContain('--sandbox')
+  })
+})
+
+describe('buildCodexPromptTransport', () => {
+  const multilinePrompt = '<system>\nfirst line\nsecond line\n</system>'
+
+  it('uses stdin on Windows so cmd.exe never parses the multiline prompt', () => {
+    expect(buildCodexPromptTransport(multilinePrompt, 'win32')).toEqual({
+      promptArg: '-',
+      stdin: multilinePrompt,
+    })
+  })
+
+  it('keeps the existing positional prompt on Linux and macOS', () => {
+    expect(buildCodexPromptTransport(multilinePrompt, 'linux')).toEqual({
+      promptArg: multilinePrompt,
+    })
+    expect(buildCodexPromptTransport(multilinePrompt, 'darwin')).toEqual({
+      promptArg: multilinePrompt,
+    })
   })
 })
 

@@ -1,0 +1,1 @@
+ALTER TABLE `scm_sources` ADD `deletion_requested_at` integer;

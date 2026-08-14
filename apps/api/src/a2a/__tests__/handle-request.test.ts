@@ -164,27 +164,16 @@ describe('handleA2ARequest', () => {
     expect(capturedExecuteFn).toBeNull()
   })
 
-  it('returns a JSON-RPC error when workspace resolution fails', async () => {
-    mockResolveWorkDir.mockRejectedValueOnce(new Error('workspace is unavailable'))
+  it('does not resolve the workspace before the transport admits execution', async () => {
     const c = createMockContext(
       { 'A2A-Version': '1.0' },
-      { jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'workspace-error' },
+      { jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'deferred-workspace' },
     )
 
-    const res = (await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)) as unknown as {
-      jsonrpc: string
-      id: string
-      error: { code: number; message: string }
-    }
+    await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)
 
-    expect(res).toMatchObject({
-      jsonrpc: '2.0',
-      id: 'workspace-error',
-      error: { code: -32009 },
-    })
-    expect(res.error.message).toContain('workspace is unavailable')
-    expect(mockV1Handle).toHaveBeenCalledOnce()
-    expect(capturedExecuteFn).toBeNull()
+    expect(mockV1Handle).toHaveBeenCalledTimes(2)
+    expect(mockResolveWorkDir).not.toHaveBeenCalled()
   })
 
   it('validates the protocol version before resolving execution configuration', async () => {

@@ -23,17 +23,17 @@ import { BaseAgentEngine } from './base-engine.js'
 import { cliProcessRunner } from './cli-process-runner.js'
 import { probeCliVersion, runStatusProbe } from './login-status-helper.js'
 import {
-  PROCESS_INJECTION_ENV_NAMES,
   buildSafeAgentProcessEnv,
   isProcessInjectionEnvName,
   omitRuntimeEnvKeys,
+  PROCESS_INJECTION_ENV_NAMES,
   sanitizeAgentRuntimeEnv,
 } from './runtime-context.js'
 import type { ExecuteResult, TokenUsage } from './types.js'
 import { attachUsageToError } from './usage.js'
 
-export { extractUsageFromError } from './usage.js'
 export type { ErrorWithUsage } from './usage.js'
+export { extractUsageFromError } from './usage.js'
 
 // Process-injection env names are defined in runtime-context (the single point
 // every engine funnels agent env through via sanitizeAgentRuntimeEnv) and
@@ -63,6 +63,8 @@ export interface RunCliStreamOptions {
   env: NodeJS.ProcessEnv
   cwd: string
   timeoutMs: number
+  /** Complete input to write to the child process stdin after spawn. */
+  stdin?: string
   /** Called for each complete stdout line (line-buffered; remainder flushed on close) */
   onStdoutLine: (line: string) => void
   /** Also feed stderr lines to onStdoutLine (some CLIs emit events on stderr) */

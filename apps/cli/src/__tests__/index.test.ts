@@ -1,8 +1,8 @@
+import { runCommand } from 'citty'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('citty', () => ({
   defineCommand: vi.fn(() => ({})),
-  runMain: vi.fn(() => Promise.resolve()),
   runCommand: vi.fn(() => Promise.resolve({ result: undefined })),
   showUsage: vi.fn(() => Promise.resolve()),
   resolveSubCommand: vi.fn(() => Promise.resolve([{}, undefined])),
@@ -16,7 +16,7 @@ vi.mock('../commands/skills.js', () => ({ skillsCommand: {} }))
 vi.mock('../commands/agents.js', () => ({ agentsCommand: {} }))
 vi.mock('../commands/runs.js', () => ({ runsCommand: {} }))
 
-const { handleError } = await import('../index.js')
+const { handleError, runCli } = await import('../index.js')
 const { CliError } = await import('../errors.js')
 const { ApiError } = await import('../client.js')
 
@@ -188,5 +188,56 @@ describe('handleError', () => {
       errorSpy.mockRestore()
       exitSpy.mockRestore()
     })
+  })
+})
+
+describe('runCli', () => {
+  it('prints the global version without running a nested command', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.mocked(runCommand).mockClear()
+
+    runCli(['setup', '--version'])
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/^\d+\.\d+\.\d+/))
+    expect(runCommand).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+  })
+
+  it('prints the version for a bare --version', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.mocked(runCommand).mockClear()
+
+    runCli(['--version'])
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/^\d+\.\d+\.\d+/))
+    expect(runCommand).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+  })
+
+  it('does not treat a free-text --version value as the global version flag', () => {
+    vi.mocked(runCommand).mockClear()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    runCli(['chat', 'send', 'my-agent', '-m', '--version'])
+
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ rawArgs: ['chat', 'send', 'my-agent', '-m', '--version'] }),
+    )
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  // The legacy alias used to be applied by mutating `process.argv`, so it was
+  // invisible to a caller passing rawArgs in. It now travels with the argument
+  // list, which is the only way `runCli(['upgrade'])` can honour it.
+  it('rewrites the legacy `upgrade` alias to `update` on the passed args', () => {
+    vi.mocked(runCommand).mockClear()
+
+    runCli(['upgrade', '--check'])
+
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ rawArgs: ['update', '--check'] }),
+    )
   })
 })

@@ -126,10 +126,10 @@ function oauthErrorResponse(description: string): OpenAPIV3.ResponseObject {
 export const openApiSpec: OpenAPIV3.Document = {
   openapi: '3.0.3',
   info: {
-    title: 'a2wave Invocation API',
-    version: '1.1.0',
+    title: 'a2wave API',
+    version: '1.2.0',
     description:
-      'API-key Gateway and enterprise OIDC OAuth APIs for invoking published agents, querying run results, and cancelling runs. ' +
+      'Authenticated SCM management plus API-key Gateway and enterprise OIDC OAuth APIs for invoking published agents, querying run results, and cancelling runs. ' +
       'HTTP 401 on OAuth paths always refers to the caller JWT issued by the enterprise OIDC provider. Agent provider credential failures use PROVIDER_* codes and never HTTP 401.',
   },
   servers: [{ url: '/api', description: 'a2wave API base path' }],
@@ -139,6 +139,12 @@ export const openApiSpec: OpenAPIV3.Document = {
         type: 'http',
         scheme: 'bearer',
         description: "Agent's API key passed as a Bearer token.",
+      },
+      userSession: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description: 'Authenticated a2wave user session JWT, as used by the CLI.',
       },
       ssoJwt: {
         type: 'http',
@@ -170,6 +176,20 @@ export const openApiSpec: OpenAPIV3.Document = {
         schema: { type: 'string', format: 'uuid' },
         description:
           'Optional request tracing ID. If omitted the server generates one and returns it in the response header.',
+      },
+      scmSourceId: {
+        name: 'id',
+        in: 'path',
+        required: true,
+        schema: { type: 'string' },
+        description: 'SCM source ID (prefixed with `scm_`).',
+      },
+      workspaceName: {
+        name: 'name',
+        in: 'path',
+        required: true,
+        schema: { type: 'string' },
+        description: 'Workspace/worktree name.',
       },
     },
     schemas: {
@@ -280,6 +300,237 @@ export const openApiSpec: OpenAPIV3.Document = {
       },
       GatewayRunStatusResponse: gatewayRunStatusResponseSchema,
       OAuthRunStatusResponse: oauthRunStatusResponseSchema,
+      CreateScmSourceRequest: {
+        oneOf: [
+          {
+            type: 'object',
+            required: ['name', 'type', 'config'],
+            properties: {
+              name: { type: 'string', minLength: 1, maxLength: 100 },
+              type: { type: 'string', enum: ['git'] },
+              description: { type: 'string', nullable: true },
+              config: {
+                type: 'object',
+                required: ['type', 'repoUrl'],
+                properties: {
+                  type: { type: 'string', enum: ['git'] },
+                  repoUrl: { type: 'string' },
+                  branch: { type: 'string', default: 'main' },
+                  repos: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                },
+                additionalProperties: true,
+              },
+              localPath: {
+                type: 'string',
+                description:
+                  'Optional absolute custom checkout path. Omit it to allocate platform-managed persistent Git storage.',
+              },
+              workspacesPath: { type: 'string', nullable: true },
+              isEnabled: { type: 'boolean' },
+            },
+          },
+          {
+            type: 'object',
+            required: ['name', 'type', 'config', 'localPath'],
+            properties: {
+              name: { type: 'string', minLength: 1, maxLength: 100 },
+              type: { type: 'string', enum: ['p4'] },
+              description: { type: 'string', nullable: true },
+              config: {
+                type: 'object',
+                required: ['type', 'p4port', 'p4user', 'p4client'],
+                properties: {
+                  type: { type: 'string', enum: ['p4'] },
+                  p4port: { type: 'string' },
+                  p4user: { type: 'string' },
+                  p4passwd: { type: 'string', format: 'password' },
+                  p4client: { type: 'string' },
+                },
+                additionalProperties: true,
+              },
+              localPath: {
+                type: 'string',
+                description: 'Required absolute P4 client checkout path.',
+              },
+              workspacesPath: { type: 'string', nullable: true },
+              isEnabled: { type: 'boolean' },
+            },
+          },
+        ],
+      },
+      ProbeScmSourceRequest: {
+        oneOf: [
+          {
+            type: 'object',
+            required: ['type', 'config'],
+            properties: {
+              type: { type: 'string', enum: ['git'] },
+              config: {
+                type: 'object',
+                required: ['type', 'repoUrl'],
+                properties: {
+                  type: { type: 'string', enum: ['git'] },
+                  repoUrl: { type: 'string' },
+                  branch: { type: 'string', default: 'main' },
+                  repos: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                },
+                additionalProperties: true,
+              },
+              localPath: { type: 'string' },
+              sourceId: { type: 'string' },
+            },
+          },
+          {
+            type: 'object',
+            required: ['type', 'config', 'localPath'],
+            properties: {
+              type: { type: 'string', enum: ['p4'] },
+              config: {
+                type: 'object',
+                required: ['type', 'p4port', 'p4user', 'p4client'],
+                properties: {
+                  type: { type: 'string', enum: ['p4'] },
+                  p4port: { type: 'string' },
+                  p4user: { type: 'string' },
+                  p4passwd: { type: 'string', format: 'password' },
+                  p4client: { type: 'string' },
+                },
+                additionalProperties: true,
+              },
+              localPath: {
+                type: 'string',
+                description: 'Required so the probe can validate P4 Root/AltRoots coverage.',
+              },
+              sourceId: { type: 'string' },
+            },
+          },
+        ],
+      },
+      UpdateScmSourceRequest: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', minLength: 1, maxLength: 100 },
+          description: { type: 'string', nullable: true },
+          config: { type: 'object', additionalProperties: true },
+          localPath: { type: 'string', description: 'Absolute checkout path.' },
+          workspacesPath: { type: 'string', nullable: true },
+          isEnabled: { type: 'boolean' },
+        },
+      },
+      ScmSource: {
+        type: 'object',
+        required: ['id', 'name', 'type', 'config', 'localPath', 'isEnabled'],
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          type: { type: 'string', enum: ['git', 'p4'] },
+          description: { type: 'string', nullable: true },
+          config: {
+            type: 'object',
+            description: 'SCM configuration with stored credentials masked.',
+            additionalProperties: true,
+          },
+          localPath: { type: 'string' },
+          workspacesPath: { type: 'string', nullable: true },
+          isEnabled: { type: 'boolean' },
+          syncStatus: { type: 'string', enum: ['idle', 'syncing', 'error'] },
+          codegraphStatus: { type: 'string', enum: ['idle', 'indexing', 'error'] },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      ScmSourceResponse: {
+        type: 'object',
+        properties: { data: { $ref: '#/components/schemas/ScmSource' } },
+      },
+      ScmSourceListResponse: {
+        type: 'object',
+        properties: {
+          data: { type: 'array', items: { $ref: '#/components/schemas/ScmSource' } },
+          pagination: {
+            type: 'object',
+            properties: {
+              total: { type: 'integer' },
+              page: { type: 'integer' },
+              pageSize: { type: 'integer' },
+              totalPages: { type: 'integer' },
+            },
+          },
+        },
+      },
+      ScmProbeResponse: {
+        type: 'object',
+        required: ['data'],
+        properties: {
+          data: {
+            type: 'object',
+            required: ['ok', 'message'],
+            properties: {
+              ok: { type: 'boolean' },
+              message: { type: 'string' },
+              serverVersion: { type: 'string' },
+              clientRoot: {
+                type: 'string',
+                description: 'P4 Client Root detected from the server-side Client Spec.',
+              },
+              clientRootWarning: {
+                type: 'string',
+                description:
+                  'P4 root-coverage diagnostic when the Client Spec cannot be read or localPath is not covered.',
+              },
+              repos: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    directory: { type: 'string' },
+                    repoUrl: { type: 'string' },
+                    ok: { type: 'boolean' },
+                    message: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      ScmStatusResponse: {
+        type: 'object',
+        properties: {
+          data: {
+            type: 'object',
+            properties: {
+              syncStatus: { type: 'string', enum: ['idle', 'syncing', 'error'] },
+              lastSyncAt: { type: 'string', format: 'date-time', nullable: true },
+              lastSyncError: { type: 'string', nullable: true },
+              initialSyncCompletedAt: { type: 'string', format: 'date-time', nullable: true },
+              codegraphStatus: { type: 'string', enum: ['idle', 'indexing', 'error'] },
+              codegraphLastIndexedAt: { type: 'string', format: 'date-time', nullable: true },
+              codegraphLastError: { type: 'string', nullable: true },
+            },
+          },
+        },
+      },
+      ScmWorkspaceListResponse: {
+        type: 'object',
+        properties: {
+          data: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['name', 'path', 'occupied'],
+              properties: {
+                name: { type: 'string' },
+                path: { type: 'string' },
+                occupied: { type: 'boolean' },
+                cleanup: { type: 'string', nullable: true },
+                lastRunId: { type: 'string', nullable: true },
+                repos: { type: 'array', items: { type: 'object', additionalProperties: true } },
+              },
+            },
+          },
+        },
+      },
       CancelRunResponse: {
         type: 'object',
         properties: {
@@ -296,6 +547,265 @@ export const openApiSpec: OpenAPIV3.Document = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    '/scm-sources': {
+      get: {
+        operationId: 'listScmSources',
+        summary: 'List visible SCM sources',
+        description: 'Deletion-reserved sources are omitted from the visible list.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        responses: {
+          '200': {
+            description: 'Paginated SCM source list with stored credentials masked.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ScmSourceListResponse' },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        operationId: 'createScmSource',
+        summary: 'Create an SCM source',
+        description:
+          'Creates Git or P4 source storage. Git allocates a managed persistent checkout when localPath is omitted; P4 requires an explicit localPath.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateScmSourceRequest' },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'SCM source created.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmSourceResponse' } },
+            },
+          },
+          '400': { description: 'Invalid source configuration or storage path.' },
+          '409': { description: 'Storage path conflicts with another source.' },
+        },
+      },
+    },
+    '/scm-sources/probe': {
+      post: {
+        operationId: 'probeScmSource',
+        summary: 'Probe SCM connectivity without saving',
+        description:
+          'Probes the supplied Git or P4 configuration. P4 requires localPath so client Root/AltRoots coverage is validated; Git probes only remote connectivity.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ProbeScmSourceRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Probe result, including P4 Client Root diagnostics when available.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmProbeResponse' } },
+            },
+          },
+          '400': { description: 'Invalid probe input or type/path mismatch.' },
+          '404': { description: 'sourceId is not visible to the caller.' },
+          '429': { description: 'Probe rate limit exceeded.' },
+        },
+      },
+    },
+    '/scm-sources/{id}': {
+      get: {
+        operationId: 'getScmSource',
+        summary: 'Get an SCM source',
+        description: 'Deletion-reserved sources are no longer visible through this endpoint.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '200': {
+            description: 'SCM source with stored credentials masked.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmSourceResponse' } },
+            },
+          },
+          '404': { description: 'SCM source not found, not visible, or pending deletion.' },
+        },
+      },
+      patch: {
+        operationId: 'updateScmSource',
+        summary: 'Update an SCM source',
+        description:
+          'Updates source metadata, configuration, or storage paths. Configuration/path changes return 409 while a durable workload, sync/index job, deletion, or workspace removal owns the source.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/UpdateScmSourceRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'SCM source updated; stored credentials remain masked.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmSourceResponse' } },
+            },
+          },
+          '400': { description: 'Invalid configuration or unsafe storage path.' },
+          '404': { description: 'SCM source not found or not visible.' },
+          '409': { description: 'Source lifecycle is busy or deletion is pending.' },
+        },
+      },
+      delete: {
+        operationId: 'deleteScmSource',
+        summary: 'Delete an SCM source and reclaim managed storage',
+        description:
+          'Durably reserves deletion, isolates managed storage, then deletes the row. A 503 means deletion remains reserved and is safe to retry; custom operator-owned paths are never reclaimed.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '200': {
+            description: 'Source and any managed storage were deleted.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmSourceResponse' } },
+            },
+          },
+          '404': { description: 'SCM source not found or not visible.' },
+          '409': {
+            description:
+              'Source is referenced, busy, pinned by a durable workload, or has a workspace removal in progress.',
+          },
+          '503': {
+            description:
+              'Deletion is durably pending because managed storage could not yet be isolated; retry later.',
+          },
+        },
+      },
+    },
+    '/scm-sources/{id}/sync': {
+      post: {
+        operationId: 'syncScmSource',
+        summary: 'Start an SCM sync',
+        description: 'Starts a background sync after atomically claiming the checkout.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '202': { description: 'Background sync started.' },
+          '404': { description: 'SCM source not found or not visible.' },
+          '409': { description: 'A sync or index job already owns the checkout.' },
+        },
+      },
+    },
+    '/scm-sources/{id}/check': {
+      post: {
+        operationId: 'checkScmSource',
+        summary: 'Check a saved SCM source connection',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '200': {
+            description: 'Connection result, including P4 Client Root diagnostics when available.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmProbeResponse' } },
+            },
+          },
+          '400': { description: 'Unsupported SCM type.' },
+          '404': { description: 'SCM source not found or not visible.' },
+        },
+      },
+    },
+    '/scm-sources/{id}/status': {
+      get: {
+        operationId: 'getScmSourceStatus',
+        summary: 'Get SCM sync and CodeGraph status',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '200': {
+            description: 'Current sync and indexing status.',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ScmStatusResponse' } },
+            },
+          },
+          '400': { description: 'The saved workspace root is unsafe and must be migrated.' },
+          '404': { description: 'SCM source not found or not visible.' },
+        },
+      },
+    },
+    '/scm-sources/{id}/codegraph/reindex': {
+      post: {
+        operationId: 'reindexScmSourceCodegraph',
+        summary: 'Start CodeGraph indexing',
+        description: 'Starts background indexing after atomically claiming the checkout.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '202': { description: 'Background indexing started.' },
+          '400': { description: 'CodeGraph is disabled for this source.' },
+          '404': { description: 'SCM source not found or not visible.' },
+          '409': { description: 'A sync or index job already owns the checkout.' },
+          '500': { description: 'Index startup failed and its checkout claim was released.' },
+        },
+      },
+    },
+    '/scm-sources/{id}/workspaces': {
+      get: {
+        operationId: 'listScmSourceWorkspaces',
+        summary: 'List source workspaces',
+        description: 'Lists Git worktrees with their current occupied state.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [{ $ref: '#/components/parameters/scmSourceId' }],
+        responses: {
+          '200': {
+            description: 'Workspace list.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ScmWorkspaceListResponse' },
+              },
+            },
+          },
+          '400': { description: 'Workspaces are unsupported or the saved root is unsafe.' },
+          '404': { description: 'SCM source not found or not visible.' },
+        },
+      },
+    },
+    '/scm-sources/{id}/workspaces/{name}': {
+      delete: {
+        operationId: 'deleteScmSourceWorkspace',
+        summary: 'Delete a source workspace',
+        description:
+          'Uses the durable removal-reservation protocol and refuses while any other workload occupies the workspace.',
+        tags: ['SCM Sources'],
+        security: [{ userSession: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/scmSourceId' },
+          { $ref: '#/components/parameters/workspaceName' },
+        ],
+        responses: {
+          '200': { description: 'Workspace removed.' },
+          '400': { description: 'Invalid workspace name, unsupported source, or unsafe root.' },
+          '404': { description: 'SCM source not found or not visible.' },
+          '409': { description: 'Workspace is occupied or another removal owns the target.' },
+        },
+      },
+    },
     '/gateway/{agentId}/attachments': {
       post: {
         operationId: 'uploadAttachment',

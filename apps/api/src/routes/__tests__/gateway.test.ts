@@ -1,9 +1,24 @@
 import { GatewayErrorCode } from '@a2wave/shared'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 type Json = Record<string, unknown>
 type ErrorJson = { error: { code: string; message: string; details?: unknown } }
+
+const mockFailRunBeforeLifecycle = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const mockFailRunSteps = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const mockCleanupWorktreeIfEphemeral = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+vi.mock('../../lib/run-lifecycle.js', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/run-lifecycle.js')>(
+    '../../lib/run-lifecycle.js',
+  )
+  return { ...actual, cleanupWorktreeIfEphemeral: mockCleanupWorktreeIfEphemeral }
+})
+
+vi.mock('../../lib/workspace-cleanup-retry.js', () => ({
+  cleanupWorkspaceOrHandOff: (cleanup: () => Promise<void>) => cleanup(),
+}))
 
 vi.mock('../../db/client.js', () => {
   const database = {
@@ -29,6 +44,11 @@ vi.mock('../../worker/index.js', () => ({
   executeInWorker: vi.fn(),
 }))
 
+vi.mock('../../lib/execute-chat-run.js', () => ({
+  executeChatRun: vi.fn(),
+  failRunBeforeLifecycle: mockFailRunBeforeLifecycle,
+}))
+
 vi.mock('../../lib/agent-helpers.js', () => ({
   resolveWorkDir: vi.fn().mockResolvedValue('/tmp/work'),
   WorktreeOccupiedError: class extends Error {
@@ -51,6 +71,12 @@ vi.mock('../../lib/git-workspace.js', () => ({
     constructor(b: string, l: string) {
       super(`locked: ${b} by ${l}`)
       this.name = 'WorktreeBranchLockedError'
+    }
+  },
+  WorktreeDirtyError: class extends Error {
+    constructor(p: string) {
+      super(`dirty: ${p}`)
+      this.name = 'WorktreeDirtyError'
     }
   },
 }))
@@ -79,7 +105,7 @@ vi.mock('../../engine/task-queue.js', () => ({
 }))
 
 vi.mock('../../engine/task-queue-db.js', () => ({
-  taskQueueDb: {},
+  taskQueueDb: { failRunSteps: mockFailRunSteps },
 }))
 
 vi.mock('@a2wave/shared', async () => {
@@ -153,9 +179,10 @@ function makeUpdateChain() {
 }
 
 import { db } from '../../db/client.js'
+import { completeExecutionLease } from '../../engine/execution-lease-registry.js'
 import { engineRegistry } from '../../engine/index.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from '../../lib/agent-helpers.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../../lib/agent-helpers.js'
 import { ProviderConfigurationError } from '../../lib/errors.js'
 import { WorktreeBranchLockedError } from '../../lib/git-workspace.js'
 import { validateGatewayAuth } from '../../middleware/gateway-auth.js'
@@ -392,6 +419,29 @@ describe('Gateway routes', () => {
       const json = (await res.json()) as ErrorJson
       expect(json.error.code).toBe(GatewayErrorCode.EXECUTION_ERROR)
       expect(json.error.message).toBe('Execution failed. Check server logs for details.')
+    })
+
+    it('reclaims the run and advances the queue when turn persistence fails', async () => {
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(db.insert as Mock)
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue(
+            asyncQuery({
+              run: vi.fn(() => {
+                throw new Error('message insert failed')
+              }),
+            }),
+          ),
+        })
+
+      const res = await invokeRequest({ message: 'hi', async: false })
+
+      expect(res.status).toBe(500)
+      expect(db.delete).toHaveBeenCalled()
+      expect(scheduleNext).toHaveBeenCalled()
+      expect(executeInWorker).not.toHaveBeenCalled()
     })
   })
 
@@ -938,6 +988,43 @@ describe('Gateway routes', () => {
         worktree: { name: 'wt-a', cleanup: 'ephemeral' },
       })
       expect(res.status).not.toBe(409)
+      // An untyped failure must still converge the admitted run through
+      // recoverRunStartup: steps failed, run row reclaimed, execution lease
+      // released (which also drops the durable SCM workload lease) and the
+      // queue woken. Leaving any of these undone pins the Agent at
+      // maxConcurrency until someone edits the database.
+      expect(mockFailRunSteps).toHaveBeenCalledWith(expect.any(String))
+      expect(db.delete).toHaveBeenCalled()
+      expect(completeExecutionLease).toHaveBeenCalledWith(expect.any(String))
+      expect(scheduleNext).toHaveBeenCalled()
+    })
+
+    it('fails lifecycle ownership before releasing an acquired ephemeral worktree on insert error', async () => {
+      ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+      ;(db.insert as Mock)
+        .mockReturnValueOnce(makeInsertChain())
+        .mockReturnValueOnce({ values: vi.fn().mockRejectedValue(new Error('step insert failed')) })
+
+      const res = await invokeRequest({
+        message: 'hi',
+        async: false,
+        worktree: { name: 'wt-a', cleanup: 'ephemeral' },
+      })
+
+      expect(res.status).toBe(500)
+      // The ephemeral worktree must be released BEFORE the run row is deleted:
+      // cleanupWorktreeIfEphemeral reads runs.worktreeConfig/workDir to decide,
+      // so after the delete it silently no-ops and the worktree leaks.
+      expect(mockCleanupWorktreeIfEphemeral).toHaveBeenCalledWith(expect.any(String), 'agt_test1')
+      expect(mockCleanupWorktreeIfEphemeral.mock.invocationCallOrder[0]).toBeLessThan(
+        (db.delete as Mock).mock.invocationCallOrder[0],
+      )
+      // ...and the run must still converge: steps failed, row reclaimed, lease
+      // released (dropping the durable SCM workload lease too), queue woken.
+      expect(mockFailRunSteps).toHaveBeenCalledWith(expect.any(String))
+      expect(db.delete).toHaveBeenCalled()
+      expect(completeExecutionLease).toHaveBeenCalledWith(expect.any(String))
+      expect(scheduleNext).toHaveBeenCalled()
     })
 
     it('reclaims the run row on an untyped resolveWorkDir failure', async () => {

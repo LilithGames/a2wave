@@ -1,4 +1,5 @@
 import { isIP } from 'node:net'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
 import { loadDotenvFiles } from './load-dotenv.js'
@@ -10,6 +11,7 @@ loadDotenvFiles()
 
 const DEFAULT_AUTH_SECRET = 'dev-secret-change-me'
 const MIN_AUTH_SECRET_LENGTH = 32
+const DEFAULT_HOME_DIR = process.env.HOME?.trim() || homedir()
 
 function isValidTrustedProxyAddress(value: string): boolean {
   if (isIP(value)) return true
@@ -327,6 +329,14 @@ export const envSchema = z
     /** Agent 长期记忆文件存储根目录（相对 cwd 或绝对路径） */
     A2WAVE_MEMORY_STORAGE: z.string().default('./data/memory'),
 
+    /** Root for server-managed SCM checkouts and Git worktrees. */
+    SCM_STORAGE_ROOT: stringEnv(
+      z
+        .string()
+        .default(path.join(DEFAULT_HOME_DIR, '.a2wave'))
+        .refine(path.isAbsolute, { message: 'SCM_STORAGE_ROOT must be an absolute path' }),
+    ),
+
     /**
      * Comma-separated absolute roots under which custom SCM workspacesPath
      * values may be created. The built-in ~/.a2wave/workspaces root is always
@@ -405,7 +415,7 @@ export const envSchema = z
     SCM_P4_PASSWD: z.string().optional().default(''),
     SCM_P4_CLIENT: z.string().optional().default(''),
     SCM_P4_DEPOT_PATH: z.string().optional().default(''),
-    SCM_P4_LOCAL_PATH: z.string().optional().default('/app/data/p4-workspace'),
+    SCM_P4_LOCAL_PATH: z.string().optional().default(''),
     SCM_P4_AUTO_SYNC: z
       .string()
       .optional()
@@ -417,7 +427,7 @@ export const envSchema = z
     SCM_GIT_BRANCH: z.string().optional().default('main'),
     SCM_GIT_USERNAME: z.string().optional().default(''),
     SCM_GIT_PAT: z.string().optional().default(''),
-    SCM_GIT_LOCAL_PATH: z.string().optional().default('/app/data/git-workspace'),
+    SCM_GIT_LOCAL_PATH: z.string().optional().default(''),
     SCM_GIT_AUTO_SYNC: z
       .string()
       .optional()

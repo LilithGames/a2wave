@@ -1,3 +1,4 @@
+import { runCommand } from 'citty'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockExistsSync = vi.fn<(p: string) => boolean>()
@@ -88,11 +89,19 @@ async function runSetup(args: Record<string, unknown> = {}): Promise<string> {
     lines.push(parts.join(' '))
   })
   try {
-    await (setupCommand.run as (ctx: { args: Record<string, unknown> }) => Promise<void>)({
+    await (
+      setupCommand.run as (ctx: {
+        args: Record<string, unknown>
+        rawArgs: string[]
+        cmd: typeof setupCommand
+      }) => Promise<void>
+    )({
       // Pin an explicit image so tests unrelated to image resolution do not
       // depend on the CLI's version-derived default; pass `image: undefined`
       // to exercise that default.
       args: { yes: true, image: 'a2wave:test', ...args },
+      rawArgs: [],
+      cmd: setupCommand,
     })
   } finally {
     spy.mockRestore()
@@ -114,6 +123,25 @@ describe('a2wave setup', () => {
     mockExecSync.mockReturnValue('')
     // health check succeeds immediately by default
     mockFetch.mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))
+  })
+
+  it('rejects an unknown option before running preflight or writing install files', async () => {
+    await expect(
+      runCommand(setupCommand, {
+        rawArgs: [
+          '--yes',
+          '--with-postgress',
+          '--no-start',
+          '--dir',
+          '/tmp/a2wave',
+          '--image',
+          'a2wave:test',
+        ],
+      }),
+    ).rejects.toThrow(/Unknown option.*--with-postgress/)
+
+    expect(mockExecSync).not.toHaveBeenCalled()
+    expect(mockWriteFileSync).not.toHaveBeenCalled()
   })
 
   afterEach(() => {
@@ -2196,6 +2224,8 @@ describe('a2wave setup --upgrade under a polluted parent environment', () => {
     process.env.A2WAVE_PORT = 'notaport'
     process.env.A2WAVE_IMAGE = 'someone-elses:image'
     process.env.DATABASE_URL = 'postgres://someone-elses-db:5432/prod'
+    process.env.SCM_STORAGE_ROOT = '/someone/elses/scm'
+    process.env.SCM_WORKSPACES_ALLOWED_ROOTS = '/someone/elses/workspaces'
   })
 
   afterEach(() => {
@@ -2208,6 +2238,10 @@ describe('a2wave setup --upgrade under a polluted parent environment', () => {
     delete process.env.A2WAVE_IMAGE
     // biome-ignore lint/performance/noDelete: same — see above
     delete process.env.DATABASE_URL
+    // biome-ignore lint/performance/noDelete: same — see above
+    delete process.env.SCM_STORAGE_ROOT
+    // biome-ignore lint/performance/noDelete: same — see above
+    delete process.env.SCM_WORKSPACES_ALLOWED_ROOTS
   })
 
   it('never lets an exported DATABASE_URL reach a compose child', async () => {
@@ -2231,6 +2265,8 @@ describe('a2wave setup --upgrade under a polluted parent environment', () => {
     expect(composeCalls.length).toBeGreaterThan(0)
     for (const [, opts] of composeCalls) {
       expect(childEnv(opts).DATABASE_URL).toBeUndefined()
+      expect(childEnv(opts).SCM_STORAGE_ROOT).toBeUndefined()
+      expect(childEnv(opts).SCM_WORKSPACES_ALLOWED_ROOTS).toBeUndefined()
     }
   })
 

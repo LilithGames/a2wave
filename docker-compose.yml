@@ -25,9 +25,8 @@ services:
       - "${A2WAVE_HOST_PORT:-3502}:3502"
     volumes:
       - a2wave-data:/app/data
-      # Host path for the SCM workspace: Linux servers default to /data/workspace.
-      # On macOS /data is not in the Docker Desktop File Sharing allowlist, so override
-      # A2WAVE_WORKSPACE_DIR to point at a directory under /Users. The in-container path never changes.
+      # Keep the historical host bind as the default so upgrades continue to see
+      # existing SCM checkouts. On macOS, set A2WAVE_WORKSPACE_DIR to a path under /Users.
       - ${A2WAVE_WORKSPACE_DIR:-/data/workspace}:/data/workspace
       # Every Provider reads localSession state from the service HOME. Persist the full directory
       # to cover Cursor, Codex, OpenCode, Qoder, Trae, Copilot, Kimi, Pi, and future Provider CLIs.
@@ -52,6 +51,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}
       - DATABASE_POOL_MAX=${DATABASE_POOL_MAX:-10}
       - A2WAVE_SKILLS_STORAGE=/app/data/skills
+      - SCM_STORAGE_ROOT=${SCM_STORAGE_ROOT:-/data/workspace}
       # Runtime install root for Provider CLIs. Left empty, the image default
       # /home/appuser/.a2wave applies (already on PATH). Point it at a different mounted volume
       # and the process adds that directory to PATH at startup.
@@ -95,11 +95,11 @@ services:
       - SCM_GIT_BRANCH=${SCM_GIT_BRANCH:-main}
       - SCM_GIT_USERNAME=${SCM_GIT_USERNAME:-}
       - SCM_GIT_PAT=${SCM_GIT_PAT:-}
-      - SCM_GIT_LOCAL_PATH=${SCM_GIT_LOCAL_PATH:-/app/data/git-workspace}
+      - SCM_GIT_LOCAL_PATH=${SCM_GIT_LOCAL_PATH:-}
       - SCM_GIT_AUTO_SYNC=${SCM_GIT_AUTO_SYNC:-true}
       # Custom per-source workspacesPath values must stay under an operator-approved root.
-      # /data/workspace is the dedicated bind mount declared above.
-      - SCM_WORKSPACES_ALLOWED_ROOTS=${SCM_WORKSPACES_ALLOWED_ROOTS:-/data/workspace}
+      # Keep the default narrower than /data/workspace so worktrees can never overlap sources/.
+      - SCM_WORKSPACES_ALLOWED_ROOTS=${SCM_WORKSPACES_ALLOWED_ROOTS:-/data/workspace/workspaces}
       # Settings overrides
       - SETTINGS_GENERAL_WORKSPACE_PATH=${SETTINGS_GENERAL_WORKSPACE_PATH:-}
       - SETTINGS_GENERAL_TIMEOUT_MINUTES=${SETTINGS_GENERAL_TIMEOUT_MINUTES:-}

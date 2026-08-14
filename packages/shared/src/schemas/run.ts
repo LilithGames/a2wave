@@ -10,6 +10,19 @@ export const runStatusEnum = z.enum([
 ])
 export type RunStatus = z.infer<typeof runStatusEnum>
 
+export const ACTIVE_RUN_STATUSES = [
+  'pending',
+  'queued',
+  'running',
+] as const satisfies readonly RunStatus[]
+export type ActiveRunStatus = (typeof ACTIVE_RUN_STATUSES)[number]
+
+const activeRunStatusSet: ReadonlySet<RunStatus> = new Set(ACTIVE_RUN_STATUSES)
+
+export function isActiveRunStatus(status: RunStatus | null | undefined): status is ActiveRunStatus {
+  return status !== null && status !== undefined && activeRunStatusSet.has(status)
+}
+
 export const runTriggerSourceEnum = z.enum([
   'debug',
   'api',

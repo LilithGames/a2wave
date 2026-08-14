@@ -15,7 +15,7 @@
  * fully simulate update/delete chains for unrelated assertions.
  */
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
 
 vi.mock('../../db/client.js', () => ({
@@ -128,9 +128,8 @@ vi.mock('@a2wave/shared', async () => {
 
 import { db } from '../../db/client.js'
 import { AppError } from '../../lib/errors.js'
-import { createTestAgent } from '../../test/factories.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { createTestAgent } from '../../test/factories.js'
 
 const mockDb = db as unknown as {
   select: Mock
@@ -434,7 +433,7 @@ describe('PATCH /agents/:id — viewer/editor/owner', () => {
   it('owner → 200', async () => {
     const app = await makeAppAsRole('user', 'usr_alice')
     const target = ownedBy('usr_alice')
-    primeAgentLookup(target, null)
+    mockDb.select.mockReturnValue(selectChain(target))
     mockDb.update.mockReturnValue(updateReturningChain({ ...target, name: 'X' }))
 
     const res = await app.request('/agents/agt_target', {
@@ -466,7 +465,7 @@ describe('DELETE /agents/:id — owner-only', () => {
   it('owner → 200', async () => {
     const app = await makeAppAsRole('user', 'usr_alice')
     const target = ownedBy('usr_alice')
-    primeAgentLookup(target, null)
+    mockDb.select.mockReturnValue(selectChain(target))
     mockDb.update.mockReturnValue(updateChain())
     mockDb.delete.mockReturnValue(deleteReturningChain(target))
 
@@ -477,7 +476,7 @@ describe('DELETE /agents/:id — owner-only', () => {
   it('admin → 200', async () => {
     const app = await makeAppAsRole('admin', 'usr_admin')
     const target = ownedBy('usr_someone')
-    primeAgentLookup(target, null)
+    mockDb.select.mockReturnValue(selectChain(target))
     mockDb.update.mockReturnValue(updateChain())
     mockDb.delete.mockReturnValue(deleteReturningChain(target))
 

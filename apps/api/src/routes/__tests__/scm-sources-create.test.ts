@@ -15,35 +15,46 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestApp } from '../../test/test-app.js'
 
-const { insertedValues, updatedValues, existingRows, storedRow } = vi.hoisted(() => ({
-  /** The row `POST /` handed to Drizzle, captured for assertion. */
-  insertedValues: { current: undefined as Record<string, unknown> | undefined },
-  /** The payload `PATCH /:id` handed to Drizzle, captured for assertion. */
-  updatedValues: { current: undefined as Record<string, unknown> | undefined },
-  existingRows: { current: [] as Record<string, unknown>[] },
-  /** The row a by-id lookup resolves to; undefined means "not found". */
-  storedRow: { current: undefined as Record<string, unknown> | undefined },
-}))
+const { insertedValues, updatedValues, existingRows, storedRow, transactionEvents } = vi.hoisted(
+  () => ({
+    /** The row `POST /` handed to Drizzle, captured for assertion. */
+    insertedValues: { current: undefined as Record<string, unknown> | undefined },
+    /** The payload `PATCH /:id` handed to Drizzle, captured for assertion. */
+    updatedValues: { current: undefined as Record<string, unknown> | undefined },
+    existingRows: { current: [] as Record<string, unknown>[] },
+    /** The row a by-id lookup resolves to; undefined means "not found". */
+    storedRow: { current: undefined as Record<string, unknown> | undefined },
+    transactionEvents: [] as string[],
+  }),
+)
 
 vi.mock('../../db/client.js', () => ({
   db: {
     select: () => ({
-      from: () =>
-        asyncQuery({
-          where: () =>
-            asyncQuery({ get: () => storedRow.current, all: () => existingRows.current }),
-          all: () => existingRows.current,
-          get: () => storedRow.current,
-        }),
+      // The durable workload lease / pending-removal checks read their own
+      // tables before the path write; answering them with the stored source
+      // row would make every path PATCH here look blocked. Only the sources
+      // table has a row.
+      from: (table?: { workloadType?: unknown; workspaceName?: unknown }) =>
+        table && ('workloadType' in table || 'workspaceName' in table)
+          ? asyncQuery({ where: () => asyncQuery({ all: () => [], get: () => undefined }) })
+          : asyncQuery({
+              where: () =>
+                asyncQuery({ get: () => storedRow.current, all: () => existingRows.current }),
+              all: () => existingRows.current,
+              get: () => storedRow.current,
+            }),
     }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
+        transactionEvents.push('insert')
         insertedValues.current = values
         return { returning: () => asyncQuery({ get: () => ({ ...values }) }) }
       },
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
+        transactionEvents.push('update')
         updatedValues.current = values
         return {
           where: () =>
@@ -59,17 +70,19 @@ vi.mock('../../db/client.js', () => ({
   // handle every transactional route throws before its own mocks are consulted.
   dialect: 'sqlite',
   isPostgres: false,
-  sqliteDatabase: { inTransaction: false, exec: vi.fn() },
+  sqliteDatabase: { inTransaction: false, exec: (sql: string) => transactionEvents.push(sql) },
 }))
 
 vi.mock('../../lib/git-sync.js', () => ({ checkGitConnection: vi.fn() }))
 vi.mock('../../lib/p4-sync.js', () => ({
+  cancelInitialScmSync: vi.fn(() => Promise.resolve(false)),
   checkP4Connection: vi.fn(),
   isCheckoutBusy: vi.fn(() => false),
   releaseCheckout: vi.fn(),
   startAutoSync: vi.fn(),
+  startInitialScmSync: vi.fn(() => Promise.resolve()),
   stopAutoSync: vi.fn(),
-  syncScmSource: vi.fn(),
+  syncScmSource: vi.fn(() => Promise.resolve()),
   tryAcquireCheckout: vi.fn(() => true),
 }))
 vi.mock('../../lib/codegraph-index.js', () => ({
@@ -83,7 +96,7 @@ vi.mock('../../lib/logger.js', () => ({
 }))
 
 import { logAudit } from '../../lib/audit.js'
-import { startAutoSync, stopAutoSync } from '../../lib/p4-sync.js'
+import { startAutoSync, startInitialScmSync, stopAutoSync } from '../../lib/p4-sync.js'
 
 import { asyncQuery } from '../../test/async-query.js'
 
@@ -111,6 +124,7 @@ beforeEach(() => {
   insertedValues.current = undefined
   updatedValues.current = undefined
   existingRows.current = []
+  transactionEvents.length = 0
   // Create's localPath-uniqueness lookup must miss; PATCH tests set this to the
   // row they are editing.
   storedRow.current = undefined
@@ -118,6 +132,109 @@ beforeEach(() => {
 
 describe('POST /scm-sources — credential normalization', () => {
   const SENTINEL = '********'
+
+  it('allocates managed local and worktree paths when localPath is omitted', async () => {
+    const app = await buildApp()
+    const res = await create(app, {
+      name: 'managed repo',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo.git' },
+    })
+
+    expect(res.status).toBe(201)
+    expect(insertedValues.current?.localPath).toMatch(/sources\//)
+    expect(insertedValues.current?.workspacesPath).toMatch(/workspaces\//)
+    expect(insertedValues.current?.localPath).not.toBe(insertedValues.current?.workspacesPath)
+  })
+
+  it('holds the SCM path mutation transaction from peer planning through insert', async () => {
+    const app = await buildApp()
+
+    const res = await create(app, {
+      name: 'serialized repo',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo.git' },
+    })
+
+    expect(res.status).toBe(201)
+    expect(transactionEvents).toEqual(['BEGIN', 'insert', 'COMMIT'])
+  })
+
+  it('requires P4 sources to use a client-root-covered local path', async () => {
+    const app = await buildApp()
+    const res = await create(app, {
+      name: 'P4 depot',
+      type: 'p4',
+      config: {
+        type: 'p4',
+        p4port: 'ssl:p4.example.com:1666',
+        p4user: 'builder',
+        p4client: 'builder-client',
+      },
+    })
+
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toEqual({
+      error: 'P4 sources require a localPath covered by the client Root or AltRoots',
+    })
+    expect(insertedValues.current).toBeUndefined()
+  })
+
+  it('starts the initial sync immediately when auto-sync is enabled', async () => {
+    const app = await buildApp()
+    const res = await create(app, {
+      name: 'auto-sync repo',
+      type: 'git',
+      config: {
+        type: 'git',
+        repoUrl: 'https://github.com/org/repo.git',
+        autoSync: true,
+        syncIntervalMin: 30,
+      },
+    })
+
+    expect(res.status).toBe(201)
+    expect(startAutoSync).toHaveBeenCalledOnce()
+    expect(startInitialScmSync).toHaveBeenCalledOnce()
+    expect(startInitialScmSync).toHaveBeenCalledWith(insertedValues.current?.id)
+  })
+
+  it('starts the initial sync even when recurring auto-sync is disabled', async () => {
+    const app = await buildApp()
+    const res = await create(app, {
+      name: 'manual-sync repo',
+      type: 'git',
+      config: {
+        type: 'git',
+        repoUrl: 'https://github.com/org/repo.git',
+        autoSync: false,
+        syncIntervalMin: 30,
+      },
+    })
+
+    expect(res.status).toBe(201)
+    expect(startAutoSync).not.toHaveBeenCalled()
+    expect(startInitialScmSync).toHaveBeenCalledOnce()
+  })
+
+  it('does not sync or schedule a disabled source', async () => {
+    const app = await buildApp()
+    const res = await create(app, {
+      name: 'disabled repo',
+      type: 'git',
+      isEnabled: false,
+      config: {
+        type: 'git',
+        repoUrl: 'https://github.com/org/repo.git',
+        autoSync: true,
+        syncIntervalMin: 30,
+      },
+    })
+
+    expect(res.status).toBe(201)
+    expect(startAutoSync).not.toHaveBeenCalled()
+    expect(startInitialScmSync).not.toHaveBeenCalled()
+  })
 
   it('rejects the retired setupScript field instead of silently discarding it', async () => {
     const app = await buildApp()
@@ -306,5 +423,30 @@ describe('PATCH /scm-sources/:id — config type must match the row', () => {
 
     expect(res.status).toBe(200)
     expect((updatedValues.current?.config as Record<string, unknown>).pat).toBe('ghp_new')
+  })
+
+  it('holds the SCM path mutation transaction from peer planning through update', async () => {
+    storedRow.current = {
+      id: 'scm_1',
+      name: 'repo',
+      type: 'git',
+      localPath: '/tmp/git',
+      workspacesPath: '/data/workspace/workspaces/scm_1',
+      isEnabled: true,
+      syncStatus: 'idle',
+      codegraphStatus: 'idle',
+      userId: 'usr_admin',
+      role: 'admin',
+      isActive: true,
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo.git' },
+    }
+    const app = await buildApp()
+
+    const res = await patch(app, {
+      workspacesPath: '/data/workspace/workspaces/scm_1-new',
+    })
+
+    expect(res.status).toBe(200)
+    expect(transactionEvents).toEqual(['BEGIN', 'update', 'COMMIT'])
   })
 })

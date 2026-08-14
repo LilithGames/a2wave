@@ -16,6 +16,18 @@ import { describe, expect, it } from 'vitest'
  */
 const ENTRY = resolve(dirname(fileURLToPath(import.meta.url)), '../index.ts')
 
+// citty colours its usage, so the rendered line is
+// `USAGE\e[22m\e[24m \e[36ma2wave` — the escapes sit between the two words a
+// caller wants to assert on, and `toContain('USAGE a2wave')` fails on a machine
+// whose environment enables colour while passing on a bare CI runner. Strip the
+// sequences so the assertions read the text, not the terminal styling.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI escapes requires ESC.
+const ANSI = /\[[0-9;]*m/g
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI, '')
+}
+
 function run(args: string[]): { stdout: string; stderr: string; code: number } {
   // consola — which citty's showUsage prints through — suppresses output when
   // it believes it is under test. It decides that from `TEST` and `NODE_ENV`
@@ -31,10 +43,14 @@ function run(args: string[]): { stdout: string; stderr: string; code: number } {
       env: { ...cleanEnv, A2WAVE_URL: 'http://127.0.0.1:59999', A2WAVE_DEBUG: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    return { stdout, stderr: '', code: 0 }
+    return { stdout: stripAnsi(stdout), stderr: '', code: 0 }
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; status?: number }
-    return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.status ?? -1 }
+    return {
+      stdout: stripAnsi(e.stdout ?? ''),
+      stderr: stripAnsi(e.stderr ?? ''),
+      code: e.status ?? -1,
+    }
   }
 }
 

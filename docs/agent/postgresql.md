@@ -46,21 +46,113 @@ than one replica behind a load balancer — or you want your existing database
 backup, replication and monitoring to cover a2wave — PostgreSQL is the direction,
 with the experimental caveat above.
 
-### ⚠️ Startup recovery is not replica-aware — read this before running replicas
+PostgreSQL shares database state only. SCM checkouts and Git worktrees remain
+filesystem state: the Compose `a2wave-workspace` named volume is appropriate for
+one API container, while replicas must mount the same RWX-capable PVC at the same
+`SCM_STORAGE_ROOT` path. Node-local volumes would give each replica a different
+checkout even though they share the same SCM Source row.
 
-**A second replica starting up will fail every run the first one is executing.**
-`recoverInterruptedRuns()` in `engine/task-queue.ts` marks *all* `running` rows as
-`SERVER_RESTART_DURING_EXEC`, with no filter for which instance owns them — the run
-queue was written for a single process, where every `running` row really was orphaned
-by the restart. With replicas that assumption is false: during a rolling update,
-replica B boots and kills the work still executing on replica A, which then finishes
-and writes the same rows back.
+### ⚠️ Upgrading to this release is non-rolling
 
-This is worse than a stale cache: it does not serve an outdated value, it destroys
-in-flight work. Until runs carry an owning-instance id and recovery filters on it,
-treat multi-replica PostgreSQL as **unsuitable for long-running Agent work**. If you
-run replicas anyway, drain runs before rolling, or accept that a deploy cancels
-whatever is executing.
+**Stop every API replica before applying these migrations, then start only the
+upgraded version.** Two independent reasons, either of which is sufficient:
+
+1. An older remover deletes workspace-removal reservations by stable id alone
+   and can erase a newer attempt's `attempt_token` fence.
+2. A pre-heartbeat replica writes no `instance_heartbeats` row. Upgraded peers
+   read a missing row as "dead" once past their startup grace window, so they
+   would reclaim leases and worktrees out from under a replica that is very
+   much alive.
+
+Both failure modes are silent, so mixed-version operation is unsupported even
+briefly.
+
+### How recovery works
+
+Run and Evaluation admission persists an SCM workload lease in the same
+transaction that snapshots the Agent binding. This prevents another replica from
+unbinding the Agent or reclaiming its checkout while the workload is queued,
+executing, cancelled-but-exiting, or cleaning up. Queue capacity decisions are also
+made under the same cross-replica transaction lock.
+
+**Liveness comes from heartbeats, never from age.** Every process renews an
+`instance_heartbeats` row every 30s and deletes it during graceful shutdown. A
+mark's owner counts as dead only when it has no row, stopped beating past five
+minutes, or booted *after* the mark was written (a reused instance id — the same
+`HOSTNAME` across container restarts). Age alone proves nothing: multi-repository
+Git work and filesystem cleanup routinely outlive any per-command timeout.
+
+Three guards keep this honest, and they are the reason manual reconciliation is
+now the exception rather than the routine:
+
+- **Recovery of peers is withheld for one staleness window after boot**, so the
+  empty heartbeat table right after an upgrade is not read as "everyone died".
+- **A process fail-stops before peers may reclaim it.** Four minutes without a
+  successful renewal irreversibly pauses admission/promotion and starts global
+  graceful shutdown; active CLIs are terminated and the process exits before
+  peers use the five-minute death threshold. A late renewal cannot revive the
+  old ownership. The one-minute margin, rather than a distributed epoch on
+  every filesystem call, is the deliberate operational trade-off.
+- **Recovery re-checks liveness immediately before its guarded claim.** Once an
+  owner reaches the five-minute peer threshold, the earlier fail-stop deadline
+  makes that stale verdict monotonic for the old process lifetime; status and
+  removal-token CAS still arbitrate concurrent recovery replicas.
+
+On that basis a surviving replica automatically:
+
+- fails workloads abandoned by a stopped instance (the Run gets a retryable
+  `INSTANCE_STOPPED_DURING_EXEC`, its A2A task is synced, the Evaluation task
+  fails with an `evaluation_task.execute` audit entry), then releases their
+  leases. Run status/result/steps and Evaluation task/results/audit settle in
+  one database transaction, so a failed write leaves the workload retryable on
+  the next tick rather than terminal-but-incomplete;
+- adopts workspace-removal reservations with no live owner, re-runs the same
+  occupancy decision every remover runs, and either finishes the removal or
+  releases the row as obsolete. A failed attempt is disowned again so the next
+  tick retries — that periodic tick *is* the retry loop.
+
+A starting PostgreSQL replica still does **not** fail `running`/`pending`
+workloads or reset `syncing`/`indexing` SCM rows on boot: another replica
+starting says nothing about a peer. Recovering a peer's work is the
+heartbeat-driven reaper's job, not startup's. SQLite keeps automatic restart
+recovery because it has only one API process, where a restart does prove the
+predecessor is gone.
+
+Draining workloads before intentionally removing a replica is still the clean
+path — graceful shutdown releases leases and removes the heartbeat row
+immediately, instead of leaving peers to wait out the staleness window.
+
+### Manual reconciliation (last resort)
+
+With the reconciler in place this should not be needed; reach for it only when a
+reservation is visibly stuck past several sweep intervals **and** you have
+confirmed no replica is still working on it. Never delete by age or by source.
+Record both values first:
+
+```sql
+SELECT id, attempt_token, owner_instance_id, attempt_started_at
+FROM scm_workspace_removals
+ORDER BY attempt_started_at;
+```
+
+Check the owner against live processes before touching anything:
+
+```sql
+SELECT id, started_at, heartbeat_at, now() - heartbeat_at AS since_beat
+FROM instance_heartbeats
+ORDER BY heartbeat_at DESC;
+```
+
+A row whose `owner_instance_id` still appears here with a recent `heartbeat_at`
+is **live** — leave it alone. Otherwise release only the exact observed attempt:
+
+```sql
+DELETE FROM scm_workspace_removals
+WHERE id = '<observed id>' AND attempt_token = '<observed attempt_token>';
+```
+
+If zero rows are affected, the reservation changed after inspection; stop and
+re-investigate instead of broadening the predicate.
 
 ### ⚠️ Caches are per-process — read this before running replicas
 
@@ -87,17 +179,12 @@ save; the 1s TTL in `src/lib/oidc.ts` bounds the divergence.
 reflects only the instance answering the request — the response's `meta.scope`
 says so explicitly.
 
-**4. In-process locks are per-replica.** Every `withKeyedLock` key — the SQLite
-transaction boundary, skill reupload, and the evaluation slot acquire — serialises
-callers *within one process only*. On a single replica that is sufficient; across
-replicas two callers can hold the "same" lock simultaneously.
-
-The one with a user-visible consequence is the evaluation slot: two submissions
-landing on different replicas can both start a task for the same Agent, and a
-**P4-backed Agent has no per-task workspace isolation**, so they would share one
-checkout. Closing this properly needs the database to hold the invariant — a
-partial unique index on `(agent_id) WHERE status = 'running'` — which means a
-migration on both lineages and is not implemented.
+**4. In-process locks are per-replica.** Every remaining `withKeyedLock` key — for
+example skill reupload — serialises callers *within one process only*. SCM workload
+admission, Agent binding mutation, and Run/Evaluation queue claims are the important
+exceptions: they use the cross-dialect SCM mutation transaction, backed by a
+PostgreSQL transaction-scoped advisory lock. A queued or active workload also holds
+a durable source lease until its process and workspace cleanup finish.
 
 ## Installing with the CLI
 
@@ -111,6 +198,11 @@ a2wave setup --yes --database-url postgres://a2wave:pw@db.internal:5432/a2wave
 # install's .env (0600) and wired into DATABASE_URL
 a2wave setup --yes --with-postgres
 ```
+
+> [!NOTE]
+> These setup flags were added after CLI v0.7.2 and are not present in the
+> published `a2wave@0.7.2` package. Confirm that `a2wave setup --help` lists
+> `--with-postgres` before using them.
 
 The generated compose file reads `DATABASE_URL=${DATABASE_URL:-/app/data/a2wave.db}`
 from the install's `.env`, so switching an existing install is a one-line `.env`

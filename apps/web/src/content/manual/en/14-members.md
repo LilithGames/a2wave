@@ -50,6 +50,39 @@ a2wave agents members remove <agent> --user alice
 | Adding a duplicate member | **409** |
 | Adding yourself / adding the owner / adding a member to an ownerless Agent / user does not exist | **400 / 404** |
 
+## Inviting a new colleague (admin)
+
+Administrators no longer create accounts by typing someone else's password. New accounts go through an **invitation link**: the admin issues a link, and the recipient sets their own username, email and password. The password is therefore known only to its owner, and every account is guaranteed to carry an email address (which corporate identity alignment later depends on).
+
+**Admin side** (sidebar → Users → **Invite user**):
+
+1. Optionally pin an **email**. If set, only that address can register with the link, so forwarding it does not transfer the invitation; leave it empty to let the invitee supply their own.
+2. Pick a **role** (user / admin) and a **validity period** (1 / 3 / 7 days, default 3).
+3. Optionally add a **note** — admin-only, e.g. which team they join.
+4. Click **Create invite link**, copy it, and send it over your usual IM.
+
+The dialog stays open on success: the full link is shown only there, so copy it before closing. You can also copy or revoke it later from **Invitations** (the button at the top of the Users page, at `/users?view=invitations` — bookmark it or send it to another admin).
+
+**Invitee side**: open the link → fill in username, email, display name (optional), password and confirmation → submitting creates the account and **signs them in immediately**, with no second trip through the login page.
+
+> [!TIP]
+> A **company email** is recommended: when SSO is enabled, the platform aligns local accounts with corporate identities by email, so a personal address leaves one person with two accounts.
+
+**Edge cases**:
+
+| Situation | What happens |
+|------|------|
+| Link expired | Shows "Invitation link expired" and no registration form; ask an admin for a new one |
+| Revoked by an admin | Shows "Invitation link revoked" |
+| Link already used | Shows "Invitation already used" — invitations are single-use |
+| Truncated or bogus code | Shows "Invalid invitation link" |
+| Re-inviting the same email | The previous link is retired automatically, so only the newest one works |
+| Email already registered | Rejected at issue time, rather than when the recipient opens the link |
+| Username or email taken | Reported on submit; pick another — the invitation link stays usable |
+
+> [!IMPORTANT]
+> The invitation link is itself a credential: whoever holds it can create an account. Send it through a trusted channel and never post it in a public channel. Revocation takes effect immediately.
+
 ## Disabling a leaver (admin)
 
 Member management above only unbinds permissions on a *single* Agent. To revoke someone's access to the whole platform at once, use **Disable** on the **Users** page (sidebar → Users, admin only).

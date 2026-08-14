@@ -305,6 +305,7 @@ async function syncSingleRepo(
   username?: string,
   pat?: string,
   timeoutMs: number = EXEC_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<GitSyncResult> {
   const authUrl = buildAuthUrlFromParts(repoUrl, username, pat)
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
@@ -331,7 +332,7 @@ async function syncSingleRepo(
       const { stdout, stderr } = await execFileAsync(
         'git',
         ['clone', '--branch', branch, '--single-branch', authUrl, localPath],
-        { timeout: timeoutMs, env: gitEnv },
+        { timeout: timeoutMs, env: gitEnv, signal },
       )
       const output = stdout + stderr
       const safeOutput = sanitizeCredentials(output)
@@ -345,6 +346,7 @@ async function syncSingleRepo(
       cwd: localPath,
       timeout: 15_000,
       env: gitEnv,
+      signal,
     })
 
     // 显式 refspec 抓取目标分支并写入 refs/remotes/origin/<branch>。
@@ -360,12 +362,14 @@ async function syncSingleRepo(
         cwd: localPath,
         timeout: timeoutMs,
         env: gitEnv,
+        signal,
       },
     )
 
     const { stdout: oldHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
       cwd: localPath,
       env: gitEnv,
+      signal,
     })
 
     // 用 `checkout -f -B` 而不是 `reset --hard`：后者只会把当前本地分支指针
@@ -377,11 +381,13 @@ async function syncSingleRepo(
       cwd: localPath,
       timeout: 60_000,
       env: gitEnv,
+      signal,
     })
 
     const { stdout: newHead } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
       cwd: localPath,
       env: gitEnv,
+      signal,
     })
 
     const oldHash = oldHead.trim()
@@ -395,7 +401,7 @@ async function syncSingleRepo(
       const { stdout: diffStat } = await execFileAsync(
         'git',
         ['diff', '--stat', oldHash, newHash],
-        { cwd: localPath, env: gitEnv },
+        { cwd: localPath, env: gitEnv, signal },
       )
       const fileMatches = diffStat.match(/(\d+) files? changed/)
       const filesUpdated = fileMatches ? Number.parseInt(fileMatches[1], 10) : 0
@@ -515,6 +521,7 @@ export async function executeGitSync(
   config: GitConfig,
   localPath: string,
   timeoutMs: number = EXEC_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<GitSyncResult> {
   const isMultiRepo = Boolean(config.repos?.length)
 
@@ -531,6 +538,7 @@ export async function executeGitSync(
       config.username,
       config.pat,
       timeoutMs,
+      signal,
     )
   }
 
@@ -547,6 +555,7 @@ export async function executeGitSync(
       config.username,
       config.pat,
       timeoutMs,
+      signal,
     )
     results.push({ directory: repo.directory, result })
   }

@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test'
 import {
-  type ScmSourceSummary,
   createScmSource,
+  deleteScmSource,
   getAdminToken,
   listScmSources,
+  type ScmSourceSummary,
 } from '../../utils/api-helpers'
 import { loginAsAdmin } from '../../utils/auth'
 import { ROUTES } from '../../utils/test-constants'
@@ -56,5 +57,29 @@ test.describe('SCM Source edit modal — Sync & Workspaces tab', () => {
 
     // empty-state copy comes from scmSources.workspaces.empty — verifies the i18n key.
     await expect(page.getByText(/暂无 workspace|No workspaces yet/)).toBeVisible({ timeout: 5000 })
+  })
+})
+
+test.describe('SCM Source managed storage', () => {
+  test('creates a Git source without asking for a container path', async ({ page }) => {
+    const token = await getAdminToken()
+    const name = `E2E managed SCM ${Date.now()}`
+    let created: ScmSourceSummary | undefined
+    try {
+      await page.goto(ROUTES.scmSources)
+      await page.getByRole('button', { name: /创建代码源|Create Source/ }).click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByRole('radio', { name: /托管存储|Managed storage/ })).toBeVisible()
+      await expect(dialog.getByLabel(/本地路径|Local Path/)).toHaveCount(0)
+      await dialog.getByLabel(/^名称|^Name/).fill(name)
+      await dialog.getByLabel(/仓库地址|Repository URL/).fill('https://github.com/example/repo.git')
+      await dialog.getByRole('button', { name: /^创建$|^Create$/ }).click()
+      await expect(dialog).toBeHidden()
+
+      created = (await listScmSources(token)).find((source) => source.name === name)
+      expect(created?.localPath).toMatch(/sources\//)
+    } finally {
+      if (created) await deleteScmSource(token, created.id)
+    }
   })
 })

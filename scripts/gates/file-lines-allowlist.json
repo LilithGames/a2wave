@@ -3,5 +3,15 @@
     "path": "apps/api/src/lib/__tests__/feishu-service.test.ts",
     "maxLines": 3756,
     "reason": "存量债务：门禁上线时已 3756 行，冻结基线，只许瘦身不许再涨；应按场景拆成多个测试文件"
+  },
+  {
+    "path": "apps/api/src/routes/__tests__/agents.test.ts",
+    "maxLines": 3051,
+    "reason": "Merge debt: main and this branch each added route tests independently and the union crosses the limit. Frozen at the merged size, shrink-only; split by route group (chat / binding / publish) when next touched."
+  },
+  {
+    "path": "apps/api/src/lib/feishu-service.ts",
+    "maxLines": 3001,
+    "reason": "Merge debt: both sides sat at exactly 3000 and the union adds the per-agent workspace resolution. Frozen here, shrink-only; the card/streaming half is the natural extraction."
   }
 ]

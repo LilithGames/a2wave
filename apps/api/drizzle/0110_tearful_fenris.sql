@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `scm_workspace_removals_target_unique` ON `scm_workspace_removals` (`scm_source_id`,`workspace_name`);

@@ -58,12 +58,12 @@ Reusable instruction set that defines agent capabilities. Skills are stored in t
 
 ## SCM Source (Source Code Management)
 
-Represents a version control repository that provides a managed working directory for Agents. Supports **Perforce P4** and **Git**. Each SCM Source has a unique `localPath` (absolute path) and type-specific configuration.
+Represents a version control repository that provides a working directory for Agents. Supports **Perforce P4** and **Git**. Each SCM Source persists a unique absolute `localPath`; Git create requests may omit it so the server allocates `SCM_STORAGE_ROOT/sources/<sourceIdSuffix>`. P4 requires an explicit operator-mounted path covered by the existing Client `Root` or `AltRoots`.
 
 ### Initial Sync and Agent Selectability
 
-- **Initial sync timeout** — the config option `initialSyncTimeoutMin` (minutes, default 30) represents the timeout for the initial sync; currently used only as configuration and for future extension.
-- **Initial sync completed** — once an SCM Source has completed at least one **successful** sync, the system writes `initialSyncCompletedAt`. Only when this field has a value can the SCM Source be selected by an Agent.
+- **Initial sync timeout** — the config option `initialSyncTimeoutMin` (minutes, default 60) bounds the *first* sync of a source, which clones or seeds an entire checkout and so routinely outlasts the ordinary `EXEC_TIMEOUT_MS` applied to every later refresh. It is read when `initialSyncCompletedAt` is still NULL; once the first sync succeeds the standard timeout applies.
+- **Initial sync completed** — every enabled source starts its first sync immediately in the background; `autoSync` controls only later interval refreshes. Restart recovery queues incomplete sources with a bounded concurrency instead of launching every clone together. Once an SCM Source has completed at least one **successful** sync, the system writes `initialSyncCompletedAt`. Only when this field has a value can the SCM Source be selected by an Agent.
 - **Constraint** — an SCM that has not completed its initial sync cannot be selected when creating/editing an Agent; if an Agent is bound to such an SCM when executing a Run or Chat, the API returns 400. Subsequent scheduled sync (`syncIntervalMin`) logic is unaffected.
 
 ### P4 Source
@@ -100,7 +100,7 @@ P4 Sources have no isolation mechanism (a client spec is server-side state bound
 
 The optional SCM Source field `workspacesPath` customizes the root directory of per-run worktrees.
 
-- When left empty (`null`), it defaults to `~/.a2wave/workspaces/<sourceId underscore suffix>`; when set, all ephemeral/ttl/persistent worktrees create subdirectories by `name` under this directory.
+- When left empty (`null`), it defaults to `SCM_STORAGE_ROOT/workspaces/<sourceId underscore suffix>`; when set, all ephemeral/ttl/persistent worktrees create subdirectories by `name` under this directory. The historical `~/.a2wave/workspaces` root remains accepted for upgraded sources.
 - When creating/updating an SCM Source, `workspacesPath` accepts a string or `null`; it is an absolute path and not shared with any other Source.
 - Used to isolate large repos or move worktrees to a high-performance volume (such as an SSD).
 

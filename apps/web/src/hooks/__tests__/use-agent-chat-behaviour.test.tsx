@@ -1,7 +1,7 @@
 /**
  * Behavioural tests for `useAgentChat`'s transcript-adoption effect.
  *
- * Seven review rounds produced defects in this effect and every one of them was a
+ * Eight review rounds produced defects in this effect and every one of them was a
  * BEHAVIOURAL bug that a pure-function test could not have caught: a transcript
  * blanked, a composer frozen, a placeholder deleted, thumbnails revoked. These
  * tests drive the real hook against a controllable query result so those states
@@ -81,6 +81,31 @@ describe('useAgentChat — restoring a conversation', () => {
     // composer). It MUST be released once the run has settled, or every restored
     // conversation would come back read-only.
     await waitFor(() => expect(result.current.isStreaming).toBe(false))
+  })
+
+  it('can send a follow-up after reopening a settled conversation', async () => {
+    agentChats = [{ id: 'run_1' }]
+    chatHistory = {
+      run: { id: 'run_1', status: 'completed' },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'agent', content: 'hello' },
+      ],
+    }
+    const { result } = renderChat()
+    await waitFor(() => expect(result.current.messages).toHaveLength(2))
+    await waitFor(() => expect(result.current.isStreaming).toBe(false))
+
+    act(() => result.current.refreshHistory())
+    await waitFor(() => expect(result.current.isStreaming).toBe(false))
+
+    act(() => result.current.setChatInput('follow-up'))
+    await waitFor(() => expect(result.current.canSend).toBe(true))
+    await act(async () => {
+      await result.current.sendMessage()
+    })
+
+    expect(result.current.chatInput).toBe('')
   })
 
   it('keeps the composer disabled while the restored run is still executing', async () => {

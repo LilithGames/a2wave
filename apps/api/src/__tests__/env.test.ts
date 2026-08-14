@@ -137,6 +137,15 @@ describe('envSchema', () => {
         }).success,
       ).toBe(true)
     })
+
+    it('requires SCM_STORAGE_ROOT to be an absolute path', async () => {
+      expect(
+        envSchema.safeParse({ NODE_ENV: 'test', SCM_STORAGE_ROOT: 'relative/path' }).success,
+      ).toBe(false)
+      expect(
+        envSchema.safeParse({ NODE_ENV: 'test', SCM_STORAGE_ROOT: '/srv/a2wave-scm' }).success,
+      ).toBe(true)
+    })
   })
 
   describe('production environment', () => {

@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  type GroupConfig,
   a2aSkillSchema,
   attachmentsInputSchema,
   chatAppConfigSchema,
   createAgentInput,
   discordConfigSchema,
+  type GroupConfig,
   ghTriggerConfigSchema,
   glabTriggerConfigSchema,
   oauthAccessModeEnum,
@@ -19,7 +19,6 @@ import {
   worktreeCallParamsSchema,
 } from '@a2wave/shared'
 import {
-  type SQL,
   and,
   asc,
   count,
@@ -33,6 +32,7 @@ import {
   lte,
   notInArray,
   or,
+  type SQL,
   sql,
 } from 'drizzle-orm'
 import { type Context, Hono } from 'hono'
@@ -52,11 +52,10 @@ import {
   skills,
   users,
 } from '../db/schema.js'
-import { completeExecutionLease } from '../engine/execution-lease-registry.js'
 import { engineRegistry } from '../engine/index.js'
 import { buildTaskId } from '../engine/task-id.js'
+import { tryAcquireSlot } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
-import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import {
   getAgentPermission,
   getAgentReadFilter,
@@ -67,13 +66,13 @@ import {
 import { collectAgentExecutionChecks } from '../lib/agent-execution-diagnose.js'
 import { buildExportZip } from '../lib/agent-export.js'
 import {
-  WorktreeOccupiedError,
   buildAgentConfig,
   removePerAgentWorkspace,
   resolveCleanupWorkDirs,
   resolveEngineType,
   resolveWorkDir,
   validateAgentProviderConfiguration,
+  WorktreeOccupiedError,
 } from '../lib/agent-helpers.js'
 import { importAgentFromUrl, importAgentFromZip } from '../lib/agent-import.js'
 import { revokeAgentTokensForAgent } from '../lib/agent-memory-token.js'
@@ -82,6 +81,10 @@ import {
   maskProviderChainConfig,
   preserveProviderChainSecrets,
 } from '../lib/agent-provider-config.js'
+import {
+  deleteAgentWithBindingGuard,
+  mutateAgentBinding,
+} from '../lib/agent-scm-binding-mutation.js'
 import { createShareToken } from '../lib/agent-share.js'
 import { askerCountExpr } from '../lib/asker-identity.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -92,7 +95,6 @@ import {
 } from '../lib/attachment-materializer.js'
 import { logAudit } from '../lib/audit.js'
 import { discordConnectionManager } from '../lib/discord-service.js'
-import { executeChatRun } from '../lib/execute-chat-run.js'
 import { type DiagnoseSeverity, runAgentFeishuDiagnose } from '../lib/feishu-diagnose.js'
 import { feishuConnectionManager, normalizeFeishuConfig } from '../lib/feishu-service.js'
 import { normalizeOauthAccessMode } from '../lib/gateway-auth-errors.js'
@@ -105,8 +107,8 @@ import { canNonAdminUseMcp } from '../lib/mcp-stdio.js'
 import { clearAgentIndex } from '../lib/memory-index.js'
 import { removeAgentMemory, removeMemoryOverride } from '../lib/memory-storage.js'
 import {
-  OAUTH_ALLOWED_EMAILS_REQUIRED,
   isOauthAllowlistMissing,
+  OAUTH_ALLOWED_EMAILS_REQUIRED,
   resolveOauthAllowedEmailsUpdate,
 } from '../lib/oauth-publish.js'
 import { getCurrentUserId, getOwnerFilter } from '../lib/owner-filter.js'
@@ -117,18 +119,20 @@ import {
   stripReservedContextKeys,
 } from '../lib/run-channel.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
-import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
+import { persistRunTurn, recoverRunStartup, releaseEphemeralWorktree } from '../lib/run-startup.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
+import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
+import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
-  MAX_BUCKETS,
-  MAX_TZ_OFFSET_SECONDS,
   boundaryBucketSql,
   bucketCount,
   bucketSequence,
   bucketStartSql,
   localDaySequence,
+  MAX_BUCKETS,
+  MAX_TZ_OFFSET_SECONDS,
   zoneOffsetSecondsAt,
 } from '../lib/time-buckets.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
@@ -243,12 +247,7 @@ async function findMemorySkill(): Promise<typeof skills.$inferSelect | undefined
   )[0]
 }
 
-/**
- * 统一脱敏：env.* sensitive + endpointApiKey + feishuConfig.appSecret。
- * endpointApiKey 仅通过 POST /:id/regenerate-api-key 的独立响应体明文返回；
- * feishuConfig.appSecret 在 publish 接口读取时客户端发送 '********' 即表示"保持不变"；
- * 其它所有 agent 返回路径一律回 '********'。
- */
+/** Mask every Agent secret except fields explicitly revealed to the detail editor. */
 export function maskAgentSecrets<T extends AgentRow | undefined>(
   agent: T,
   opts?: {
@@ -272,8 +271,7 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
     }),
     a2aRouteTargets: maskA2ARouteTargetSecrets(masked.a2aRouteTargets) ?? null,
   }
-  // OAuth Token 比 API Key 更长寿（Anthropic 端默认数月不轮转），泄露成本更高，对外响应统一掩码；
-  // 仅单个 Agent 详情接口（编辑页）回传明文供"点眼睛查看"，PATCH 时回传 '********' 视为「保持不变」。
+  // OAuth tokens are long-lived, so only the detail editor may reveal them.
   if (!opts?.revealOauthToken && masked.providerOauthToken) {
     masked = { ...masked, providerOauthToken: '********' }
   }
@@ -294,8 +292,7 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
   if (masked.providerBaseUrl) {
     masked = { ...masked, providerBaseUrl: '********' }
   }
-  // Feishu App Secret 在单个 Agent 详情接口回传明文，便于编辑页"点眼睛查看"；
-  // 列表及其它响应仍脱敏，避免明文随处暴露。
+  // Only the detail editor may reveal the Feishu App Secret.
   const fc = masked.feishuConfig as { appSecret?: string } | null | undefined
   if (!opts?.revealFeishuSecret && fc?.appSecret) {
     masked = {
@@ -326,7 +323,6 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
 
 // --- Routes ---
 
-/** GET /agents - 列出所有 Agent */
 app.get('/', async (c) => {
   const { page = '1', pageSize = '50' } = c.req.query()
   const pageNum = Math.max(1, Number.parseInt(page) || 1)
@@ -341,18 +337,14 @@ app.get('/', async (c) => {
     .select()
     .from(agents)
     .where(ownerFilter)
-    // 置顶优先：pinned_at 非空排在前（按置顶时间升序，先置顶的靠前，后置顶的排在最后一个置顶之后），
-    // 未置顶项按创建时间倒序。`pinned_at IS NULL` 把空值排到后面。
+    // Pinned Agents come first; unpinned Agents use reverse creation order.
     .orderBy(sql`${agents.pinnedAt} IS NULL`, asc(agents.pinnedAt), desc(agents.createdAt))
     .limit(limit)
     .offset(offset)
   const total = totalResult?.count ?? 0
 
-  // canManage：调用者是否可写该 Agent（owner/editor/admin），前端据此决定是否渲染置顶按钮，
-  // 避免 viewer 点击后被 pin 路由 403。用 getAgentPermission（与 requireAgentWrite 同一套派生规则）
-  // 判定 owner/admin，再叠加 editor 成员集合。关键：null-owner 遗留 Agent 对非 admin 一律不可写
-  // （getAgentPermission 返回 null 且 requireAgentWrite 会 404），editor 成员集合也须显式排除，
-  // 否则会渲染出一个点了必 404 的置顶按钮。
+  // canManage mirrors the write permission used by pin routes so viewers never
+  // receive a control that can only fail. Legacy null-owner Agents remain admin-only.
   const editorAgentIds = new Set<string>()
   const needsEditorLookup = data.filter(
     (a) => a.userId !== null && getAgentPermission(c, a) === null,
@@ -916,12 +908,7 @@ app.get('/:id/stats/timeseries', async (c) => {
 
 const SCM_INITIAL_SYNC_REQUIRED_MSG = 'SCM_INITIAL_SYNC_REQUIRED'
 
-/**
- * 检查非管理员是否尝试绑定 adminOnly MCP。
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）：
- * 已挂载的 ID 视为先前的所有者/管理员决定，editor 类成员的 PATCH 不应因此被拒。
- */
+/** Validate newly-added admin-only MCP bindings for non-admin callers. */
 async function checkAdminOnlyMcpAccess(
   c: import('hono').Context,
   mcpServerIds: string[] | null | undefined,
@@ -1089,11 +1076,7 @@ async function checkSkillGroupAccessForAgentOwner(
  * flattened into the clone's direct Skill ids. Foreign private Skills stay
  * excluded, and Skills from retained groups are not duplicated as direct refs.
  */
-/**
- * Validate that all kbDocumentIds are visible to the caller (admin sees all, others only their own).
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）。
- */
+/** Validate newly-added KB document ids against caller visibility. */
 async function validateKbDocumentIds(
   c: import('hono').Context,
   ids: string[] | undefined,
@@ -1115,11 +1098,7 @@ async function validateKbDocumentIds(
   return null
 }
 
-/**
- * Validate that all skillGroupIds are visible to the caller (admin sees all, others only their own).
- *
- * 当 `existingIds` 提供时，只校验「新增」的 ID（diff-only 语义）。
- */
+/** Validate newly-added Skill group ids against caller visibility. */
 async function validateSkillGroupIds(
   c: import('hono').Context,
   ids: string[] | undefined,
@@ -1201,21 +1180,46 @@ app.post('/', async (c) => {
 
   const id = createId('agt')
   const authMode = await effectiveProviderAuthMode(parsed.data.providerId, parsed.data.authMode)
-  const newAgent = (
-    await db
-      .insert(agents)
-      .values({
-        id,
-        // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
-        // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
-        oauthAccessMode: 'all_idaas_users',
-        ...parsed.data,
-        env: envRestore.value,
-        authMode,
-        userId,
-      })
-      .returning()
-  )[0]
+  const insertAgent = async (executor: typeof db) =>
+    (
+      await executor
+        .insert(agents)
+        .values({
+          id,
+          // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
+          // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
+          oauthAccessMode: 'all_idaas_users',
+          ...parsed.data,
+          env: envRestore.value,
+          authMode,
+          userId,
+        })
+        .returning()
+    )[0]
+
+  // Binding and SCM deletion reservation share one lifecycle lock. The earlier
+  // lookup gives a useful validation error, while this authoritative lookup in
+  // the write transaction closes the read-to-insert race across API replicas.
+  const bindingResult =
+    workspaceType === 'scm' && scmSourceId
+      ? await withScmPathMutation(async (tx) => {
+          const source = (
+            await tx
+              .select()
+              .from(scmSources)
+              .where(and(eq(scmSources.id, scmSourceId), isNull(scmSources.deletionRequestedAt)))
+              .limit(1)
+          )[0]
+          if (!source || source.initialSyncCompletedAt == null) {
+            return { allowed: false as const, agent: undefined }
+          }
+          return { allowed: true as const, agent: await insertAgent(tx as typeof db) }
+        })
+      : { allowed: true as const, agent: await insertAgent(db) }
+  if (!bindingResult.allowed) {
+    return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
+  }
+  const newAgent = bindingResult.agent
 
   logAudit(c, { action: 'agent.create', resource: 'agent', resourceId: id })
 
@@ -1429,9 +1433,6 @@ app.patch('/:id', async (c) => {
       if (memorySkill) {
         const currentSkills =
           (parsed.data.skills as string[] | null) || (existing.skills as string[] | null) || []
-        // Sync predicate on purpose: an `async` callback here returns a Promise,
-        // which is always truthy, so `filter` would keep the memory Skill it is
-        // meant to strip.
         parsed.data.skills = currentSkills.filter((sid: string) => sid !== memorySkill.id)
       }
       shouldRemoveMemoryOverrides = true
@@ -1453,12 +1454,6 @@ app.patch('/:id', async (c) => {
     updatedAt: new Date(),
   }
 
-  // A published Agent is already live, so PATCH is also an activation boundary:
-  // validate the effective candidate before replacing the configuration used by
-  // its active channels. Draft and stopped Agents remain freely editable. Match
-  // Drizzle's update semantics by ignoring undefined fields in the candidate.
-  // Keep this after masked Provider credentials are restored above: the resolver
-  // must never mistake the "********" transport placeholder for a real secret.
   if (existing.publishStatus === 'published') {
     const candidate = { ...existing }
     const candidateRecord = candidate as unknown as Record<string, unknown>
@@ -1478,9 +1473,27 @@ app.patch('/:id', async (c) => {
     disableWorkDirs = await resolveCleanupWorkDirs(existing)
   }
 
-  const updated = (
-    await db.update(agents).set(updatePayload).where(eq(agents.id, id)).returning()
-  )[0]
+  const updateAgent = async (executor: typeof db) =>
+    (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
+  const bindingResult = await mutateAgentBinding({
+    agentId: id,
+    requestedWorkspaceType: parsed.data.workspaceType,
+    requestedScmSourceId: scmSourceId,
+    mutate: updateAgent,
+  })
+  if (!bindingResult.allowed) {
+    if (bindingResult.active) {
+      const label = bindingResult.active.type === 'run' ? 'Run' : 'Evaluation'
+      return c.json(
+        {
+          error: `Cannot change the SCM binding while ${label} ${bindingResult.active.id} is active`,
+        },
+        409,
+      )
+    }
+    return c.json({ error: 'SCM source is unavailable or has not completed initial sync' }, 409)
+  }
+  const updated = bindingResult.value
 
   resyncGitTriggerAfterUpdate(id, parsed.data, updated)
 
@@ -2172,66 +2185,90 @@ app.post('/:id/clone', async (c) => {
     c,
     agent.mcpServerIds as string[] | null | undefined,
   )
-  const cloned = (
-    await db
-      .insert(agents)
-      .values({
-        id: cloneId,
-        name: `${agent.name} (Copy)`,
-        description: agent.description,
-        type: agent.type,
-        config: maskProviderChainConfig(agent.config, null),
-        status: agent.status,
-        icon: agent.icon,
-        systemPrompt: agent.systemPrompt,
-        skills: clonedSkillReferences.skillIds,
-        skillGroupIds: clonedSkillReferences.skillGroupIds,
-        // Drop admin-only / stdio MCP the caller couldn't bind themselves — the
-        // clone is theirs, and this copy would otherwise survive membership revoke.
-        mcpServerIds: clonedMcpServerIds,
-        kbDocumentIds: agent.kbDocumentIds,
-        publishStatus: 'draft',
-        endpointApiKey: null,
-        a2aEndpointApiKey: null,
-        providerApiKey: null,
-        providerBaseUrl: null,
-        providerOauthToken: null,
-        memoryProviderApiKey: null,
-        embeddingApiKey: null,
-        authMode: agent.authMode,
-        publishAuthType: 'api_key',
-        publishIpWhitelist: [],
-        publishDescription: null,
-        publishChannels: ['api'],
-        // Explicit on purpose (see db/schema.ts): omitting these writes the retired
-        // `feishu_scope`, which reads normalize to the **open** mode, so a clone of a
-        // `specified_users` Agent would come back open. Only an explicit `all_idaas_users` clones
-        // as open; anything else is a tier this code cannot establish, so it takes the restricted
-        // one. Not `normalizeOauthAccessMode()` — that resolves *unclear* to open, which is right
-        // for a read but is the write side giving away a decision it owns. The roster is
-        // deliberately not copied (personnel data), which is why the tier must survive.
-        oauthAccessMode:
-          agent.oauthAccessMode === 'all_idaas_users' ? 'all_idaas_users' : 'specified_users',
-        oauthAllowedEmails: null,
-        a2aSkills: null,
-        feishuConfig: null,
-        slackConfig: null,
-        discordConfig: null,
-        scheduleConfig: null,
-        glabConfig: null,
-        ghConfig: null,
-        publishedAt: null,
-        providerId: agent.providerId,
-        env: clonedEnv,
-        workspaceType: agent.workspaceType,
-        scmSourceId: agent.scmSourceId,
-        maxConcurrency: agent.maxConcurrency,
-        userId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
-  )[0]
+  const insertClone = async (executor: typeof db) =>
+    (
+      await executor
+        .insert(agents)
+        .values({
+          id: cloneId,
+          name: `${agent.name} (Copy)`,
+          description: agent.description,
+          type: agent.type,
+          config: maskProviderChainConfig(agent.config, null),
+          status: agent.status,
+          icon: agent.icon,
+          systemPrompt: agent.systemPrompt,
+          skills: clonedSkillReferences.skillIds,
+          skillGroupIds: clonedSkillReferences.skillGroupIds,
+          // Drop admin-only / stdio MCP the caller couldn't bind themselves — the
+          // clone is theirs, and this copy would otherwise survive membership revoke.
+          mcpServerIds: clonedMcpServerIds,
+          kbDocumentIds: agent.kbDocumentIds,
+          publishStatus: 'draft',
+          endpointApiKey: null,
+          a2aEndpointApiKey: null,
+          providerApiKey: null,
+          providerBaseUrl: null,
+          providerOauthToken: null,
+          memoryProviderApiKey: null,
+          embeddingApiKey: null,
+          authMode: agent.authMode,
+          publishAuthType: 'api_key',
+          publishIpWhitelist: [],
+          publishDescription: null,
+          publishChannels: ['api'],
+          // Explicit on purpose (see db/schema.ts): omitting these writes the retired
+          // `feishu_scope`, which reads normalize to the **open** mode, so a clone of a
+          // `specified_users` Agent would come back open. Only an explicit `all_idaas_users` clones
+          // as open; anything else is a tier this code cannot establish, so it takes the restricted
+          // one. Not `normalizeOauthAccessMode()` — that resolves *unclear* to open, which is right
+          // for a read but is the write side giving away a decision it owns. The roster is
+          // deliberately not copied (personnel data), which is why the tier must survive.
+          oauthAccessMode:
+            agent.oauthAccessMode === 'all_idaas_users' ? 'all_idaas_users' : 'specified_users',
+          oauthAllowedEmails: null,
+          a2aSkills: null,
+          feishuConfig: null,
+          slackConfig: null,
+          discordConfig: null,
+          scheduleConfig: null,
+          glabConfig: null,
+          ghConfig: null,
+          publishedAt: null,
+          providerId: agent.providerId,
+          env: clonedEnv,
+          workspaceType: agent.workspaceType,
+          scmSourceId: agent.scmSourceId,
+          maxConcurrency: agent.maxConcurrency,
+          userId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+    )[0]
+  const bindingResult =
+    agent.workspaceType === 'scm' && agent.scmSourceId
+      ? await withScmPathMutation(async (tx) => {
+          const source = (
+            await tx
+              .select({ id: scmSources.id })
+              .from(scmSources)
+              .where(
+                and(
+                  eq(scmSources.id, agent.scmSourceId as string),
+                  isNull(scmSources.deletionRequestedAt),
+                ),
+              )
+              .limit(1)
+          )[0]
+          if (!source) return { allowed: false as const, agent: undefined }
+          return { allowed: true as const, agent: await insertClone(tx as typeof db) }
+        })
+      : { allowed: true as const, agent: await insertClone(db) }
+  if (!bindingResult.allowed) {
+    return c.json({ error: 'The Agent SCM source is no longer available' }, 409)
+  }
+  const cloned = bindingResult.agent
   logAudit(c, { action: 'agent.clone', resource: 'agent', resourceId: cloneId })
 
   return c.json({ data: maskAgentSecrets(cloned) }, 201)
@@ -2419,7 +2456,7 @@ app.post('/:id/chat', async (c) => {
     )
   }
 
-  // Worktree 参数：在入库 run 记录时一并写入，保证排队场景调度器能读到
+  // Persist worktree parameters with the Run so queued execution can recover them.
   const worktreeCfg = parsed.data.worktree
     ? {
         name: parsed.data.worktree.name,
@@ -2431,18 +2468,10 @@ app.post('/:id/chat', async (c) => {
   // --- Resolve or create Run ---
   let runId: string
   let createdRunThisRequest = false
-  // 复用已完成 run 时记下它的原终态；worktree 冲突回滚时恢复到这个终态，绝不留 pending——
-  // 否则新加的 409 guard 会因 pending 永久拒绝该 chatId，而 scheduleNext 只 promote queued
-  // 不恢复 pending，进程内无法自愈（review [P1]）。
+  // Snapshot reused Run state so an aborted turn can restore it exactly.
   let reusedRunPriorStatus: string | undefined
-  // 复用 run 时，在覆盖 intent/executionMetadata **之前**记下原值：若本请求最终没跑起来
-  // （queue_full / worktree 冲突），把这条历史行还原回去，绝不让一条从未执行的新消息污染
-  // 已有会话历史（review [P2]）。
   let reusedRunPriorIntent: string | undefined
   let reusedRunPriorExecMeta: (typeof runs.$inferSelect)['executionMetadata'] | undefined
-  // worktreeConfig 也会被新一轮覆盖（见下方 reuse update），回滚时同样要还原——否则
-  // queue_full/worktree 冲突后行上残留新一轮的 worktreeConfig，后续 rerun/出队会跑错
-  // workspace（review 回归）。
   let reusedRunPriorWorktreeConfig: (typeof runs.$inferSelect)['worktreeConfig'] | undefined
   const requestedChatId = parsed.data.chatId
   /**
@@ -2493,10 +2522,7 @@ app.post('/:id/chat', async (c) => {
     )[0]
 
     if (existingRun) {
-      // 禁止同一会话（chatId→同一 run）并发追问：上一轮还没结束（非终态）就复用同一行会
-      // 互相覆盖 intent / pending-context / executionMetadata.attachments，两个请求都可能返回
-      // 202 但只执行最后一轮（review [P1]）。与 OAuth 渠道的 SESSION_BUSY 语义一致——拒绝，
-      // 让调用方等上一轮完成再追问。
+      // One conversation row cannot safely host two concurrent turns.
       if (
         existingRun.status === 'pending' ||
         existingRun.status === 'queued' ||
@@ -2665,9 +2691,7 @@ app.post('/:id/chat', async (c) => {
     // an untyped error (a workspace bookkeeping failure, a broken SCM config)
     // would otherwise pin the Agent at maxConcurrency until someone edits the
     // database.
-    await abandonRun()
-    completeExecutionLease(runId)
-    scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
+    await recoverRunStartup({ runId, agentId: id, settleRun: abandonRun })
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
@@ -2677,16 +2701,6 @@ app.post('/:id/chat', async (c) => {
     }
     throw err
   }
-
-  // Determine step order
-  const lastStep = (
-    await db
-      .select({ maxOrder: sql<number>`MAX(${runSteps.order})` })
-      .from(runSteps)
-      .where(eq(runSteps.runId, runId))
-      .limit(1)
-  )[0]
-  const nextOrder = (lastStep?.maxOrder ?? 0) + 1
 
   // 附件落盘 + prompt 注入（与飞书逐字节一致的路径提示）。无附件时 mergedPrompt ===
   // message、rootDir === null。原始 refs 存 runSteps.input.attachments（免迁移审计）。
@@ -2716,29 +2730,38 @@ app.post('/:id/chat', async (c) => {
   if (materialized.length > 0) {
     stepInput.attachments = materialized
   }
-  // insert 失败即清理已落盘的附件目录再 rethrow，避免泄漏（review [P2]）。
   try {
-    await db.insert(runSteps).values({
-      id: stepId,
-      runId,
-      agentId: id,
-      order: nextOrder,
-      input: stepInput,
-      status: 'running',
-    })
-
-    // Write user message：存**用户原始输入**，不存注入了附件绝对路径的 mergedPrompt——否则
-    // 历史里用户原话会变成含 [图片]/[文件]/服务器路径的执行文本（review）。附件回显靠
-    // runSteps.input.attachments。mergedPrompt 仅用于引擎执行 + step 审计。
-    await db.insert(chatMessages).values({
-      id: createId('msg'),
-      runId,
-      role: 'user',
-      content: parsed.data.message,
+    await persistRunTurn({
+      step: {
+        id: stepId,
+        runId,
+        agentId: id,
+        input: stepInput,
+        status: 'running',
+      },
+      // Write user message：存**用户原始输入**，不存注入了附件绝对路径的 mergedPrompt——否则
+      // 历史里用户原话会变成含 [图片]/[文件]/服务器路径的执行文本（review）。附件回显靠
+      // runSteps.input.attachments。mergedPrompt 仅用于引擎执行 + step 审计。
+      message: {
+        id: createId('msg'),
+        runId,
+        role: 'user',
+        content: parsed.data.message,
+      },
     })
   } catch (err) {
-    if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
-    completeExecutionLease(runId)
+    await recoverRunStartup({
+      runId,
+      agentId: id,
+      // Release the acquired ephemeral worktree BEFORE abandonRun clears
+      // runs.workDir / deletes the row — cleanupWorktreeIfEphemeral reads those
+      // to decide, so afterwards it is a silent no-op and the worktree leaks.
+      cleanup: async () => {
+        if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
+        await releaseEphemeralWorktree(runId, id)
+      },
+      settleRun: abandonRun,
+    })
     throw err
   }
 
@@ -2914,18 +2937,29 @@ app.delete('/:id', async (c) => {
   const { id } = c.req.param()
   const { agent } = await requireAgentOwner(c, id)
 
-  // A running (published) agent must be stopped before it can be deleted.
   if (agent.publishStatus === 'published') {
     return c.json({ error: 'Agent must be stopped before deletion' }, 409)
   }
 
-  // Clean up foreign key references before deleting agent
-  await db.update(runSteps).set({ agentId: null }).where(eq(runSteps.agentId, id))
-
-  await db
-    .update(runs)
-    .set({ initiatorAgentId: null, updatedAt: new Date() })
-    .where(eq(runs.initiatorAgentId, id))
+  const deleteRows = async (executor: typeof db) => {
+    await executor.update(runSteps).set({ agentId: null }).where(eq(runSteps.agentId, id))
+    await executor
+      .update(runs)
+      .set({ initiatorAgentId: null, updatedAt: new Date() })
+      .where(eq(runs.initiatorAgentId, id))
+    return (await executor.delete(agents).where(eq(agents.id, id)).returning())[0]
+  }
+  const deletion = await deleteAgentWithBindingGuard(id, deleteRows)
+  if (!deletion.allowed) {
+    if (deletion.active) {
+      const label = deletion.active.type === 'run' ? 'Run' : 'Evaluation'
+      return c.json(
+        { error: `Cannot delete the Agent while ${label} ${deletion.active.id} is active` },
+        409,
+      )
+    }
+    return c.json({ error: 'Agent not found' }, 404)
+  }
 
   feishuConnectionManager.stop(id)
   void slackConnectionManager.stop(id)
@@ -2940,15 +2974,17 @@ app.delete('/:id', async (c) => {
   // Reclaim the per-agent worktree in the background: serial `git worktree
   // remove --force` on a large or multi-repo checkout is seconds of latency,
   // and nothing downstream reads its outcome (failures only log).
+  //
+  // The row is already gone — `deleteAgentWithBindingGuard` deleted it under
+  // the binding guard, which is also what proves no Run or Evaluation still
+  // holds this Agent's checkout.
   void removePerAgentWorkspace(agent).catch((err) =>
     logger.warn({ err, agentId: id }, 'Per-agent worktree reclaim failed'),
   )
 
-  const deleted = (await db.delete(agents).where(eq(agents.id, id)).returning())[0]
-
   logAudit(c, { action: 'agent.delete', resource: 'agent', resourceId: id })
 
-  return c.json({ data: maskAgentSecrets(deleted) })
+  return c.json({ data: maskAgentSecrets(deletion.value) })
 })
 
 export default app

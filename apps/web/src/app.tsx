@@ -2,10 +2,9 @@ import { StyleProvider } from '@ant-design/cssinjs'
 import { App as AntApp, ConfigProvider, Spin } from 'antd'
 import enUS from 'antd/locale/en_US'
 import zhCN from 'antd/locale/zh_CN'
-import { Suspense, lazy } from 'react'
-import { useMemo } from 'react'
+import { lazy, Suspense, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Outlet, createBrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, Outlet } from 'react-router-dom'
 import { AuthGuard } from './components/auth-guard'
 import { ErrorBoundary } from './components/error-boundary'
 import { Layout } from './components/layout'
@@ -23,6 +22,7 @@ const DashboardPage = lazy(() =>
   import('./pages/dashboard').then((m) => ({ default: m.DashboardPage })),
 )
 const LoginPage = lazy(() => import('./pages/login').then((m) => ({ default: m.LoginPage })))
+const InvitePage = lazy(() => import('./pages/invite').then((m) => ({ default: m.InvitePage })))
 const ShareLoginPage = lazy(() =>
   import('./pages/share-login').then((m) => ({ default: m.ShareLoginPage })),
 )
@@ -165,6 +165,15 @@ export const router = createBrowserRouter([
         element: (
           <Suspense fallback={null}>
             <ShareLoginPage />
+          </Suspense>
+        ),
+      },
+      // Invitation registration: public by necessity — the visitor has no account yet.
+      {
+        path: '/invite/:code',
+        element: (
+          <Suspense fallback={null}>
+            <InvitePage />
           </Suspense>
         ),
       },

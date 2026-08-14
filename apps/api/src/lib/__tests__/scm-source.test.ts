@@ -18,7 +18,7 @@ vi.mock('../scm-workspace-safety.js', () => ({
   assertStoredScmWorkspacesRoot: (source: unknown) => mockAssertStoredScmWorkspacesRoot(source),
 }))
 
-import { type ScmSourceRow, createScmSource } from '../scm-source.js'
+import { createScmSource, type ScmSourceRow } from '../scm-source.js'
 
 function makeGitSourceRow(overrides?: Partial<ScmSourceRow>): ScmSourceRow {
   return {
@@ -127,6 +127,41 @@ describe('createScmSource', () => {
         'ws-abc',
         expect.objectContaining({ type: 'git' }),
         { keepBranches: true },
+      )
+    })
+
+    it('passes the beforeRemove guard through to removeGitWorkspace', async () => {
+      mockRemoveGitWorkspace.mockResolvedValue(undefined)
+      const source = await createScmSource(makeGitSourceRow({ workspacesPath: '/ws/path' }))
+      const beforeRemove = vi.fn().mockResolvedValue(undefined)
+
+      await source?.removeWorkspace('ws-abc', { beforeRemove })
+
+      expect(mockRemoveGitWorkspace).toHaveBeenCalledWith(
+        '/data/repos/my-repo',
+        '/ws/path',
+        'ws-abc',
+        expect.objectContaining({ type: 'git' }),
+        { beforeRemove },
+      )
+    })
+
+    it('carries both the reservation guard and the branch-preserving flag', async () => {
+      // The two options come from opposite sides of this merge and must
+      // compose: the reservation re-check runs inside the mutex, and the
+      // per-agent branch survives the removal that follows it.
+      mockRemoveGitWorkspace.mockResolvedValue(undefined)
+      const source = await createScmSource(makeGitSourceRow({ workspacesPath: '/ws/path' }))
+      const beforeRemove = vi.fn().mockResolvedValue(undefined)
+
+      await source?.removeWorkspace('agent-abcdefghij123456', { beforeRemove, keepBranches: true })
+
+      expect(mockRemoveGitWorkspace).toHaveBeenCalledWith(
+        '/data/repos/my-repo',
+        '/ws/path',
+        'agent-abcdefghij123456',
+        expect.objectContaining({ type: 'git' }),
+        { beforeRemove, keepBranches: true },
       )
     })
 

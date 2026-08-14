@@ -66,6 +66,9 @@ import { Hono } from 'hono'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { closeDatabaseConnection, db } from '../../db/client.js'
 import { agents, runs, scmSources, users } from '../../db/schema.js'
+import { setDurableExecutionLeaseReleaseHandler } from '../../engine/execution-lease-registry.js'
+import { processInstanceId } from '../../lib/process-instance.js'
+import { releaseScmWorkload } from '../../lib/scm-workload-lifecycle.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -179,9 +182,17 @@ beforeAll(async () => {
   // 4. 挂载真 gateway 路由
   const mod = await import('../../routes/gateway.js')
   gatewayApp = new Hono().route('/api/gateway', mod.default)
+
+  // 5. Match index.ts: release the durable SCM workload lease when the
+  //    execution lease ends. Admission counts active durable leases, so
+  //    omitting this handler would leave every later invocation queued (202).
+  setDurableExecutionLeaseReleaseHandler(async (runId) => {
+    await releaseScmWorkload({ type: 'run', workloadId: runId, ownerInstanceId: processInstanceId })
+  })
 })
 
 afterAll(async () => {
+  setDurableExecutionLeaseReleaseHandler(undefined)
   await closeDatabaseConnection()
   if (E2E_ROOT) rmSync(E2E_ROOT, { recursive: true, force: true })
   if (existsSync(DB_PATH)) rmSync(DB_PATH, { force: true })

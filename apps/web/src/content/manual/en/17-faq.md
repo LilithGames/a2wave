@@ -170,6 +170,9 @@ a2wave setup --with-postgres
 
 The two flags are mutually exclusive and cannot be combined with `--upgrade`. To switch an existing install, edit `DATABASE_URL` in the install directory's `.env` and run `docker compose up -d` (again starting from an empty database).
 
+> [!IMPORTANT]
+> These options were added after CLI v0.7.2 and are not present in the published `a2wave@0.7.2` package. Confirm that `a2wave setup --help` lists them before installation. If either option is unknown, install a newer CLI before retrying; do not continue with the generated deployment, because SQLite remains the default.
+
 > [!WARNING]
 > Do not point the database URL at `localhost` — inside the container, localhost is the container itself. For a database on the host machine, use `host.docker.internal` (Docker Desktop) or the host IP. Also, on a PostgreSQL install the automatic pre-upgrade backup covers only the data volume, **not** the database itself — take a `pg_dump` before upgrading.
 
