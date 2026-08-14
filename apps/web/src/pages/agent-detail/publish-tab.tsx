@@ -1,14 +1,25 @@
+import {
+  type Agent,
+  CHAT_APP_SUGGESTED_QUESTION_MAX_LENGTH,
+  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
+  GIT_TRIGGER_DEFAULT_INTERVAL_SECONDS,
+  type GitTriggerCliStatus,
+  type GitTriggerEvent,
+  type GitTriggerProvider,
+  type GitTriggerScope,
+  isSupportedScheduleCron,
+  type SsoConfigSource,
+} from '@a2wave/shared'
+import { useQuery } from '@tanstack/react-query'
+import { Modal, Radio } from 'antd'
+import { Globe, Info, Loader2, Play, RefreshCw, StopCircle, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  useNativeChatConnections,
-  useRegenerateA2aApiKey,
-  useRegenerateApiKey,
-  useSaveChannelConfig,
-} from '@/hooks/use-agents'
-import { fetchGitTriggerCliStatus } from '@/hooks/use-agents'
 import type {
   ChatAppPublishConfig,
   ConfigurableChannel,
@@ -19,6 +30,13 @@ import type {
   SchedulePublishConfig,
   SlackPublishConfig,
 } from '@/hooks/use-agents'
+import {
+  fetchGitTriggerCliStatus,
+  useNativeChatConnections,
+  useRegenerateA2aApiKey,
+  useRegenerateApiKey,
+  useSaveChannelConfig,
+} from '@/hooks/use-agents'
 import { useCurrentUser, useOauthConfig } from '@/hooks/use-auth'
 import { message } from '@/lib/antd-static'
 import { api } from '@/lib/api'
@@ -28,29 +46,12 @@ import {
   resolveChannelConnectionUi,
 } from '@/lib/channel-connection-ui'
 import { confirm } from '@/lib/confirm'
-import { cronToPreset, presetToCron } from '@/lib/cron-utils'
 import type { SchedulePreset } from '@/lib/cron-utils'
+import { cronToPreset, presetToCron } from '@/lib/cron-utils'
 import { formatGitRepoUrl } from '@/lib/git-repo-url'
 import { safeSetItem } from '@/lib/safe-storage'
 import { cn } from '@/lib/utils'
 import { resolveSsoMethods } from '@/pages/login'
-import {
-  type Agent,
-  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
-  CHAT_APP_SUGGESTED_QUESTION_MAX_LENGTH,
-  GIT_TRIGGER_DEFAULT_INTERVAL_SECONDS,
-  type GitTriggerCliStatus,
-  type GitTriggerEvent,
-  type GitTriggerProvider,
-  type SsoConfigSource,
-  isSupportedScheduleCron,
-} from '@a2wave/shared'
-import { useQuery } from '@tanstack/react-query'
-import { Modal, Radio } from 'antd'
-import { Globe, Info, Loader2, Play, RefreshCw, StopCircle, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useSearchParams } from 'react-router-dom'
 import { ChatAppChannelSection } from './chat-app-channel-section'
 import { CopyButton } from './copy-button'
 import { A2aChannelSection } from './publish/a2a-channel-section'
@@ -95,7 +96,7 @@ interface GitTriggerDraft {
  */
 function createGitTriggerDraft(defaultIntent = ''): GitTriggerDraft {
   return {
-    repos: [{ url: '', project: '', host: '' }],
+    repos: [{ url: '', project: '', host: '', scope: 'project' as const }],
     // Default to the two events that represent "there is new work to look at".
     // `closed` is opt-in: an Agent usually has nothing to do once a request is
     // gone, and firing on it by default would spend tokens for no outcome.
@@ -119,7 +120,7 @@ function toGitTriggerDraft(config: unknown, defaultIntent = ''): GitTriggerDraft
   const fallback = createGitTriggerDraft(defaultIntent)
   if (!config || typeof config !== 'object') return fallback
   const raw = config as {
-    repos?: { project?: string; host?: string }[]
+    repos?: { project?: string; host?: string; scope?: GitTriggerScope }[]
     events?: GitTriggerEvent[]
     intervalSeconds?: number
     intent?: string
@@ -129,10 +130,16 @@ function toGitTriggerDraft(config: unknown, defaultIntent = ''): GitTriggerDraft
   // The stored config keeps host and project apart, so the URL the field shows
   // is rebuilt from them on load.
   const repos = (raw.repos ?? [])
-    .filter((repo) => repo?.project)
+    // `all` is the one scope with nothing to name; every other row still needs a
+    // path, or it would render as an empty field claiming to watch something.
+    .filter((repo) => repo?.project || repo?.scope === 'all')
     .map((repo) => {
       const parts = { project: repo.project ?? '', host: repo.host ?? '' }
-      return { url: formatGitRepoUrl(parts), ...parts }
+      return {
+        url: repo.scope === 'all' ? '' : formatGitRepoUrl(parts),
+        ...parts,
+        scope: repo.scope ?? 'project',
+      }
     })
   return {
     repos: repos.length > 0 ? repos : fallback.repos,
@@ -146,12 +153,17 @@ function toGitTriggerDraft(config: unknown, defaultIntent = ''): GitTriggerDraft
 
 function toGitTriggerReadiness(draft: GitTriggerDraft) {
   return {
-    repos: draft.repos.map((repo) => ({ project: repo.project, url: repo.url })),
+    repos: draft.repos.map((repo) => ({
+      project: repo.project,
+      url: repo.url,
+      scope: repo.scope,
+    })),
     events: draft.events,
     intent: draft.intent,
     intervalSeconds: draft.intervalSeconds,
   }
 }
+
 import { SlackChannelSection } from './publish/slack-channel-section'
 
 const DESCRIPTION_MAX = 300
@@ -601,8 +613,12 @@ export function PublishTab({
     return {
       provider,
       repos: draft.repos
-        .filter((repo) => repo.project.trim())
+        // The instance-wide scope names no path, so a project check would drop
+        // the one row the user deliberately left blank — publishing a channel
+        // with no watch entries at all.
+        .filter((repo) => repo.project.trim() || repo.scope === 'all')
         .map((repo) => ({
+          scope: repo.scope ?? 'project',
           project: repo.project.trim(),
           ...(repo.host.trim() ? { host: repo.host.trim() } : {}),
         })),

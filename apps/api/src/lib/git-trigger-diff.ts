@@ -43,6 +43,7 @@ import {
   type GitTriggerEvent,
   type GitTriggerRepoState,
   type GitTriggerRequestState,
+  type GitTriggerScope,
 } from '@a2wave/shared'
 
 /**
@@ -66,6 +67,16 @@ export interface ObservedRequest {
   targetBranch?: string
   updatedAt?: string
   isDraft: boolean
+  /**
+   * The repository this request actually belongs to.
+   *
+   * Only set by a listing that spans repositories (the `group` and `all`
+   * scopes), where the watch entry names a namespace and each request comes from
+   * a different project underneath it. The caller knows the path already for a
+   * single-project listing, so it stays absent there rather than being
+   * duplicated into every entry.
+   */
+  project?: string
 }
 
 export interface GitTriggerFiredEvent {
@@ -88,6 +99,24 @@ export interface DiffResult {
   seeded: boolean
 }
 
+/**
+ * Identity of one request within a watch entry's state.
+ *
+ * A merge request number is only unique *within its repository*, and a `group`
+ * or `all` scope holds many. Keying on the number alone therefore made
+ * `repo-a!42` and `repo-b!42` the same entry: whichever the listing mentioned
+ * second overwrote the first's fingerprint, so one repository's push looked like
+ * the other's, and every tick fired a bogus `updated` for both while genuinely
+ * new commits went unreported.
+ *
+ * Qualifying by project removes the collision. A single-project listing sets no
+ * `project` — the entry is already unique there — so its keys stay bare numbers
+ * and every fingerprint stored before scopes existed keeps matching.
+ */
+export function requestKey(request: { number: number; project?: string }): string {
+  return request.project ? `${request.project}!${request.number}` : String(request.number)
+}
+
 function fingerprint(request: ObservedRequest): GitTriggerRequestState {
   return {
     number: request.number,
@@ -98,13 +127,16 @@ function fingerprint(request: ObservedRequest): GitTriggerRequestState {
     // was stored — the forge has already stopped listing the request by then.
     ...(request.title ? { title: request.title } : {}),
     ...(request.url ? { url: request.url } : {}),
+    // Same reason as title/url: a closed request is gone from the listing, so
+    // the stored copy is the only thing that can still name its repository.
+    ...(request.project ? { project: request.project } : {}),
   }
 }
 
 /** Every request number the tick knows about, from either side of the diff. */
 function allKnownKeys(observed: ObservedRequest[], previous: GitTriggerRepoState): Set<string> {
   const keys = new Set(Object.keys(previous.requests))
-  for (const request of observed) keys.add(String(request.number))
+  for (const request of observed) keys.add(requestKey(request))
   return keys
 }
 
@@ -164,7 +196,7 @@ function retainedFingerprint(input: {
 function buildState(requests: ObservedRequest[], polledAt: string): GitTriggerRepoState {
   const next: Record<string, GitTriggerRequestState> = {}
   for (const request of requests) {
-    next[String(request.number)] = fingerprint(request)
+    next[requestKey(request)] = fingerprint(request)
   }
   return { requests: next, polledAt }
 }
@@ -233,7 +265,7 @@ export function diffRepoState(params: {
   const cap = params.maxRunsPerTick ?? GIT_TRIGGER_MAX_RUNS_PER_TICK
   const wanted = new Set(events)
   const stillOpen = new Set(
-    (params.observedUnfiltered ?? observed).map((request) => String(request.number)),
+    (params.observedUnfiltered ?? observed).map((request) => requestKey(request)),
   )
   const listingComplete = params.listingComplete ?? true
   const canInferClosed = wanted.has('closed') && listingComplete
@@ -242,12 +274,12 @@ export function diffRepoState(params: {
     return { fired: [], deferred: [], nextState: buildState(observed, polledAt), seeded: true }
   }
 
-  const observedByNumber = new Map(observed.map((r) => [String(r.number), r]))
+  const observedByNumber = new Map(observed.map((r) => [requestKey(r), r]))
   const candidates: GitTriggerFiredEvent[] = []
   const seen = new Set<string>()
 
   for (const request of observed) {
-    const key = String(request.number)
+    const key = requestKey(request)
     seen.add(key)
     const prior = previous.requests[key]
 
@@ -313,6 +345,11 @@ export function diffRepoState(params: {
           isDraft: false,
           ...(prior.updatedAt ? { updatedAt: prior.updatedAt } : {}),
           ...(prior.url ? { url: prior.url } : {}),
+          // Restores the identity this event is keyed on. Without it the
+          // reconstructed request keys as a bare number, so `rollbackUnhandled`
+          // would look up the wrong entry and the intent would name the group
+          // instead of the repository that actually merged.
+          ...(prior.project ? { project: prior.project } : {}),
         },
       })
     }
@@ -416,7 +453,7 @@ export function rollbackUnhandled(
   if (unhandled.length === 0) return next
   const requests = { ...next.requests }
   for (const item of unhandled) {
-    const key = String(item.request.number)
+    const key = requestKey(item.request)
     const prior = previous?.requests?.[key]
     if (prior) requests[key] = prior
     else delete requests[key]
@@ -458,7 +495,25 @@ export function renderGitTriggerIntent(
   )
 }
 
-/** Stable key for a repository within a channel's persisted state. */
-export function repoStateKey(repo: { project: string; host?: string }): string {
-  return repo.host ? `${repo.host}/${repo.project}` : repo.project
+/**
+ * Stable key for one watch entry within a channel's persisted state.
+ *
+ * The `project` scope is deliberately unprefixed. Every state row written before
+ * scopes existed used the bare path, and prefixing it now would make the first
+ * poll after an upgrade find nothing, treat a live repository as a cold start,
+ * and silently swallow every change that happened in between. The wider scopes
+ * are new, so they can afford an explicit prefix — which they need, because a
+ * namespace and a repository can be spelled identically and sharing one row
+ * would merge two unrelated request sets into a single fingerprint.
+ */
+export function repoStateKey(repo: {
+  project: string
+  host?: string
+  scope?: GitTriggerScope
+}): string {
+  const scope = repo.scope ?? 'project'
+  // `all` names no path at all, so it needs a key that does not collapse to the
+  // empty string and collide with every other pathless entry.
+  const path = scope === 'all' ? 'all:' : scope === 'group' ? `group:${repo.project}` : repo.project
+  return repo.host ? `${repo.host}/${path}` : path
 }

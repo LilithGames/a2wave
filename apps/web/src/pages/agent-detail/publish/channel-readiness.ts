@@ -12,6 +12,7 @@
 import {
   GIT_TRIGGER_MAX_INTERVAL_SECONDS,
   GIT_TRIGGER_MIN_INTERVAL_SECONDS,
+  type GitTriggerScope,
   isSupportedScheduleCron,
 } from '@a2wave/shared'
 import type { ChannelKey } from './channel-registry'
@@ -48,7 +49,7 @@ export interface GitTriggerReadiness {
    * needed to tell an untouched blank row (ignore it) from a typed-but-
    * unparseable one (block, or it gets dropped from the payload in silence).
    */
-  repos: { project: string; url?: string }[]
+  repos: { project: string; url?: string; scope?: GitTriggerScope }[]
   events: string[]
   intent: string
   intervalSeconds: number
@@ -112,7 +113,10 @@ export function getChannelBlockReason(
 }
 
 function getGitTriggerBlockReason(input: GitTriggerReadiness): string | null {
-  const repos = input.repos.filter((repo) => repo.project.trim())
+  // The instance-wide scope names no path on purpose, so it counts as a filled
+  // row. Every other scope still needs one, or an untouched form would read as
+  // ready — the form seeds one blank row.
+  const repos = input.repos.filter((repo) => repo.project.trim() || repo.scope === 'all')
   if (repos.length === 0) return 'agentPublish.gitTriggerRepoRequired'
   // A row the user typed into that yielded no project would otherwise be
   // filtered out of the payload without ever being mentioned.

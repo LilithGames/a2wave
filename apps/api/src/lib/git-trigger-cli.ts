@@ -1,4 +1,9 @@
-import type { GitTriggerCliStatus, GitTriggerProvider } from '@a2wave/shared'
+import {
+  GIT_TRIGGER_MAX_PAGES,
+  type GitTriggerCliStatus,
+  type GitTriggerProvider,
+  type GitTriggerScope,
+} from '@a2wave/shared'
 /**
  * `glab` / `gh` CLI adapter for the git repository trigger channels.
  *
@@ -393,6 +398,25 @@ interface GitLabMergeRequest {
   draft?: boolean
   work_in_progress?: boolean
   author?: { name?: string; username?: string }
+  /**
+   * Present on every listing. `full` reads `group/sub/repo!42`, which is the
+   * only field naming the owning repository — the group and instance listings
+   * span many, and `web_url` would have to be parsed to recover it.
+   */
+  references?: { full?: string }
+}
+
+/**
+ * The repository path out of `references.full` (`group/sub/repo!42`).
+ *
+ * Returns undefined rather than guessing when the shape is unfamiliar: a wrong
+ * path here silently sends the Agent at a repository that holds no such merge
+ * request, whereas an absent one degrades to the watch entry's own path.
+ */
+function projectFromReference(reference: string | undefined): string | undefined {
+  if (!reference) return undefined
+  const [path] = reference.split('!')
+  return path?.includes('/') ? path : undefined
 }
 
 /**
@@ -436,6 +460,9 @@ function normalizeGitLab(mr: GitLabMergeRequest): ObservedRequest {
     ...(mr.target_branch ? { targetBranch: mr.target_branch } : {}),
     ...(mr.updated_at ? { updatedAt: mr.updated_at } : {}),
     isDraft: Boolean(mr.draft ?? mr.work_in_progress),
+    ...(projectFromReference(mr.references?.full)
+      ? { project: projectFromReference(mr.references?.full) }
+      : {}),
   }
 }
 
@@ -555,40 +582,105 @@ async function fetchGitHubNodes(project: string, host?: string): Promise<unknown
 }
 
 /**
- * List open merge/pull requests for one repository.
+ * Build the GitLab listing path for one watch entry and page.
  *
- * One call per repository per tick, ordered by recent activity and capped at
- * the forge page size. Everything the diff needs (head SHA, comment count) is
- * in this single response, so no per-request follow-up is issued.
+ * The three scopes are three collections, not three filters — GitLab exposes a
+ * project's requests, a group's (recursing into subgroups), and the caller's
+ * whole visible set as separate endpoints returning the identical record shape.
+ * That sameness is what lets one normalizer and one diff engine serve all three.
+ *
+ * Ordering is always most-recently-updated first because paging is capped: the
+ * cap has to fall on the requests least likely to have moved, or a wide scope
+ * would miss exactly the activity it was configured to catch.
+ */
+export function buildGitLabListPath(
+  entry: { scope: GitTriggerScope; project: string },
+  page: number,
+): string {
+  const query = `state=opened&per_page=${LIST_PAGE_SIZE}&order_by=updated_at&sort=desc&page=${page}`
+  if (entry.scope === 'all') return `merge_requests?scope=all&${query}`
+  const collection = entry.scope === 'group' ? 'groups' : 'projects'
+  return `${collection}/${encodeURIComponent(entry.project)}/merge_requests?${query}`
+}
+
+/**
+ * Fetch a GitLab listing, following pages until the scope is exhausted.
+ *
+ * A project fits in one page and stops after it. A group need not, and paging is
+ * what makes `closed` inference possible there at all: absence proves closure
+ * only when the whole open set was seen. The cap bounds the cost — beyond it the
+ * result is reported incomplete and the diff suspends closure inference rather
+ * than firing `closed` on evidence it does not have.
+ */
+async function fetchGitLabPages(
+  entry: { scope: GitTriggerScope; project: string },
+  host?: string,
+): Promise<{ payload: unknown[]; complete: boolean }> {
+  /**
+   * A single project stays at exactly one call, as it always has.
+   *
+   * Paging exists for namespaces, whose size is a property of the organisation
+   * rather than the config. One repository holding more than a page of open
+   * merge requests is pathological, and paying five calls per tick on every
+   * ordinary repository to cover it would tax the common case for the rare one —
+   * the existing "full page ⇒ treat as truncated" rule already handles it
+   * safely by suspending closure inference.
+   */
+  const maxPages = entry.scope === 'project' ? 1 : GIT_TRIGGER_MAX_PAGES
+  const payload: unknown[] = []
+
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = (await callApi('glab', buildGitLabListPath(entry, page), host)) as unknown[]
+    payload.push(...batch)
+    // A short page is the forge saying there is nothing after it. This is the
+    // only proof of completeness available, since the page-count headers are not
+    // exposed through the CLI's JSON passthrough.
+    if (batch.length < LIST_PAGE_SIZE) return { payload, complete: true }
+  }
+
+  // Every page came back full, so there is at least one more the budget refused
+  // to fetch. Completeness is unprovable and closure must not be inferred.
+  return { payload, complete: false }
+}
+
+/**
+ * List open merge/pull requests for one watch entry.
+ *
+ * A project scope stays at one call per tick, the property the whole channel
+ * depends on. The wider scopes trade a bounded number of extra calls for
+ * covering a namespace whose membership changes without a config edit — still
+ * far cheaper than one call per repository, and everything the diff needs
+ * arrives in the same responses, so no per-request follow-up is ever issued.
  */
 export async function listOpenRequests(
   provider: GitTriggerProvider,
   project: string,
   host?: string,
+  scope: GitTriggerScope = 'project',
 ): Promise<ListOpenRequestsResult> {
-  const payload =
-    provider === 'glab'
-      ? await callApi(
-          'glab',
-          `projects/${encodeURIComponent(project)}/merge_requests?state=opened&per_page=${LIST_PAGE_SIZE}&order_by=updated_at`,
-          host,
-        )
-      : await fetchGitHubNodes(project, host)
+  if (provider === 'gh') {
+    const requests = normalizeRequests('gh', await fetchGitHubNodes(project, host))
+    const complete = requests.length < LIST_PAGE_SIZE
+    if (!complete) {
+      logger.warn(
+        { provider, project, host, pageSize: LIST_PAGE_SIZE },
+        'git-trigger: open request listing is a full page; closed-event detection is suspended for this repository until it fits one page',
+      )
+    }
+    return { requests, complete }
+  }
 
-  const requests = normalizeRequests(provider, payload)
-  // A full page means the forge had at least this many open requests and may
-  // have more it did not return. Only a short page proves the whole open set was
-  // seen — which is the precondition for inferring that a missing request was
-  // closed rather than merely paged out.
-  const complete = requests.length < LIST_PAGE_SIZE
+  const { payload, complete } = await fetchGitLabPages({ scope, project }, host)
+  const requests = normalizeRequests('glab', payload)
+
   if (!complete) {
     logger.warn(
-      { provider, project, host, pageSize: LIST_PAGE_SIZE },
-      'git-trigger: open request listing is a full page; closed-event detection is suspended for this repository until it fits one page',
+      { provider, project, host, scope, pages: GIT_TRIGGER_MAX_PAGES, count: requests.length },
+      'git-trigger: scope exceeds the page budget; closed-event detection is suspended for it until it fits — narrow the scope to restore it',
     )
   }
   logger.debug(
-    { provider, project, host, count: requests.length, complete },
+    { provider, project, host, scope, count: requests.length, complete },
     'git-trigger: listed open requests',
   )
   return { requests, complete }

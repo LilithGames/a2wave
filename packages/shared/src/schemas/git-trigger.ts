@@ -92,22 +92,82 @@ export const GIT_TRIGGER_MAX_RUNS_PER_TICK = 5
 export const GIT_TRIGGER_MAX_REPOS = 5
 
 /**
- * A repository to watch.
+ * How wide a single watch entry reaches.
+ *
+ * Enumerating repositories one by one is the thing this exists to avoid: a
+ * product line is a *namespace*, its membership changes as repositories are
+ * created, and a per-repository list is stale the moment someone adds one. The
+ * wider scopes name the namespace instead, so new repositories are picked up
+ * with no config change.
+ *
+ * GitLab is the only provider that can serve these. `GET /groups/:id/
+ * merge_requests` recurses through subgroups and returns exactly the fields the
+ * fingerprint needs, so a group costs the same single call shape as a project.
+ * GitHub has no equivalent that carries head SHA and comment counts together —
+ * its org-wide search returns neither — so widening there would mean an N+1
+ * sweep, which is precisely what this channel exists to avoid.
+ */
+export const gitTriggerScopeEnum = z.enum([
+  /** One repository, addressed by its full path. */
+  'project',
+  /** A namespace and everything beneath it, subgroups included. */
+  'group',
+  /** Every repository the CLI's credential can see. */
+  'all',
+])
+export type GitTriggerScope = z.infer<typeof gitTriggerScopeEnum>
+
+/**
+ * Upper bound on list pages fetched for one watch entry per tick.
+ *
+ * Applies to the wide scopes only — a `project` deliberately stays at exactly
+ * one call, since a single repository holding more than a page of open requests
+ * is pathological and paging every ordinary repository to cover it would tax the
+ * common case for the rare one.
+ *
+ * For a namespace, paging is what makes `closed` inference possible at all —
+ * absence only proves closure when the whole open set was seen — but unbounded
+ * paging turns one tick into a sweep whose cost the interval cannot bound. Five
+ * pages (500 requests) covers the real namespaces this was built for while
+ * keeping the worst case near the measured ~1.7s per page; beyond it the listing
+ * is marked incomplete and `closed` detection suspends itself rather than firing
+ * on partial evidence.
+ */
+export const GIT_TRIGGER_MAX_PAGES = 5
+
+/**
+ * A watch entry: one repository, or one namespace of them.
  *
  * `project` is the forge's own full path (`group/sub/repo` on GitLab,
  * `owner/repo` on GitHub) rather than a numeric id, because that is what a user
- * can read off a browser URL and what both CLIs accept directly.
+ * can read off a browser URL and what both CLIs accept directly. Under the
+ * `group` scope the same field holds a namespace path, which may legitimately be
+ * a single segment; under `all` it is empty because there is nothing to name.
  */
-export const gitTriggerRepoSchema = z.object({
-  /** Full project path, e.g. `acme/demo`. */
-  project: z.string().trim().min(1).max(300),
-  /**
-   * Self-hosted forge host, e.g. `gitlab.example.com`. Blank uses the CLI's
-   * default host. Stored per repository because one Agent may legitimately
-   * watch repositories on two different forges.
-   */
-  host: z.string().trim().max(300).optional(),
-})
+export const gitTriggerRepoSchema = z
+  .object({
+    /**
+     * Defaulted rather than required, because every config written before scopes
+     * existed omits it. Anything but `project` as the default would silently
+     * widen those configs — a change to what an Agent watches that nobody made.
+     */
+    scope: gitTriggerScopeEnum.default('project'),
+    /** Full project path, or a namespace path under the `group` scope. */
+    project: z.string().trim().max(300).default(''),
+    /**
+     * Self-hosted forge host, e.g. `gitlab.example.com`. Blank uses the CLI's
+     * default host. Stored per entry because one Agent may legitimately watch
+     * repositories on two different forges.
+     */
+    host: z.string().trim().max(300).optional(),
+  })
+  .refine((repo) => repo.scope === 'all' || repo.project.length > 0, {
+    // Only `all` has nothing to name. Letting the others through blank would
+    // resolve to the widest possible scope by way of an empty field — the
+    // opposite of what leaving a box empty should ever mean.
+    message: 'A project or group path is required for the project and group scopes',
+    path: ['project'],
+  })
 export type GitTriggerRepo = z.infer<typeof gitTriggerRepoSchema>
 
 /**
@@ -171,9 +231,24 @@ export type GitTriggerConfig = z.input<typeof gitTriggerConfigSchema>
 export const glabTriggerConfigSchema = gitTriggerConfigSchema.extend({
   provider: z.literal('glab'),
 })
-export const ghTriggerConfigSchema = gitTriggerConfigSchema.extend({
-  provider: z.literal('gh'),
-})
+
+/**
+ * GitHub additionally rejects the wide scopes.
+ *
+ * The `gh` listing is a per-repository GraphQL query, chosen because it is the
+ * only shape returning head SHA and both comment counters in one call. There is
+ * no org-wide query with those fields, so a `group` config would validate, save,
+ * publish green — and then fail every poll. Refusing it here makes the
+ * limitation a validation error at the write path instead of a runtime mystery.
+ */
+export const ghTriggerConfigSchema = gitTriggerConfigSchema
+  .extend({
+    provider: z.literal('gh'),
+  })
+  .refine((config) => config.repos.every((repo) => (repo.scope ?? 'project') === 'project'), {
+    message: 'GitHub supports the project scope only; group and all are GitLab-only',
+    path: ['repos'],
+  })
 
 export type GlabTriggerConfig = z.input<typeof glabTriggerConfigSchema>
 export type GhTriggerConfig = z.input<typeof ghTriggerConfigSchema>
@@ -221,6 +296,16 @@ export const gitTriggerRequestStateSchema = z.object({
    */
   title: z.string().optional(),
   url: z.string().optional(),
+  /**
+   * The repository this request belongs to, under a scope that spans several.
+   *
+   * Carried for the same reason as title and URL — a closed request is gone from
+   * the forge, so the fingerprint is the only surviving record of which
+   * repository it was in — and additionally because it is part of the entry's
+   * identity: a merge request number is unique only within its own repository.
+   * Absent for a single-project watch entry, where the path is already known.
+   */
+  project: z.string().optional(),
 })
 export type GitTriggerRequestState = z.infer<typeof gitTriggerRequestStateSchema>
 

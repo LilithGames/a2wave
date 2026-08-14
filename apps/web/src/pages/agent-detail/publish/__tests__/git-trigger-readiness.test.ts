@@ -1,6 +1,6 @@
+import { describe, expect, it } from 'vitest'
 import en from '@/locales/en.json'
 import zh from '@/locales/zh.json'
-import { describe, expect, it } from 'vitest'
 import {
   type ChannelReadinessInput,
   getChannelBlockReason,
@@ -54,6 +54,35 @@ describe('git trigger channel readiness', () => {
     // The form seeds one empty row, so "untouched" must not read as ready.
     const input = baseInput({
       glab: { repos: [{ project: '   ' }], events: ['opened'], intent: 'x', intervalSeconds: 60 },
+    })
+    expect(getChannelBlockReason('glab', input)).toBe('agentPublish.gitTriggerRepoRequired')
+  })
+
+  it('is ready with an instance-wide row that names no path', () => {
+    // `all` deliberately has nothing to fill in, so the emptiness check that
+    // guards every other scope must not read it as an untouched row — that
+    // would make the one scope requiring no input impossible to publish.
+    const input = baseInput({
+      glab: {
+        repos: [{ project: '', scope: 'all' }],
+        events: ['opened'],
+        intent: 'x',
+        intervalSeconds: 60,
+      },
+    })
+    expect(getChannelBlockReason('glab', input)).toBeNull()
+  })
+
+  it('still blocks a group row with no path', () => {
+    // A group names a namespace, so a blank one is genuinely incomplete rather
+    // than deliberately empty.
+    const input = baseInput({
+      glab: {
+        repos: [{ project: '  ', scope: 'group' }],
+        events: ['opened'],
+        intent: 'x',
+        intervalSeconds: 60,
+      },
     })
     expect(getChannelBlockReason('glab', input)).toBe('agentPublish.gitTriggerRepoRequired')
   })

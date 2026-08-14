@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatGitRepoUrl, parseGitRepoUrl } from '../git-repo-url'
+import { formatGitRepoUrl, parseGitNamespaceUrl, parseGitRepoUrl } from '../git-repo-url'
 
 describe('parseGitRepoUrl', () => {
   it('parses a full https URL into host and project', () => {
@@ -285,6 +285,50 @@ describe('incremental typing', () => {
       host: 'git.example.com',
       project: 'group/repo',
     })
+  })
+})
+
+describe('parseGitNamespaceUrl', () => {
+  it('accepts a single-segment group, which is not a valid project', () => {
+    // A namespace has no `owner/repo` minimum — `acme` is a real,
+    // top-level group. Reusing the project parser here rejected it as too short
+    // and the field could never be filled in.
+    expect(parseGitNamespaceUrl('https://gitlab.example.com/acme')).toEqual({
+      host: 'gitlab.example.com',
+      project: 'acme',
+    })
+  })
+
+  it('keeps a deeply nested subgroup path whole', () => {
+    expect(parseGitNamespaceUrl('https://gitlab.example.com/acme/platform/sdk')).toEqual({
+      host: 'gitlab.example.com',
+      project: 'acme/platform/sdk',
+    })
+  })
+
+  it('cuts GitLab routing off a namespace URL', () => {
+    // A browser URL for a group's merge requests carries `/-/merge_requests`,
+    // and that is exactly the URL a user is most likely to copy.
+    expect(
+      parseGitNamespaceUrl('https://gitlab.example.com/acme/platform/-/merge_requests'),
+    ).toEqual({ host: 'gitlab.example.com', project: 'acme/platform' })
+  })
+
+  it('accepts a bare namespace with no host', () => {
+    expect(parseGitNamespaceUrl('acme/platform')).toEqual({
+      host: '',
+      project: 'acme/platform',
+    })
+  })
+
+  it('returns nothing for a host-only URL', () => {
+    // There is no namespace in it, and defaulting to "everything on this host"
+    // would silently widen the watch to the whole instance.
+    expect(parseGitNamespaceUrl('https://gitlab.example.com')).toEqual({ host: '', project: '' })
+  })
+
+  it('returns nothing for empty input', () => {
+    expect(parseGitNamespaceUrl('   ')).toEqual({ host: '', project: '' })
   })
 })
 

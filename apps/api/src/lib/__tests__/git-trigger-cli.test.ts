@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { extractJson, isAuthenticatedReport, normalizeRequests } from '../git-trigger-cli.js'
+import {
+  buildGitLabListPath,
+  extractJson,
+  isAuthenticatedReport,
+  normalizeRequests,
+} from '../git-trigger-cli.js'
 import {
   GH_AUTH_STATUS_AUTHENTICATED,
   GH_AUTH_STATUS_LOGGED_OUT,
@@ -125,6 +130,44 @@ describe('extractJson', () => {
   })
 })
 
+describe('buildGitLabListPath', () => {
+  it('addresses one project under the project scope', () => {
+    const path = buildGitLabListPath({ scope: 'project', project: 'acme/demo' }, 1)
+    // The path must be URL-encoded: GitLab addresses a project by its full path
+    // with the slashes escaped, and an unencoded one resolves to a different,
+    // usually nonexistent, route.
+    expect(path).toContain('projects/acme%2Fdemo/merge_requests')
+    expect(path).toContain('state=opened')
+  })
+
+  it('addresses a namespace under the group scope', () => {
+    const path = buildGitLabListPath({ scope: 'group', project: 'acme/platform/sdk' }, 1)
+    // `groups/:id/merge_requests` recurses into subgroups, which is what lets
+    // one entry cover a whole product line.
+    expect(path).toContain('groups/acme%2Fplatform%2Fsdk/merge_requests')
+  })
+
+  it('addresses the whole instance under the all scope', () => {
+    const path = buildGitLabListPath({ scope: 'all', project: '' }, 1)
+    // Neither a project nor a group prefix — the bare collection with
+    // `scope=all`, which is every request the credential can see.
+    expect(path).toMatch(/^merge_requests\?/)
+    expect(path).toContain('scope=all')
+  })
+
+  it('orders by recent activity so the first page holds what changed', () => {
+    // Paging is capped, so the cap must fall on the least recently touched
+    // requests rather than an arbitrary slice.
+    const path = buildGitLabListPath({ scope: 'group', project: 'g' }, 1)
+    expect(path).toContain('order_by=updated_at')
+    expect(path).toContain('sort=desc')
+  })
+
+  it('requests the page it was asked for', () => {
+    expect(buildGitLabListPath({ scope: 'group', project: 'g' }, 3)).toContain('page=3')
+  })
+})
+
 describe('normalizeRequests', () => {
   it('normalizes a real GitLab merge request payload', () => {
     const payload = [
@@ -156,6 +199,30 @@ describe('normalizeRequests', () => {
         isDraft: false,
       },
     ])
+  })
+
+  it('carries the owning project path from a group listing', () => {
+    // Under a group scope every request comes from a different repository, so
+    // the entry itself has to say which one. Without this the intent renders
+    // `{{repo}}` as the group and the Agent is told to act on a path that holds
+    // no merge request — the whole point of a wide scope is lost at the moment
+    // the Run is created.
+    const [request] = normalizeRequests('glab', [
+      {
+        iid: 1042,
+        sha: 'abc',
+        title: 'chore: bump',
+        references: { full: 'acme/platform/sdk/core!1042' },
+      },
+    ])
+    expect(request.project).toBe('acme/platform/sdk/core')
+  })
+
+  it('leaves the project unset when the payload carries no reference', () => {
+    // A single-project listing needs no per-entry path: the caller already knows
+    // it. Inventing one from `!iid` alone would be a guess.
+    const [request] = normalizeRequests('glab', [{ iid: 7, sha: 'a', title: 't' }])
+    expect(request.project).toBeUndefined()
   })
 
   it('treats a GitLab work_in_progress request as a draft', () => {
