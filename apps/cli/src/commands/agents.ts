@@ -907,13 +907,15 @@ export const agentsCommand = defineCommand({
           meta: { name: 'stats', description: 'Memory stats' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
+            ...jsonArg,
             ...urlArg,
           },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
             const agentId = await client.resolveAgentId(args.agent as string)
             const { data } = await client.get<{ data: unknown }>(`/api/memories/${agentId}/stats`)
-            console.log(JSON.stringify(data, null, 2))
+            if (emit(args, data)) return
+            console.log(JSON.stringify(redactSecrets(data), null, 2))
           },
         }),
 
@@ -922,6 +924,7 @@ export const agentsCommand = defineCommand({
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             query: { type: 'string', description: 'Search query', required: true },
+            ...jsonArg,
             ...urlArg,
           },
           run: async ({ args }) => {
@@ -931,7 +934,8 @@ export const agentsCommand = defineCommand({
             const { data } = await client.get<{ data: { results: unknown[] } }>(
               `/api/memories/${agentId}/search?q=${q}`,
             )
-            console.log(JSON.stringify(data.results, null, 2))
+            if (emit(args, data.results)) return
+            console.log(JSON.stringify(redactSecrets(data.results), null, 2))
           },
         }),
 

@@ -183,7 +183,8 @@ describe('scm workspaces / codegraph', () => {
 
     await nested('workspaces', 'list').run({ args: { id: 'repo', json: true } })
 
-    expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify(payload, null, 2))
+    // Parsed, not string-compared: the JSON layout belongs to emit().
+    expect(JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))).toEqual(payload)
   })
 })
 
@@ -237,5 +238,59 @@ describe('scm workspaces branch rendering', () => {
     const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
     expect(out).toContain('web=main')
     expect(out).toContain('api=detached')
+  })
+
+  // `check` and `status` printed `JSON.stringify(data, null, 2)` directly,
+  // bypassing emit() and therefore redactSecrets(). The server sanitizes these
+  // two payloads today, so this is defence in depth rather than a live leak —
+  // but the CLI is the last hop before a terminal scrollback or a CI log, and
+  // it must not depend on every upstream route staying careful. Both are also
+  // the only scm commands with no `--json`, so a caller had no way to ask for
+  // the machine-readable form these were already emitting.
+  describe('check', () => {
+    it('redacts credential-bearing fields instead of dumping raw', async () => {
+      mockResolveScmSourceId.mockResolvedValueOnce('scm_1')
+      mockPost.mockResolvedValueOnce({
+        data: { ok: false, message: 'failed', repoUrl: 'https://u:tok@git.example/o/r.git' },
+      })
+
+      await getSubCommand('check').run({ args: { id: 'repo', json: true } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).not.toContain('tok')
+      expect(out).toContain('********')
+      // The non-secret parts of the URL stay usable.
+      expect(out).toContain('git.example')
+    })
+
+    it('still prints the payload when --json is absent', async () => {
+      mockResolveScmSourceId.mockResolvedValueOnce('scm_1')
+      mockPost.mockResolvedValueOnce({ data: { ok: true, message: 'healthy' } })
+
+      await getSubCommand('check').run({ args: { id: 'repo' } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).toContain('healthy')
+    })
+  })
+
+  describe('status', () => {
+    it('redacts credential-bearing fields instead of dumping raw', async () => {
+      mockResolveScmSourceId.mockResolvedValueOnce('scm_1')
+      mockGet.mockResolvedValueOnce({
+        data: {
+          syncStatus: 'error',
+          lastSyncError: 'auth failed',
+          repoUrl: 'https://u:tok@git.example/o/r.git',
+        },
+      })
+
+      await getSubCommand('status').run({ args: { id: 'repo', json: true } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).not.toContain('tok')
+      expect(out).toContain('********')
+      expect(out).toContain('auth failed')
+    })
   })
 })

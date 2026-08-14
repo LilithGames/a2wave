@@ -685,9 +685,12 @@ describe('agentsCommand', () => {
       mockGet.mockResolvedValueOnce({ data: { total: 42, byKind: { fact: 40 } } })
       await getGroupSub('memory', 'stats').run({ args: { agent: 'agt_1' } })
       expect(mockGet).toHaveBeenCalledWith('/api/memories/agt_1/stats')
-      expect(consoleSpy).toHaveBeenCalledWith(
-        JSON.stringify({ total: 42, byKind: { fact: 40 } }, null, 2),
-      )
+      // Asserted on the parsed value, not the exact string: the JSON layout is
+      // emit()'s concern (compact by default, indented under --json-pretty),
+      // and pinning it here would fail the whole suite on a formatting change
+      // that is not this command's behaviour.
+      const printed = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0]))
+      expect(printed).toEqual({ total: 42, byKind: { fact: 40 } })
     })
 
     it('search uses q query param', async () => {
@@ -695,6 +698,38 @@ describe('agentsCommand', () => {
       mockGet.mockResolvedValueOnce({ data: { results: [{ text: 'x' }] } })
       await getGroupSub('memory', 'search').run({ args: { agent: 'agt_1', query: 'hello world' } })
       expect(mockGet).toHaveBeenCalledWith('/api/memories/agt_1/search?q=hello%20world')
+    })
+
+    // Memory content is free-form text an Agent wrote about its own work, so
+    // unlike the scm probes there is no server-side allowlist bounding it — a
+    // recalled note can contain anything the Agent once saw, credentials
+    // included. This printed raw, outside emit(), with no redaction and no way
+    // to opt into machine-readable output.
+    it('search redacts credential-bearing fields', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce({
+        data: { results: [{ text: 'deploy note', apiKey: 'sk-live-secret' }] },
+      })
+
+      await getGroupSub('memory', 'search').run({
+        args: { agent: 'agt_1', query: 'deploy', json: true },
+      })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).not.toContain('sk-live-secret')
+      expect(out).toContain('********')
+      expect(out).toContain('deploy note')
+    })
+
+    it('stats redacts credential-bearing fields', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce({ data: { total: 1, providerApiKey: 'sk-live-secret' } })
+
+      await getGroupSub('memory', 'stats').run({ args: { agent: 'agt_1', json: true } })
+
+      const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+      expect(out).not.toContain('sk-live-secret')
+      expect(out).toContain('********')
     })
 
     it('reindex posts', async () => {

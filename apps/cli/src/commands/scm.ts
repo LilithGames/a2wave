@@ -2,7 +2,7 @@ import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import { confirmDestructive, parseIntFlag, readJsonFile } from '../lib/args.js'
-import { emit, jsonArg } from '../lib/output.js'
+import { emit, jsonArg, redactSecrets } from '../lib/output.js'
 
 interface Workspace {
   name: string
@@ -240,6 +240,7 @@ export const scmCommand = defineCommand({
       meta: { name: 'check', description: 'Check SCM source connectivity' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -249,7 +250,8 @@ export const scmCommand = defineCommand({
           `/api/scm-sources/${id}/check`,
           {},
         )
-        console.log(JSON.stringify(data, null, 2))
+        if (emit(args, data)) return
+        console.log(JSON.stringify(redactSecrets(data), null, 2))
       },
     }),
 
@@ -257,13 +259,15 @@ export const scmCommand = defineCommand({
       meta: { name: 'status', description: 'Show sync and CodeGraph status snapshot' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
+        ...jsonArg,
         ...urlArg,
       },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
         const id = await client.resolveScmSourceId(args.id as string)
         const { data } = await client.get<{ data: unknown }>(`/api/scm-sources/${id}/status`)
-        console.log(JSON.stringify(data, null, 2))
+        if (emit(args, data)) return
+        console.log(JSON.stringify(redactSecrets(data), null, 2))
       },
     }),
 
