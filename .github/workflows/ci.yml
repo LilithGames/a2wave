@@ -303,7 +303,7 @@ jobs:
   #
   # The trust model gives every invited colleague merge-on-green; this gate is
   # the counterweight — the CI definition, gate scripts, waiver lists, the
-  # pinned CLI lock, coverage thresholds and DB migrations cannot change
+  # pinned CLI lock, test configuration and DB migrations cannot change
   # without a second person adding the `ci-reviewed` label. Adding the label
   # retriggers this run (`labeled` is in the trigger list).
   # ───────────────────────────────────────────────────────────────────────

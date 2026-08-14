@@ -87,7 +87,7 @@ const RULES = [
  * merge — the review-labels gate. These are the spots where CLAUDE.md says
  * "reviewed via MR" / "shrink-only" but nothing enforced it: the CI definition
  * itself, the gate scripts and their waiver lists, the pinned CLI lock,
- * coverage thresholds, and DB migrations.
+ * test configuration, and DB migrations.
  */
 const CI_REVIEW = [
   /^\.github\//,
