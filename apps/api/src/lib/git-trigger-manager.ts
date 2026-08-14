@@ -11,6 +11,7 @@
  */
 import {
   GIT_TRIGGER_DEFAULT_INTERVAL_SECONDS,
+  GIT_TRIGGER_MAX_PAGE_BUDGET,
   GIT_TRIGGER_MAX_RUNS_PER_TICK,
   type GitTriggerConfig,
   type GitTriggerEvent,
@@ -411,6 +412,19 @@ class GitTriggerManager {
     // `RunBudget` for why this is a type rather than a bare counter.
     const budget = new RunBudget(GIT_TRIGGER_MAX_RUNS_PER_TICK)
 
+    /**
+     * List pages left for this tick, shared across entries.
+     *
+     * Without a shared budget the per-entry page cap and the entry cap multiply:
+     * five group entries at five pages each is 25 serial CLI calls, ~500s at the
+     * poll timeout, against a 30s minimum interval. That is the worst-case tick
+     * `GIT_TRIGGER_MAX_REPOS` exists to bound, so the pages are spent from one
+     * pool and the bound holds no matter how the entries are configured.
+     * Round-robin ordering means a namespace that consumes the pool does not
+     * permanently starve the entries behind it.
+     */
+    let pageBudget = GIT_TRIGGER_MAX_PAGE_BUDGET
+
     for (const repo of listings) {
       const repoKey = repoStateKey(repo)
 
@@ -436,7 +450,8 @@ class GitTriggerManager {
 
       let listing: Awaited<ReturnType<typeof listOpenRequests>>
       try {
-        listing = await listOpenRequests(provider, repo.project, repo.host, repo.scope)
+        listing = await listOpenRequests(provider, repo.project, repo.host, repo.scope, pageBudget)
+        pageBudget -= listing.pagesFetched
       } catch (err) {
         const message =
           err instanceof GitTriggerCliError ? err.message : String((err as Error)?.message ?? err)

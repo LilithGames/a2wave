@@ -80,8 +80,20 @@ export function toGitTriggerRepoDraft(
   url: string,
   provider: GitTriggerProvider,
   scope: GitTriggerScope = 'project',
+  previousHost = '',
 ): GitTriggerRepoDraft {
-  if (scope === 'all') return { url: '', project: '', host: '', scope }
+  if (scope === 'all') {
+    /**
+     * `all` names no path, but it still names a *forge*.
+     *
+     * Dropping the host sends the poll at the CLI's default host — a different
+     * instance entirely — so a user watching a self-hosted group who switches
+     * the row to "everything visible" would silently start watching the wrong
+     * server with no error shown. The URL is kept as typed so switching back is
+     * not destructive; it is simply not displayed while `all` is selected.
+     */
+    return { url, project: '', host: previousHost, scope }
+  }
   const parsed = scope === 'group' ? parseGitNamespaceUrl(url) : parseGitRepoUrl(url, provider)
   return { url, ...parsed, scope }
 }
@@ -282,7 +294,12 @@ export function GitTriggerChannelSection({
                         // project path while claiming to watch a group.
                         updateRepo(
                           index,
-                          toGitTriggerRepoDraft(repo.url, provider, value as GitTriggerScope),
+                          toGitTriggerRepoDraft(
+                            repo.url,
+                            provider,
+                            value as GitTriggerScope,
+                            repo.host,
+                          ),
                         )
                       }
                       options={[

@@ -76,18 +76,24 @@ export const GIT_TRIGGER_DEFAULT_INTERVAL_SECONDS = 60
 export const GIT_TRIGGER_MAX_RUNS_PER_TICK = 5
 
 /**
- * Upper bound on repositories per channel config.
+ * Upper bound on watch entries per channel config.
  *
- * Lowered from 20 when repository fetching became serial. Repositories are now
- * fetched one at a time, immediately before being processed, so the worst-case
- * tick is `repos × POLL_TIMEOUT`; at 5 that is ~100s, which stays close enough
- * to the interval that a skipped tick is an exception rather than routine.
+ * Lowered from 20 when repository fetching became serial. Entries are fetched
+ * one at a time, immediately before being processed, so the worst-case tick is
+ * `calls × POLL_TIMEOUT`; at 5 that is ~100s, which stays close enough to the
+ * interval that a skipped tick is an exception rather than routine.
  *
  * The previous 20 relied on parallel prefetch to stay inside the interval, and
  * the window that opened between fetching a repository and acting on it is where
  * every concurrency defect on this channel lived. A smaller cap buys the
  * simplicity of having no window at all; a deployment needing more repositories
- * should use a second Agent rather than a longer, racier tick.
+ * should watch a group (see `gitTriggerScopeEnum`) rather than lengthening the
+ * tick.
+ *
+ * Note that with wide scopes an entry is no longer one call, which is why the
+ * page budget below is spent across the whole tick rather than per entry —
+ * `calls` in the bound above stays `GIT_TRIGGER_MAX_PAGE_BUDGET`, not
+ * `entries × pages`.
  */
 export const GIT_TRIGGER_MAX_REPOS = 5
 
@@ -134,6 +140,23 @@ export type GitTriggerScope = z.infer<typeof gitTriggerScopeEnum>
  * on partial evidence.
  */
 export const GIT_TRIGGER_MAX_PAGES = 5
+
+/**
+ * Total list pages one tick may fetch, across every watch entry.
+ *
+ * `GIT_TRIGGER_MAX_PAGES` bounds a single entry; this bounds the tick. Without
+ * it the two caps multiply — five group entries at five pages each is 25 serial
+ * CLI calls, ~500s at `POLL_TIMEOUT_MS`, against a 30s minimum interval. That
+ * silently invalidates the worst-case tick `GIT_TRIGGER_MAX_REPOS` was chosen to
+ * satisfy and makes overlapping-tick skips routine rather than exceptional.
+ *
+ * Set to the same 5, so the tick's call budget is unchanged from before scopes
+ * existed: five single-project entries cost five calls, and one group entry may
+ * spend the whole budget on itself. An entry that runs out is reported
+ * incomplete exactly as if it had hit the per-entry cap, so `closed` inference
+ * suspends rather than firing on partial evidence.
+ */
+export const GIT_TRIGGER_MAX_PAGE_BUDGET = 5
 
 /**
  * A watch entry: one repository, or one namespace of them.
@@ -215,6 +238,16 @@ export const gitTriggerConfigSchema = z.object({
 export type GitTriggerConfig = z.input<typeof gitTriggerConfigSchema>
 
 /**
+ * The wide scopes are GitLab-only.
+ *
+ * The `gh` listing is a per-repository GraphQL query, chosen because it is the
+ * only shape returning head SHA and both comment counters in one call. There is
+ * no org-wide query carrying those fields, so a `group` config would validate,
+ * save, publish green — and then fail every poll. The rule is applied by
+ * `ghTriggerConfigSchema` below.
+ */
+
+/**
  * Provider-bound variants of the config.
  *
  * The two channels share one shape, so a `provider: 'glab'` config validated
@@ -233,22 +266,27 @@ export const glabTriggerConfigSchema = gitTriggerConfigSchema.extend({
 })
 
 /**
- * GitHub additionally rejects the wide scopes.
+ * GitHub additionally rejects the wide scopes; see `refineProviderScopes`.
  *
- * The `gh` listing is a per-repository GraphQL query, chosen because it is the
- * only shape returning head SHA and both comment counters in one call. There is
- * no org-wide query with those fields, so a `group` config would validate, save,
- * publish green — and then fail every poll. Refusing it here makes the
- * limitation a validation error at the write path instead of a runtime mystery.
+ * The rule lives on the `repos` field rather than wrapping the config, because
+ * both `.refine()` and `.superRefine()` turn a `ZodObject` into a `ZodEffects` —
+ * silently losing `.extend()`, `.pick()`, `.omit()` and `.shape`, so this
+ * variant would stop composing the way `glabTriggerConfigSchema` still does.
+ * Constraining the field keeps the config object a plain object, and the rule
+ * applies at exactly the place the offending value is written.
  */
-export const ghTriggerConfigSchema = gitTriggerConfigSchema
-  .extend({
-    provider: z.literal('gh'),
-  })
-  .refine((config) => config.repos.every((repo) => (repo.scope ?? 'project') === 'project'), {
-    message: 'GitHub supports the project scope only; group and all are GitLab-only',
-    path: ['repos'],
-  })
+export const ghTriggerConfigSchema = gitTriggerConfigSchema.extend({
+  provider: z.literal('gh'),
+  repos: z
+    .array(
+      gitTriggerRepoSchema.refine((repo) => (repo.scope ?? 'project') === 'project', {
+        message: 'GitHub supports the project scope only; group and all are GitLab-only',
+        path: ['scope'],
+      }),
+    )
+    .min(1)
+    .max(GIT_TRIGGER_MAX_REPOS),
+})
 
 export type GlabTriggerConfig = z.input<typeof glabTriggerConfigSchema>
 export type GhTriggerConfig = z.input<typeof ghTriggerConfigSchema>

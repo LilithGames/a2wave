@@ -39,6 +39,7 @@
  * precisely why each earlier variant got through.
  */
 import {
+  GIT_TRIGGER_MAX_PAGES,
   GIT_TRIGGER_MAX_RUNS_PER_TICK,
   type GitTriggerEvent,
   type GitTriggerRepoState,
@@ -47,13 +48,20 @@ import {
 } from '@a2wave/shared'
 
 /**
- * Hard ceiling on fingerprints kept for one repository.
+ * Hard ceiling on fingerprints kept for one watch entry.
  *
- * Only reached when a repository permanently exceeds one page, where closure can
- * never be proven and entries would otherwise be retained forever. Set above the
- * 100-item page size so a repository that fits in one page is never affected.
+ * Only reached when an entry permanently exceeds its page budget, where closure
+ * can never be proven and entries would otherwise be retained forever.
+ *
+ * Must stay above the largest listing a single entry can observe, or the ceiling
+ * starts fighting the ordinary case instead of bounding the pathological one: a
+ * wide scope can return `GIT_TRIGGER_MAX_PAGES × 100` = 500 requests, and at the
+ * previous 300 the observed set alone exhausted the ceiling, leaving a retention
+ * budget of zero. Every unprovable entry was then dropped and re-fired as
+ * `opened` on the next tick — a duplicate-wake loop on exactly the large
+ * namespaces this feature exists to serve.
  */
-export const MAX_RETAINED_REQUESTS = 300
+export const MAX_RETAINED_REQUESTS = GIT_TRIGGER_MAX_PAGES * 100 + 200
 
 /** A merge/pull request as normalized from either CLI's list output. */
 export interface ObservedRequest {
@@ -392,7 +400,11 @@ export function diffRepoState(params: {
    * and adding a new event or filter means extending that one function rather
    * than appending another pass here.
    */
-  const deferredNumbers = new Set(deferred.map((d) => String(d.request.number)))
+  // Keyed exactly as `allKnownKeys` and `previous.requests` are, via the one
+  // key function. A bare number here silently never matched a project-qualified
+  // key, so under a wide scope every deferred request was treated as handled and
+  // advanced past a change no Run ever processed.
+  const deferredNumbers = new Set(deferred.map((d) => requestKey(d.request)))
   const nextRequests: Record<string, GitTriggerRequestState> = {}
   const unprovable: [string, GitTriggerRequestState][] = []
 

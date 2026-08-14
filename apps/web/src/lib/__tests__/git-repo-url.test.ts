@@ -314,6 +314,34 @@ describe('parseGitNamespaceUrl', () => {
     ).toEqual({ host: 'gitlab.example.com', project: 'acme/platform' })
   })
 
+  it('drops the /groups/ prefix GitLab puts in every real group URL', () => {
+    // This is THE url a user copies: GitLab serves a group at
+    // `https://host/groups/acme/platform` (verified against a live instance —
+    // the API's own `web_url` for a group has the prefix), while a project has
+    // no such prefix. Keeping it yields the project path `groups/acme/platform`,
+    // which contains a slash and therefore passes every validation, publishes
+    // green, and then 404s on every single poll.
+    expect(parseGitNamespaceUrl('https://gitlab.example.com/groups/acme/platform')).toEqual({
+      host: 'gitlab.example.com',
+      project: 'acme/platform',
+    })
+  })
+
+  it('drops the prefix on a group merge-request list URL too', () => {
+    expect(
+      parseGitNamespaceUrl('https://gitlab.example.com/groups/acme/platform/-/merge_requests'),
+    ).toEqual({ host: 'gitlab.example.com', project: 'acme/platform' })
+  })
+
+  it('keeps a project named "groups" that is not a prefix', () => {
+    // The prefix only exists directly after the host. A namespace legitimately
+    // called `groups` deeper in the path must survive.
+    expect(parseGitNamespaceUrl('https://gitlab.example.com/acme/groups')).toEqual({
+      host: 'gitlab.example.com',
+      project: 'acme/groups',
+    })
+  })
+
   it('accepts a bare namespace with no host', () => {
     expect(parseGitNamespaceUrl('acme/platform')).toEqual({
       host: '',

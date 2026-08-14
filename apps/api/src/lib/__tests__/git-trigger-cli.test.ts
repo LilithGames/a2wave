@@ -207,15 +207,29 @@ describe('normalizeRequests', () => {
     // `{{repo}}` as the group and the Agent is told to act on a path that holds
     // no merge request — the whole point of a wide scope is lost at the moment
     // the Run is created.
-    const [request] = normalizeRequests('glab', [
-      {
-        iid: 1042,
-        sha: 'abc',
-        title: 'chore: bump',
-        references: { full: 'acme/platform/sdk/core!1042' },
-      },
-    ])
+    const [request] = normalizeRequests(
+      'glab',
+      [
+        {
+          iid: 1042,
+          sha: 'abc',
+          title: 'chore: bump',
+          references: { full: 'acme/platform/sdk/core!1042' },
+        },
+      ],
+      true,
+    )
     expect(request.project).toBe('acme/platform/sdk/core')
+  })
+
+  it('ignores the reference GitLab sends on a single-project listing', () => {
+    // GitLab returns `references` on every listing, so the payload alone cannot
+    // decide this — only the scope can. Recording it for a single project
+    // re-keys state that was written before scopes existed.
+    const [request] = normalizeRequests('glab', [
+      { iid: 42, sha: 'a', title: 't', references: { full: 'group/repo!42' } },
+    ])
+    expect(request.project).toBeUndefined()
   })
 
   it('leaves the project unset when the payload carries no reference', () => {

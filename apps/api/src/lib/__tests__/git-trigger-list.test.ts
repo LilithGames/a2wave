@@ -183,6 +183,27 @@ describe('listOpenRequests — wide scopes', () => {
     expect(runStatusProbe).toHaveBeenCalledTimes(2)
   })
 
+  it('spends a caller-supplied page budget and reports what is left', async () => {
+    // The per-entry cap and the entry cap would otherwise multiply: five group
+    // entries at five pages each is 25 serial CLI calls, ~500s against a 30s
+    // minimum interval — silently invalidating the worst-case tick that
+    // GIT_TRIGGER_MAX_REPOS was chosen to satisfy.
+    runStatusProbe.mockResolvedValue(probeResult({ stdout: JSON.stringify(page(1, 100)) }))
+
+    const result = await listOpenRequests('glab', 'acme', undefined, 'group', 2)
+    expect(runStatusProbe).toHaveBeenCalledTimes(2)
+    expect(result.complete).toBe(false)
+    expect(result.pagesFetched).toBe(2)
+  })
+
+  it('reports pages fetched so the caller can charge the tick budget', async () => {
+    runStatusProbe.mockResolvedValueOnce(probeResult({ stdout: JSON.stringify(page(1, 3)) }))
+
+    const result = await listOpenRequests('glab', 'acme', undefined, 'group')
+    expect(result.pagesFetched).toBe(1)
+    expect(result.complete).toBe(true)
+  })
+
   it('stops at the page budget and reports the listing incomplete', async () => {
     // Beyond the budget the open set is unproven, so `closed` must not fire on
     // absence. Reporting incomplete is what makes the diff suspend it.
@@ -208,6 +229,25 @@ describe('listOpenRequests — wide scopes', () => {
     const [, argv] = runStatusProbe.mock.calls[0] as [string, string[]]
     expect(argv[1]).toMatch(/^merge_requests\?/)
     expect(argv[1]).toContain('scope=all')
+  })
+
+  it('leaves the project unset under the project scope, even though GitLab sends it', async () => {
+    // GitLab returns `references` on the PROJECT listing too, not only the group
+    // one. Attaching it unconditionally re-keyed every single-repository entry
+    // from `42` to `group/repo!42`, so the first poll after an upgrade matched
+    // none of the fingerprints written before it: every open request fired
+    // `opened` and every stored key fired `closed`. That is precisely the
+    // migration break `repoStateKey` is written to avoid, undone one layer down.
+    runStatusProbe.mockResolvedValue(
+      probeResult({
+        stdout: JSON.stringify([
+          { iid: 42, sha: 'a', title: 't', references: { full: 'group/repo!42' } },
+        ]),
+      }),
+    )
+
+    const result = await listOpenRequests('glab', 'group/repo')
+    expect(result.requests[0].project).toBeUndefined()
   })
 
   it('carries each request back with its own repository path', async () => {

@@ -383,6 +383,11 @@ const LIST_PAGE_SIZE = 100
 export interface ListOpenRequestsResult {
   requests: ObservedRequest[]
   complete: boolean
+  /**
+   * List pages this call actually fetched, so the caller can charge them
+   * against the tick-wide budget. Always at least 1.
+   */
+  pagesFetched: number
 }
 
 /** GitLab merge request as returned by `/projects/:id/merge_requests`. */
@@ -446,7 +451,21 @@ interface GitHubPullRequestNode {
   author?: { login?: string }
 }
 
-function normalizeGitLab(mr: GitLabMergeRequest): ObservedRequest {
+/**
+ * `spansRepositories` decides whether the per-request path is recorded at all.
+ *
+ * GitLab sends `references` on **every** listing, the single-project one
+ * included, so attaching it unconditionally re-keyed ordinary single-repository
+ * entries from `42` to `group/repo!42`. Fingerprints written before scopes
+ * existed use the bare number, so the first poll after an upgrade matched none
+ * of them: every open request fired `opened` and every stored key fired
+ * `closed`. `repoStateKey` is carefully written to keep the project scope's key
+ * stable across that upgrade, and this is the same invariant one layer down —
+ * the path is recorded only when the listing genuinely spans repositories and
+ * the number alone is therefore ambiguous.
+ */
+function normalizeGitLab(mr: GitLabMergeRequest, spansRepositories: boolean): ObservedRequest {
+  const project = spansRepositories ? projectFromReference(mr.references?.full) : undefined
   return {
     number: mr.iid,
     sha: mr.sha ?? '',
@@ -460,9 +479,7 @@ function normalizeGitLab(mr: GitLabMergeRequest): ObservedRequest {
     ...(mr.target_branch ? { targetBranch: mr.target_branch } : {}),
     ...(mr.updated_at ? { updatedAt: mr.updated_at } : {}),
     isDraft: Boolean(mr.draft ?? mr.work_in_progress),
-    ...(projectFromReference(mr.references?.full)
-      ? { project: projectFromReference(mr.references?.full) }
-      : {}),
+    ...(project ? { project } : {}),
   }
 }
 
@@ -494,10 +511,16 @@ function normalizeGitHub(pr: GitHubPullRequestNode): ObservedRequest {
 export function normalizeRequests(
   provider: GitTriggerProvider,
   payload: unknown,
+  /**
+   * Whether this payload can contain more than one repository. Defaults to
+   * false, so a caller that does not say keeps the historical single-project
+   * shape rather than silently re-keying its state.
+   */
+  spansRepositories = false,
 ): ObservedRequest[] {
   if (!Array.isArray(payload)) return []
   return provider === 'glab'
-    ? payload.map((item) => normalizeGitLab(item as GitLabMergeRequest))
+    ? payload.map((item) => normalizeGitLab(item as GitLabMergeRequest, spansRepositories))
     : payload.map((item) => normalizeGitHub(item as GitHubPullRequestNode))
 }
 
@@ -614,8 +637,9 @@ export function buildGitLabListPath(
  */
 async function fetchGitLabPages(
   entry: { scope: GitTriggerScope; project: string },
-  host?: string,
-): Promise<{ payload: unknown[]; complete: boolean }> {
+  host: string | undefined,
+  pageBudget: number,
+): Promise<{ payload: unknown[]; complete: boolean; pagesFetched: number }> {
   /**
    * A single project stays at exactly one call, as it always has.
    *
@@ -626,7 +650,10 @@ async function fetchGitLabPages(
    * the existing "full page ⇒ treat as truncated" rule already handles it
    * safely by suspending closure inference.
    */
-  const maxPages = entry.scope === 'project' ? 1 : GIT_TRIGGER_MAX_PAGES
+  // Bounded by the per-entry cap AND whatever the tick has left, so five group
+  // entries cannot multiply into 25 serial calls.
+  const maxPages =
+    entry.scope === 'project' ? 1 : Math.max(1, Math.min(GIT_TRIGGER_MAX_PAGES, pageBudget))
   const payload: unknown[] = []
 
   for (let page = 1; page <= maxPages; page++) {
@@ -635,12 +662,12 @@ async function fetchGitLabPages(
     // A short page is the forge saying there is nothing after it. This is the
     // only proof of completeness available, since the page-count headers are not
     // exposed through the CLI's JSON passthrough.
-    if (batch.length < LIST_PAGE_SIZE) return { payload, complete: true }
+    if (batch.length < LIST_PAGE_SIZE) return { payload, complete: true, pagesFetched: page }
   }
 
   // Every page came back full, so there is at least one more the budget refused
   // to fetch. Completeness is unprovable and closure must not be inferred.
-  return { payload, complete: false }
+  return { payload, complete: false, pagesFetched: maxPages }
 }
 
 /**
@@ -657,6 +684,11 @@ export async function listOpenRequests(
   project: string,
   host?: string,
   scope: GitTriggerScope = 'project',
+  /**
+   * Pages this entry may still spend from the tick's shared allowance. Defaults
+   * to the per-entry cap for callers that do not track a tick.
+   */
+  pageBudget: number = GIT_TRIGGER_MAX_PAGES,
 ): Promise<ListOpenRequestsResult> {
   if (provider === 'gh') {
     const requests = normalizeRequests('gh', await fetchGitHubNodes(project, host))
@@ -667,21 +699,25 @@ export async function listOpenRequests(
         'git-trigger: open request listing is a full page; closed-event detection is suspended for this repository until it fits one page',
       )
     }
-    return { requests, complete }
+    return { requests, complete, pagesFetched: 1 }
   }
 
-  const { payload, complete } = await fetchGitLabPages({ scope, project }, host)
-  const requests = normalizeRequests('glab', payload)
+  const { payload, complete, pagesFetched } = await fetchGitLabPages(
+    { scope, project },
+    host,
+    pageBudget,
+  )
+  const requests = normalizeRequests('glab', payload, scope !== 'project')
 
   if (!complete) {
     logger.warn(
-      { provider, project, host, scope, pages: GIT_TRIGGER_MAX_PAGES, count: requests.length },
+      { provider, project, host, scope, pages: pagesFetched, count: requests.length },
       'git-trigger: scope exceeds the page budget; closed-event detection is suspended for it until it fits — narrow the scope to restore it',
     )
   }
   logger.debug(
-    { provider, project, host, scope, count: requests.length, complete },
+    { provider, project, host, scope, count: requests.length, complete, pagesFetched },
     'git-trigger: listed open requests',
   )
-  return { requests, complete }
+  return { requests, complete, pagesFetched }
 }

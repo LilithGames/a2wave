@@ -171,6 +171,18 @@ describe('watch scope', () => {
     ).toBe(true)
   })
 
+  it('keeps both provider variants composable object schemas', () => {
+    // Enforcing the GitHub restriction with `.refine()` on the config turns the
+    // schema into a `ZodEffects`, which silently loses `.extend()`, `.pick()`
+    // and `.shape`. Nothing breaks today, but the next call site that composes
+    // it the way the glab variant already can would fail with a confusing type
+    // error — so the rule lives on the `repos` field instead.
+    for (const schema of [glabTriggerConfigSchema, ghTriggerConfigSchema]) {
+      expect(typeof schema.extend).toBe('function')
+      expect(schema.shape).toBeDefined()
+    }
+  })
+
   it('exposes the three scopes', () => {
     expect(gitTriggerScopeEnum.options).toEqual(['project', 'group', 'all'])
   })

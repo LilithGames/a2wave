@@ -205,8 +205,20 @@ export function parseGitNamespaceUrl(input: string): GitRepoLocation {
   if (!first) return EMPTY
 
   const isHost = hasScheme || looksLikeHost(first)
-  const pathSegments = isHost ? rest : segments
+  const rawPath = isHost ? rest : segments
   const host = isHost ? first : ''
+
+  /**
+   * GitLab routes a *group* under `/groups/`, a project under nothing.
+   *
+   * This is the URL a user actually copies — the API's own `web_url` for a group
+   * is `https://host/groups/acme/platform`. Keeping the prefix yields the path
+   * `groups/acme/platform`, which contains a slash and so passes every
+   * validation, publishes green, and then 404s on every poll. Stripped only in
+   * the leading position, so a namespace genuinely called `groups` deeper in the
+   * path survives.
+   */
+  const pathSegments = rawPath[0] === 'groups' ? rawPath.slice(1) : rawPath
 
   // Everything before GitLab's routing separator; a namespace never contains it.
   const separatorIndex = pathSegments.indexOf(GITLAB_ROUTE_SEPARATOR)

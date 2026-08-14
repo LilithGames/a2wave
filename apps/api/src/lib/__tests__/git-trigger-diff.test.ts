@@ -589,6 +589,39 @@ describe('cross-repository identity under a wide scope', () => {
     expect(result.nextState.requests['group/repo-b!42'].sha).toBe('ccc')
   })
 
+  it('does not advance a deferred request whose key is project-qualified', () => {
+    // The per-tick cap defers work, and a deferred request's fingerprint must
+    // NOT advance — nothing acted on the change, so the next tick has to
+    // re-detect it. The deferral set was built from bare numbers while being
+    // looked up with project-qualified keys, so under a wide scope no deferred
+    // request ever matched: its fingerprint advanced past a change no Run
+    // handled and the event was lost for good, not merely delayed. That is the
+    // exact violation this module's header calls out as its one rule.
+    const previous: GitTriggerRepoState = {
+      requests: {
+        'group/repo-a!1': { number: 1, sha: 'old1', comments: 0, project: 'group/repo-a' },
+        'group/repo-b!2': { number: 2, sha: 'old2', comments: 0, project: 'group/repo-b' },
+      },
+    }
+    const result = diffRepoState({
+      previous,
+      observed: [
+        makeRequest({ number: 1, sha: 'new1', project: 'group/repo-a' }),
+        makeRequest({ number: 2, sha: 'new2', project: 'group/repo-b' }),
+      ],
+      events: ALL_EVENTS,
+      polledAt: POLLED_AT,
+      maxRunsPerTick: 1,
+    })
+
+    expect(result.fired).toHaveLength(1)
+    expect(result.deferred).toHaveLength(1)
+    const deferredKey = `${result.deferred[0].request.project}!${result.deferred[0].request.number}`
+    // The deferred entry keeps its OLD fingerprint so the next tick sees the
+    // delta again.
+    expect(result.nextState.requests[deferredKey].sha).toBe(previous.requests[deferredKey].sha)
+  })
+
   it('reports a closed request against the repository it lived in', () => {
     // Closure is inferred from absence, so the fingerprint is the only surviving
     // record of which repository the request belonged to.
