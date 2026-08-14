@@ -57,7 +57,19 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 if [[ "${SCM_STORAGE_BUILD_IMAGE:-true}" == "true" ]]; then
-  docker build -q -t "$IMAGE_NAME" "$REPO_ROOT" >/dev/null
+  # Not quiet on failure: the image pulls a pinned p4 binary from an external
+  # CDN, so a build error here is often third-party availability rather than
+  # anything about the storage semantics this gate exists to check. Surfacing
+  # the real output is what tells those two apart.
+  if ! build_log="$(docker build -q -t "$IMAGE_NAME" "$REPO_ROOT" 2>&1)"; then
+    echo "$build_log" >&2
+    echo "" >&2
+    echo "Image build failed before the ownership matrix could run." >&2
+    echo "If the failure is the p4 download, it is an upstream CDN outage, not a" >&2
+    echo "regression here — re-run, or set SCM_STORAGE_BUILD_IMAGE=false against" >&2
+    echo "an image you built earlier." >&2
+    exit 1
+  fi
 fi
 
 # The reclaim root must be covered too, and specifically as a *mkdir* rather
