@@ -940,6 +940,27 @@ body {
     0 1px 2px color-mix(in srgb, var(--color-primary) 16%, transparent);
 }
 
+/* Centre the label with flex rather than line-height.
+
+   antd centres the item text by setting `line-height` equal to the item height.
+   That only lands on the optical centre when the glyphs fill the em box the way
+   the metric assumes — Latin text does, CJK does not. A half-width Latin font
+   and a full-width CJK fallback have different ascent/descent ratios, so the
+   half-leading split above and below the text is uneven and 「单个仓库」 sits a
+   pixel or two low. Pairing it with an icon makes that visible, because the SVG
+   is centred geometrically and the text is not, so the two disagree.
+
+   Flex centring measures the actual content box instead of trusting the font's
+   metrics, so text and icon land on the same axis in any script. The explicit
+   `line-height: 1` stops the inherited tall line-height from re-introducing the
+   uneven half-leading inside the flex item. */
+.ant-segmented .ant-segmented-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 /* Force the selected item's label + icon to the on-primary color. Our options
    wrap the label in a custom <span> with a lucide icon (currentColor); without
    this the icon/text inherits the muted color and renders dark-grey on the
