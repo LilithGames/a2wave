@@ -1,9 +1,28 @@
+import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
+import { toStringArray } from '../lib/args.js'
 import { emit, jsonArg, wantsJson } from '../lib/output.js'
 import { forEachSSELine } from '../lib/sse.js'
+
+/**
+ * Hard ceiling on attachments per turn, mirroring `attachmentsInputSchema`'s
+ * `.max(10)`. Checked BEFORE any upload: staging eleven files and then having
+ * the send rejected leaves eleven blobs on the server for the whole TTL and
+ * costs the caller the upload time for nothing.
+ */
+const MAX_ATTACHMENTS = 10
+
+/** A reference to a staged upload, exactly as the chat body's schema expects. */
+interface AttachmentRef {
+  token: string
+  name: string
+  mimeType: string
+  size?: number
+}
 
 interface ChatSession {
   /** The RUN id (`run_xxx`) — NOT what `--chat-id` accepts. */
@@ -226,16 +245,50 @@ function queuedTurn(runId: string | undefined): TurnResult {
   }
 }
 
+/**
+ * Two-step upload: stage each file, then hand the returned refs to the chat
+ * call, which is what consumes the token.
+ *
+ * Sequential on purpose. The server enforces a per-file size limit and an
+ * extension allowlist, so a rejection is normal input validation rather than a
+ * fault — uploading in parallel would report whichever file happened to fail
+ * first while the others were already staged, and the caller could not tell
+ * which of its arguments was wrong.
+ */
+async function stageAttachments(
+  client: ReturnType<typeof createClient>,
+  paths: string[],
+): Promise<AttachmentRef[]> {
+  const refs: AttachmentRef[] = []
+  for (const path of paths) {
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(path)
+    } catch (err) {
+      throw new CliError(`Cannot read --attach ${path}: ${(err as Error).message}`, {
+        type: 'validation',
+        subtype: 'unreadable_attachment',
+      })
+    }
+    const form = new FormData()
+    form.append('file', new Blob([bytes]), basename(path))
+    const { data } = await client.postFormData<{ data: AttachmentRef }>('/api/attachments', form)
+    refs.push(data)
+  }
+  return refs
+}
+
 /** Send one message. Streams by default; falls back to the sync JSON shape with --no-stream. */
 async function sendTurn(
   client: ReturnType<typeof createClient>,
   agentId: string,
   message: string,
   chatId: string | undefined,
-  opts: { stream: boolean; quiet: boolean },
+  opts: { stream: boolean; quiet: boolean; attachments?: AttachmentRef[] },
 ): Promise<TurnResult> {
   const body: Record<string, unknown> = { message, stream: opts.stream }
   if (chatId) body.chatId = chatId
+  if (opts.attachments?.length) body.attachments = opts.attachments
 
   if (!opts.stream) {
     // A full queue answers 202 with a BARE `{status, runId}` — no `data`
@@ -275,7 +328,11 @@ async function sendTurn(
  * therefore take no positional of its own.
  */
 export const chatSendCommand = defineCommand({
-  meta: { name: 'send', description: 'Send a message to an Agent, or open an interactive session' },
+  meta: {
+    name: 'send',
+    description: 'Send a message to an Agent, or open an interactive session',
+    agentMeta: { risk: 'write' },
+  },
   args: {
     agent: { type: 'positional', description: 'Agent ID or name', required: true },
     message: {
@@ -296,6 +353,10 @@ export const chatSendCommand = defineCommand({
       default: true,
       description: 'Stream tokens as they arrive. Use --no-stream to wait for the full reply',
     },
+    attach: {
+      type: 'string',
+      description: `Attach a local file to this turn (repeatable, max ${MAX_ATTACHMENTS})`,
+    },
     ...jsonArg,
     ...urlArg,
   },
@@ -315,6 +376,23 @@ export const chatSendCommand = defineCommand({
       throw new CliError('Interactive chat needs a TTY. Use -m "message" for scripted use.')
     }
 
+    const attachPaths = toStringArray(args.attach)
+    // An interactive session sends many turns; there is no single one the files
+    // would belong to, and silently attaching them to the first would be worse
+    // than refusing.
+    if (attachPaths.length > 0 && !args.message) {
+      throw new CliError('--attach requires -m/--message (it applies to one turn)', {
+        type: 'validation',
+        subtype: 'missing_argument',
+      })
+    }
+    if (attachPaths.length > MAX_ATTACHMENTS) {
+      throw new CliError(
+        `--attach accepts at most ${MAX_ATTACHMENTS} files (got ${attachPaths.length})`,
+        { type: 'validation', subtype: 'too_many_attachments' },
+      )
+    }
+
     // `--chat-id` matches `json_extract(runs.result,'$.chatId')` — the ENGINE
     // session id. A run id finds nothing and the server silently starts a fresh
     // run instead of erroring, so the follow-up is answered with none of the
@@ -332,9 +410,11 @@ export const chatSendCommand = defineCommand({
     const agentId = await client.resolveAgentId(args.agent as string)
 
     if (args.message) {
+      const attachments = attachPaths.length > 0 ? await stageAttachments(client, attachPaths) : []
       const turn = await sendTurn(client, agentId, args.message as string, requestedChatId, {
         stream,
         quiet: json,
+        attachments,
       })
       if (emit(args, { data: turn })) return
       // Print the reply unless the streaming path already wrote it to a TTY.
@@ -416,7 +496,11 @@ export const chatCommand = defineCommand({
     send: chatSendCommand,
 
     list: defineCommand({
-      meta: { name: 'list', description: 'List chat sessions for an Agent' },
+      meta: {
+        name: 'list',
+        description: 'List chat sessions for an Agent',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         ...jsonArg,
@@ -458,7 +542,11 @@ export const chatCommand = defineCommand({
     }),
 
     messages: defineCommand({
-      meta: { name: 'messages', description: 'Show the messages of one chat session' },
+      meta: {
+        name: 'messages',
+        description: 'Show the messages of one chat session',
+        agentMeta: { risk: 'read' },
+      },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         run: { type: 'positional', description: 'Run ID of the session (run_xxx)', required: true },
