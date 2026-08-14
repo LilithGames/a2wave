@@ -63,10 +63,15 @@ ARG TARGETARCH
 # bubblewrap: Claude Code native sandbox on Linux; ripgrep: fast repository search
 # gosu: drop privileges from root to appuser in docker-entrypoint.sh (UID remap pattern, see docker-entrypoint.sh)
 RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates sqlite3 procps tini bubblewrap ripgrep socat gosu && rm -rf /var/lib/apt/lists/* && \
+    # Perforce republishes r24.2 in place, so these move without the URL
+    # changing — which is exactly what the checksum below is here to notice.
+    # Both values were re-read from the vendor's own SHA256SUMS beside each
+    # binary (bin.linux26x86_64/SHA256SUMS, bin.linux26aarch64/SHA256SUMS) on
+    # 2026-08-14, not computed from whatever the build happened to download.
     case "${TARGETARCH}" in \
-      amd64) P4_ARCH="x86_64"; P4_SHA256="5132fc1fc81c1911700924f18375558eec30d0aa7c82e80f8397da0b9f352a86" ;; \
-      arm64) P4_ARCH="aarch64"; P4_SHA256="a3813fc18cca541d347f38874d8c835b370d11478d6430a07a23eeb17268bb9f" ;; \
-      *)     P4_ARCH="x86_64"; P4_SHA256="5132fc1fc81c1911700924f18375558eec30d0aa7c82e80f8397da0b9f352a86" ;; \
+      amd64) P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
+      arm64) P4_ARCH="aarch64"; P4_SHA256="2b4df86bab5a72950fdd93d92ef865c0e2d6b378a6bc8bde62b86511cfc6d669" ;; \
+      *)     P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
     esac && \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
       "https://cdist2.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
