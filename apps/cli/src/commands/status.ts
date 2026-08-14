@@ -195,6 +195,7 @@ function printKv(key: string, value: string): void {
 
 export const statusCommand = defineCommand({
   meta: {
+    name: 'status',
     description:
       'Show current a2wave CLI status: URL / credentials / SSO cache / backend health / current user',
   },

@@ -1257,6 +1257,7 @@ async function upgrade(
 
 export const setupCommand = defineCommand({
   meta: {
+    name: 'setup',
     description:
       'Install a local a2wave platform: generate .env + docker-compose.yml, start the container, and wait until healthy. Use --upgrade to move an existing install to a new image, or --down to uninstall.',
   },

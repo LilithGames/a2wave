@@ -24,10 +24,10 @@ interface KbDocument {
 }
 
 export const kbCommand = defineCommand({
-  meta: { description: 'Manage knowledge base documents (KB Document)' },
+  meta: { name: 'kb', description: 'Manage knowledge base documents (KB Document)' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List all KB documents' },
+      meta: { name: 'list', description: 'List all KB documents' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -44,7 +44,7 @@ export const kbCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show KB document details (by ID or name)' },
+      meta: { name: 'get', description: 'Show KB document details (by ID or name)' },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         ...jsonArg,
@@ -73,6 +73,7 @@ export const kbCommand = defineCommand({
 
     create: defineCommand({
       meta: {
+        name: 'create',
         description:
           'Create a KB document from a Feishu / Notion source (for local files use kb upload)',
       },
@@ -115,6 +116,7 @@ export const kbCommand = defineCommand({
 
     upload: defineCommand({
       meta: {
+        name: 'upload',
         description:
           'Upload a local .md / .txt file as a KB document (name taken from the filename)',
       },
@@ -141,7 +143,10 @@ export const kbCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { description: 'Update KB document metadata or Notion connection (by ID or name)' },
+      meta: {
+        name: 'update',
+        description: 'Update KB document metadata or Notion connection (by ID or name)',
+      },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -176,7 +181,7 @@ export const kbCommand = defineCommand({
     }),
 
     delete: defineCommand({
-      meta: { description: 'Delete a KB document (by ID or name)' },
+      meta: { name: 'delete', description: 'Delete a KB document (by ID or name)' },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         ...urlArg,
@@ -190,7 +195,10 @@ export const kbCommand = defineCommand({
     }),
 
     sync: defineCommand({
-      meta: { description: 'Manually re-fetch the document content from Feishu / Notion' },
+      meta: {
+        name: 'sync',
+        description: 'Manually re-fetch the document content from Feishu / Notion',
+      },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         ...urlArg,
@@ -204,7 +212,10 @@ export const kbCommand = defineCommand({
     }),
 
     content: defineCommand({
-      meta: { description: 'Print the cached document body (for troubleshooting)' },
+      meta: {
+        name: 'content',
+        description: 'Print the cached document body (for troubleshooting)',
+      },
       args: {
         id: { type: 'positional', description: 'KB Document ID or name', required: true },
         ...urlArg,

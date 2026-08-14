@@ -179,13 +179,13 @@ const agentArg = {
 }
 
 export const evalCommand = defineCommand({
-  meta: { description: 'Manage Agent evaluation sets, cases and replay tasks' },
+  meta: { name: 'eval', description: 'Manage Agent evaluation sets, cases and replay tasks' },
   subCommands: {
     sets: defineCommand({
-      meta: { description: 'Manage evaluation sets' },
+      meta: { name: 'sets', description: 'Manage evaluation sets' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List evaluation sets' },
+          meta: { name: 'list', description: 'List evaluation sets' },
           args: { ...agentArg, ...jsonArg, ...urlArg },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
@@ -205,7 +205,7 @@ export const evalCommand = defineCommand({
         }),
 
         create: defineCommand({
-          meta: { description: 'Create an evaluation set' },
+          meta: { name: 'create', description: 'Create an evaluation set' },
           args: {
             ...agentArg,
             name: { type: 'string', description: 'Set name', required: true },
@@ -226,7 +226,7 @@ export const evalCommand = defineCommand({
         }),
 
         update: defineCommand({
-          meta: { description: 'Update an evaluation set' },
+          meta: { name: 'update', description: 'Update an evaluation set' },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -257,7 +257,10 @@ export const evalCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { description: 'Delete an evaluation set (cases cascade; task history kept)' },
+          meta: {
+            name: 'delete',
+            description: 'Delete an evaluation set (cases cascade; task history kept)',
+          },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -280,10 +283,10 @@ export const evalCommand = defineCommand({
     }),
 
     cases: defineCommand({
-      meta: { description: 'Manage the cases of an evaluation set' },
+      meta: { name: 'cases', description: 'Manage the cases of an evaluation set' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List cases in a set' },
+          meta: { name: 'list', description: 'List cases in a set' },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -309,7 +312,7 @@ export const evalCommand = defineCommand({
         }),
 
         add: defineCommand({
-          meta: { description: 'Add one case (single turn) to a set' },
+          meta: { name: 'add', description: 'Add one case (single turn) to a set' },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -339,7 +342,7 @@ export const evalCommand = defineCommand({
         }),
 
         import: defineCommand({
-          meta: { description: 'Bulk-import cases from a YAML or JSON file' },
+          meta: { name: 'import', description: 'Bulk-import cases from a YAML or JSON file' },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -394,7 +397,7 @@ export const evalCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { description: 'Delete one case' },
+          meta: { name: 'delete', description: 'Delete one case' },
           args: {
             ...agentArg,
             set: { type: 'positional', description: 'Set ID or name', required: true },
@@ -418,7 +421,10 @@ export const evalCommand = defineCommand({
     }),
 
     run: defineCommand({
-      meta: { description: 'Start an evaluation task (replay a set against the Agent)' },
+      meta: {
+        name: 'run',
+        description: 'Start an evaluation task (replay a set against the Agent)',
+      },
       args: {
         ...agentArg,
         set: { type: 'string', description: 'Set ID or name to replay', required: true },
@@ -460,10 +466,10 @@ export const evalCommand = defineCommand({
     }),
 
     tasks: defineCommand({
-      meta: { description: 'Inspect evaluation tasks' },
+      meta: { name: 'tasks', description: 'Inspect evaluation tasks' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List evaluation tasks (newest first)' },
+          meta: { name: 'list', description: 'List evaluation tasks (newest first)' },
           args: { ...agentArg, ...jsonArg, ...urlArg },
           run: async ({ args }) => {
             const client = createClient({ url: args.url as string | undefined })
@@ -486,7 +492,7 @@ export const evalCommand = defineCommand({
         }),
 
         get: defineCommand({
-          meta: { description: 'Show a task with its per-case results' },
+          meta: { name: 'get', description: 'Show a task with its per-case results' },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -505,7 +511,7 @@ export const evalCommand = defineCommand({
         }),
 
         verdict: defineCommand({
-          meta: { description: 'Record a manual verdict on one case result' },
+          meta: { name: 'verdict', description: 'Record a manual verdict on one case result' },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -541,7 +547,7 @@ export const evalCommand = defineCommand({
         }),
 
         cancel: defineCommand({
-          meta: { description: 'Cancel a queued or running task' },
+          meta: { name: 'cancel', description: 'Cancel a queued or running task' },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },
@@ -563,7 +569,7 @@ export const evalCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { description: 'Delete a task and its results' },
+          meta: { name: 'delete', description: 'Delete a task and its results' },
           args: {
             ...agentArg,
             task: { type: 'positional', description: 'Task ID (evt_xxx)', required: true },

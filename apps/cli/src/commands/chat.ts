@@ -275,7 +275,7 @@ async function sendTurn(
  * therefore take no positional of its own.
  */
 export const chatSendCommand = defineCommand({
-  meta: { description: 'Send a message to an Agent, or open an interactive session' },
+  meta: { name: 'send', description: 'Send a message to an Agent, or open an interactive session' },
   args: {
     agent: { type: 'positional', description: 'Agent ID or name', required: true },
     message: {
@@ -411,12 +411,12 @@ export const chatSendCommand = defineCommand({
 })
 
 export const chatCommand = defineCommand({
-  meta: { description: 'Chat with an Agent (send / list sessions / read messages)' },
+  meta: { name: 'chat', description: 'Chat with an Agent (send / list sessions / read messages)' },
   subCommands: {
     send: chatSendCommand,
 
     list: defineCommand({
-      meta: { description: 'List chat sessions for an Agent' },
+      meta: { name: 'list', description: 'List chat sessions for an Agent' },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         ...jsonArg,
@@ -458,7 +458,7 @@ export const chatCommand = defineCommand({
     }),
 
     messages: defineCommand({
-      meta: { description: 'Show the messages of one chat session' },
+      meta: { name: 'messages', description: 'Show the messages of one chat session' },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         run: { type: 'positional', description: 'Run ID of the session (run_xxx)', required: true },

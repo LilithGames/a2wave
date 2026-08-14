@@ -7,6 +7,7 @@ import { oauthLogin } from './oauth.js'
 
 export const loginCommand = defineCommand({
   meta: {
+    name: 'login',
     description:
       'Log in to a2wave. Defaults to SSO (OAuth) browser login with no arguments needed; the token is written to the SSO token cache + ~/.a2wave/config.json.',
   },
@@ -95,6 +96,7 @@ export const loginCommand = defineCommand({
 
 export const logoutCommand = defineCommand({
   meta: {
+    name: 'logout',
     description:
       'Log out: best-effort revoke of the server token, then clear ~/.a2wave/config.json.',
   },

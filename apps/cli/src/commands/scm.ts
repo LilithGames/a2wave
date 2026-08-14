@@ -113,10 +113,10 @@ const createArgs = {
 }
 
 export const scmCommand = defineCommand({
-  meta: { description: 'Manage SCM sources' },
+  meta: { name: 'scm', description: 'Manage SCM sources' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List all SCM sources' },
+      meta: { name: 'list', description: 'List all SCM sources' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -136,7 +136,7 @@ export const scmCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show SCM source details (ID or name)' },
+      meta: { name: 'get', description: 'Show SCM source details (ID or name)' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         ...jsonArg,
@@ -162,7 +162,7 @@ export const scmCommand = defineCommand({
     }),
 
     create: defineCommand({
-      meta: { description: 'Create an SCM source (--type git | p4)' },
+      meta: { name: 'create', description: 'Create an SCM source (--type git | p4)' },
       args: { ...createArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -173,7 +173,7 @@ export const scmCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { description: 'Update an SCM source (excludes type; ID or name)' },
+      meta: { name: 'update', description: 'Update an SCM source (excludes type; ID or name)' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -209,7 +209,7 @@ export const scmCommand = defineCommand({
     }),
 
     delete: defineCommand({
-      meta: { description: 'Delete an SCM source (409 if referenced by an agent)' },
+      meta: { name: 'delete', description: 'Delete an SCM source (409 if referenced by an agent)' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         ...urlArg,
@@ -223,7 +223,7 @@ export const scmCommand = defineCommand({
     }),
 
     sync: defineCommand({
-      meta: { description: 'Trigger a background sync (async, 202)' },
+      meta: { name: 'sync', description: 'Trigger a background sync (async, 202)' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         ...urlArg,
@@ -237,7 +237,7 @@ export const scmCommand = defineCommand({
     }),
 
     check: defineCommand({
-      meta: { description: 'Check SCM source connectivity' },
+      meta: { name: 'check', description: 'Check SCM source connectivity' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         ...urlArg,
@@ -254,7 +254,7 @@ export const scmCommand = defineCommand({
     }),
 
     status: defineCommand({
-      meta: { description: 'Show sync and CodeGraph status snapshot' },
+      meta: { name: 'status', description: 'Show sync and CodeGraph status snapshot' },
       args: {
         id: { type: 'positional', description: 'SCM source ID or name', required: true },
         ...urlArg,
@@ -268,10 +268,10 @@ export const scmCommand = defineCommand({
     }),
 
     workspaces: defineCommand({
-      meta: { description: 'Manage the worktrees of an SCM source' },
+      meta: { name: 'workspaces', description: 'Manage the worktrees of an SCM source' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List worktrees (with occupied status)' },
+          meta: { name: 'list', description: 'List worktrees (with occupied status)' },
           args: {
             id: { type: 'positional', description: 'SCM source ID or name', required: true },
             ...jsonArg,
@@ -298,7 +298,7 @@ export const scmCommand = defineCommand({
         }),
 
         remove: defineCommand({
-          meta: { description: 'Delete a worktree (409 when occupied by a run)' },
+          meta: { name: 'remove', description: 'Delete a worktree (409 when occupied by a run)' },
           args: {
             id: { type: 'positional', description: 'SCM source ID or name', required: true },
             name: { type: 'positional', description: 'Worktree name', required: true },
@@ -322,10 +322,13 @@ export const scmCommand = defineCommand({
     }),
 
     codegraph: defineCommand({
-      meta: { description: 'CodeGraph index maintenance' },
+      meta: { name: 'codegraph', description: 'CodeGraph index maintenance' },
       subCommands: {
         reindex: defineCommand({
-          meta: { description: 'Rebuild the CodeGraph index (409 while the checkout is busy)' },
+          meta: {
+            name: 'reindex',
+            description: 'Rebuild the CodeGraph index (409 while the checkout is busy)',
+          },
           args: {
             id: { type: 'positional', description: 'SCM source ID or name', required: true },
             ...jsonArg,

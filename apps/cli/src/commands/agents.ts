@@ -147,10 +147,10 @@ function assertMemberRole(role: unknown): asserts role is (typeof MEMBER_ROLES)[
 }
 
 export const agentsCommand = defineCommand({
-  meta: { description: 'Manage Agents' },
+  meta: { name: 'agents', description: 'Manage Agents' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List all Agents' },
+      meta: { name: 'list', description: 'List all Agents' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -168,7 +168,7 @@ export const agentsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show Agent details (accepts ID or name)' },
+      meta: { name: 'get', description: 'Show Agent details (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...jsonArg,
@@ -247,7 +247,7 @@ export const agentsCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { description: 'Update Agent (accepts ID or name)' },
+      meta: { name: 'update', description: 'Update Agent (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -346,6 +346,7 @@ export const agentsCommand = defineCommand({
 
     diagnose: defineCommand({
       meta: {
+        name: 'diagnose',
         description:
           'Full Agent diagnosis (GET /agents/:id/diagnose): engine/Provider/Feishu/gateway, etc.',
       },
@@ -375,7 +376,7 @@ export const agentsCommand = defineCommand({
     }),
 
     export: defineCommand({
-      meta: { description: 'Export Agent config as ZIP (accepts ID or name)' },
+      meta: { name: 'export', description: 'Export Agent config as ZIP (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         output: {
@@ -405,7 +406,7 @@ export const agentsCommand = defineCommand({
     }),
 
     import: defineCommand({
-      meta: { description: 'Import Agent from a ZIP file' },
+      meta: { name: 'import', description: 'Import Agent from a ZIP file' },
       args: {
         file: { type: 'positional', description: 'ZIP file path', required: true },
         ...urlArg,
@@ -450,6 +451,7 @@ export const agentsCommand = defineCommand({
 
     apply: defineCommand({
       meta: {
+        name: 'apply',
         description:
           'YAML-driven idempotent apply (looked up by name; --example shows the full example yaml)',
       },
@@ -551,7 +553,7 @@ export const agentsCommand = defineCommand({
     }),
 
     publish: defineCommand({
-      meta: { description: 'Publish Agent (POST /agents/:id/publish)' },
+      meta: { name: 'publish', description: 'Publish Agent (POST /agents/:id/publish)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         channels: {
@@ -589,7 +591,7 @@ export const agentsCommand = defineCommand({
     }),
 
     stop: defineCommand({
-      meta: { description: 'Stop a published Agent (POST /agents/:id/stop)' },
+      meta: { name: 'stop', description: 'Stop a published Agent (POST /agents/:id/stop)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...urlArg,
@@ -603,7 +605,7 @@ export const agentsCommand = defineCommand({
     }),
 
     resume: defineCommand({
-      meta: { description: 'Resume a stopped Agent (POST /agents/:id/resume)' },
+      meta: { name: 'resume', description: 'Resume a stopped Agent (POST /agents/:id/resume)' },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...urlArg,
@@ -618,6 +620,7 @@ export const agentsCommand = defineCommand({
 
     clone: defineCommand({
       meta: {
+        name: 'clone',
         description:
           'Clone Agent (POST /agents/:id/clone); new agent is named "<original> (Copy)" with draft status',
       },
@@ -638,6 +641,7 @@ export const agentsCommand = defineCommand({
 
     'regenerate-api-key': defineCommand({
       meta: {
+        name: 'regenerate-api-key',
         description:
           'Regenerate the Agent endpointApiKey (POST /agents/:id/regenerate-api-key). Note: the old key becomes invalid immediately.',
       },
@@ -659,10 +663,10 @@ export const agentsCommand = defineCommand({
     }),
 
     members: defineCommand({
-      meta: { description: 'Manage Agent members' },
+      meta: { name: 'members', description: 'Manage Agent members' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List all Agent members (including owner)' },
+          meta: { name: 'list', description: 'List all Agent members (including owner)' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -685,7 +689,7 @@ export const agentsCommand = defineCommand({
         }),
 
         add: defineCommand({
-          meta: { description: 'Add a member to the Agent' },
+          meta: { name: 'add', description: 'Add a member to the Agent' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -711,7 +715,7 @@ export const agentsCommand = defineCommand({
         }),
 
         update: defineCommand({
-          meta: { description: 'Update an Agent member role' },
+          meta: { name: 'update', description: 'Update an Agent member role' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -737,7 +741,7 @@ export const agentsCommand = defineCommand({
         }),
 
         remove: defineCommand({
-          meta: { description: 'Remove an Agent member' },
+          meta: { name: 'remove', description: 'Remove an Agent member' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             user: {
@@ -762,6 +766,7 @@ export const agentsCommand = defineCommand({
 
     delete: defineCommand({
       meta: {
+        name: 'delete',
         description:
           'Delete Agent (irreversible; accepts ID or name; asks for confirmation by default)',
       },
@@ -784,7 +789,10 @@ export const agentsCommand = defineCommand({
     }),
 
     stats: defineCommand({
-      meta: { description: 'Agent overview stats (KPI / asker count / channel breakdown)' },
+      meta: {
+        name: 'stats',
+        description: 'Agent overview stats (KPI / asker count / channel breakdown)',
+      },
       args: {
         id: { type: 'positional', description: 'Agent ID or name', required: true },
         ...urlArg,
@@ -812,10 +820,10 @@ export const agentsCommand = defineCommand({
     }),
 
     artifacts: defineCommand({
-      meta: { description: 'Manage Agent artifacts' },
+      meta: { name: 'artifacts', description: 'Manage Agent artifacts' },
       subCommands: {
         list: defineCommand({
-          meta: { description: 'List Agent artifacts' },
+          meta: { name: 'list', description: 'List Agent artifacts' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -837,7 +845,7 @@ export const agentsCommand = defineCommand({
         }),
 
         download: defineCommand({
-          meta: { description: 'Download a single artifact' },
+          meta: { name: 'download', description: 'Download a single artifact' },
           args: {
             id: { type: 'positional', description: 'Artifact ID (art_xxx)', required: true },
             out: {
@@ -878,7 +886,7 @@ export const agentsCommand = defineCommand({
         }),
 
         delete: defineCommand({
-          meta: { description: 'Delete a single artifact' },
+          meta: { name: 'delete', description: 'Delete a single artifact' },
           args: {
             id: { type: 'positional', description: 'Artifact ID (art_xxx)', required: true },
             ...urlArg,
@@ -893,10 +901,10 @@ export const agentsCommand = defineCommand({
     }),
 
     memory: defineCommand({
-      meta: { description: 'Manage Agent memory' },
+      meta: { name: 'memory', description: 'Manage Agent memory' },
       subCommands: {
         stats: defineCommand({
-          meta: { description: 'Memory stats' },
+          meta: { name: 'stats', description: 'Memory stats' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -910,7 +918,7 @@ export const agentsCommand = defineCommand({
         }),
 
         search: defineCommand({
-          meta: { description: 'Search memories' },
+          meta: { name: 'search', description: 'Search memories' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             query: { type: 'string', description: 'Search query', required: true },
@@ -928,7 +936,7 @@ export const agentsCommand = defineCommand({
         }),
 
         reindex: defineCommand({
-          meta: { description: 'Rebuild the memory index' },
+          meta: { name: 'reindex', description: 'Rebuild the memory index' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -942,7 +950,7 @@ export const agentsCommand = defineCommand({
         }),
 
         consolidate: defineCommand({
-          meta: { description: 'Consolidate / merge memories' },
+          meta: { name: 'consolidate', description: 'Consolidate / merge memories' },
           args: {
             agent: { type: 'positional', description: 'Agent ID or name', required: true },
             ...urlArg,
@@ -958,7 +966,7 @@ export const agentsCommand = defineCommand({
     }),
 
     'import-url': defineCommand({
-      meta: { description: 'Import Agent from a remote a2wave instance URL' },
+      meta: { name: 'import-url', description: 'Import Agent from a remote a2wave instance URL' },
       args: {
         source: {
           type: 'positional',

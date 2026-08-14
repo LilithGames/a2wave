@@ -10,10 +10,14 @@ function maskToken(token: string | undefined): string {
 }
 
 export const configCommand = defineCommand({
-  meta: { description: 'View and set a2wave CLI global config (~/.a2wave/config.json)' },
+  meta: {
+    name: 'config',
+    description: 'View and set a2wave CLI global config (~/.a2wave/config.json)',
+  },
   subCommands: {
     'set-url': defineCommand({
       meta: {
+        name: 'set-url',
         description:
           "Set the global default a2wave instance URL (overridden by each command's --url / $A2WAVE_URL)",
       },
@@ -37,7 +41,7 @@ export const configCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show current ~/.a2wave/config.json (token auto-masked)' },
+      meta: { name: 'get', description: 'Show current ~/.a2wave/config.json (token auto-masked)' },
       run: () => {
         const config = loadConfig()
         if (!config) {
@@ -51,6 +55,7 @@ export const configCommand = defineCommand({
 
     'unset-url': defineCommand({
       meta: {
+        name: 'unset-url',
         description:
           'Clear the global default URL (keeps token; use --url or $A2WAVE_URL when needed)',
       },

@@ -37,10 +37,10 @@ const ENGINE_TYPES = [
 ] as const
 
 export const providersCommand = defineCommand({
-  meta: { description: 'Manage Providers (execution engines)' },
+  meta: { name: 'providers', description: 'Manage Providers (execution engines)' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List all Providers' },
+      meta: { name: 'list', description: 'List all Providers' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -57,7 +57,7 @@ export const providersCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'View Provider details (accepts ID or name)' },
+      meta: { name: 'get', description: 'View Provider details (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'Provider ID or name', required: true },
         ...jsonArg,
@@ -78,7 +78,10 @@ export const providersCommand = defineCommand({
     }),
 
     'login-status': defineCommand({
-      meta: { description: 'Check local CLI login state (for the "use server login state" mode)' },
+      meta: {
+        name: 'login-status',
+        description: 'Check local CLI login state (for the "use server login state" mode)',
+      },
       args: {
         engine: {
           type: 'positional',
@@ -113,7 +116,7 @@ export const providersCommand = defineCommand({
     }),
 
     dependents: defineCommand({
-      meta: { description: 'List Agents that depend on this Provider' },
+      meta: { name: 'dependents', description: 'List Agents that depend on this Provider' },
       args: {
         id: { type: 'positional', description: 'Provider ID or name', required: true },
         ...urlArg,

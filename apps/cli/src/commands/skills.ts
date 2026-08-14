@@ -131,10 +131,13 @@ async function installRemoteSkills(
 }
 
 export const skillsCommand = defineCommand({
-  meta: { description: 'Manage Skills' },
+  meta: { name: 'skills', description: 'Manage Skills' },
   subCommands: {
     create: defineCommand({
-      meta: { description: 'Create a Skill (via fields, or upload .md/.zip with --file)' },
+      meta: {
+        name: 'create',
+        description: 'Create a Skill (via fields, or upload .md/.zip with --file)',
+      },
       args: {
         name: { type: 'string', description: 'Skill name (required for field-based creation)' },
         description: { type: 'string', description: 'Description' },
@@ -231,7 +234,10 @@ export const skillsCommand = defineCommand({
     }),
 
     install: defineCommand({
-      meta: { description: 'Install public Skills from a skills.sh or GitHub URL' },
+      meta: {
+        name: 'install',
+        description: 'Install public Skills from a skills.sh or GitHub URL',
+      },
       args: {
         source: {
           type: 'positional',
@@ -265,7 +271,10 @@ export const skillsCommand = defineCommand({
     }),
 
     'check-update': defineCommand({
-      meta: { description: 'Check a remote Skill for upstream and local file changes' },
+      meta: {
+        name: 'check-update',
+        description: 'Check a remote Skill for upstream and local file changes',
+      },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         ...urlArg,
@@ -294,7 +303,10 @@ export const skillsCommand = defineCommand({
     }),
 
     'update-remote': defineCommand({
-      meta: { description: 'Update a remote Skill after an explicit three-way comparison' },
+      meta: {
+        name: 'update-remote',
+        description: 'Update a remote Skill after an explicit three-way comparison',
+      },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         strategy: {
@@ -337,7 +349,7 @@ export const skillsCommand = defineCommand({
     }),
 
     list: defineCommand({
-      meta: { description: 'List all Skills' },
+      meta: { name: 'list', description: 'List all Skills' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -355,7 +367,7 @@ export const skillsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show Skill details (ID or name)' },
+      meta: { name: 'get', description: 'Show Skill details (ID or name)' },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         ...jsonArg,
@@ -380,7 +392,7 @@ export const skillsCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { description: 'Update a Skill (ID or name)' },
+      meta: { name: 'update', description: 'Update a Skill (ID or name)' },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         name: { type: 'string', description: 'New name' },
@@ -448,7 +460,10 @@ export const skillsCommand = defineCommand({
     }),
 
     delete: defineCommand({
-      meta: { description: 'Delete a Skill (irreversible; ID or name; confirms by default)' },
+      meta: {
+        name: 'delete',
+        description: 'Delete a Skill (irreversible; ID or name; confirms by default)',
+      },
       args: {
         id: { type: 'positional', description: 'Skill ID or name', required: true },
         force: { type: 'boolean', description: 'Skip confirmation (for scripts/CI)' },

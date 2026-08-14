@@ -169,10 +169,10 @@ async function consumeSSE(response: Response): Promise<void> {
 }
 
 export const runsCommand = defineCommand({
-  meta: { description: 'Manage runs' },
+  meta: { name: 'runs', description: 'Manage runs' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List run records' },
+      meta: { name: 'list', description: 'List run records' },
       args: {
         agent: { type: 'string', description: 'Filter by Agent ID or name' },
         status: {
@@ -251,7 +251,7 @@ export const runsCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'View run details and logs' },
+      meta: { name: 'get', description: 'View run details and logs' },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         ...jsonArg,
@@ -295,7 +295,7 @@ export const runsCommand = defineCommand({
     }),
 
     logs: defineCommand({
-      meta: { description: 'Download the full execution log (NDJSON, untruncated)' },
+      meta: { name: 'logs', description: 'Download the full execution log (NDJSON, untruncated)' },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         output: {
@@ -380,7 +380,7 @@ export const runsCommand = defineCommand({
     }),
 
     cancel: defineCommand({
-      meta: { description: 'Cancel a queued or running run' },
+      meta: { name: 'cancel', description: 'Cancel a queued or running run' },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         ...jsonArg,
@@ -398,7 +398,7 @@ export const runsCommand = defineCommand({
     }),
 
     rerun: defineCommand({
-      meta: { description: 'Replay a run with its original intent and attachments' },
+      meta: { name: 'rerun', description: 'Replay a run with its original intent and attachments' },
       args: {
         id: { type: 'positional', description: 'Run ID (run_xxx)', required: true },
         wait: {
@@ -437,7 +437,7 @@ export const runsCommand = defineCommand({
     }),
 
     trigger: defineCommand({
-      meta: { description: 'Trigger an Agent run with live log output' },
+      meta: { name: 'trigger', description: 'Trigger an Agent run with live log output' },
       args: {
         agent: { type: 'positional', description: 'Agent ID or name', required: true },
         intent: { type: 'string', description: 'Execution intent', required: true },

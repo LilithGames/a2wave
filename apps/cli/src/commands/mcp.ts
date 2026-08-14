@@ -89,10 +89,10 @@ const mutationArgs = {
 }
 
 export const mcpCommand = defineCommand({
-  meta: { description: 'Manage MCP Servers' },
+  meta: { name: 'mcp', description: 'Manage MCP Servers' },
   subCommands: {
     list: defineCommand({
-      meta: { description: 'List all MCP Servers' },
+      meta: { name: 'list', description: 'List all MCP Servers' },
       args: { ...jsonArg, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -120,7 +120,7 @@ export const mcpCommand = defineCommand({
     }),
 
     get: defineCommand({
-      meta: { description: 'Show MCP Server details (accepts ID or name)' },
+      meta: { name: 'get', description: 'Show MCP Server details (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'MCP Server ID or name', required: true },
         ...jsonArg,
@@ -150,7 +150,7 @@ export const mcpCommand = defineCommand({
     }),
 
     create: defineCommand({
-      meta: { description: 'Create an MCP Server' },
+      meta: { name: 'create', description: 'Create an MCP Server' },
       args: { ...mutationArgs, ...urlArg },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
@@ -161,7 +161,7 @@ export const mcpCommand = defineCommand({
     }),
 
     update: defineCommand({
-      meta: { description: 'Update an MCP Server (accepts ID or name)' },
+      meta: { name: 'update', description: 'Update an MCP Server (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'MCP Server ID or name', required: true },
         ...mutationArgs,
@@ -180,7 +180,7 @@ export const mcpCommand = defineCommand({
     }),
 
     delete: defineCommand({
-      meta: { description: 'Delete an MCP Server (accepts ID or name)' },
+      meta: { name: 'delete', description: 'Delete an MCP Server (accepts ID or name)' },
       args: {
         id: { type: 'positional', description: 'MCP Server ID or name', required: true },
         ...urlArg,
@@ -195,6 +195,7 @@ export const mcpCommand = defineCommand({
 
     tools: defineCommand({
       meta: {
+        name: 'tools',
         description: 'Connect and list the tools this MCP Server exposes (for troubleshooting)',
       },
       args: {
