@@ -252,7 +252,7 @@ Cases file format (YAML or JSON — a bare list, or `cases:` wrapping one):
 | Command | Description |
 |------|------|
 | `a2wave scm list` / `get <id\|name>` | List / view details |
-| `a2wave scm create --type git --name X --local-path P --repo-url U` | Create a git source |
+| `a2wave scm create --type git --name X --repo-url U [--local-path P]` | Create a managed git source by default; pass `--local-path` for custom storage |
 | `a2wave scm create --type p4 --name X --local-path P --p4port ... --p4user ... --p4client ...` | Create a p4 source |
 | `a2wave scm update <id\|name> ...` | Update (excludes type; use `--config-file` for complex config) |
 | `a2wave scm delete <id\|name>` | Delete (returns 409 if referenced by an agent) |

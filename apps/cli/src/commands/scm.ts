@@ -49,8 +49,6 @@ function buildCreateBody(args: Record<string, unknown>): Record<string, unknown>
     )
   }
   if (!args.name) throw new CliError('Creating an SCM source requires --name')
-  if (!args['local-path'])
-    throw new CliError('Creating an SCM source requires --local-path (absolute path)')
 
   const config: Record<string, unknown> = { type }
   if (type === 'git') {
@@ -60,6 +58,9 @@ function buildCreateBody(args: Record<string, unknown>): Record<string, unknown>
     if (args.username) config.username = args.username as string
     if (args.pat) config.pat = args.pat as string
   } else {
+    if (!args['local-path']) {
+      throw new CliError('Creating a p4 SCM source requires --local-path (absolute path)')
+    }
     if (!args.p4port || !args.p4user || !args.p4client) {
       throw new CliError('A p4 SCM source requires --p4port --p4user --p4client')
     }
@@ -76,9 +77,9 @@ function buildCreateBody(args: Record<string, unknown>): Record<string, unknown>
   const body: Record<string, unknown> = {
     name: args.name as string,
     type,
-    localPath: args['local-path'] as string,
     config,
   }
+  if (args['local-path']) body.localPath = args['local-path'] as string
   if (args.description) body.description = args.description as string
   if (args['workspaces-path']) body.workspacesPath = args['workspaces-path'] as string
   if (args.enabled !== undefined) body.isEnabled = args.enabled as boolean
@@ -89,7 +90,10 @@ const createArgs = {
   name: { type: 'string' as const, description: 'SCM source name' },
   type: { type: 'string' as const, description: 'Type: git | p4' },
   description: { type: 'string' as const, description: 'Description' },
-  'local-path': { type: 'string' as const, description: 'Absolute local storage path (required)' },
+  'local-path': {
+    type: 'string' as const,
+    description: 'Absolute local storage path (optional for managed Git; required for P4)',
+  },
   'workspaces-path': {
     type: 'string' as const,
     description: 'Root directory for worktrees/workspaces',

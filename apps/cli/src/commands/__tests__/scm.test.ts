@@ -43,6 +43,22 @@ describe('scmCommand', () => {
   })
 
   describe('create', () => {
+    it('creates a managed git source when --local-path is omitted', async () => {
+      mockPost.mockResolvedValueOnce({ data: { id: 'scm_9', name: 'managed-repo' } })
+      await getSubCommand('create').run({
+        args: {
+          name: 'managed-repo',
+          type: 'git',
+          'repo-url': 'https://git.test/managed.git',
+        },
+      })
+      expect(mockPost).toHaveBeenCalledWith('/api/scm-sources', {
+        name: 'managed-repo',
+        type: 'git',
+        config: { type: 'git', repoUrl: 'https://git.test/managed.git' },
+      })
+    })
+
     it('builds git config', async () => {
       mockPost.mockResolvedValueOnce({ data: { id: 'scm_9', name: 'repo' } })
       await getSubCommand('create').run({
@@ -80,6 +96,20 @@ describe('scmCommand', () => {
         localPath: '/data/p4',
         config: { type: 'p4', p4port: 'perforce:1666', p4user: 'bob', p4client: 'bob_ws' },
       })
+    })
+
+    it('still requires --local-path for p4', async () => {
+      await expect(
+        getSubCommand('create').run({
+          args: {
+            name: 'p4src',
+            type: 'p4',
+            p4port: 'perforce:1666',
+            p4user: 'bob',
+            p4client: 'bob_ws',
+          },
+        }),
+      ).rejects.toThrow('--local-path')
     })
 
     it('requires --type', async () => {

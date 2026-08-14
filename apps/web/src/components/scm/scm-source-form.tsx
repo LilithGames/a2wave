@@ -39,7 +39,9 @@ import {
   Eye,
   EyeOff,
   FolderGit2,
+  FolderOpen,
   GitBranch,
+  HardDrive,
   HelpCircle,
   Loader2,
   MoreHorizontal,
@@ -725,10 +727,13 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
           </div>
           {!isCreateMode && (
-            <div className="space-y-2">
-              <Label htmlFor="localPath">{t('scmSources.detail.localPathLabel')}</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="localPath" className="text-sm">
+                {t('scmSources.detail.localPathLabel')}
+              </Label>
               <Input
                 id="localPath"
+                placeholder={source?.type === 'p4' ? '/data/p4/client' : '/data/repos/repository'}
                 readOnly={source?.type === 'git'}
                 className={cn('font-mono text-sm', source?.type === 'git' && 'bg-muted')}
                 {...register('localPath', {
@@ -756,96 +761,57 @@ export function ScmSourceForm({ sourceId, onSaved, onDeleted }: Props) {
             <legend className="text-sm font-medium leading-none text-foreground">
               {t('scmSources.detail.storageModeLabel')}
             </legend>
-            <div role="radiogroup">
-              <div className="overflow-hidden rounded-lg border border-border bg-card">
-                <label
-                  htmlFor="storage-managed"
-                  className={cn(
-                    'flex w-full cursor-pointer items-start gap-3 px-3.5 py-3 transition-colors',
-                    storageMode === 'managed' ? 'bg-primary/5' : 'hover:bg-muted/40',
-                  )}
-                >
-                  <input
-                    id="storage-managed"
-                    type="radio"
-                    name="storageMode"
-                    value="managed"
-                    checked={storageMode === 'managed'}
-                    onChange={() =>
-                      setValue('storageMode', 'managed', {
-                        shouldDirty: true,
-                      })
-                    }
-                    className="mt-1 h-4 w-4 shrink-0 accent-primary"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-foreground">
-                        {t('scmSources.detail.storageManaged')}
-                      </span>
-                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium leading-4 text-primary">
-                        {t('scmSources.detail.storageRecommended')}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                      {t('scmSources.detail.storageManagedHint')}
-                    </p>
-                  </div>
-                </label>
-                <div
-                  data-storage-choice="custom"
-                  className={cn(
-                    'border-t border-border px-3.5 py-3 transition-colors sm:flex sm:items-center sm:gap-4',
-                    storageMode === 'custom' ? 'bg-primary/5' : 'hover:bg-muted/40',
-                  )}
-                >
-                  <label
-                    htmlFor="storage-custom"
-                    className="flex min-w-0 cursor-pointer items-start gap-3 sm:w-72 sm:shrink-0"
-                  >
-                    <input
-                      id="storage-custom"
-                      type="radio"
-                      name="storageMode"
-                      value="custom"
-                      checked={storageMode === 'custom'}
-                      onChange={() =>
-                        setValue('storageMode', 'custom', {
-                          shouldDirty: true,
-                        })
-                      }
-                      className="mt-1 h-4 w-4 shrink-0 accent-primary"
-                    />
-                    <div className="min-w-0">
-                      <span className="text-sm font-medium text-foreground">
-                        {t('scmSources.detail.storageCustom')}
-                      </span>
-                      <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                        {t('scmSources.detail.storageCustomHint')}
-                      </p>
-                    </div>
-                  </label>
-                  {storageMode === 'custom' && (
-                    <div className="mt-3 min-w-0 flex-1 sm:mt-0">
-                      <Input
-                        id="localPath"
-                        aria-label={t('scmSources.detail.localPathLabel')}
-                        placeholder="/data/workspace/sources/my-repo"
-                        className="font-mono text-sm"
-                        {...register('localPath', {
-                          required: t('scmSources.detail.localPathRequired'),
-                          validate: (value) =>
-                            isAbsolutePath(value) || t('scmSources.detail.localPathAbsolute'),
-                        })}
-                      />
-                      {errors.localPath && (
-                        <p className="mt-1 text-xs text-destructive">{errors.localPath.message}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
+            <Segmented
+              value={storageMode}
+              onChange={(value) =>
+                setValue('storageMode', value as 'managed' | 'custom', {
+                  shouldDirty: true,
+                })
+              }
+              options={[
+                {
+                  value: 'managed',
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <HardDrive className="h-4 w-4" />
+                      {t('scmSources.detail.storageManaged')}
+                    </span>
+                  ),
+                },
+                {
+                  value: 'custom',
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <FolderOpen className="h-4 w-4" />
+                      {t('scmSources.detail.storageCustom')}
+                    </span>
+                  ),
+                },
+              ]}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">
+              {storageMode === 'managed'
+                ? `${t('scmSources.detail.storageManagedHint')} ${t('scmSources.detail.storageRecommended')}`
+                : t('scmSources.detail.storageCustomHint')}
+            </p>
+            {storageMode === 'custom' && (
+              <div data-storage-choice="custom" className="max-w-xl">
+                <Input
+                  id="localPath"
+                  aria-label={t('scmSources.detail.localPathLabel')}
+                  placeholder="/data/workspace/sources/my-repo"
+                  className="font-mono text-sm"
+                  {...register('localPath', {
+                    required: t('scmSources.detail.localPathRequired'),
+                    validate: (value) =>
+                      isAbsolutePath(value) || t('scmSources.detail.localPathAbsolute'),
+                  })}
+                />
+                {errors.localPath && (
+                  <p className="mt-1 text-xs text-destructive">{errors.localPath.message}</p>
+                )}
               </div>
-            </div>
+            )}
           </fieldset>
         )}
         {isCreateMode && scmType === 'p4' && (

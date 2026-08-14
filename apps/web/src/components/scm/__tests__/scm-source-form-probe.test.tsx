@@ -142,9 +142,12 @@ describe('ScmSourceForm — connection probe', () => {
     renderForm(undefined)
 
     const customStorage = screen.getByRole('radio', { name: /Custom path/i })
+    expect(customStorage.closest('.ant-segmented')).not.toBeNull()
     fireEvent.click(customStorage)
 
-    const customStorageRow = customStorage.closest('[data-storage-choice="custom"]')
+    const customStorageRow = screen
+      .getByLabelText(/^Local Path/i)
+      .closest('[data-storage-choice="custom"]')
     expect(customStorageRow).not.toBeNull()
     expect(screen.getByLabelText(/^Local Path/i)).toBeInTheDocument()
     expect(customStorageRow).toContainElement(screen.getByLabelText(/^Local Path/i))
@@ -187,6 +190,25 @@ describe('ScmSourceForm — connection probe', () => {
     renderForm('scm_p4')
 
     expect(screen.getByLabelText(/^Local Path/i)).not.toHaveAttribute('readonly')
+  })
+
+  it('uses the standard field rhythm and placeholder for an existing P4 path', () => {
+    sourceMock.mockImplementation(() => P4_RESULT as never)
+    renderForm('scm_p4')
+
+    const input = screen.getByLabelText(/^Local Path/i)
+    expect(input).toHaveAttribute('placeholder', '/data/p4/client')
+    expect(input.parentElement).toHaveClass('space-y-1.5')
+    expect(screen.getByText(/^Local Path$/i)).toHaveClass('text-sm')
+  })
+
+  it('keeps the same standard field contract for a read-only Git path', () => {
+    renderForm('scm_1')
+
+    const input = screen.getByLabelText(/^Local Path/i)
+    expect(input).toHaveAttribute('placeholder', '/data/repos/repository')
+    expect(input).toHaveAttribute('readonly')
+    expect(input.parentElement).toHaveClass('space-y-1.5')
   })
 
   it('offers the probe button in create mode, before a source exists', () => {

@@ -33,6 +33,15 @@ Key fields: `p4port`, `p4user`, `p4passwd`, `p4client`, optional `depotPath`, pl
 3. Once the connection fields are filled in, click **Test Connection** below that section (**Test All Repos** in multi-repo mode) to verify connectivity. It probes using the values **currently in the form** and saves nothing, so you can test before creating the source; multi-repo results list each repository's pass/fail with its own reason.
 4. After saving an enabled source, a2wave starts its initial sync in the background immediately. **Auto Sync** controls later interval refreshes, not the first checkout. Reopen the source to view its status in "Sync & Workspaces", re-verify the **saved** configuration with **Check connection**, or click **Sync now** (the workspaces/worktree list is managed there too).
 
+You can also create a managed Git source from the CLI. Omit `--local-path` to use
+platform-managed storage:
+
+```bash
+a2wave scm create --name repo --type git --repo-url https://git.example.com/team/repo.git
+```
+
+Pass `--local-path` only for a custom Git checkout or a P4 source; it is always required for P4.
+
 > When editing an existing source, the PAT / P4 password are shown masked. As long as you leave them untouched, Test Connection probes with the real stored credential.
 
 The managed Git checkout is stored under `SCM_STORAGE_ROOT/sources/<sourceId>`. In Docker

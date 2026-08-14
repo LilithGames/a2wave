@@ -170,7 +170,8 @@ a2wave mcp tools <mcp-id-or-name>                # Connect and list the tools ex
 ```bash
 a2wave scm list
 a2wave scm get <scm-id-or-name>
-a2wave scm create --name repo --type git --local-path /data/repo --repo-url https://git/x.git --branch main
+a2wave scm create --name repo --type git --repo-url https://git/x.git --branch main
+a2wave scm create --name custom-repo --type git --local-path /data/repo --repo-url https://git/x.git
 a2wave scm create --name p4src --type p4 --local-path /data/p4 --p4port host:1666 --p4user u --p4client ws
 a2wave scm update <scm-id-or-name> --enabled
 a2wave scm delete <scm-id-or-name>
@@ -179,7 +180,9 @@ a2wave scm check <scm-id-or-name>                # Check connectivity
 a2wave scm status <scm-id-or-name>               # Sync / CodeGraph status
 ```
 
-> For complex structures such as git multi-repo, fall back to `--config-file <json>`.
+> Git uses platform-managed storage when `--local-path` is omitted. P4 always requires
+> `--local-path`. For complex structures such as git multi-repo, fall back to
+> `--config-file <json>`.
 
 ## Knowledge Base (KB Document) Management
 
