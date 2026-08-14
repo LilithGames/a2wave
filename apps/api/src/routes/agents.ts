@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  type GroupConfig,
   a2aSkillSchema,
   attachmentsInputSchema,
   chatAppConfigSchema,
   createAgentInput,
   discordConfigSchema,
+  type GroupConfig,
   ghTriggerConfigSchema,
   glabTriggerConfigSchema,
   oauthAccessModeEnum,
@@ -19,7 +19,6 @@ import {
   worktreeCallParamsSchema,
 } from '@a2wave/shared'
 import {
-  type SQL,
   and,
   asc,
   count,
@@ -33,6 +32,7 @@ import {
   lte,
   notInArray,
   or,
+  type SQL,
   sql,
 } from 'drizzle-orm'
 import { type Context, Hono } from 'hono'
@@ -52,11 +52,10 @@ import {
   skills,
   users,
 } from '../db/schema.js'
-import { completeExecutionLease } from '../engine/execution-lease-registry.js'
 import { engineRegistry } from '../engine/index.js'
 import { buildTaskId } from '../engine/task-id.js'
+import { tryAcquireSlot } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
-import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import {
   getAgentPermission,
   getAgentReadFilter,
@@ -67,13 +66,13 @@ import {
 import { collectAgentExecutionChecks } from '../lib/agent-execution-diagnose.js'
 import { buildExportZip } from '../lib/agent-export.js'
 import {
-  WorktreeOccupiedError,
   buildAgentConfig,
   removePerAgentWorkspace,
   resolveCleanupWorkDirs,
   resolveEngineType,
   resolveWorkDir,
   validateAgentProviderConfiguration,
+  WorktreeOccupiedError,
 } from '../lib/agent-helpers.js'
 import { importAgentFromUrl, importAgentFromZip } from '../lib/agent-import.js'
 import { revokeAgentTokensForAgent } from '../lib/agent-memory-token.js'
@@ -96,7 +95,6 @@ import {
 } from '../lib/attachment-materializer.js'
 import { logAudit } from '../lib/audit.js'
 import { discordConnectionManager } from '../lib/discord-service.js'
-import { executeChatRun, failRunBeforeLifecycle } from '../lib/execute-chat-run.js'
 import { type DiagnoseSeverity, runAgentFeishuDiagnose } from '../lib/feishu-diagnose.js'
 import { feishuConnectionManager, normalizeFeishuConfig } from '../lib/feishu-service.js'
 import { normalizeOauthAccessMode } from '../lib/gateway-auth-errors.js'
@@ -109,8 +107,8 @@ import { canNonAdminUseMcp } from '../lib/mcp-stdio.js'
 import { clearAgentIndex } from '../lib/memory-index.js'
 import { removeAgentMemory, removeMemoryOverride } from '../lib/memory-storage.js'
 import {
-  OAUTH_ALLOWED_EMAILS_REQUIRED,
   isOauthAllowlistMissing,
+  OAUTH_ALLOWED_EMAILS_REQUIRED,
   resolveOauthAllowedEmailsUpdate,
 } from '../lib/oauth-publish.js'
 import { getCurrentUserId, getOwnerFilter } from '../lib/owner-filter.js'
@@ -121,19 +119,20 @@ import {
   stripReservedContextKeys,
 } from '../lib/run-channel.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
-import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
+import { persistRunTurn, recoverRunStartup, releaseEphemeralWorktree } from '../lib/run-startup.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
+import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 import {
-  MAX_BUCKETS,
-  MAX_TZ_OFFSET_SECONDS,
   boundaryBucketSql,
   bucketCount,
   bucketSequence,
   bucketStartSql,
   localDaySequence,
+  MAX_BUCKETS,
+  MAX_TZ_OFFSET_SECONDS,
   zoneOffsetSecondsAt,
 } from '../lib/time-buckets.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
@@ -2692,9 +2691,7 @@ app.post('/:id/chat', async (c) => {
     // an untyped error (a workspace bookkeeping failure, a broken SCM config)
     // would otherwise pin the Agent at maxConcurrency until someone edits the
     // database.
-    await abandonRun()
-    completeExecutionLease(runId)
-    scheduleNext(taskQueueDb, id, (rid, aid) => void executeChatRun(aid, rid))
+    await recoverRunStartup({ runId, agentId: id, settleRun: abandonRun })
     if (
       err instanceof WorktreeOccupiedError ||
       err instanceof WorktreeBranchLockedError ||
@@ -2702,9 +2699,22 @@ app.post('/:id/chat', async (c) => {
     ) {
       return c.json({ error: err.message }, 409)
     }
-    await failRunBeforeLifecycle(runId, id, err instanceof Error ? err.message : String(err))
     throw err
   }
+
+  // 附件落盘 + prompt 注入（与飞书逐字节一致的路径提示）。无附件时 mergedPrompt ===
+  // message、rootDir === null。原始 refs 存 runSteps.input.attachments（免迁移审计）。
+  const {
+    mergedPrompt,
+    rootDir: attachmentRootDir,
+    materialized,
+  } = await materializeForRun({
+    agentId: id,
+    runId,
+    message: parsed.data.message,
+    sources: refsToSources(parsed.data.attachments),
+    consumerId: userId, // 上传者=当前 web 用户
+  })
 
   const stepId = createId('rst')
   // channelResult was built up-front for the runs.triggerUserName denormalization;
@@ -2715,57 +2725,43 @@ app.post('/:id/chat', async (c) => {
     ...stripReservedContextKeys(parsed.data.context),
     channel: channelResult.ctx,
   }
-  let attachmentRootDir: string | null = null
-  let mergedPrompt = parsed.data.message
+  const stepInput: Record<string, unknown> = { message: mergedPrompt, context: stepContext }
+  // 只记**实际落盘**的附件（materialized），不用请求原始 refs——被拒/过期时不写不存在的 chip。
+  if (materialized.length > 0) {
+    stepInput.attachments = materialized
+  }
   try {
-    const lastStep = (
-      await db
-        .select({ maxOrder: sql<number>`MAX(${runSteps.order})` })
-        .from(runSteps)
-        .where(eq(runSteps.runId, runId))
-        .limit(1)
-    )[0]
-    const nextOrder = (lastStep?.maxOrder ?? 0) + 1
-
-    const attachmentPreparation = await materializeForRun({
-      agentId: id,
-      runId,
-      message: parsed.data.message,
-      sources: refsToSources(parsed.data.attachments),
-      consumerId: userId,
-    })
-    mergedPrompt = attachmentPreparation.mergedPrompt
-    attachmentRootDir = attachmentPreparation.rootDir
-    const stepInput: Record<string, unknown> = { message: mergedPrompt, context: stepContext }
-    if (attachmentPreparation.materialized.length > 0) {
-      stepInput.attachments = attachmentPreparation.materialized
-    }
-
-    await db.insert(runSteps).values({
-      id: stepId,
-      runId,
-      agentId: id,
-      order: nextOrder,
-      input: stepInput,
-      status: 'running',
-    })
-
-    // Write user message：存**用户原始输入**，不存注入了附件绝对路径的 mergedPrompt——否则
-    // 历史里用户原话会变成含 [图片]/[文件]/服务器路径的执行文本（review）。附件回显靠
-    // runSteps.input.attachments。mergedPrompt 仅用于引擎执行 + step 审计。
-    await db.insert(chatMessages).values({
-      id: createId('msg'),
-      runId,
-      role: 'user',
-      content: parsed.data.message,
+    await persistRunTurn({
+      step: {
+        id: stepId,
+        runId,
+        agentId: id,
+        input: stepInput,
+        status: 'running',
+      },
+      // Write user message：存**用户原始输入**，不存注入了附件绝对路径的 mergedPrompt——否则
+      // 历史里用户原话会变成含 [图片]/[文件]/服务器路径的执行文本（review）。附件回显靠
+      // runSteps.input.attachments。mergedPrompt 仅用于引擎执行 + step 审计。
+      message: {
+        id: createId('msg'),
+        runId,
+        role: 'user',
+        content: parsed.data.message,
+      },
     })
   } catch (err) {
-    await failRunBeforeLifecycle(
+    await recoverRunStartup({
       runId,
-      id,
-      err instanceof Error ? err.message : String(err),
-      attachmentRootDir,
-    )
+      agentId: id,
+      // Release the acquired ephemeral worktree BEFORE abandonRun clears
+      // runs.workDir / deletes the row — cleanupWorktreeIfEphemeral reads those
+      // to decide, so afterwards it is a silent no-op and the worktree leaks.
+      cleanup: async () => {
+        if (attachmentRootDir) await cleanupMaterializedRoot(attachmentRootDir)
+        await releaseEphemeralWorktree(runId, id)
+      },
+      settleRun: abandonRun,
+    })
     throw err
   }
 

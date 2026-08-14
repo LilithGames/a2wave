@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runSchema, runWithAgentSchema } from '../schemas/run.js'
+import { isActiveRunStatus, runSchema, runWithAgentSchema } from '../schemas/run.js'
 
 const BASE_RUN = {
   id: 'run_1',
@@ -34,5 +34,20 @@ describe('run caller provenance', () => {
       triggerAgentName: 'Order Router',
       agentName: 'Order Expert',
     })
+  })
+})
+
+describe('active run status', () => {
+  it.each(['pending', 'queued', 'running'] as const)('treats %s as active', (status) => {
+    expect(isActiveRunStatus(status)).toBe(true)
+  })
+
+  it.each(['completed', 'failed', 'cancelled'] as const)('treats %s as terminal', (status) => {
+    expect(isActiveRunStatus(status)).toBe(false)
+  })
+
+  it('treats missing status as inactive', () => {
+    expect(isActiveRunStatus(null)).toBe(false)
+    expect(isActiveRunStatus(undefined)).toBe(false)
   })
 })

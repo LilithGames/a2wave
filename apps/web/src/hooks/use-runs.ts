@@ -1,6 +1,13 @@
-import { api } from '@/lib/api'
-import type { ChatMessage, PaginatedResponse, Run, RunStep, RunWithAgent } from '@a2wave/shared'
+import {
+  type ChatMessage,
+  isActiveRunStatus,
+  type PaginatedResponse,
+  type Run,
+  type RunStep,
+  type RunWithAgent,
+} from '@a2wave/shared'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 
 const RUNS_KEY = ['runs'] as const
 const RUNS_STATS_KEY = ['runs', 'stats'] as const
@@ -226,6 +233,8 @@ export function useRuns(filter?: RunsFilter) {
       if (!res.ok) throw new Error('Failed to fetch runs')
       return res.json() as Promise<PaginatedResponse<RunWithAgent>>
     },
+    refetchInterval: (query) =>
+      query.state.data?.data.some((run) => isActiveRunStatus(run.status)) ? 2_000 : false,
   })
 }
 
@@ -240,7 +249,7 @@ export function useRun(id: string) {
     enabled: !!id,
     refetchInterval: (query) => {
       const status = query.state.data?.data?.status
-      return status === 'running' || status === 'pending' ? 2000 : false
+      return isActiveRunStatus(status) ? 2_000 : false
     },
   })
 }

@@ -1,6 +1,6 @@
 import { GatewayErrorCode } from '@a2wave/shared'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 type Json = Record<string, unknown>
 type ErrorJson = { error: { code: string; message: string; details?: unknown } }
@@ -39,6 +39,8 @@ const {
   mockTryAcquireSlot,
   mockScheduleNext,
   mockFailRunBeforeLifecycle,
+  mockFailRunSteps,
+  mockCleanupWorktreeIfEphemeral,
 } = vi.hoisted(() => ({
   mockResolveWorkDir: vi.fn(),
   runsSetCalls: [] as unknown[],
@@ -48,6 +50,8 @@ const {
   mockTryAcquireSlot: vi.fn().mockReturnValue('acquired'),
   mockScheduleNext: vi.fn(),
   mockFailRunBeforeLifecycle: vi.fn().mockResolvedValue(undefined),
+  mockFailRunSteps: vi.fn().mockResolvedValue(undefined),
+  mockCleanupWorktreeIfEphemeral: vi.fn().mockResolvedValue(undefined),
 }))
 
 // ============================================================
@@ -121,6 +125,11 @@ vi.mock('../../lib/run-lifecycle.js', () => ({
   createLogCollector: vi.fn().mockReturnValue({ logs: [], onLogEntry: vi.fn() }),
   finishRunSuccess: vi.fn().mockResolvedValue([]),
   finishRunError: vi.fn().mockReturnValue('Execution failed. Check server logs for details.'),
+  cleanupWorktreeIfEphemeral: mockCleanupWorktreeIfEphemeral,
+}))
+
+vi.mock('../../lib/workspace-cleanup-retry.js', () => ({
+  cleanupWorkspaceOrHandOff: (cleanup: () => Promise<void>) => cleanup(),
 }))
 
 vi.mock('../../worker/index.js', () => ({
@@ -139,7 +148,9 @@ vi.mock('../../engine/task-queue.js', () => ({
   scheduleNext: mockScheduleNext,
 }))
 
-vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
+vi.mock('../../engine/task-queue-db.js', () => ({
+  taskQueueDb: { failRunSteps: mockFailRunSteps },
+}))
 
 vi.mock('../../lib/execute-chat-run.js', () => ({
   executeChatRun: vi.fn(),
@@ -713,12 +724,19 @@ describe('Agents POST /:id/chat — worktree lifecycle', () => {
     })
 
     expect(res.status).toBe(500)
-    expect(mockFailRunBeforeLifecycle).toHaveBeenCalledWith(
-      expect.any(String),
-      'agt_test1',
-      'step insert failed',
-      null,
+    // The ephemeral worktree acquired by resolveWorkDir must be released BEFORE
+    // abandonRun clears runs.workDir / deletes the row: cleanupWorktreeIfEphemeral
+    // reads those columns to decide, so afterwards it silently no-ops and the
+    // worktree leaks. recoverRunStartup runs `cleanup` ahead of `settleRun`.
+    expect(mockCleanupWorktreeIfEphemeral).toHaveBeenCalledWith(expect.any(String), 'agt_test1')
+    expect(mockCleanupWorktreeIfEphemeral.mock.invocationCallOrder[0]).toBeLessThan(
+      mockScheduleNext.mock.invocationCallOrder[0],
     )
+    // ...and the run must still converge: steps failed, run row reclaimed, and
+    // the queue woken so the released slot is reused.
+    expect(mockFailRunSteps).toHaveBeenCalledWith(expect.any(String))
+    expect(deleteCalls.length).toBeGreaterThan(0)
+    expect(mockScheduleNext).toHaveBeenCalled()
   })
 
   it('复用 run 的轮 worktree 冲突回滚时还原 worktreeConfig（不残留新一轮配置，review 回归）', async () => {

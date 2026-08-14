@@ -6,8 +6,8 @@
   },
   {
     "path": "apps/api/src/routes/__tests__/agents.test.ts",
-    "maxLines": 3027,
-    "reason": "Merge debt: main (2923) and this branch (3000) each grew this file independently and the union crosses the limit. Frozen here, shrink-only; split by route group (chat / binding / publish) when next touched."
+    "maxLines": 3051,
+    "reason": "Merge debt: main and this branch each added route tests independently and the union crosses the limit. Frozen at the merged size, shrink-only; split by route group (chat / binding / publish) when next touched."
   },
   {
     "path": "apps/api/src/lib/feishu-service.ts",

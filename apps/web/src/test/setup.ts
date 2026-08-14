@@ -18,6 +18,45 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
+// antd >= 6.6 styles borderless Inputs with `&:has(input:focus-visible)`. CSS-in-JS
+// expands `&` to the enclosing selector chain, so inside a Tailwind-classed container
+// the rule reaching jsdom carries an unescaped arbitrary-value class such as
+// `min-h-[7.5rem]`. nwsapi cannot parse it, and because its `:has()` resolver
+// re-enters `querySelector` while matching, the throw escapes jsdom's own
+// `matchesDontThrow` guard — failing any test that computes a role or visibility
+// inside such a container. Real browsers parse the rule fine; this is purely a jsdom
+// limitation, so restore the "unmatchable selector simply does not match" behavior
+// that `matchesDontThrow` already intends.
+//
+// jsdom throws a DOMException, which is not an `instanceof Error`. The re-entrant call
+// always arrives as `:scope <inner>`, so only that shape is swallowed — a malformed
+// selector written by application code still surfaces as it should.
+const isReentrantSelectorError = (error: unknown, selectors: string) =>
+  (error as { name?: string })?.name === 'SyntaxError' && selectors.startsWith(':scope ')
+
+const originalQuerySelector = Element.prototype.querySelector
+Element.prototype.querySelector = function patched(this: Element, selectors: string) {
+  try {
+    return originalQuerySelector.call(this, selectors)
+  } catch (error) {
+    if (isReentrantSelectorError(error, selectors)) return null
+    throw error
+  }
+}
+
+const originalQuerySelectorAll = Element.prototype.querySelectorAll
+Element.prototype.querySelectorAll = function patched(this: Element, selectors: string) {
+  try {
+    return originalQuerySelectorAll.call(this, selectors)
+  } catch (error) {
+    if (isReentrantSelectorError(error, selectors)) {
+      // An empty NodeList: the fragment holds no children, so nothing can match.
+      return document.createDocumentFragment().childNodes as NodeListOf<Element>
+    }
+    throw error
+  }
+}
+
 // jsdom logs a noisy "not implemented" error whenever a library requests a
 // pseudo-element style. Ant Design only uses the result to measure scrollbar
 // chrome, so falling back to the element style is the closest useful behavior.
