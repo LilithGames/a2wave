@@ -155,18 +155,17 @@ jobs:
         run: ./gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
 
   # Known-vulnerability floor for the dependency tree (the one check hermes,
-  # vllm and dify all carry that we lacked). `critical` only, deliberately:
-  # the tree currently holds a handful of high-severity advisories in dev
-  # tooling, and a gate that is born red gets `continue-on-error`d into
-  # decoration. Dependabot's PRs are the fix path for those; tighten the
-  # level to `high` once they land.
+  # vllm and dify all carry that we lacked). `high`: the tree is clean at
+  # this level — the former high advisories (nanoid, brace-expansion) are
+  # patched via range-scoped pnpm overrides in the root package.json. Do not
+  # loosen the level to absorb a new advisory; patch or override it instead.
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
-      - run: pnpm audit --audit-level critical
+      - run: pnpm audit --audit-level high
 
   # ───────────────────────────────────────────────────────────────────────
   # Lane-gated jobs: skipped when the diff cannot affect them.
