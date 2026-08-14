@@ -205,6 +205,56 @@ describe('createClient', () => {
     })
   })
 
+  // An agent recovers from a failure by branching on it, and matching prose is
+  // a brittle way to do that. The status is the one thing the server always
+  // states unambiguously, so it becomes the stable branch key.
+  describe('ApiError classification', () => {
+    async function statusOf(status: number, body = 'x'): Promise<ApiError> {
+      mockFetch.mockResolvedValueOnce(new Response(body, { status }))
+      const client = createClient()
+      try {
+        await client.get('/api/thing')
+      } catch (err) {
+        return err as ApiError
+      }
+      throw new Error(`expected HTTP ${status} to throw`)
+    }
+
+    it('maps common statuses to a stable type', async () => {
+      expect((await statusOf(403)).type).toBe('permission')
+      expect((await statusOf(404)).type).toBe('not_found')
+      expect((await statusOf(409)).type).toBe('conflict')
+      expect((await statusOf(422)).type).toBe('validation')
+      expect((await statusOf(429)).type).toBe('rate_limit')
+      expect((await statusOf(500)).type).toBe('server')
+      expect((await statusOf(503)).type).toBe('server')
+    })
+
+    it('carries the numeric status as the subtype', async () => {
+      expect((await statusOf(404)).subtype).toBe('404')
+    })
+
+    it('keeps the status and body in the message', async () => {
+      const err = await statusOf(404, 'Agent not found')
+      expect(err.message).toContain('404')
+      expect(err.message).toContain('Agent not found')
+    })
+
+    it('caps an oversized body instead of dumping it whole', async () => {
+      // A 5xx can answer with a full HTML error page. Untruncated, that lands
+      // in a terminal, a CI log, or an agent's context window.
+      const err = await statusOf(500, 'E'.repeat(9000))
+      expect(err.message.length).toBeLessThan(3000)
+      expect(err.message).toContain('truncated')
+    })
+
+    it('leaves a short body untouched', async () => {
+      const err = await statusOf(400, 'name is required')
+      expect(err.message).toContain('name is required')
+      expect(err.message).not.toContain('truncated')
+    })
+  })
+
   describe('getRaw', () => {
     afterEach(() => {
       mockToken = 'test-token'

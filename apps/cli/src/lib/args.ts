@@ -106,7 +106,17 @@ export function parseIntFlag(
 export async function confirmDestructive(message: string, force: boolean): Promise<void> {
   if (force) return
   if (!process.stdin.isTTY) {
-    throw new CliError(`${message}\nIn a non-interactive environment, add --force to confirm.`)
+    // The single most likely error an agent hits, since it never has a TTY.
+    // A stable type plus a runnable hint lets it decide whether to re-run with
+    // --force or stop and ask the human, without parsing the sentence. The
+    // sentence keeps saying it too — the structured fields are for the machine,
+    // and dropping the human-readable instruction to avoid repeating itself
+    // would make the plain-text mode strictly worse.
+    throw new CliError(`${message}\nIn a non-interactive environment, add --force to confirm.`, {
+      type: 'confirmation',
+      subtype: 'confirmation_required',
+      hint: '--force',
+    })
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {

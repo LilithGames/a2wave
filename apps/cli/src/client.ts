@@ -1,12 +1,50 @@
 import { requireToken, resolveUrl } from './config.js'
-import { CliError } from './errors.js'
+import { CliError, type CliErrorType } from './errors.js'
+
+/**
+ * Longest server body embedded in an error message.
+ *
+ * A 5xx can answer with a whole HTML error page, and a zod failure with a
+ * multi-kilobyte dump. Untruncated, that lands in a terminal scrollback, a CI
+ * log, or an agent's context window. The head is kept because a server error
+ * puts its summary first.
+ */
+const MAX_ERROR_BODY_CHARS = 2000
+
+/**
+ * Map an HTTP status onto a stable branch key.
+ *
+ * An agent recovers from a failure by branching on it, and matching the prose
+ * of a message breaks the moment anyone rewords it. The status is the one
+ * thing the server always states unambiguously.
+ *
+ * 401 is absent on purpose: `request()` intercepts it before any caller sees an
+ * ApiError, and turns it into an auth error carrying a login hint.
+ */
+function classifyStatus(status: number): CliErrorType {
+  if (status === 403) return 'permission'
+  if (status === 404) return 'not_found'
+  if (status === 409) return 'conflict'
+  if (status === 429) return 'rate_limit'
+  if (status >= 500) return 'server'
+  if (status >= 400) return 'validation'
+  return 'cli'
+}
+
+function clipErrorBody(body: string): string {
+  if (body.length <= MAX_ERROR_BODY_CHARS) return body
+  return `${body.slice(0, MAX_ERROR_BODY_CHARS)}… (${body.length - MAX_ERROR_BODY_CHARS} more chars truncated)`
+}
 
 export class ApiError extends CliError {
   constructor(
     public status: number,
     message: string,
   ) {
-    super(`API Error (${status}): ${message}`)
+    super(`API Error (${status}): ${clipErrorBody(message)}`, {
+      type: classifyStatus(status),
+      subtype: String(status),
+    })
     this.name = 'ApiError'
   }
 }
@@ -78,7 +116,10 @@ async function exchangeIdaasToken(baseUrl: string, idaasJwt: string): Promise<st
       body: JSON.stringify({ idaasToken: idaasJwt }),
     })
   } catch (err) {
-    throw new CliError(`Cannot connect to ${baseUrl}: ${(err as Error).message}`)
+    throw new CliError(`Cannot connect to ${baseUrl}: ${(err as Error).message}`, {
+      type: 'network',
+      hint: 'a2wave status',
+    })
   }
 
   if (!res.ok) {
@@ -149,7 +190,14 @@ export function createClient(opts: ClientOptions = {}) {
       },
     })
     if (res.status === 401) {
-      throw new CliError('Session expired or invalid. Run: a2wave login')
+      // Intercepted here rather than left to ApiError so every caller gets the
+      // same recovery instruction, and so `type` says "your credentials", not
+      // "the request was rejected".
+      throw new CliError('Session expired or invalid.', {
+        type: 'auth',
+        subtype: 'expired',
+        hint: 'a2wave login',
+      })
     }
     return res
   }
@@ -183,6 +231,22 @@ export function createClient(opts: ClientOptions = {}) {
   async function post<T>(path: string, body: unknown): Promise<T> {
     const res = await request(path, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new ApiError(res.status, await res.text())
+    return res.json() as Promise<T>
+  }
+
+  /**
+   * PUT exists only for the `a2wave api` escape hatch. No typed command needs it
+   * today, but a raw caller reaching a PUT route must still go through this
+   * client — an independent fetch would skip the IDaaS exchange above and 401
+   * for every OIDC user.
+   */
+  async function put<T>(path: string, body: unknown): Promise<T> {
+    const res = await request(path, {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
@@ -365,6 +429,7 @@ export function createClient(opts: ClientOptions = {}) {
     getRaw,
     patch,
     post,
+    put,
     del,
     postStream,
     postFormData,
