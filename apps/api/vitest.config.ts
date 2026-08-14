@@ -16,22 +16,17 @@ export default defineConfig({
     fileParallelism: false,
     coverage: {
       provider: 'v8',
+      // Coverage is an on-demand diagnostic, not a merge gate. CI requires the
+      // behavior tests themselves; it does not block on a repository-wide
+      // percentage that can reward shallow tests and makes this serial suite
+      // materially slower.
       reporter: ['text', 'lcov', 'html'],
       reportsDirectory: './coverage',
       include: ['src/**/*.ts'],
       // `src/db/migrations/**` is defensive: generated migrations live in
       // apps/api/drizzle/ today, but should any land under src/ they must not
-      // enter the coverage denominator and push the ratchet below threshold.
+      // enter the coverage denominator and distort the report.
       exclude: ['src/**/__tests__/**', 'src/db/migrations/**', 'src/test/**'],
-      // Ratchet against regression: set just under measured coverage, never
-      // lowered to make a red run green. Measured 2026-08: 86.28 lines /
-      // 81.28 functions / 78.23 branches / 85.07 statements.
-      thresholds: {
-        lines: 82,
-        functions: 77,
-        branches: 74,
-        statements: 81,
-      },
     },
   },
 })

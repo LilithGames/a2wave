@@ -96,6 +96,7 @@ vi.mock('../logger.js', () => ({
 
 import { asyncQuery } from '../../test/async-query.js'
 import { p4ClientRootCoversPath, parseP4ClientRoots } from '../p4-client-root.js'
+import type { ScmSyncResult } from '../p4-sync.js'
 import {
   cancelInitialScmSync,
   checkP4Connection,
@@ -112,7 +113,6 @@ import {
   syncScmSource,
   tryAcquireCheckout,
 } from '../p4-sync.js'
-import type { ScmSyncResult } from '../p4-sync.js'
 import { legacyScmReclaimRoot } from '../scm-storage.js'
 
 describe('P4 client roots', () => {
@@ -513,7 +513,10 @@ function mockDbSelectAll(rows: unknown[]) {
 function mockDbUpdate({
   acquired = true,
   acquiredRow,
-}: { acquired?: boolean; acquiredRow?: unknown } = {}) {
+}: {
+  acquired?: boolean
+  acquiredRow?: unknown
+} = {}) {
   const runFn = vi.fn()
   // The atomic acquire ends in .returning().get() and its result is taken as the
   // authoritative source snapshot; the terminal status write is awaited directly.

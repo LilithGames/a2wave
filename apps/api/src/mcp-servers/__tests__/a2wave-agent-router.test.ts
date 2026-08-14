@@ -17,18 +17,19 @@ vi.mock('../../lib/streaming-safe-fetch.js', async () => {
         }),
   }
 })
+
 import {
   A2WAVE_CALLER_AGENT_NAME_B64_HEADER,
   encodeCallerAgentNameHeader,
 } from '../../a2a/caller.js'
 import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../../a2a/provenance.js'
+import type { RouteTarget } from '../a2wave-agent-router.js'
 import {
   createRouterInvocationHandlers,
   getAgentCardHandler,
   invokeAgentHandler,
   streamSSEWithCallback,
 } from '../a2wave-agent-router.js'
-import type { RouteTarget } from '../a2wave-agent-router.js'
 import { createRouterInvocationRegistry } from '../agent-router-lifecycle.js'
 
 beforeEach(() => {
@@ -136,12 +137,7 @@ function mockStandardJsonRpcResult(result: Record<string, unknown>) {
   }) as unknown as typeof fetch
 }
 
-function completedStandardTask(
-  overrides: {
-    artifacts?: unknown[]
-    history?: unknown[]
-  } = {},
-) {
+function completedStandardTask(overrides: { artifacts?: unknown[]; history?: unknown[] } = {}) {
   return {
     task: {
       id: 'task-local',

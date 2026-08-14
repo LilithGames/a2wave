@@ -206,7 +206,10 @@ function wrapperFactory() {
 function renderForm({
   createMode = false,
   templateData,
-}: { createMode?: boolean; templateData?: Parameters<typeof useAgentForm>[2] } = {}) {
+}: {
+  createMode?: boolean
+  templateData?: Parameters<typeof useAgentForm>[2]
+} = {}) {
   return renderHook(
     () => useAgentForm(createMode ? undefined : 'agt_test1', createMode, templateData),
     {

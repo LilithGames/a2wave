@@ -1,7 +1,7 @@
-import type { AgentTimeseries, AgentTimeseriesPoint } from '@/hooks/use-runs'
-import { renderWithProviders, screen } from '@/test/render'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AgentTimeseries, AgentTimeseriesPoint } from '@/hooks/use-runs'
+import { renderWithProviders, screen } from '@/test/render'
 
 /**
  * recharts is mocked because `ResponsiveContainer` measures its parent, and in
@@ -36,7 +36,11 @@ vi.mock('recharts', () => {
       dataKey,
       connectNulls,
       dot,
-    }: { dataKey?: string; connectNulls?: boolean; dot?: unknown }) => (
+    }: {
+      dataKey?: string
+      connectNulls?: boolean
+      dot?: unknown
+    }) => (
       <div
         data-testid="line"
         data-key={dataKey}

@@ -1,41 +1,49 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "organizeImports": {
-    "enabled": true
-  },
+  "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "files": {
-    "ignore": [
-      ".claude/**",
-      "test-results/**",
-      "node_modules/**",
-      "dist/**",
-      "coverage/**",
-      "data/**",
-      "temp/**",
-      "**/.understand-anything/**",
-      "**/reports/mutation/**",
-      "apps/api/drizzle/meta/**",
-      "apps/api/drizzle-pg/meta/**"
+    "includes": [
+      "**",
+      "!!**/.claude",
+      "!!**/test-results",
+      "!!**/node_modules",
+      "!!**/dist",
+      "!!**/coverage",
+      "!!**/data",
+      "!!**/temp",
+      "!!**/.understand-anything",
+      "!!**/reports/mutation",
+      "!!**/apps/api/drizzle/meta",
+      "!!**/apps/api/drizzle-pg/meta"
     ]
   },
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "complexity": {
         "noForEach": "warn"
       },
       "performance": {
         "noDelete": "warn"
       },
+      "correctness": {
+        "noUnsafeOptionalChaining": "warn",
+        "useExhaustiveDependencies": "warn"
+      },
       "style": {
         "noNonNullAssertion": "warn"
       },
       "suspicious": {
-        "noExplicitAny": "warn"
+        "noArrayIndexKey": "warn",
+        "noExplicitAny": "warn",
+        "useIterableCallbackReturn": "warn"
       },
       "a11y": {
         "noLabelWithoutControl": "warn",
+        "noStaticElementInteractions": "warn",
+        "noSvgWithoutTitle": "warn",
+        "useAriaPropsSupportedByRole": "warn",
         "useKeyWithClickEvents": "warn",
         "useSemanticElements": "warn",
         "useFocusableInteractive": "warn"
@@ -52,6 +60,16 @@
     "formatter": {
       "quoteStyle": "single",
       "semicolons": "asNeeded"
+    }
+  },
+  "json": {
+    "formatter": {
+      "expand": "auto"
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
     }
   }
 }

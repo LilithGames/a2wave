@@ -15,12 +15,13 @@
  * and we pre-seed the members query via `setQueryData` to bypass the loading
  * state and skip a `findByText` race.
  */
-import { screen, userEvent, waitFor, within } from '@/test/render'
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { type ReactElement, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { screen, userEvent, waitFor, within } from '@/test/render'
 import i18n from '../../../i18n'
 
 const mockGet = vi.fn()
@@ -90,13 +91,7 @@ function makeClient() {
   })
 }
 
-function Harness({
-  initialOpen,
-  agentId = AGENT_ID,
-}: {
-  initialOpen: boolean
-  agentId?: string
-}) {
+function Harness({ initialOpen, agentId = AGENT_ID }: { initialOpen: boolean; agentId?: string }) {
   const [open, setOpen] = useState(initialOpen)
   return (
     <>

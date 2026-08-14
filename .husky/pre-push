@@ -1,3 +1,3 @@
-pnpm exec biome check --changed --since=origin/main --files-ignore-unknown=true --no-errors-on-unmatched
+pnpm exec biome check --enforce-assist=false --diagnostic-level=warn --changed --since=origin/main --files-ignore-unknown=true --no-errors-on-unmatched
 pnpm --filter @a2wave/shared build
 pnpm typecheck

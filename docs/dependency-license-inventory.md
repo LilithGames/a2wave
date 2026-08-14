@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-13 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-08-14 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -83,7 +83,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/traverse | 7.29.0 | MIT |
 | @babel/types | 7.29.0, 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 1.9.4 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.5.7 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.0 | MIT |
 | @codemirror/commands | 6.10.2 | MIT |
 | @codemirror/language | 6.12.2 | MIT |
@@ -307,7 +307,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | bindings | 1.5.0 | MIT |
 | bl | 4.1.0 | MIT |
 | body-parser | 2.3.0 | MIT |
-| brace-expansion | 5.0.8 | MIT |
+| brace-expansion | 5.0.9 | MIT |
 | braces | 3.0.3 | MIT |
 | browserslist | 4.28.1 | MIT |
 | buffer | 5.7.1 | MIT |
@@ -613,7 +613,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | mutation-testing-report-schema | 3.7.3 | Apache-2.0 |
 | mute-stream | 3.0.0 | ISC |
 | mz | 2.7.0 | MIT |
-| nanoid | 3.3.16, 3.3.17 | MIT |
+| nanoid | 6.0.1 | MIT |
 | napi-build-utils | 2.0.0 | MIT |
 | negotiator | 1.0.0 | MIT |
 | node-abi | 3.87.0 | MIT |

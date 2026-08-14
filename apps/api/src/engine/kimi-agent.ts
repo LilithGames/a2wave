@@ -417,10 +417,7 @@ export class KimiAgentEngine extends BaseCliAgentEngine {
    * both.
    */
   private buildKimiEnv(
-    options: {
-      agentEnv?: Record<string, string>
-      runtimeEnv?: Record<string, string>
-    } = {},
+    options: { agentEnv?: Record<string, string>; runtimeEnv?: Record<string, string> } = {},
   ): NodeJS.ProcessEnv {
     return this.buildCredentialEnv({
       protectedNames: PROTECTED_KIMI_ENV_NAMES,
