@@ -3,9 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mockLoadConfig = vi.fn()
 const mockSaveConfig = vi.fn()
 
+const mockSaveProfile = vi.fn()
+const mockResolveProfileUrl = vi.fn()
+
 vi.mock('../../config.js', () => ({
   loadConfig: () => mockLoadConfig(),
   saveConfig: (...args: unknown[]) => mockSaveConfig(...args),
+  saveProfile: (...args: unknown[]) => mockSaveProfile(...args),
+  resolveProfileUrl: (...args: unknown[]) => mockResolveProfileUrl(...args),
 }))
 
 const { configCommand } = await import('../config.js')
@@ -93,6 +98,76 @@ describe('config command', () => {
       mockLoadConfig.mockImplementation(() => null)
       subs['unset-url'].run({ args: {} })
       expect(mockSaveConfig).not.toHaveBeenCalled()
+    })
+  })
+  // Profiles are named aliases over URL-keyed credentials, for humans switching
+  // contexts. An agent almost never wants "a profile" — it wants "this URL with
+  // the right token" — so these must not complicate the common path.
+  describe('profiles', () => {
+    it('add stores a profile', () => {
+      subs['add-profile'].run({ args: { name: 'staging', url: 'https://b.example' } })
+      expect(mockSaveProfile).toHaveBeenCalledWith('staging', 'https://b.example')
+    })
+
+    it('add rejects a URL without a scheme, like set-url does', () => {
+      expect(() => subs['add-profile'].run({ args: { name: 'x', url: 'b.example' } })).toThrow(
+        /http/,
+      )
+      expect(mockSaveProfile).not.toHaveBeenCalled()
+    })
+
+    it('use points the default URL at the profile', () => {
+      mockResolveProfileUrl.mockReturnValue('https://b.example')
+      mockLoadConfig.mockReturnValue({ token: 'tok', url: 'https://a.example' })
+
+      subs.use.run({ args: { name: 'staging' } })
+
+      expect(mockResolveProfileUrl).toHaveBeenCalledWith('staging')
+      expect(mockSaveConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://b.example', currentProfile: 'staging' }),
+      )
+    })
+
+    it('list prints each profile with its URL', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      mockLoadConfig.mockReturnValue({
+        token: 'tok',
+        profiles: { prod: { url: 'https://a.example' }, staging: { url: 'https://b.example' } },
+        currentProfile: 'prod',
+      })
+
+      subs.list.run({ args: {} })
+
+      const out = log.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(out).toContain('prod')
+      expect(out).toContain('https://b.example')
+      log.mockRestore()
+    })
+
+    it('list emits machine-readable output with --json', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      mockLoadConfig.mockReturnValue({
+        token: 'tok',
+        profiles: { prod: { url: 'https://a.example' } },
+        currentProfile: 'prod',
+      })
+
+      subs.list.run({ args: { json: true } })
+
+      const parsed = JSON.parse(String(log.mock.calls.at(-1)?.[0]))
+      expect(parsed.current).toBe('prod')
+      expect(parsed.profiles).toEqual({ prod: { url: 'https://a.example' } })
+      log.mockRestore()
+    })
+
+    it('list says so plainly when there are none', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      mockLoadConfig.mockReturnValue({ token: 'tok' })
+
+      subs.list.run({ args: {} })
+
+      expect(log.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/no profiles/i)
+      log.mockRestore()
     })
   })
 })

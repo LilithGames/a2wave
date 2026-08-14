@@ -202,4 +202,98 @@ describe('config', () => {
       expect(() => resolveUrl()).toThrow(/config set-url/)
     })
   })
+  // ---------------------------------------------------------------------------
+  // Credentials are keyed by URL.
+  //
+  // The bug this fixes: `requireToken()` took no URL argument (client.ts called
+  // it alongside `resolveUrl(opts.url)` with no link between the two), so
+  // pointing `--url` at a second instance silently sent the FIRST instance's
+  // token. It then failed as a 401 that blamed the user's login rather than
+  // naming the real cause.
+  // ---------------------------------------------------------------------------
+  describe('resolveCredential', () => {
+    it('returns the legacy top-level token for the configured URL', async () => {
+      // The migration contract: an existing flat {url, token} keeps working
+      // untouched. Nothing rewrites the file on read, so downgrading to an
+      // older CLI also still works.
+      const { saveConfig, resolveCredential } = await getConfig()
+      saveConfig({ url: 'https://a.example', token: 'tok-a' })
+
+      expect(resolveCredential('https://a.example')).toBe('tok-a')
+    })
+
+    it('REFUSES to reuse that token for a different URL', async () => {
+      const { saveConfig, resolveCredential } = await getConfig()
+      saveConfig({ url: 'https://a.example', token: 'tok-a' })
+
+      expect(() => resolveCredential('https://b.example')).toThrow(/b\.example/)
+    })
+
+    it('names the fix in the error, and types it so an agent can branch', async () => {
+      const { saveConfig, resolveCredential } = await getConfig()
+      saveConfig({ url: 'https://a.example', token: 'tok-a' })
+
+      try {
+        resolveCredential('https://b.example')
+        throw new Error('expected a throw')
+      } catch (err) {
+        const e = err as { type?: string; subtype?: string; hint?: string }
+        expect(e.type).toBe('auth')
+        expect(e.subtype).toBe('no_credential_for_url')
+        expect(e.hint).toContain('a2wave login')
+      }
+    })
+
+    it('prefers a per-URL credential over the legacy field', async () => {
+      const { saveConfig, saveCredential, resolveCredential } = await getConfig()
+      saveConfig({ url: 'https://a.example', token: 'tok-a' })
+      saveCredential('https://b.example', 'tok-b')
+
+      expect(resolveCredential('https://b.example')).toBe('tok-b')
+      expect(resolveCredential('https://a.example')).toBe('tok-a')
+    })
+
+    it('ignores a trailing slash, so the same instance is one key', async () => {
+      const { saveCredential, resolveCredential } = await getConfig()
+      saveCredential('https://a.example/', 'tok-a')
+
+      expect(resolveCredential('https://a.example')).toBe('tok-a')
+    })
+
+    it('still reports "not logged in" when there is no config at all', async () => {
+      const { resolveCredential } = await getConfig()
+      expect(() => resolveCredential('https://a.example')).toThrow(/Not logged in/)
+    })
+  })
+
+  describe('profiles', () => {
+    it('adds a profile without disturbing the legacy fields', async () => {
+      // Profiles are a thin alias over URL-keyed credentials, not a new
+      // primary abstraction: an agent almost never wants "a profile", it wants
+      // "this URL with the right token". Profiles serve humans switching
+      // contexts, so they must not complicate the common path.
+      const { saveConfig, saveProfile, loadConfig } = await getConfig()
+      saveConfig({ url: 'https://a.example', token: 'tok-a' })
+      saveProfile('staging', 'https://b.example')
+
+      const cfg = loadConfig()
+      expect(cfg?.url).toBe('https://a.example')
+      expect(cfg?.token).toBe('tok-a')
+      expect(cfg?.profiles?.staging).toEqual({ url: 'https://b.example' })
+    })
+
+    it('resolves a profile name to its URL', async () => {
+      const { saveProfile, resolveProfileUrl } = await getConfig()
+      saveProfile('staging', 'https://b.example')
+
+      expect(resolveProfileUrl('staging')).toBe('https://b.example')
+    })
+
+    it('errors on an unknown profile, listing the ones that exist', async () => {
+      const { saveProfile, resolveProfileUrl } = await getConfig()
+      saveProfile('staging', 'https://b.example')
+
+      expect(() => resolveProfileUrl('nope')).toThrow(/staging/)
+    })
+  })
 })

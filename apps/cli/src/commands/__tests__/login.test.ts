@@ -5,8 +5,10 @@ const mockClearConfig = vi.fn()
 const mockLoadConfig = vi.fn()
 
 const mockResolveUrl = vi.fn(() => 'https://a2wave.test')
+const mockSaveCredential = vi.fn()
 vi.mock('../../config.js', () => ({
   saveConfig: (...args: unknown[]) => mockSaveConfig(...args),
+  saveCredential: (...args: unknown[]) => mockSaveCredential(...args),
   clearConfig: () => mockClearConfig(),
   loadConfig: () => mockLoadConfig(),
   resolveUrl: () => mockResolveUrl(),
@@ -229,6 +231,10 @@ describe('loginCommand — --password (legacy)', () => {
       }),
     )
     expect(mockSaveConfig).toHaveBeenCalledWith({ url: 'https://a2wave.test', token: 'jwt-pw' })
+    // ALSO filed against its own URL. Without this, logging into a second
+    // deployment overwrote the first one's token and `--url` back to it sent a
+    // credential that no longer belonged to it.
+    expect(mockSaveCredential).toHaveBeenCalledWith('https://a2wave.test', 'jwt-pw')
     expect(consoleSpy).toHaveBeenCalledWith('Login successful ✓')
   })
 

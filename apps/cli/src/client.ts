@@ -1,4 +1,4 @@
-import { requireToken, resolveUrl } from './config.js'
+import { resolveCredential, resolveUrl } from './config.js'
 import { CliError, type CliErrorType } from './errors.js'
 
 /**
@@ -161,8 +161,13 @@ async function exchangeIdaasToken(baseUrl: string, idaasJwt: string): Promise<st
 }
 
 export function createClient(opts: ClientOptions = {}) {
-  const initialToken = requireToken()
+  // Order matters: resolve the URL FIRST, then ask for the credential that
+  // belongs to it. These two lines used to be independent — `requireToken()`
+  // took no argument — so `--url https://other` paired that instance with the
+  // stored token for a completely different one, leaked it to that host, and
+  // surfaced as a 401 blaming the user's login.
   const url = resolveUrl(opts.url)
+  const initialToken = resolveCredential(url)
 
   // a2wave session token: exchanged on demand at the first request, reused afterwards.
   let sessionToken: string | null = needsIdaasExchange(initialToken) ? null : initialToken

@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline/promises'
 import { defineCommand } from 'citty'
-import { clearConfig, loadConfig, resolveUrl, saveConfig } from '../config.js'
+import { clearConfig, loadConfig, resolveUrl, saveConfig, saveCredential } from '../config.js'
 import { CliError } from '../errors.js'
 import { readSecret } from '../lib/prompt.js'
 import { oauthLogin } from './oauth.js'
@@ -8,6 +8,7 @@ import { oauthLogin } from './oauth.js'
 export const loginCommand = defineCommand({
   meta: {
     name: 'login',
+    agentMeta: { risk: 'write' },
     description:
       'Log in to a2wave. Defaults to SSO (OAuth) browser login with no arguments needed; the token is written to the SSO token cache + ~/.a2wave/config.json.',
   },
@@ -87,9 +88,14 @@ export const loginCommand = defineCommand({
       throw new CliError('Login failed: server returned a non-JSON response')
     }
 
-    // Keep the url (if previously set) and update the token
+    // Two writes, deliberately. The legacy top-level pair still moves to this
+    // instance, so a single-instance user sees no change. But the credential is
+    // ALSO filed under its own URL, so logging into a second deployment no
+    // longer costs you the first one's token — which is what made `--url`
+    // silently send the wrong credential.
     const existing = loadConfig() ?? { token: '' }
     saveConfig({ ...existing, url, token: parsed.data.token })
+    saveCredential(url, parsed.data.token)
     console.log('Login successful ✓')
   },
 })
@@ -97,6 +103,7 @@ export const loginCommand = defineCommand({
 export const logoutCommand = defineCommand({
   meta: {
     name: 'logout',
+    agentMeta: { risk: 'write' },
     description:
       'Log out: best-effort revoke of the server token, then clear ~/.a2wave/config.json.',
   },

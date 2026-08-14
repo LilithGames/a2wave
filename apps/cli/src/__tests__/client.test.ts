@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mockUrl = 'https://api.test'
 const mockResolveUrl = vi.fn((override?: string) => override ?? mockUrl)
 let mockToken = 'test-token' // HS256 default (does not trigger exchange)
+const mockResolveCredential = vi.fn((_url: string) => mockToken)
 
 vi.mock('../config.js', () => ({
   requireToken: () => mockToken,
+  resolveCredential: (url: string) => mockResolveCredential(url),
   resolveUrl: (override?: string) => mockResolveUrl(override),
   loadConfig: vi.fn(),
 }))
@@ -172,6 +174,24 @@ describe('createClient', () => {
         throw new Error('No a2wave instance URL configured')
       })
       expect(() => createClient()).toThrow(/No a2wave instance URL configured/)
+    })
+
+    // The regression this pins: the credential is fetched FOR the resolved URL.
+    // Previously `requireToken()` took no argument, so `--url https://other`
+    // paired that host with the stored token for a different instance — leaking
+    // it there and then reporting a 401 that blamed the user's login.
+    it('asks for the credential belonging to the RESOLVED url', () => {
+      mockResolveUrl.mockReturnValueOnce('https://override.test')
+      createClient({ url: 'https://override.test' })
+      expect(mockResolveCredential).toHaveBeenCalledWith('https://override.test')
+    })
+
+    it('surfaces a missing per-URL credential instead of sending the wrong one', () => {
+      mockResolveUrl.mockReturnValueOnce('https://unknown.test')
+      mockResolveCredential.mockImplementationOnce(() => {
+        throw new Error('No stored credential for https://unknown.test')
+      })
+      expect(() => createClient({ url: 'https://unknown.test' })).toThrow(/No stored credential/)
     })
   })
 
