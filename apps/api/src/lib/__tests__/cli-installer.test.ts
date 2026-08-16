@@ -280,7 +280,7 @@ describe('install state', () => {
    * stale.
    */
   describe('minimum version floor', () => {
-    // qoder's preset floor is 1.0.0; claude-code declares none, and codegraph is
+    // qoder's preset floor is 1.0.0; codex declares none, and codegraph is
     // a non-Provider tool that has no preset at all.
     const FLOOR_LOCK = {
       providers: [
@@ -296,6 +296,20 @@ describe('install state', () => {
             tarball: 'https://registry.npmjs.org/@qoder-ai/qodercli/-/qodercli-1.5.0.tgz',
             integrity: 'sha512-test',
             allowScripts: true,
+          },
+        },
+        {
+          kind: 'codex',
+          version: '0.144.5',
+          binary: 'codex',
+          versionArgs: ['--version'],
+          expectedVersionOutput: '0.144.5',
+          install: {
+            type: 'npm' as const,
+            package: '@openai/codex',
+            tarball: 'https://registry.npmjs.org/@openai/codex/-/codex-0.144.5.tgz',
+            integrity: 'sha512-test',
+            allowScripts: false,
           },
         },
         ...LOCK.providers,
@@ -359,7 +373,7 @@ describe('install state', () => {
     })
 
     it('reports no floor for a Provider that declares none', async () => {
-      const state = await stateOf('claude-code', '2.0.1')
+      const state = await stateOf('codex', '0.144.5')
 
       expect(state.minVersion).toBeNull()
       expect(state.meetsMinimum).toBeNull()

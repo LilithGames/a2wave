@@ -47,6 +47,11 @@ export function serializeProviderChainEntries(
       id: entry.id,
       providerId: entry.providerId as string,
       model: entry.model || undefined,
+      // Absent, never empty: the shared schema validates the effort token's
+      // shape, so an empty string would reject the whole save rather than
+      // reading as "not configured".
+      reasoningEffort: entry.reasoningEffort || undefined,
+      fastMode: entry.fastMode ? true : undefined,
       authMode: entry.authMode,
       authHeaderStyle: entry.authHeaderStyle === 'bearer' ? 'bearer' : 'x-api-key',
       providerApiKey: valueOrNull(entry.providerApiKey),

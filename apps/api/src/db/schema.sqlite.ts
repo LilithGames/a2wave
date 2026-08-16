@@ -1232,6 +1232,8 @@ export const evaluationTasks = sqliteTable(
         providerId: string | null
         providerName: string | null
         model: string | null
+        reasoningEffort: string | null
+        fastMode: boolean | null
         systemPrompt: string
         capturedAt: string
       }>()

@@ -17,6 +17,7 @@ On the Agent detail page you can configure:
 - **Name / Icon / Description**: identifying information.
 - **System Prompt**: the Agent's core persona and rules, supporting Mustache variables (e.g. `{{message}}`).
 - **Provider and model**: choose the execution engine and specific model; supports a **Provider chain** (primary + fallback).
+- **Reasoning effort and fast mode**: supported by some engines (Claude Code, Codex) and configured **beside each chain entry's model** — see "Reasoning Effort and Fast Mode" below.
 - **Credential mode (authMode)**:
   - `apiKey`: injects an API Key (e.g. `ANTHROPIC_API_KEY`).
   - `oauth`: injects an OAuth Token (`CLAUDE_CODE_OAUTH_TOKEN`, Claude Code only).
@@ -29,6 +30,27 @@ On the Agent detail page you can configure:
 - **Long-term Memory**: see [Long-term Memory](/wiki/memory).
 - **Evaluation**: verify config changes and compare models, see [Evaluation](/wiki/evaluation).
 - **Publish channels and triggers**: see [Trigger Methods](/wiki/triggers).
+
+## Reasoning Effort and Fast Mode
+
+Some execution engines — currently **Claude Code** and **Codex** — let you tune how deeply the model thinks and how fast it answers. Both controls sit **beside the model of each Provider chain entry**, not once per Agent: a chain can mix engines and models, and each model offers different levels.
+
+### Reasoning effort
+
+A higher level means deeper reasoning, at more time and cost. **The available levels come from the selected model**, not from a list the platform maintains: a2wave fetches them together with the model list, so what you see is what these credentials can really use with that model.
+
+- **Leave it empty** to use the CLI's own default.
+- Switching models refreshes the levels. A level the new model also offers is kept as is; one it does not offer falls back to **that model's own default** (or to empty, meaning the CLI default, when discovery reports no default).
+- Some models (lightweight ones, typically) accept no level at all, and the field says so.
+
+> [!NOTE]
+> Behind a self-hosted proxy the model endpoint usually returns model names only, with no level list. The field is then disabled and says no level information was discovered. Leaving it empty is fine — the run uses the CLI default — and a level configured earlier is not lost.
+
+### Fast mode
+
+Runs at a higher output speed, usually at premium pricing. It is a plain switch with no levels.
+
+**Turning it on does not by itself guarantee it applies**: that also depends on the model, the account plan and how the engine is reached (a third-party proxy typically cannot enable it). When a condition is unmet the run simply proceeds at normal speed without failing. To see whether a given run actually used it, check the execution parameters in its [run record](/wiki/runs).
 
 ## Creating an Agent
 

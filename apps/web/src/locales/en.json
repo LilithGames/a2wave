@@ -114,6 +114,7 @@
     "input": "Input",
     "output": "Output",
     "execLog": "Execution log",
+    "fastSummary": "Fast",
     "execParams": "Exec params",
     "result": "Result",
     "notFound": "Log not found",
@@ -158,7 +159,15 @@
     "filterProblems": "Errors / retries",
     "pageInfo": "Page {{page}} / {{total}}",
     "prevPage": "Prev",
-    "nextPage": "Next"
+    "nextPage": "Next",
+    "fastMode": {
+      "on": "fast mode served",
+      "requested": "fast mode requested; this engine does not report the served speed",
+      "denied": "fast mode requested, served at standard speed",
+      "off": "fast mode off",
+      "cooldown": "fast mode cooling down",
+      "unknown": "fast mode: {{state}}"
+    }
   },
   "streaming": {
     "thinking": "Thinking…",
@@ -1264,6 +1273,22 @@
     "askModeDesc": "Run in read-only mode (--mode ask), MCP unavailable",
     "forceMode": "Force Mode",
     "forceModeDesc": "Skip workspace trust prompt (--force)",
+    "reasoningEffort": "Reasoning effort",
+    "reasoningEffortDesc": "Levels come from the selected model. Higher means deeper reasoning at more time and cost. Leave empty to use the CLI's own default.",
+    "reasoningEffortPlaceholder": "Use the CLI default",
+    "reasoningEffortDefaultOption": "{{level}} (model default)",
+    "reasoningEffortNone": "This model takes no reasoning level",
+    "reasoningEffortNoneDesc": "Discovery reported no levels for this model. Pick a different model to see options.",
+    "reasoningEffortUnknown": "No level information discovered",
+    "reasoningEffortUnknownDesc": "These credentials return no level list for this model — a self-hosted proxy usually reports model ids only. Leave it empty; the run uses the CLI default.",
+    "fastMode": "Fast mode",
+    "fastModeDesc": "Runs at a higher output speed, usually at premium pricing. Whether a run really gets it depends on the model, the plan and the endpoint — the run record shows the actual state.",
+    "fastModeBlocked": {
+      "extra_usage_disabled": "This account has usage credits disabled, so fast mode cannot run. Enable it with /usage-credits in the Claude client.",
+      "free": "Fast mode requires a paid subscription.",
+      "preference": "Fast mode is disabled by your organization.",
+      "unknown": "Fast mode is unavailable for these credentials."
+    },
     "cleanResult": "Keep Final Answer Only",
     "cleanResultDesc": "Codex CLI only. Save and send only the final assistant response.",
     "maxConcurrency": "Max Concurrency",

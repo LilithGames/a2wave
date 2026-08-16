@@ -215,3 +215,34 @@ describe('provider-chain submission helpers', () => {
     })
   })
 })
+
+describe('reasoning controls survive serialization', () => {
+  it('keeps each entry’s own effort and fast mode', () => {
+    const chain = serializeProviderChainEntries([
+      chainEntry({ id: 'chain_codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' }),
+      chainEntry({
+        id: 'chain_claude',
+        model: 'claude-opus-4-8',
+        reasoningEffort: 'xhigh',
+        fastMode: true,
+      }),
+    ])
+
+    expect(chain.map((entry) => entry.reasoningEffort)).toEqual(['ultra', 'xhigh'])
+    expect(chain.map((entry) => entry.fastMode)).toEqual([undefined, true])
+  })
+
+  it('omits an unset effort rather than serializing an empty string', () => {
+    // An empty string would fail the schema's token check and reject the save;
+    // "not configured" has to reach the API as an absent field.
+    const [entry] = serializeProviderChainEntries([chainEntry({ reasoningEffort: '' })])
+
+    expect(entry.reasoningEffort).toBeUndefined()
+  })
+
+  it('omits fast mode when it is off', () => {
+    const [entry] = serializeProviderChainEntries([chainEntry({ fastMode: false })])
+
+    expect(entry.fastMode).toBeUndefined()
+  })
+})

@@ -7,6 +7,8 @@ import {
   createAgentInput,
   discordConfigSchema,
   feishuConfigSchema,
+  providerChainItemSchema,
+  providerChainSchema,
   publishChannelEnum,
   scheduleConfigSchema,
   slackConfigSchema,
@@ -451,5 +453,52 @@ describe('chat app channel schema', () => {
       suggestedQuestions: ['a'],
       showCreator: true,
     })
+  })
+})
+
+describe('provider chain item reasoning controls', () => {
+  const base = { providerId: 'prv_1', model: 'claude-opus-4-8' }
+
+  it('keeps a chain item valid when neither control is configured', () => {
+    const parsed = providerChainItemSchema.parse(base)
+
+    expect(parsed.reasoningEffort).toBeUndefined()
+    expect(parsed.fastMode).toBeUndefined()
+  })
+
+  it('stores both controls beside the model they belong to', () => {
+    const parsed = providerChainItemSchema.parse({
+      ...base,
+      reasoningEffort: 'xhigh',
+      fastMode: true,
+    })
+
+    expect(parsed.reasoningEffort).toBe('xhigh')
+    expect(parsed.fastMode).toBe(true)
+  })
+
+  it('rejects an effort value that could not have come from discovery', () => {
+    expect(
+      providerChainItemSchema.safeParse({ ...base, reasoningEffort: '--effort' }).success,
+    ).toBe(false)
+  })
+
+  it('rejects a non-boolean fast mode', () => {
+    expect(providerChainItemSchema.safeParse({ ...base, fastMode: 'on' }).success).toBe(false)
+  })
+
+  it('lets each entry in one chain carry its own controls', () => {
+    const parsed = providerChainSchema.parse([
+      { providerId: 'prv_codex', model: 'gpt-5.6-sol', reasoningEffort: 'ultra' },
+      {
+        providerId: 'prv_claude',
+        model: 'claude-opus-4-8',
+        reasoningEffort: 'xhigh',
+        fastMode: true,
+      },
+    ])
+
+    expect(parsed.map((entry) => entry.reasoningEffort)).toEqual(['ultra', 'xhigh'])
+    expect(parsed.map((entry) => entry.fastMode)).toEqual([undefined, true])
   })
 })

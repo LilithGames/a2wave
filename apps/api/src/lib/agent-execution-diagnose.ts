@@ -146,6 +146,31 @@ export async function collectAgentExecutionChecks(agent: AgentRow): Promise<Diag
     })
   }
 
+  // A control stored against a Provider whose CLI has no such setting is dropped
+  // silently at spawn time. The web form clears both when a chain entry changes
+  // Provider, but an imported Agent or a direct API write can still leave one
+  // behind, and diagnose is then the only place it would ever be noticed.
+  //
+  // Whether the *model* accepts a given level is deliberately not checked here:
+  // that answer only exists in a live probe, the model can still change mid-Run
+  // through fallback, and the CLI already rejects a bad level with the accepted
+  // set named in its error.
+  const configuredEffort = String(config.reasoningEffort ?? '').trim()
+  if (configuredEffort && !adapter.manifest.capabilities.reasoningEffort) {
+    checks.push({
+      id: 'provider_reasoning_effort_unsupported',
+      severity: 'warn',
+      message: `A reasoning level ("${configuredEffort}") is configured, but ${cliDisplayName(adapter.manifest.displayName)} has no such setting, so it is ignored on every run. Clear it, or bind a Provider that supports one.`,
+    })
+  }
+  if (config.fastMode === true && !adapter.manifest.capabilities.fastMode) {
+    checks.push({
+      id: 'provider_fast_mode_unsupported',
+      severity: 'warn',
+      message: `Fast mode is on, but ${cliDisplayName(adapter.manifest.displayName)} has no fast mode, so runs proceed at normal speed. Turn it off, or bind a Provider that supports one.`,
+    })
+  }
+
   const authMode = (await config).authMode ?? adapter.manifest.capabilities.defaultAuthMode
   const credentials = {
     authMode,

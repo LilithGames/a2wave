@@ -25,12 +25,26 @@ export interface EvaluationConfigSnapshot {
   /** Denormalised: still shows which provider was used after it is deleted. */
   providerName: string | null
   model: string | null
+  /**
+   * The reasoning controls of the binding that will run. They belong in the
+   * snapshot for the same reason the model does: both change what a run costs
+   * and how it answers, so replaying a set at a different level and filing the
+   * results under the same task would move a variable the comparison assumes is
+   * fixed. `null` means the task did not configure one — including tasks created
+   * before these fields existed.
+   */
+  reasoningEffort: string | null
+  fastMode: boolean | null
   systemPrompt: string
   capturedAt: Date
 }
 
 function asNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
+}
+
+function asNullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
 }
 
 /**
@@ -73,7 +87,8 @@ export class EvaluationProviderUnavailableError extends Error {
 export function applyEvaluationSnapshot(
   liveConfig: AgentConfig,
   snapshot:
-    | Pick<EvaluationConfigSnapshot, 'providerId' | 'model' | 'systemPrompt'>
+    | (Pick<EvaluationConfigSnapshot, 'providerId' | 'model' | 'systemPrompt'> &
+        Partial<Pick<EvaluationConfigSnapshot, 'reasoningEffort' | 'fastMode'>>)
     | null
     | undefined,
   agent?: AgentRow,
@@ -105,10 +120,24 @@ export function applyEvaluationSnapshot(
     // snapshot provider's endpoint would disclose it to the wrong host.
     applyProviderBinding(config, pinnedChain[0])
 
-    // After applyProviderBinding, which sets model from the binding.
+    // After applyProviderBinding, which sets these from the binding.
+    //
+    // A snapshot value of null falls back to the live binding, exactly as the
+    // model does: null cannot distinguish "captured while unset" from "captured
+    // before this field existed", and inheriting the live value is the reading
+    // that keeps pre-existing tasks running unchanged.
     const model = snapshot.model ?? pinnedChain[0].model
+    const reasoningEffort = snapshot.reasoningEffort ?? pinnedChain[0].reasoningEffort
+    const fastMode = snapshot.fastMode ?? pinnedChain[0].fastMode
     if (model) config.model = model
-    config.providerChain = pinnedChain.map((item) => ({ ...item, model: model ?? item.model }))
+    if (reasoningEffort) config.reasoningEffort = reasoningEffort
+    if (fastMode !== undefined) config.fastMode = fastMode
+    config.providerChain = pinnedChain.map((item) => ({
+      ...item,
+      model: model ?? item.model,
+      reasoningEffort: reasoningEffort ?? item.reasoningEffort,
+      fastMode: fastMode ?? item.fastMode,
+    }))
   } else if (snapshot.providerId && snapshot.providerId !== liveConfig.providerId) {
     // The snapshot provider is no longer bound to this Agent — it was unbound
     // or disabled while the task sat in the queue.
@@ -148,6 +177,8 @@ export async function buildEvaluationSnapshot(agent: AgentRow): Promise<Evaluati
     providerId: asNullableString(config.providerId),
     providerName: asNullableString(config.providerName),
     model: asNullableString(config.model),
+    reasoningEffort: asNullableString(config.reasoningEffort),
+    fastMode: asNullableBoolean(config.fastMode),
     systemPrompt,
     capturedAt: new Date(),
   }

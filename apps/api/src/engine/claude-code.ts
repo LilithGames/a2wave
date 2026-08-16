@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { FastModeAvailability, ModelCapabilities, ReasoningEffortOption } from '@a2wave/shared'
 import { Agent as UndiciAgent } from 'undici'
 import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
@@ -16,6 +17,7 @@ import { BaseCliAgentEngine, type CliEngineBaseConfig, stripPromptArg } from './
 import { toDisplayExecParams } from './exec-params.js'
 import { createHeartbeatTracker } from './heartbeat.js'
 import { runStatusProbe, truncateForRaw } from './login-status-helper.js'
+import { finalizeModelCapabilities, isReasoningEffortValue } from './model-capabilities.js'
 import {
   buildSafeAgentProcessEnv,
   omitRuntimeEnvKeys,
@@ -52,6 +54,134 @@ function normalizeClaudeProxyBaseUrl(baseUrl: string): string {
 
 function clearClaudeCredentialEnv(env: NodeJS.ProcessEnv): void {
   for (const key of CLAUDE_CREDENTIAL_ENV_KEYS) unsetEnv(env, key)
+}
+
+/**
+ * Read the reasoning-effort levels one model advertises on `GET /v1/models`.
+ *
+ * Anthropic reports them as `capabilities.effort`, a `supported` flag sitting
+ * alongside one nested object per level. Levels are collected by walking that
+ * object rather than by consulting a list of level names: the names are exactly
+ * what must not be hard-coded here, and they already differ between models
+ * (Opus 4.5 has no `xhigh`, Haiku 4.5 has no effort at all). Skipping the
+ * `supported` flag needs no special case either — it is a boolean, not an
+ * object, so it fails the per-level shape check on its own.
+ *
+ * Returns `undefined` when the model reports no effort capability at all, which
+ * is what a proxy standing in for the vendor endpoint does. That is "unknown"
+ * and is deliberately distinct from the empty array returned for a model that
+ * says effort is unsupported.
+ */
+function readEffortCapability(capabilities: unknown): ReasoningEffortOption[] | undefined {
+  if (!capabilities || typeof capabilities !== 'object') return undefined
+  const effort = (capabilities as { effort?: unknown }).effort
+  if (!effort || typeof effort !== 'object') return undefined
+  if ((effort as { supported?: unknown }).supported === false) return []
+
+  const options: ReasoningEffortOption[] = []
+  for (const [level, detail] of Object.entries(effort as Record<string, unknown>)) {
+    if (!detail || typeof detail !== 'object') continue
+    if ((detail as { supported?: unknown }).supported !== true) continue
+    if (!isReasoningEffortValue(level)) continue
+    options.push({ value: level })
+  }
+  return options
+}
+
+const CLAUDE_FAST_MODE_URL = `${CLAUDE_OAUTH_BASE_URL}/api/claude_code_penguin_mode`
+
+/**
+ * Ask Anthropic whether these credentials may use fast mode.
+ *
+ * The switch alone cannot answer this: fast mode is premium usage, and an
+ * account can be refused for several distinct reasons the operator would
+ * otherwise only discover by reading a finished run. The CLI gates on the same
+ * endpoint, which is why a2wave can pre-empt the outcome instead of guessing
+ * from the model name.
+ *
+ * **Advisory only, by construction.** It is an internal CLI endpoint rather than
+ * a published contract, so every failure path — non-200, malformed body, network
+ * error, timeout — resolves to `undefined` ("not answered") and never to
+ * `available: false`. A vanished endpoint therefore degrades to today's
+ * behaviour (offer the switch, report the outcome afterwards) instead of locking
+ * a working feature out.
+ *
+ * Skipped entirely when the binding points at a proxy: the question belongs to
+ * Anthropic, and a proxy's answer — or its 404 — would say nothing about it.
+ */
+async function probeFastModeAvailability(
+  token: string,
+  useBearer: boolean,
+): Promise<FastModeAvailability | undefined> {
+  try {
+    const { addresses } = await resolvePublicUrl(CLAUDE_FAST_MODE_URL, undefined, {
+      allowPrivateDnsAnswers: true,
+    })
+    const dispatcher = new UndiciAgent({ connect: { lookup: createPinnedLookup(addresses) } })
+    try {
+      const res = await safeFetch(CLAUDE_FAST_MODE_URL, {
+        method: 'GET',
+        headers: {
+          ...(useBearer
+            ? { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }
+            : { 'x-api-key': token }),
+          'anthropic-version': '2023-06-01',
+        },
+        signal: AbortSignal.timeout(8_000),
+        maxRedirects: 0,
+        dispatcher,
+      } as Parameters<typeof safeFetch>[1])
+      if (!res.ok) return undefined
+      const body = (await res.json()) as { enabled?: unknown; disabled_reason?: unknown }
+      if (typeof body.enabled !== 'boolean') return undefined
+      return {
+        available: body.enabled,
+        ...(body.enabled || typeof body.disabled_reason !== 'string'
+          ? {}
+          : { reason: body.disabled_reason.slice(0, 64) }),
+      }
+    } finally {
+      await dispatcher.close().catch(() => {})
+    }
+  } catch (err) {
+    logger.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[claude-code] fast mode availability probe skipped',
+    )
+    return undefined
+  }
+}
+
+/**
+ * What actually happened to fast mode on this run.
+ *
+ * Two sources disagree, and only one of them is evidence:
+ * - `usage.speed` is the speed Anthropic **served** — the fact.
+ * - `fast_mode_state` is the CLI's own **intent**; it reads `on` as soon as the
+ *   request is allowed to leave the client.
+ *
+ * They part company on the case that matters most. An account without usage
+ * credits gets `fast_mode_state: on` and `speed: standard`, with no error
+ * anywhere — recording the intent would mark that run "Fast" when it ran, and
+ * billed, at normal speed. So the served speed wins whenever it is reported, and
+ * `denied` — asked for, confirmed served at standard — gets its own verdict
+ * rather than being flattened into `on` or `off`: it is the one state the
+ * operator can act on (enable usage credits), and the switch alone cannot show it.
+ *
+ * The third verdict, `requested`, belongs to engines that never answer at all
+ * (see codex): the request went out and nothing contradicted it, which is
+ * strictly more than "off" and strictly less than "served".
+ *
+ * `cooldown` survives because the served speed cannot express it.
+ */
+export function resolveFastModeState(
+  servedSpeed: unknown,
+  claimedState: unknown,
+): string | undefined {
+  const claimed = typeof claimedState === 'string' ? claimedState : undefined
+  if (typeof servedSpeed !== 'string') return claimed
+  if (servedSpeed === 'fast') return 'on'
+  return claimed === 'on' ? 'denied' : (claimed ?? 'off')
 }
 
 /**
@@ -389,13 +519,32 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
         }
       }
 
-      const json = (await res.json()) as { data?: Array<{ id?: string }> }
-      const models = (json.data ?? [])
-        .map((m) => m.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      const json = (await res.json()) as { data?: Array<{ id?: string; capabilities?: unknown }> }
+      const entries = (json.data ?? []).filter(
+        (m): m is { id: string; capabilities?: unknown } =>
+          typeof m.id === 'string' && m.id.length > 0,
+      )
+      const models = entries.map((m) => m.id)
+
+      const capabilitiesByModel = new Map<string, ModelCapabilities>()
+      for (const entry of entries) {
+        const efforts = readEffortCapability(entry.capabilities)
+        if (efforts) capabilitiesByModel.set(entry.id, { reasoningEfforts: efforts })
+      }
+      const modelCapabilities = finalizeModelCapabilities(capabilitiesByModel)
+
+      // Only meaningful against Anthropic's own endpoint — a proxy neither owns
+      // the entitlement nor can speak for it.
+      const fastMode = usesFixedClaudeOauthEndpoint
+        ? await probeFastModeAvailability(key, true)
+        : undefined
 
       logger.info({ url, count: models.length }, '[claude-code] listAvailableModels success')
-      return { models }
+      return {
+        models,
+        ...(modelCapabilities ? { modelCapabilities } : {}),
+        ...(fastMode ? { fastMode } : {}),
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.warn({ url, err: message }, '[claude-code] listAvailableModels failed')
@@ -443,6 +592,9 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
       readOnly: agentConfig?.readOnly !== undefined ? Boolean(agentConfig.readOnly) : undefined,
       force: agentConfig?.force !== undefined ? Boolean(agentConfig.force) : undefined,
       approveMcps: approveMcpsOverride,
+      reasoningEffort:
+        typeof agentConfig?.reasoningEffort === 'string' ? agentConfig.reasoningEffort : undefined,
+      fastMode: agentConfig?.fastMode === true,
     })
     const execEnv = this.buildEnv(
       agentEnv,
@@ -463,6 +615,10 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
       cwd: resolvedWorkDir,
       authMode,
       authHeaderStyle: authMode === 'apiKey' ? authHeaderStyle : undefined,
+      ...(typeof agentConfig?.reasoningEffort === 'string'
+        ? { reasoningEffort: agentConfig.reasoningEffort }
+        : {}),
+      ...(agentConfig?.fastMode === true ? { fastMode: true } : {}),
       baseUrl: resolvedBaseUrl,
       timeout: streamTimeoutMs,
       runtimeHome: request.runtimeContext?.home.dir,
@@ -651,11 +807,20 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
           if (resultIsError) {
             resultErrorText = resultText || 'Claude Code returned an error result'
           }
+          // Recorded rather than inferred, and taken from the server's answer
+          // rather than the client's request — see resolveFastModeState. A run
+          // where neither source says anything keeps the field absent, because
+          // defaulting to "off" would state a verdict nobody issued.
+          const fastModeState = resolveFastModeState(
+            (data.usage as { speed?: unknown } | undefined)?.speed,
+            data.fast_mode_state,
+          )
           onLogEntry?.({
             type: 'result',
             subtype: resultIsError ? 'error' : 'success',
             durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : undefined,
             ...(lastUsage ? { usage: lastUsage } : {}),
+            ...(fastModeState ? { fastModeState } : {}),
             ts: Date.now(),
           })
           break
@@ -751,7 +916,13 @@ This rule only applies to explicit model/version questions. For general "who are
     model: string,
     outputFormat: 'json' | 'stream-json',
     chatId?: string,
-    extras?: { readOnly?: boolean; force?: boolean; approveMcps?: boolean },
+    extras?: {
+      readOnly?: boolean
+      force?: boolean
+      approveMcps?: boolean
+      reasoningEffort?: string
+      fastMode?: boolean
+    },
   ): string[] {
     const args = ['-p', prompt, '--output-format', outputFormat]
     // Claude CLI 要求: --print(-p) + --output-format stream-json 必须同时带 --verbose
@@ -769,6 +940,18 @@ This rule only applies to explicit model/version questions. For general "who are
     }
     if (chatId) args.push('--resume', chatId)
     if (model) args.push('--model', model)
+    // Unset means "say nothing": the CLI's own default is the fallback, never a
+    // level a2wave picked. Which levels are legal belongs to the model and is
+    // discovered per credential, so nothing is validated here — an unsupported
+    // level is rejected by the CLI with the accepted set named in the error,
+    // which is a better answer than any table this process could keep.
+    if (extras?.reasoningEffort) args.push('--effort', extras.reasoningEffort)
+    // Fast mode has no flag of its own; the CLI reads it from settings. Passing
+    // it inline keeps it scoped to this run instead of writing into the user's
+    // settings file, and carries no credential, so it needs no masking. Whether
+    // the run actually gets the faster path depends on the model, the plan and
+    // the endpoint — the CLI reports the outcome as `fast_mode_state`.
+    if (extras?.fastMode) args.push('--settings', JSON.stringify({ fastMode: true }))
     // 模型有非空值时注入身份覆盖 prompt（修 CLI 内置过时模型清单导致 agent 答错版本）
     if (model?.trim()) {
       args.push('--append-system-prompt', ClaudeCodeEngine.buildIdentityPrompt(model))

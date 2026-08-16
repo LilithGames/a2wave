@@ -37,6 +37,8 @@ const capabilities: ProviderCapabilities = {
   // The Provider under test cannot deliver MCP — this is what the warning is about.
   mcpDelivery: { mode: 'none' },
   executionOptions: [],
+  reasoningEffort: false,
+  fastMode: false,
   sessionResume: false,
   sandbox: 'native',
 }

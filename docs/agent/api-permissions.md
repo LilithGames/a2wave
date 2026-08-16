@@ -99,7 +99,8 @@ the exact thing the separate queue prevents.
 - `turnsReplayed` counts evaluation **turns**, not Agent invocations — one turn may
   start several workers via retry or provider fallback, so it is **not** a billing
   figure.
-- Each task freezes provider + model + system prompt — **never credentials**. If
+- Each task freezes provider + model + reasoning effort + fast mode + system prompt —
+  **never credentials**. If
   that provider is unbound before the task starts the task **fails** rather than
   silently substituting and misattributing results.
 

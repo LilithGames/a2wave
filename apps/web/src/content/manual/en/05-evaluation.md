@@ -51,7 +51,7 @@ A task can be **cancelled** while it runs: a queued task is cancelled immediatel
 > If the service restarts mid-evaluation, the interrupted task is marked **Failed** with the reason "Interrupted by a server restart" rather than being left stuck on "Running". Just start it again — finished tasks and recorded verdicts are unaffected.
 
 > [!NOTE]
-> A task freezes the **provider, model and prompt** in use when it was created and runs against that snapshot, so editing the Agent while a task is queued cannot change what it measures. If the snapshotted provider is removed from the Agent before the task starts, the task **fails** and names the missing provider — rather than quietly running on a different one and filing the results under the original.
+> A task freezes the **provider, model, reasoning effort / fast mode and prompt** in use when it was created and runs against that snapshot, so editing the Agent while a task is queued cannot change what it measures. If the snapshotted provider is removed from the Agent before the task starts, the task **fails** and names the missing provider — rather than quietly running on a different one and filing the results under the original.
 
 > [!NOTE]
 > Evaluation uses the Agent's **currently saved** config — publishing is not required. If you just edited the config, save it before running. Evaluation runs do not appear in [Run History](/wiki/runs) and are excluded from statistics and leaderboards.
@@ -70,6 +70,7 @@ This is where evaluation pays off. Every task freezes a **config snapshot** reco
 
 - **Provider** (execution engine)
 - **Model**
+- **Reasoning effort and fast mode** (where the Provider supports them)
 - **System prompt**
 
 Expand "Config snapshot" in the task detail to view it. The task list is ordered newest first, so comparing pass rates across tasks shows which configuration performs best.
@@ -86,7 +87,7 @@ When a task's config differs from the previous one, the list flags **model chang
 > These flags are what let you read a score change correctly. Above, "prompt v2" dropped because the prompt changed, not because the model regressed — without the flag it's easy to blame the wrong thing.
 
 > [!NOTE]
-> The snapshot records only provider, model and prompt. **No credentials are ever stored** (API keys, OAuth tokens and the like never reach the snapshot). Mounted Skills, MCP servers and knowledge bases are outside its scope.
+> The snapshot records only provider, model, reasoning effort / fast mode and prompt. **No credentials are ever stored** (API keys, OAuth tokens and the like never reach the snapshot). Mounted Skills, MCP servers and knowledge bases are outside its scope.
 
 ## Permissions
 

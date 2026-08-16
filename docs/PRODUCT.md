@@ -76,7 +76,7 @@ API, a schema, a Skill), never a form.
 
 **Invested in:**
 
-* **Runtime** — queueing, concurrency, credential injection, workspace isolation
+* **Runtime** — queueing, concurrency, credential injection, workspace isolation, per-binding execution controls (model, reasoning effort, fast mode) whose legal values are discovered from the credential rather than declared by the platform
 * **Observability** — Run records, execution traces, diagnosis, token spend, audit
 * **Fault tolerance** — retry with backoff, ordered provider fallback chains, restart recovery
 * **Skills & tools** — hosting, discovery, permissions, progressive disclosure for MCP

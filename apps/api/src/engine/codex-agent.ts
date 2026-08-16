@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { ModelCapabilities } from '@a2wave/shared'
 import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
 import { BaseCliAgentEngine, type CliEngineBaseConfig } from './cli-engine-base.js'
@@ -28,6 +29,11 @@ import { toDisplayExecParams } from './exec-params.js'
 import { createHeartbeatTracker } from './heartbeat.js'
 import { runStatusProbe, truncateForRaw } from './login-status-helper.js'
 import type { ResolvedMcpServer } from './mcp-sync.js'
+import {
+  finalizeModelCapabilities,
+  isReasoningEffortValue,
+  toReasoningEffortOptions,
+} from './model-capabilities.js'
 import {
   buildSafeAgentProcessEnv,
   omitRuntimeEnvKeys,
@@ -46,6 +52,48 @@ import type {
   TokenUsage,
 } from './types.js'
 import { mapCodexUsage } from './usage.js'
+
+/**
+ * One entry of `codex debug models`. Only the fields a2wave reads are typed;
+ * the CLI reports considerably more (pricing hints, base instructions, speed
+ * tiers) that the platform has no business persisting.
+ */
+interface CodexCatalogEntry {
+  slug?: string
+  visibility?: string
+  default_reasoning_level?: unknown
+  supported_reasoning_levels?: unknown
+}
+
+/**
+ * Read the reasoning levels one catalog entry advertises.
+ *
+ * codex reports them per model, with its own wording for each level, and the
+ * set genuinely varies — `ultra` exists for some models and not others. The
+ * descriptions are carried through so the picker can explain the levels in the
+ * CLI's own words rather than in wording a2wave invented.
+ *
+ * A model that reports neither field yields an empty object, which
+ * `finalizeModelCapabilities` then drops: nothing was discovered, so nothing is
+ * claimed.
+ */
+function readReasoningCapability(entry: CodexCatalogEntry): ModelCapabilities {
+  const capabilities: ModelCapabilities = {}
+
+  if (Array.isArray(entry.supported_reasoning_levels)) {
+    capabilities.reasoningEfforts = toReasoningEffortOptions(
+      entry.supported_reasoning_levels.map((level) => ({
+        value: (level as { effort?: unknown })?.effort,
+        description: (level as { description?: unknown })?.description,
+      })),
+    )
+  }
+  if (isReasoningEffortValue(entry.default_reasoning_level)) {
+    capabilities.defaultReasoningEffort = entry.default_reasoning_level
+  }
+
+  return capabilities
+}
 
 const ENGINE_TYPE = 'codex'
 const CODEX_MCP_TOOL_TIMEOUT_SEC = 660
@@ -361,7 +409,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       }
     }
 
-    let parsed: { models?: Array<{ slug?: string; visibility?: string }> }
+    let parsed: { models?: CodexCatalogEntry[] }
     try {
       parsed = JSON.parse(result.stdout)
     } catch (err) {
@@ -378,10 +426,11 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       }
     }
 
-    const models = (parsed.models ?? [])
-      .filter((m) => m.visibility === 'list')
-      .map((m) => m.slug)
-      .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0)
+    const visible = (parsed.models ?? []).filter(
+      (m): m is CodexCatalogEntry & { slug: string } =>
+        m.visibility === 'list' && typeof m.slug === 'string' && m.slug.length > 0,
+    )
+    const models = visible.map((m) => m.slug)
 
     if (models.length === 0) {
       return {
@@ -391,11 +440,17 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       }
     }
 
+    const capabilitiesByModel = new Map<string, ModelCapabilities>()
+    for (const entry of visible) {
+      capabilitiesByModel.set(entry.slug, readReasoningCapability(entry))
+    }
+    const modelCapabilities = finalizeModelCapabilities(capabilitiesByModel)
+
     logger.info(
       { count: models.length, sample: models.slice(0, 3) },
       '[codex] listAvailableModels success',
     )
-    return { models }
+    return modelCapabilities ? { models, modelCapabilities } : { models }
   }
 
   protected async executeStreamWithModel(
@@ -447,12 +502,17 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       )
     }
 
+    // codex reports no duration of its own, so the platform times the stream.
+    const streamStartedAt = Date.now()
     const promptTransport = buildCodexPromptTransport(prompt)
     const args = this.buildArgs(promptTransport.promptArg, model, inputChatId, {
       readOnly: agentConfig?.readOnly !== undefined ? Boolean(agentConfig.readOnly) : undefined,
       force: agentConfig?.force !== undefined ? Boolean(agentConfig.force) : undefined,
       mcpConfigOverride: mcpInjection?.configOverride,
       openaiBaseUrl: authMode === 'apiKey' ? perAgentBaseUrl : undefined,
+      reasoningEffort:
+        typeof agentConfig?.reasoningEffort === 'string' ? agentConfig.reasoningEffort : undefined,
+      fastMode: agentConfig?.fastMode === true,
     })
     const execEnv = this.buildEnv(agentEnv, mcpInjection?.env, runtimeEnv, perAgentApiKey, authMode)
     const resolvedApiKey = perAgentApiKey || this.config.apiKey
@@ -464,6 +524,14 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       args: filteredArgs,
       cwd: resolvedWorkDir,
       authMode,
+      // Reported as named fields rather than read off the argv above: every
+      // `-c` value is blanket-redacted in the log, and neither of these is a
+      // secret worth losing to that rule — knowing which level a slow run used
+      // is exactly what the exec params are for.
+      ...(typeof agentConfig?.reasoningEffort === 'string'
+        ? { reasoningEffort: agentConfig.reasoningEffort }
+        : {}),
+      ...(agentConfig?.fastMode === true ? { fastMode: true } : {}),
       proxyConfigured: authMode === 'apiKey' && Boolean(perAgentBaseUrl),
       mcpCount: agentConfig?.resolvedMcpServers?.length ?? 0,
       mcpNames: (agentConfig?.resolvedMcpServers as ResolvedMcpServer[] | undefined)?.map(
@@ -520,9 +588,13 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
           case 'session':
             sessionId = ev.chatId
             logger.info({ taskId, sessionId }, '[codex] Thread started')
+            // codex's JSON stream never names the model, so the run log would
+            // otherwise show which engine ran but not what it ran — the one
+            // detail that changes with every provider-chain fallback.
             onLogEntry?.({
               type: 'system',
               subtype: 'init',
+              ...(model ? { model } : {}),
               ts: Date.now(),
             })
             break
@@ -535,10 +607,20 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
             // chat turns use separate exec processes, including exec resume.
             lastUsage = mapCodexUsage(ev.usage) ?? lastUsage
             logger.info({ taskId, usage: ev.usage }, '[codex] Turn completed')
+            // Measured here rather than read from the stream: codex reports no
+            // duration, and the platform has been holding the start time all along.
+            // codex's stream never reports which service tier was served, but it
+            // does reject a tier the model does not advertise (warning, then
+            // dropping it). So a run that got this far with fast mode on has
+            // been requested AND accepted by the CLI — more than intent, less
+            // than confirmation. `requested` states exactly that; claiming `on`
+            // would assert a backend answer nobody gave.
             onLogEntry?.({
               type: 'result',
               subtype: 'success',
+              durationMs: Date.now() - streamStartedAt,
               ...(lastUsage ? { usage: lastUsage } : {}),
+              ...(agentConfig?.fastMode === true ? { fastModeState: 'requested' } : {}),
               ts: Date.now(),
             })
             break
@@ -550,6 +632,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
             onLogEntry?.({
               type: 'result',
               subtype: 'error',
+              durationMs: Date.now() - streamStartedAt,
               ts: Date.now(),
             })
             break
@@ -681,6 +764,8 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       force?: boolean
       mcpConfigOverride?: string
       openaiBaseUrl?: string
+      reasoningEffort?: string
+      fastMode?: boolean
     },
   ): string[] {
     const isResume = !!chatId
@@ -695,6 +780,19 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
     }
     if (extras?.mcpConfigOverride) {
       args.push('-c', extras.mcpConfigOverride)
+    }
+    // Both are re-passed on resume: unlike --sandbox, `-c` is accepted by
+    // `codex exec resume`, and a resumed turn that dropped them would silently
+    // continue the conversation on the CLI defaults. Unset passes nothing.
+    if (extras?.reasoningEffort) {
+      args.push('-c', `model_reasoning_effort=${tomlString(extras.reasoningEffort)}`)
+    }
+    // Fast mode is the `priority` service tier. codex validates the tier against
+    // what the selected model advertises and omits it with a warning when the
+    // model has no such tier, so an unsupported combination degrades to normal
+    // speed rather than failing the run.
+    if (extras?.fastMode) {
+      args.push('-c', `service_tier=${tomlString('priority')}`)
     }
 
     // sandbox / bypass flags: resume inherits the original session policy, so

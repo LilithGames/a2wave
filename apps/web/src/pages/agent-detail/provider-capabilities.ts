@@ -1,10 +1,12 @@
 import type {
   AuthHeaderStyle,
   AuthMode,
+  ModelCapabilities,
   ProbeModelsRequest,
   ProviderCapabilities,
   ProviderCredentialField,
   ProviderDto,
+  ReasoningEffortOption,
 } from '@a2wave/shared'
 
 const MASKED_SECRET = '********'
@@ -248,4 +250,88 @@ export function buildProbeModelsRequest(
     },
     missingFields: [],
   }
+}
+
+/**
+ * What the reasoning-effort control should render for one provider chain entry.
+ *
+ * Four states, because collapsing any pair of them produces a lie:
+ * - `unsupported` — the CLI has no such setting; there is nothing to show.
+ * - `options` — discovery reported the levels this model accepts.
+ * - `none` — discovery reported that this model accepts no level. Real: Haiku
+ *   4.5 and Sonnet 4.5 answer exactly this.
+ * - `unknown` — nothing was discovered. A proxy standing in for the vendor
+ *   endpoint returns bare model ids, and so does an entry that has not been
+ *   probed yet.
+ *
+ * `none` and `unknown` both end up as an empty dropdown, but only one of them is
+ * something the operator can act on, so they must not share a message.
+ */
+export type ReasoningEffortSelectState =
+  | { kind: 'unsupported' }
+  | { kind: 'unknown' }
+  | { kind: 'none' }
+  | { kind: 'options'; options: ReasoningEffortOption[]; defaultValue?: string }
+
+export function reasoningEffortSelectState(
+  capabilities: ProviderCapabilities | undefined,
+  modelCapabilities: Record<string, ModelCapabilities> | undefined,
+  model: string,
+): ReasoningEffortSelectState {
+  if (!capabilities?.reasoningEffort) return { kind: 'unsupported' }
+
+  const discovered = model ? modelCapabilities?.[model] : undefined
+  const options = discovered?.reasoningEfforts
+  if (!options) return { kind: 'unknown' }
+  if (options.length === 0) return { kind: 'none' }
+
+  return {
+    kind: 'options',
+    options,
+    ...(discovered.defaultReasoningEffort
+      ? { defaultValue: discovered.defaultReasoningEffort }
+      : {}),
+  }
+}
+
+/**
+ * The level to keep after the entry's model changed.
+ *
+ * The dropdown's OPTIONS follow the model on their own, but the selected value
+ * does not — leaving a level the new model rejects both shows a value missing
+ * from its own dropdown and saves a setting the CLI will refuse.
+ *
+ * The value is carried over whenever the new model still offers it — the same
+ * level means the same thing across models, so switching should not disturb it.
+ * It is given up only on positive evidence: a discovered level list that does
+ * not contain it. The value then falls back to that model's own **discovered
+ * default**, so the field keeps stating what the run will use rather than going
+ * blank.
+ *
+ * Two cases have no default to fall back to and therefore clear — which passes
+ * no flag and leaves the CLI's own default in force, the same outcome just not
+ * spelled out in the field: a model that accepts no level at all, and one whose
+ * discovery lists levels without naming a default (Anthropic's model endpoint
+ * reports the levels only; codex reports `default_reasoning_level` per model).
+ *
+ * `unknown` keeps the value untouched. Behind a proxy nothing is ever
+ * discovered, so treating that as evidence would drop a working setting on every
+ * model switch.
+ */
+export function reasoningEffortAfterModelChange(
+  capabilities: ProviderCapabilities | undefined,
+  modelCapabilities: Record<string, ModelCapabilities> | undefined,
+  nextModel: string,
+  currentEffort: string | undefined,
+): string | undefined {
+  if (!currentEffort) return undefined
+
+  const state = reasoningEffortSelectState(capabilities, modelCapabilities, nextModel)
+  if (state.kind === 'none') return undefined
+  if (state.kind === 'options') {
+    return state.options.some((option) => option.value === currentEffort)
+      ? currentEffort
+      : state.defaultValue
+  }
+  return currentEffort
 }

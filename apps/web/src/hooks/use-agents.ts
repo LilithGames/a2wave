@@ -500,6 +500,8 @@ export type StreamLogEntry =
       type: 'result'
       subtype: string
       durationMs?: number
+      /** CLI's own verdict on fast mode: `on` / `off` / `cooldown`; absent when unreported. */
+      fastModeState?: string
       usage?: {
         inputTokens?: number
         outputTokens?: number

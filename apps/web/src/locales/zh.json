@@ -114,6 +114,7 @@
     "input": "输入",
     "output": "输出",
     "execLog": "执行日志",
+    "fastSummary": "Fast",
     "execParams": "执行参数",
     "result": "运行结果",
     "notFound": "日志未找到",
@@ -158,7 +159,15 @@
     "filterProblems": "错误/重试",
     "pageInfo": "{{page}} / {{total}} 页",
     "prevPage": "上一页",
-    "nextPage": "下一页"
+    "nextPage": "下一页",
+    "fastMode": {
+      "on": "快速模式已生效",
+      "requested": "已请求快速模式，该引擎不回报实际执行速度",
+      "denied": "已请求快速模式，服务端按普通速度执行",
+      "off": "快速模式未生效",
+      "cooldown": "快速模式冷却中",
+      "unknown": "快速模式：{{state}}"
+    }
   },
   "streaming": {
     "thinking": "思考中…",
@@ -1264,6 +1273,22 @@
     "askModeDesc": "以只读模式运行（--mode ask），无法使用 MCP",
     "forceMode": "强制模式",
     "forceModeDesc": "跳过工作区信任确认（--force）",
+    "reasoningEffort": "推理档位",
+    "reasoningEffortDesc": "档位由所选模型下发，越高越深入思考、耗时和费用也越高。留空则用 CLI 自己的默认值。",
+    "reasoningEffortPlaceholder": "使用 CLI 默认档位",
+    "reasoningEffortDefaultOption": "{{level}}（模型默认）",
+    "reasoningEffortNone": "该模型不支持推理档位",
+    "reasoningEffortNoneDesc": "拉取结果显示这个模型没有可选档位，换一个模型即可看到选项。",
+    "reasoningEffortUnknown": "未拉取到档位信息",
+    "reasoningEffortUnknownDesc": "当前凭证拉取不到该模型的档位清单（自建代理通常只返回模型名）。留空即可，运行时会用 CLI 默认档位。",
+    "fastMode": "快速模式",
+    "fastModeDesc": "以更高的输出速度运行，通常按更高价格计费。是否真正生效取决于模型、账号套餐和接入方式，以运行记录中的实际状态为准。",
+    "fastModeBlocked": {
+      "extra_usage_disabled": "该账号未开启额外用量，无法使用快速模式。在 Claude 客户端执行 /usage-credits 开启后即可。",
+      "free": "快速模式需要付费订阅。",
+      "preference": "所在组织已禁用快速模式。",
+      "unknown": "当前凭证不可用快速模式。"
+    },
     "cleanResult": "仅保留最终回答",
     "cleanResultDesc": "仅 Codex CLI 生效。只保存并发送最后一段 assistant 回复。",
     "maxConcurrency": "最大并发数",

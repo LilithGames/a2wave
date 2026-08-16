@@ -10,6 +10,8 @@ import {
   modelProbePolicy,
   normalizeAuthMode,
   providersWithoutMcpDelivery,
+  reasoningEffortAfterModelChange,
+  reasoningEffortSelectState,
   resolveModelProbeErrorTranslation,
   visibleCredentialFieldsFor,
 } from '../provider-capabilities'
@@ -27,6 +29,8 @@ const capabilities: ProviderCapabilities = {
   },
   mcpDelivery: { mode: 'runtime-injection' },
   executionOptions: ['readOnly'],
+  reasoningEffort: false,
+  fastMode: false,
   sessionResume: true,
   sandbox: 'native',
   localSessionLoginCommand: 'custom login',
@@ -512,5 +516,157 @@ describe('Provider capability UI helpers', () => {
       key: 'agentDetail.probeModelsError',
       values: { error: 'Personal Access Token was not accepted by qodercli' },
     })
+  })
+})
+
+describe('reasoningEffortSelectState', () => {
+  const supported = { reasoningEffort: true } as unknown as ProviderCapabilities
+  const unsupported = { reasoningEffort: false } as unknown as ProviderCapabilities
+
+  it('renders nothing for a Provider whose CLI has no such setting', () => {
+    expect(reasoningEffortSelectState(unsupported, undefined, 'gpt-5.6-sol')).toEqual({
+      kind: 'unsupported',
+    })
+  })
+
+  it('renders nothing when the Provider is not resolved yet', () => {
+    expect(reasoningEffortSelectState(undefined, undefined, '')).toEqual({ kind: 'unsupported' })
+  })
+
+  it('offers the levels discovery reported for the selected model', () => {
+    const state = reasoningEffortSelectState(
+      supported,
+      {
+        'claude-opus-4-8': {
+          reasoningEfforts: [{ value: 'low' }, { value: 'xhigh' }],
+          defaultReasoningEffort: 'xhigh',
+        },
+      },
+      'claude-opus-4-8',
+    )
+
+    expect(state).toEqual({
+      kind: 'options',
+      options: [{ value: 'low' }, { value: 'xhigh' }],
+      defaultValue: 'xhigh',
+    })
+  })
+
+  it('follows the model select — a second model gets its own levels', () => {
+    const capabilities = {
+      'claude-opus-4-8': { reasoningEfforts: [{ value: 'xhigh' }] },
+      'claude-opus-4-5-20251101': { reasoningEfforts: [{ value: 'high' }] },
+    }
+
+    expect(reasoningEffortSelectState(supported, capabilities, 'claude-opus-4-5-20251101')).toEqual(
+      {
+        kind: 'options',
+        options: [{ value: 'high' }],
+      },
+    )
+  })
+
+  it('separates "this model takes no level" from "nothing was discovered"', () => {
+    // A proxy that returns bare model ids reports nothing; Haiku reports an
+    // empty list. Both would render an empty dropdown, but only one of them is
+    // the user's fault to fix, so they must not share a message.
+    expect(
+      reasoningEffortSelectState(
+        supported,
+        { 'claude-haiku-4-5': { reasoningEfforts: [] } },
+        'claude-haiku-4-5',
+      ),
+    ).toEqual({ kind: 'none' })
+
+    expect(reasoningEffortSelectState(supported, undefined, 'deepseek-v4-flash')).toEqual({
+      kind: 'unknown',
+    })
+  })
+
+  it('reports unknown for a model missing from an otherwise populated probe result', () => {
+    expect(
+      reasoningEffortSelectState(
+        supported,
+        { 'claude-opus-4-8': { reasoningEfforts: [] } },
+        'other-model',
+      ),
+    ).toEqual({ kind: 'unknown' })
+  })
+
+  it('reports unknown before a model has been chosen', () => {
+    expect(
+      reasoningEffortSelectState(supported, { 'claude-opus-4-8': { reasoningEfforts: [] } }, ''),
+    ).toEqual({ kind: 'unknown' })
+  })
+})
+
+describe('reasoningEffortAfterModelChange', () => {
+  const supported = { reasoningEffort: true } as unknown as ProviderCapabilities
+  const capabilities = {
+    'claude-opus-4-8': { reasoningEfforts: [{ value: 'high' }, { value: 'xhigh' }] },
+    // No default: Anthropic's model endpoint lists levels without naming one.
+    'claude-sonnet-4-6': { reasoningEfforts: [{ value: 'high' }] },
+    'claude-haiku-4-5': { reasoningEfforts: [] },
+    // codex reports a per-model default alongside the levels.
+    'gpt-5.6-sol': {
+      reasoningEfforts: [{ value: 'low' }, { value: 'medium' }, { value: 'ultra' }],
+      defaultReasoningEffort: 'low',
+    },
+  }
+
+  it('keeps a level the new model still accepts', () => {
+    expect(
+      reasoningEffortAfterModelChange(supported, capabilities, 'claude-sonnet-4-6', 'high'),
+    ).toBe('high')
+  })
+
+  it('falls back to the new model’s default when the level does not carry over', () => {
+    // `ultra` exists on this codex model but not on every one; when a switch
+    // lands on a model that reports a default, the field states that default
+    // rather than going blank.
+    expect(reasoningEffortAfterModelChange(supported, capabilities, 'gpt-5.6-sol', 'xhigh')).toBe(
+      'low',
+    )
+  })
+
+  it('clears when the new model rejects the level and names no default', () => {
+    // Opus 4.8 has xhigh, Sonnet 4.6 does not, and Anthropic reports no default
+    // to fall back to. Empty passes no flag, so the CLI's own default applies —
+    // the same outcome, just not spelled out in the field.
+    expect(
+      reasoningEffortAfterModelChange(supported, capabilities, 'claude-sonnet-4-6', 'xhigh'),
+    ).toBeUndefined()
+  })
+
+  it('carries the level over unchanged when the new model still offers it', () => {
+    expect(reasoningEffortAfterModelChange(supported, capabilities, 'gpt-5.6-sol', 'medium')).toBe(
+      'medium',
+    )
+  })
+
+  it('drops any level when the new model accepts none, default or not', () => {
+    expect(
+      reasoningEffortAfterModelChange(supported, capabilities, 'claude-haiku-4-5', 'high'),
+    ).toBeUndefined()
+  })
+
+  it('keeps the level when the new model’s levels were never discovered', () => {
+    // Unknown is not evidence of invalidity — behind a proxy nothing is ever
+    // discovered, and clearing here would silently drop a working setting.
+    expect(
+      reasoningEffortAfterModelChange(supported, capabilities, 'deepseek-v4-flash', 'high'),
+    ).toBe('high')
+  })
+
+  it('keeps the level when nothing was probed at all', () => {
+    expect(reasoningEffortAfterModelChange(supported, undefined, 'claude-opus-4-8', 'high')).toBe(
+      'high',
+    )
+  })
+
+  it('stays undefined when no level was configured', () => {
+    expect(
+      reasoningEffortAfterModelChange(supported, capabilities, 'claude-haiku-4-5', undefined),
+    ).toBeUndefined()
   })
 })

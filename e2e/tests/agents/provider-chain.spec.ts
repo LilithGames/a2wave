@@ -126,6 +126,80 @@ test.describe('Agent provider chain compatibility', () => {
     }
   })
 
+  /**
+   * The level list is discovered per credential, and in an environment where no
+   * CLI or key is present it cannot be discovered at all — the same situation as
+   * a self-hosted proxy that reports bare model ids. A stored level must survive
+   * that: the control degrades to disabled, but saving the page must not silently
+   * drop a setting the operator configured elsewhere.
+   */
+  test('keeps a stored reasoning level and fast mode through a save that cannot probe levels', async ({
+    page,
+  }) => {
+    const token = await getAdminToken()
+    const providers = await listProviders(token)
+    const claude = providers.find((p) => p.kind === 'claude-code')
+    expect(claude, 'claude-code provider fixture').toBeTruthy()
+    if (!claude) return
+
+    const agent = await createAgentWithPayload(token, {
+      name: `e2e-reasoning-controls-${Date.now()}`,
+      type: 'cursor',
+      providerId: claude.id,
+      authMode: 'apiKey',
+      providerApiKey: 'primary-api-key',
+      config: {
+        model: enabledModel(claude),
+        providerChain: [
+          {
+            id: 'pc_primary',
+            providerId: claude.id,
+            model: enabledModel(claude),
+            authMode: 'apiKey',
+            providerApiKey: 'primary-api-key',
+            reasoningEffort: 'xhigh',
+            fastMode: true,
+            enabled: true,
+          },
+        ],
+        force: true,
+        timeoutMinutes: 10,
+        maxRetries: 2,
+      },
+    })
+
+    try {
+      await page.goto(`/agents/${agent.id}`)
+      await expect(page.getByTestId('provider-chain-item-0')).toContainText(claude.name, {
+        timeout: 8000,
+      })
+
+      const fastMode = page.getByTestId('provider-chain-fast-mode-0')
+      await expect(fastMode).toBeVisible()
+      await expect(fastMode).toHaveAttribute('aria-checked', 'true')
+      await expect(page.getByTestId('provider-chain-reasoning-effort-0')).toContainText('xhigh')
+
+      await fastMode.click()
+      await expect(fastMode).toHaveAttribute('aria-checked', 'false')
+
+      const responsePromise = page.waitForResponse(
+        (response) =>
+          response.url().includes(`/api/agents/${agent.id}`) &&
+          response.request().method() === 'PATCH',
+      )
+      await page.getByTestId('agent-detail-save').click()
+      const response = await responsePromise
+      expect(response.ok()).toBe(true)
+
+      const after = await getAgent(token, agent.id)
+      const chain = after.config?.providerChain as Array<Record<string, unknown>>
+      expect(chain[0]?.reasoningEffort).toBe('xhigh')
+      expect(chain[0]?.fastMode ?? false).toBe(false)
+    } finally {
+      await deleteAgentAs(token, agent.id)
+    }
+  })
+
   test('reorders provider chain with drag and persists the new fallback order', async ({
     page,
   }) => {

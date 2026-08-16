@@ -84,6 +84,22 @@ export const providerCapabilitiesSchema = z
     credentialFields: credentialFieldsSchema,
     mcpDelivery: providerMcpDeliverySchema,
     executionOptions: z.array(providerExecutionOptionSchema),
+    /**
+     * Whether the CLI accepts a reasoning-effort setting at all. Only that —
+     * *which* levels are legal is reported per model by discovery, never
+     * declared here. The flag exists so the UI can tell "this Provider has no
+     * such knob" apart from "it has one but this credential could not be
+     * probed"; the two deserve different treatment and look identical without it.
+     */
+    reasoningEffort: z.boolean(),
+    /**
+     * Whether the CLI accepts a fast-mode switch. Unlike effort this is a plain
+     * boolean with nothing to discover, so a static declaration is the whole
+     * story. Whether a given run actually gets the faster path depends on the
+     * model, the account tier and the endpoint, and is reported by the run
+     * itself rather than predicted here.
+     */
+    fastMode: z.boolean(),
     sessionResume: z.boolean(),
     sandbox: z.enum(['native', 'cli-controlled', 'unsupported']),
     localSessionLoginCommand: z.string().min(1).optional(),
@@ -265,7 +281,14 @@ const PRESET_PROVIDER_DEFS: PresetProvider[] = [
     checkScript: 'claude --version',
     skillsDir: '.claude/skills',
     mcpConfigPath: '.mcp.json',
-    minVersion: null,
+    // `--effort` first shipped in 2.1.47 (2.1.45 rejects it; 2.1.46 was never
+    // published). An unknown option is fatal to the CLI's argument parser, so a
+    // build below this floor fails at spawn the moment an Agent configures a
+    // reasoning level. `--settings` is older and already present at that
+    // version, so one floor covers both. The floor guards the FLAG only: which
+    // levels are legal is a property of the model and is discovered per
+    // credential — 2.1.47 itself advertised just low/medium/high.
+    minVersion: '2.1.47',
   },
   {
     kind: 'codex',

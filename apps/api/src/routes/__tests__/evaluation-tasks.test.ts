@@ -372,6 +372,8 @@ describe('POST /:agentId/evaluation-tasks', () => {
         providerId: 'prv_1',
         providerName: 'Claude Code',
         model: 'claude-opus-4-8',
+        reasoningEffort: null,
+        fastMode: null,
         systemPrompt: 'You are helpful.',
         capturedAt: '2026-07-20T00:00:00.000Z',
       }

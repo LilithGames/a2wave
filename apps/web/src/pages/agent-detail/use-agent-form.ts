@@ -217,6 +217,8 @@ export function useAgentForm(
         return (
           entry.providerId === other.providerId &&
           entry.model === other.model &&
+          entry.reasoningEffort === other.reasoningEffort &&
+          Boolean(entry.fastMode) === Boolean(other.fastMode) &&
           entry.authMode === other.authMode &&
           entry.providerApiKey === other.providerApiKey &&
           entry.providerBaseUrl === other.providerBaseUrl &&
@@ -521,6 +523,10 @@ export function useAgentForm(
             id: typeof item.id === 'string' ? item.id : uniqueId(),
             providerId,
             model: typeof item.model === 'string' ? item.model : '',
+            ...(typeof item.reasoningEffort === 'string' && item.reasoningEffort
+              ? { reasoningEffort: item.reasoningEffort }
+              : {}),
+            ...(item.fastMode === true ? { fastMode: true } : {}),
             authMode: resolvePersistedAuthMode(
               item.authMode,
               providerId ? providersById.get(providerId)?.capabilities?.defaultAuthMode : undefined,

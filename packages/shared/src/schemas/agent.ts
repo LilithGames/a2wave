@@ -100,10 +100,35 @@ export const authHeaderStyleEnum = z.enum(['x-api-key', 'bearer'])
 export type AuthHeaderStyle = z.infer<typeof authHeaderStyleEnum>
 export type PublishChannel = z.infer<typeof publishChannelEnum>
 
+/**
+ * One reasoning-effort level, as a bare token.
+ *
+ * The set of legal values is NOT enumerable here: it is reported per model by
+ * discovery and differs between Providers and between models of the same
+ * Provider (codex advertises `ultra`, Claude does not; Claude Opus 4.5 has
+ * neither `xhigh` nor `max`; Haiku 4.5 accepts no effort at all). Hard-coding a
+ * union would be wrong for some model on day one.
+ *
+ * What is enforced is the SHAPE, because the value is handed to a CLI as an
+ * argument: a lowercase token, no whitespace, never starting with a dash. That
+ * keeps a stored value from ever reading as a second flag or splitting into an
+ * extra argv entry, without pretending to know which levels exist.
+ */
+export const reasoningEffortValueSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/)
+export type ReasoningEffortValue = z.infer<typeof reasoningEffortValueSchema>
+
 export const providerChainItemSchema = z.object({
   id: z.string().optional(),
   providerId: z.string().nullable(),
   model: z.string().optional(),
+  /**
+   * Reasoning effort and fast mode live HERE, beside the model, not on the
+   * Agent. A chain mixes Providers and models for fallback, and the legal
+   * levels follow the model — an Agent-level value would be invalid for at
+   * least one entry of any mixed chain.
+   */
+  reasoningEffort: reasoningEffortValueSchema.optional(),
+  fastMode: z.boolean().optional(),
   // The effective default belongs to the selected Provider manifest. Keeping
   // this optional prevents a platform-wide apiKey default from overriding
   // Providers such as Pi whose native/default mode is localSession.

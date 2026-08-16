@@ -291,6 +291,15 @@ export interface AgentConfig {
   providerKind?: ProviderKind
   engineType?: string
   model?: string
+  /**
+   * Reasoning effort and fast mode belong to the binding that is actually
+   * running, not to the Agent: a chain mixes Providers and models, and the legal
+   * effort levels follow the model. Both are (re)set by `applyProviderBinding`
+   * so a provider fallback swaps them along with the model instead of carrying
+   * the previous entry's settings onto a CLI that rejects them.
+   */
+  reasoningEffort?: string
+  fastMode?: boolean
   fallbackModels?: string[]
   providerId?: string | null
   providerName?: string
@@ -348,6 +357,8 @@ export interface ResolvedProviderBinding {
   /** Compatibility alias consumed by the current engine registry. */
   engineType: ProviderKind
   model?: string
+  reasoningEffort?: string
+  fastMode?: boolean
   initScript?: string | null
   checkScript?: string | null
   skillsDir?: string
@@ -450,6 +461,8 @@ async function resolveProviderBinding(
     providerKind,
     engineType: providerKind,
     model: binding.model || undefined,
+    ...(binding.reasoningEffort ? { reasoningEffort: binding.reasoningEffort } : {}),
+    ...(binding.fastMode ? { fastMode: true } : {}),
     initScript: provider.initScript,
     checkScript: provider.checkScript,
     authMode,
@@ -516,6 +529,8 @@ export function clearProviderBinding(agentConfig: AgentConfig): void {
   agentConfig.initScript = undefined
   agentConfig.checkScript = undefined
   agentConfig.model = undefined
+  agentConfig.reasoningEffort = undefined
+  agentConfig.fastMode = undefined
   agentConfig.skillsDir = undefined
   agentConfig.mcpConfigPath = undefined
   agentConfig.mcpDelivery = undefined
@@ -539,6 +554,8 @@ export function applyProviderBinding(
   agentConfig.authMode = binding.authMode
   if (binding.authHeaderStyle) agentConfig.authHeaderStyle = binding.authHeaderStyle
   if (binding.model) agentConfig.model = binding.model
+  if (binding.reasoningEffort) agentConfig.reasoningEffort = binding.reasoningEffort
+  if (binding.fastMode) agentConfig.fastMode = true
   if (binding.skillsDir) agentConfig.skillsDir = binding.skillsDir
   if (binding.mcpConfigPath) agentConfig.mcpConfigPath = binding.mcpConfigPath
   agentConfig.mcpDelivery = binding.mcpDelivery

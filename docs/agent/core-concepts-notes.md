@@ -41,8 +41,9 @@ Run, ChatMessage, Settings, Evaluation Set / Case / Task.
 
 An Evaluation Set groups Cases (each an ordered list of
 `{request, expectedResponse}` turns); an Evaluation Task replays a set against the
-Agent's current config and freezes a provider/model/prompt snapshot for
-comparison. Why it bypasses the `runs` table, its queueing and workspace
+Agent's current config and freezes a provider/model/reasoning-effort/fast-mode/prompt
+snapshot for comparison — the two execution controls belong to the binding, so a task
+that differed only in reasoning depth would otherwise be indistinguishable. Why it bypasses the `runs` table, its queueing and workspace
 isolation: [api-permissions.md](./api-permissions.md#evaluation-why-it-bypasses-runs).
 
 ## Channels

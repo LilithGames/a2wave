@@ -20,6 +20,8 @@ const cursorManifest = {
     },
     mcpDelivery: { mode: 'workspace-file', defaultPath: '.cursor/mcp.json' },
     executionOptions: ['readOnly', 'force'],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     sandbox: 'cli-controlled',
     localSessionLoginCommand: 'cursor-agent login',
@@ -114,5 +116,30 @@ describe('provider manifest schema', () => {
     } as const
 
     expect(providerManifestSchema.safeParse(invalid)).toMatchObject({ success: false })
+  })
+})
+
+describe('reasoning capability declaration', () => {
+  it('is part of every manifest, so a new Provider must answer for both dimensions', () => {
+    const parsed = providerManifestSchema.parse(cursorManifest)
+
+    expect(parsed.capabilities.reasoningEffort).toBe(false)
+    expect(parsed.capabilities.fastMode).toBe(false)
+  })
+
+  it('rejects a manifest that leaves reasoning effort undeclared', () => {
+    const { reasoningEffort: _omitted, ...capabilities } = cursorManifest.capabilities
+
+    expect(providerManifestSchema.safeParse({ ...cursorManifest, capabilities })).toMatchObject({
+      success: false,
+    })
+  })
+
+  it('rejects a manifest that leaves fast mode undeclared', () => {
+    const { fastMode: _omitted, ...capabilities } = cursorManifest.capabilities
+
+    expect(providerManifestSchema.safeParse({ ...cursorManifest, capabilities })).toMatchObject({
+      success: false,
+    })
   })
 })

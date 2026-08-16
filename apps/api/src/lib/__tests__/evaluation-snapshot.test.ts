@@ -97,7 +97,7 @@ describe('buildEvaluationSnapshot', () => {
     expect(snapshot).not.toHaveProperty('providerChain')
   })
 
-  it('exposes exactly the five allowlisted keys and nothing else', async () => {
+  it('exposes exactly the allowlisted keys and nothing else', async () => {
     const snapshot = await snapshotOf(createTestAgent(), {
       providerId: 'prv_1',
       providerName: 'Claude Code',
@@ -110,9 +110,11 @@ describe('buildEvaluationSnapshot', () => {
 
     expect(Object.keys(snapshot).sort()).toEqual([
       'capturedAt',
+      'fastMode',
       'model',
       'providerId',
       'providerName',
+      'reasoningEffort',
       'systemPrompt',
     ])
     expect(JSON.stringify(snapshot)).not.toContain('leak-me')
@@ -158,9 +160,11 @@ describe('buildStoredEvaluationSnapshot', () => {
     expect(JSON.stringify(stored)).not.toContain('sk-super-secret')
     expect(Object.keys(stored).sort()).toEqual([
       'capturedAt',
+      'fastMode',
       'model',
       'providerId',
       'providerName',
+      'reasoningEffort',
       'systemPrompt',
     ])
   })
@@ -239,5 +243,106 @@ describe('applyEvaluationSnapshot', () => {
     )
 
     expect(config.model).toBe('old-model')
+  })
+})
+
+describe('reasoning controls in the snapshot', () => {
+  beforeEach(() => {
+    buildAgentConfigMock.mockReset()
+  })
+
+  it('captures the effort and fast mode the run will actually use', async () => {
+    const snapshot = await snapshotOf(createTestAgent(), {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      systemPrompt: '',
+      reasoningEffort: 'xhigh',
+      fastMode: true,
+    })
+
+    expect(snapshot.reasoningEffort).toBe('xhigh')
+    expect(snapshot.fastMode).toBe(true)
+  })
+
+  it('records "not configured" rather than inventing a level', async () => {
+    const snapshot = await snapshotOf(createTestAgent(), {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      systemPrompt: '',
+    })
+
+    expect(snapshot.reasoningEffort).toBeNull()
+    expect(snapshot.fastMode).toBeNull()
+  })
+
+  it('restores the captured effort over an Agent edited after the task was created', async () => {
+    // Effort changes what a run costs and how it answers. Replaying a set at a
+    // different level and filing the results under the same task would publish a
+    // comparison whose variables silently moved.
+    const agent = createTestAgent()
+    const live = {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      reasoningEffort: 'low',
+      providerChain: [
+        {
+          providerId: 'prv_1',
+          providerName: 'Claude Code',
+          engineType: 'claude-code',
+          model: 'claude-opus-4-8',
+          reasoningEffort: 'low',
+        },
+      ],
+    }
+
+    const config = applyEvaluationSnapshot(
+      live as never,
+      {
+        providerId: 'prv_1',
+        model: 'claude-opus-4-8',
+        systemPrompt: '',
+        reasoningEffort: 'xhigh',
+        fastMode: true,
+      } as never,
+      agent as never,
+    )
+
+    expect(config.reasoningEffort).toBe('xhigh')
+    expect(config.fastMode).toBe(true)
+    // executeWithRetry re-reads providerChain and reapplies its first entry, so
+    // pinning only the top level would be undone before the first turn runs.
+    const chain = config.providerChain as Array<Record<string, unknown>>
+    expect(chain[0]?.reasoningEffort).toBe('xhigh')
+    expect(chain[0]?.fastMode).toBe(true)
+  })
+
+  it('leaves a task created before these fields existed on the live configuration', async () => {
+    const agent = createTestAgent()
+    const live = {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      reasoningEffort: 'high',
+      providerChain: [
+        {
+          providerId: 'prv_1',
+          providerName: 'Claude Code',
+          engineType: 'claude-code',
+          model: 'claude-opus-4-8',
+          reasoningEffort: 'high',
+        },
+      ],
+    }
+
+    const config = applyEvaluationSnapshot(
+      live as never,
+      { providerId: 'prv_1', model: 'claude-opus-4-8', systemPrompt: '' } as never,
+      agent as never,
+    )
+
+    expect(config.reasoningEffort).toBe('high')
   })
 })

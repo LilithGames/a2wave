@@ -265,6 +265,19 @@ export function StreamLogItem({ entry, baseTs }: { entry: StreamLogEntry; baseTs
               {formatTokens(entry.usage.outputTokens)}
             </span>
           )}
+          {/* Only rendered when the engine reported a verdict. Fast mode is
+              requested, never guaranteed — the model, the plan and the endpoint
+              each get a veto — so this is the only place the operator learns
+              whether the switch actually did anything. */}
+          {entry.fastModeState && (
+            <span
+              className={entry.fastModeState === 'on' ? 'text-success' : 'text-muted-foreground'}
+            >
+              {t(`runLog.fastMode.${entry.fastModeState}`, {
+                defaultValue: t('runLog.fastMode.unknown', { state: entry.fastModeState }),
+              })}
+            </span>
+          )}
         </div>
       )
 
@@ -354,12 +367,35 @@ export function StreamLogsTimeline({
   const durationLabel = durationMs != null ? `${(durationMs / 1000).toFixed(1)}s` : undefined
   const model = logs.find((e) => e.type === 'system' && e.subtype === 'init' && 'model' in e)
   const modelLabel = model && 'model' in model ? (model as { model?: string }).model : undefined
+  // Both markers sit next to the model they belong to, and both are bare
+  // tokens: the summary is a one-line scan, not a report. The level is rendered
+  // verbatim — it is the CLI's own vocabulary, so a label in front of it adds
+  // width without adding meaning. Fast mode is marked only when it actually
+  // applied: "off" is the norm and would be noise on every run, and the full
+  // verdict (off, cooldown) stays on the result row inside.
+  const execParams = logs.find((e) => e.type === 'exec_params')
+  const effortLevel =
+    execParams && 'params' in execParams && typeof execParams.params.reasoningEffort === 'string'
+      ? execParams.params.reasoningEffort
+      : undefined
+  // Marked unless there is positive evidence it did not happen. Engines differ
+  // in how much they admit — Claude reports the served speed, codex reports
+  // nothing about the tier at all — and surfacing that gap as a different
+  // marker made an ordinary codex run look broken. Only `denied`, where the
+  // engine explicitly said it served standard, drops the marker; the result row
+  // inside carries the exact wording either way.
+  const fastState =
+    resultEntry && 'fastModeState' in resultEntry ? resultEntry.fastModeState : undefined
+  const fastMarker =
+    fastState === 'on' || fastState === 'requested' ? t('runLog.fastSummary') : null
 
   const parts = [
     toolCalls > 0 ? t('runLog.toolCallsSummary', { count: toolCalls }) : null,
     messages > 0 ? t('runLog.messagesSummary', { count: messages }) : null,
     durationLabel,
     modelLabel,
+    effortLevel,
+    fastMarker,
   ].filter(Boolean)
 
   return (

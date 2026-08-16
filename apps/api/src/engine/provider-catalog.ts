@@ -218,6 +218,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     credentialFields: { apiKey: [required('apiKey')] },
     mcpDelivery: { mode: 'workspace-file', defaultPath: '.cursor/mcp.json' },
     executionOptions: ['readOnly', 'force'],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     sandbox: 'cli-controlled',
     localSessionLoginCommand: 'cursor-agent login',
@@ -233,6 +235,13 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     },
     mcpDelivery: { mode: 'workspace-file', defaultPath: '.mcp.json' },
     executionOptions: ['readOnly', 'force', 'approveMcps'],
+    // `--effort` takes a level, and which levels are legal is a property of the
+    // model, so the values are probed rather than declared. Fast mode is the
+    // opposite: a plain switch (`--settings {"fastMode":true}`) with nothing to
+    // discover — whether a run really gets the faster path depends on the model,
+    // the plan and the endpoint, and the run reports that itself.
+    reasoningEffort: true,
+    fastMode: true,
     sessionResume: true,
     // Native OS-level sandbox: macOS Seatbelt / Linux bubblewrap; the platform can
     // force it on non-bypassably via managed settings.
@@ -247,6 +256,12 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     credentialFields: { apiKey: [required('apiKey'), optional('baseUrl')] },
     mcpDelivery: { mode: 'runtime-injection' },
     executionOptions: ['readOnly', 'force', 'cleanResult'],
+    // `-c model_reasoning_effort=<level>`; the levels come from `codex debug
+    // models`, which reports a different set per model. Fast mode is the
+    // `priority` service tier — a switch, but one codex silently omits (with a
+    // warning) when the selected model does not advertise it.
+    reasoningEffort: true,
+    fastMode: true,
     sessionResume: true,
     sandbox: 'native',
     localSessionLoginCommand: 'codex login',
@@ -259,6 +274,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     credentialFields: {},
     mcpDelivery: { mode: 'runtime-injection' },
     executionOptions: [],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     // No OS-level sandbox — only an in-process tool-approval gate, no filesystem
     // or network isolation.
@@ -272,6 +289,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     credentialFields: { apiKey: [required('apiKey')] },
     mcpDelivery: { mode: 'workspace-file', defaultPath: '.mcp.json' },
     executionOptions: ['readOnly', 'force', 'approveMcps'],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     sandbox: 'cli-controlled',
     localSessionLoginCommand: 'qodercli login',
@@ -284,6 +303,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     credentialFields: { apiKey: [required('apiKey'), optional('baseUrl')] },
     mcpDelivery: { mode: 'workspace-file', defaultPath: '.trae/mcp.json' },
     executionOptions: ['readOnly', 'force', 'approveMcps'],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     sandbox: 'cli-controlled',
     localSessionLoginCommand: 'traecli',
@@ -301,6 +322,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     // `-p` rejects --yolo/--auto/--plan and always runs under the `auto`
     // permission policy, so readOnly/force/approveMcps have no valid flag.
     executionOptions: [],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     // No OS-level sandbox — only an in-process approval gate, which `-p`
     // resolves automatically.
@@ -320,6 +343,8 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     // one, but silently installing code is outside the Provider contract.
     mcpDelivery: { mode: 'none' },
     executionOptions: ['readOnly'],
+    reasoningEffort: false,
+    fastMode: false,
     sessionResume: true,
     sandbox: 'unsupported',
     localSessionLoginCommand: 'pi',

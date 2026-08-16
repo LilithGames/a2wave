@@ -187,3 +187,30 @@ describe('evaluateProviderVersion', () => {
     })
   })
 })
+
+describe('reasoning capability declaration', () => {
+  it('declares reasoning effort only for the CLIs that accept one', () => {
+    const declaring = Object.entries(BUILTIN_PROVIDER_MANIFESTS)
+      .filter(([, manifest]) => manifest.capabilities.reasoningEffort)
+      .map(([kind]) => kind)
+
+    expect(declaring).toEqual(['claude-code', 'codex'])
+  })
+
+  it('declares fast mode only for the CLIs that accept one', () => {
+    const declaring = Object.entries(BUILTIN_PROVIDER_MANIFESTS)
+      .filter(([, manifest]) => manifest.capabilities.fastMode)
+      .map(([kind]) => kind)
+
+    expect(declaring).toEqual(['claude-code', 'codex'])
+  })
+
+  it('keeps the two dimensions separate from the boolean execution options', () => {
+    // executionOptions drives the Agent-wide advanced switches; effort and fast
+    // mode belong to a single provider chain entry and must not leak into it.
+    for (const manifest of Object.values(BUILTIN_PROVIDER_MANIFESTS)) {
+      expect(manifest.capabilities.executionOptions).not.toContain('reasoningEffort')
+      expect(manifest.capabilities.executionOptions).not.toContain('fastMode')
+    }
+  })
+})
