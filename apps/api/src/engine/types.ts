@@ -1,4 +1,9 @@
-import type { AuthHeaderStyle } from '@a2wave/shared'
+import type {
+  AuthHeaderStyle,
+  FastModeAvailability,
+  FastModeState,
+  ModelCapabilities,
+} from '@a2wave/shared'
 
 /**
  * Agent execution engine abstraction layer
@@ -121,13 +126,12 @@ export type StreamLogEntry =
       durationMs?: number
       usage?: TokenUsage
       /**
-       * Whether the run actually got the faster path, as reported by the CLI —
-       * `on` / `off` / `cooldown`. Fast mode is only ever *requested*: the model,
-       * the account plan and the endpoint all have a veto, and the CLI settles it
-       * at run time. Absent when the engine reports nothing, which is not the
-       * same as `off`.
+       * Whether the run actually got the faster path. Fast mode is only ever
+       * *requested* — the model, the account plan and the endpoint all have a
+       * veto, and the CLI settles it at run time. Absent when the engine
+       * reports nothing, which is not the same as `off`; see FastModeState.
        */
-      fastModeState?: string
+      fastModeState?: FastModeState
       ts: number
     }
   | { type: 'error'; message: string; ts: number }
@@ -228,13 +232,13 @@ export interface ModelListResult {
    * an entry with an EMPTY level list is the different, positive answer "this
    * model takes no effort setting".
    */
-  modelCapabilities?: Record<string, import('@a2wave/shared').ModelCapabilities>
+  modelCapabilities?: Record<string, ModelCapabilities>
   /**
    * Whether these credentials may use fast mode. Absent when the engine cannot
    * ask, or the answer did not arrive — never inferred, and never a reason to
    * block the control.
    */
-  fastMode?: import('@a2wave/shared').FastModeAvailability
+  fastMode?: FastModeAvailability
   /** Failure signal — a non-empty value in either field means failure */
   error?: string
   /** Failure code: 'unsupported_mode' / 'http_error' / 'no_account_models' / 'cli_failed' / 'timeout' / 'spawn_failed' / 'parse_failed' */

@@ -2,6 +2,7 @@ import { createWriteStream, renameSync, rmSync, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as StreamWebReadable } from 'node:stream/web'
+import type { FastModeState } from '@a2wave/shared'
 import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
@@ -103,8 +104,8 @@ interface StreamLogEntry {
   durationMs?: number
   /** Model the engine actually started with; carried on the `init` system entry. */
   model?: string
-  /** Served fast-mode verdict (`on` / `off` / `denied` / `requested`), when the engine reported one. */
-  fastModeState?: string
+  /** The engine's verdict on fast mode; absent when it reported none. */
+  fastModeState?: FastModeState
   engine?: string
   params?: Record<string, unknown>
   ts: number

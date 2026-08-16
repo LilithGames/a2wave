@@ -12,7 +12,7 @@
  * takes no effort setting, and the UI has to tell them apart.
  */
 import type { ModelCapabilities, ReasoningEffortOption } from '@a2wave/shared'
-import { reasoningEffortValueSchema } from '@a2wave/shared'
+import { REASONING_EFFORT_DESCRIPTION_MAX, reasoningEffortValueSchema } from '@a2wave/shared'
 
 /**
  * Whether a token is shaped like a level a CLI could be handed as an argument.
@@ -43,7 +43,10 @@ export function toReasoningEffortOptions(
     if (!isReasoningEffortValue(level.value)) continue
     options.push(
       typeof level.description === 'string' && level.description
-        ? { value: level.value, description: level.description.slice(0, 200) }
+        ? {
+            value: level.value,
+            description: level.description.slice(0, REASONING_EFFORT_DESCRIPTION_MAX),
+          }
         : { value: level.value },
     )
   }

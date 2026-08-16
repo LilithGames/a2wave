@@ -180,3 +180,53 @@ describe('describeDestructiveDiff', () => {
     ])
   })
 })
+
+/**
+ * `config` is freeform and the repo treats it as secret-bearing — `agents get`
+ * prints its top-level KEY NAMES and never a value, "to avoid leaking plaintext
+ * to the terminal/logs". Recursing into it for the removal gate opened a path
+ * that printed values again: a removed element of a nested primitive array was
+ * rendered verbatim into the confirmation prompt.
+ *
+ * Identity fields stay named at any depth — `pc_codex` is what makes the warning
+ * actionable, and an id is not a credential.
+ */
+describe('value disclosure below the top level', () => {
+  it('never prints a removed value from an array nested inside config', () => {
+    const existing = { config: { allowedTokens: ['sk-live-abc123', 'sk-live-def456'] } }
+    const proposed = { config: { allowedTokens: ['sk-live-abc123'] } }
+
+    const findings = describeDestructiveDiff(existing, proposed)
+
+    expect(findings.join('\n')).not.toContain('sk-live-def456')
+    expect(findings).toEqual(['config.allowedTokens: removes 1 entry'])
+  })
+
+  it('still names top-level list members, which are ids the user chose', () => {
+    // skills / mcpServerIds are the case the naming exists for, and they are not
+    // reached by recursing into a freeform object.
+    expect(describeDestructiveDiff({ skills: ['a', 'b'] }, { skills: ['a'] })).toEqual([
+      'skills: removes 1 (b)',
+    ])
+  })
+
+  it('still names a removed chain entry by its identity', () => {
+    const existing = { config: { providerChain: [{ id: 'pc_claude' }, { id: 'pc_codex' }] } }
+    const proposed = { config: { providerChain: [{ id: 'pc_claude' }] } }
+
+    expect(describeDestructiveDiff(existing, proposed)).toEqual([
+      'config.providerChain: removes 1 (pc_codex)',
+    ])
+  })
+
+  it('keeps naming removed KEYS at any depth, which carry no value', () => {
+    const existing = { config: { limits: { cpu: 2, apiKey: 'sk-live' } } }
+    const proposed = { config: { limits: { cpu: 2 } } }
+
+    // The key name is the actionable part; its value is exactly what must not
+    // be echoed, and removing a key never prints one.
+    expect(describeDestructiveDiff(existing, proposed)).toEqual([
+      'config.limits: removes 1 key (apiKey)',
+    ])
+  })
+})

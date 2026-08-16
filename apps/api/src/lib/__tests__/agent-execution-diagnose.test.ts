@@ -32,14 +32,13 @@ vi.mock('../cli-installer.js', () => ({
 }))
 
 import type { agents } from '../../db/schema.js'
+import { asyncQuery } from '../../test/async-query.js'
 import { collectAgentExecutionChecks } from '../agent-execution-diagnose.js'
 import {
   ProviderBindingInvalidError,
   ProviderMcpUnsupportedError,
   UnusableProviderChainError,
 } from '../errors.js'
-
-import { asyncQuery } from '../../test/async-query.js'
 
 type AgentRow = typeof agents.$inferSelect
 
@@ -421,6 +420,50 @@ describe('reasoning controls bound to a Provider that cannot use them', () => {
     const check = checks.find((c) => c.id === 'provider_reasoning_effort_unsupported')
     expect(check?.severity).toBe('warn')
     expect(check?.message).toContain('xhigh')
+  })
+
+  /**
+   * A control belongs to its chain entry, so a mismatch on a FALLBACK is just as
+   * real — and harder to notice, since it only bites once the primary has
+   * already failed and nobody is watching that run closely.
+   */
+  it('warns about a fallback entry, not just the bound one', async () => {
+    mockBuildAgentConfig.mockReturnValue({
+      engineType: 'claude-code',
+      model: 'claude-opus-4-8',
+      providerChain: [
+        { providerId: 'prv_1', providerKind: 'claude-code', reasoningEffort: 'high' },
+        { providerId: 'prv_2', providerKind: 'cursor', reasoningEffort: 'xhigh' },
+      ],
+    })
+    mockProviderGet.mockReturnValue({ id: 'prv_1', kind: 'claude-code', name: 'Claude Code' })
+
+    const checks = await collectAgentExecutionChecks(
+      row({ id: 'a1', providerId: 'prv_1', type: 'cursor', providerApiKey: 'k' }),
+    )
+
+    const found = checks.filter((c) => c.id === 'provider_reasoning_effort_unsupported')
+    expect(found).toHaveLength(1)
+    // Positioned, because "somewhere in the chain" is not actionable.
+    expect(found[0]?.message).toContain('chain entry 2')
+    expect(found[0]?.message).toContain('xhigh')
+  })
+
+  it('names no position when the Agent has a single binding', async () => {
+    mockBuildAgentConfig.mockReturnValue({
+      engineType: 'cursor',
+      model: 'composer-1',
+      reasoningEffort: 'xhigh',
+    })
+    mockProviderGet.mockReturnValue({ id: 'prv_1', kind: 'cursor', name: 'Cursor CLI' })
+
+    const checks = await collectAgentExecutionChecks(
+      row({ id: 'a1', providerId: 'prv_1', type: 'cursor', providerApiKey: 'k' }),
+    )
+
+    expect(
+      checks.find((c) => c.id === 'provider_reasoning_effort_unsupported')?.message,
+    ).not.toContain('chain entry')
   })
 
   it('warns when fast mode is on for a Provider that has no fast mode', async () => {

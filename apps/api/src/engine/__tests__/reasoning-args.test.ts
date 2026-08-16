@@ -282,6 +282,21 @@ describe('claude-code fast mode outcome', () => {
 
     expect(result?.fastModeState).toBeUndefined()
   })
+
+  it('drops a state string the closed set does not define, rather than echoing it', async () => {
+    // The token reaches the run record, the web log and a terminal. Every other
+    // third-party value in this engine is capped or shape-checked; an unknown
+    // state degrades to absent, which the UI already renders as "said nothing".
+    const result = await runReporting({
+      type: 'result',
+      subtype: 'success',
+      result: 'ok',
+      duration_ms: 1,
+      fast_mode_state: `throttled${'x'.repeat(500)}`,
+    })
+
+    expect(result?.fastModeState).toBeUndefined()
+  })
 })
 
 /**

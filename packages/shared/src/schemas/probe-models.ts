@@ -46,10 +46,21 @@ export type ProbeModelsRequest = z.input<typeof probeModelsRequestSchema>
 /** Normalized request used by the API and ProviderAdapter. */
 export type ResolvedProbeModelsRequest = z.output<typeof probeModelsRequestSchema>
 
+/**
+ * Bounds on the two free-text fields discovery carries through.
+ *
+ * Exported because the engines truncate to them before the value ever reaches a
+ * schema: the probe route returns the adapter result verbatim, so the `.slice()`
+ * IS the enforcement. Two literals — one here, one in the engine — would let a
+ * raised bound leave the engines silently clipping at the old one.
+ */
+export const REASONING_EFFORT_DESCRIPTION_MAX = 200
+export const FAST_MODE_REASON_MAX = 64
+
 /** One reasoning-effort level a model accepts, with the CLI's own wording for it. */
 export const reasoningEffortOptionSchema = z.object({
   value: reasoningEffortValueSchema,
-  description: z.string().max(200).optional(),
+  description: z.string().max(REASONING_EFFORT_DESCRIPTION_MAX).optional(),
 })
 export type ReasoningEffortOption = z.infer<typeof reasoningEffortOptionSchema>
 
@@ -70,6 +81,26 @@ export const modelCapabilitiesSchema = z.object({
 export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>
 
 /**
+ * What actually happened to fast mode on one run, as reported by the engine.
+ *
+ * A closed set, declared once. It was three hand-written prose lists typed as
+ * bare `string` — one per app — and each named a different, incomplete subset,
+ * so no reader could learn the real vocabulary from any of them.
+ *
+ * - `on` — the server confirmed it served the faster path.
+ * - `requested` — the request went out and nothing contradicted it. The most
+ *   that can be claimed of an engine that never reports a tier (codex).
+ * - `denied` — asked for, and confirmed served at standard speed.
+ * - `off` — not asked for.
+ * - `cooldown` — refused for now; the served speed cannot express this.
+ *
+ * Absent is a sixth state and deliberately not a member: it means the engine
+ * said nothing, which is not `off`.
+ */
+export const fastModeStateEnum = z.enum(['on', 'requested', 'denied', 'off', 'cooldown'])
+export type FastModeState = z.infer<typeof fastModeStateEnum>
+
+/**
  * Whether these credentials may actually use fast mode, as answered by the
  * vendor rather than guessed from the model name.
  *
@@ -81,7 +112,7 @@ export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>
 export const fastModeAvailabilitySchema = z.object({
   available: z.boolean(),
   /** Vendor's machine-readable reason when unavailable, e.g. `extra_usage_disabled`. */
-  reason: z.string().max(64).optional(),
+  reason: z.string().max(FAST_MODE_REASON_MAX).optional(),
 })
 export type FastModeAvailability = z.infer<typeof fastModeAvailabilitySchema>
 

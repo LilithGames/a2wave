@@ -186,22 +186,35 @@ test.describe('Agent provider chain compatibility', () => {
       await expect(fastMode).toHaveAttribute('aria-checked', 'true')
       await expect(page.getByTestId('provider-chain-reasoning-effort-0')).toContainText('xhigh')
 
+      const save = async () => {
+        const responsePromise = page.waitForResponse(
+          (response) =>
+            response.url().includes(`/api/agents/${agent.id}`) &&
+            response.request().method() === 'PATCH',
+        )
+        await page.getByTestId('agent-detail-save').click()
+        expect((await responsePromise).ok()).toBe(true)
+        const after = await getAgent(token, agent.id)
+        const chain = (after.config?.providerChain ?? []) as Array<Record<string, unknown>>
+        return chain[0]
+      }
+
+      // Off first. Asserted as ABSENT rather than `?? false`: the serializer
+      // writes `undefined` for off, and `?? false` would read a chain that lost
+      // the field entirely as the expected result.
       await fastMode.click()
       await expect(fastMode).toHaveAttribute('aria-checked', 'false')
+      const afterOff = await save()
+      expect(afterOff?.reasoningEffort).toBe('xhigh')
+      expect(afterOff?.fastMode).toBeUndefined()
 
-      const responsePromise = page.waitForResponse(
-        (response) =>
-          response.url().includes(`/api/agents/${agent.id}`) &&
-          response.request().method() === 'PATCH',
-      )
-      await page.getByTestId('agent-detail-save').click()
-      const response = await responsePromise
-      expect(response.ok()).toBe(true)
-
-      const after = await getAgent(token, agent.id)
-      const chain = after.config?.providerChain as Array<Record<string, unknown>>
-      expect(chain[0]?.reasoningEffort).toBe('xhigh')
-      expect(chain[0]?.fastMode ?? false).toBe(false)
+      // Then back on, through the real UI rather than an API seed — otherwise
+      // nothing proves the switch can turn fast mode ON at all.
+      await fastMode.click()
+      await expect(fastMode).toHaveAttribute('aria-checked', 'true')
+      const afterOn = await save()
+      expect(afterOn?.fastMode).toBe(true)
+      expect(afterOn?.reasoningEffort).toBe('xhigh')
     } finally {
       await deleteAgentAs(token, agent.id)
     }

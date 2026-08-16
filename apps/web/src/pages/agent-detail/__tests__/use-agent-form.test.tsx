@@ -967,3 +967,89 @@ describe('useAgentForm — post-create redirect does not force a channel dialog 
     expect(target).toBe('/agents/agt_test1')
   })
 })
+
+/**
+ * Reasoning effort and fast mode are per-binding, so they must take part in the
+ * dirty check like every other chain field. Leaving them out leaves Save
+ * disabled and the unsaved-changes guard silent for an operator who changed only
+ * the reasoning level — the edit is then lost on the next navigation, with the
+ * page never having looked unsaved.
+ */
+describe('useAgentForm — reasoning controls take part in the dirty check', () => {
+  function hydratedWithChain(entry: Record<string, unknown>) {
+    vi.mocked(useAgent).mockReturnValueOnce({
+      data: {
+        data: {
+          ...agentFixture,
+          providerId: 'prv_default',
+          config: {
+            ...agentFixture.config,
+            providerChain: [
+              { id: 'chain_1', providerId: 'prv_default', model: 'm', enabled: true, ...entry },
+            ],
+          },
+        },
+        permission: 'owner',
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useAgent>)
+    return renderForm()
+  }
+
+  it('hydrates both controls from the persisted chain', async () => {
+    const { result } = hydratedWithChain({ reasoningEffort: 'ultra', fastMode: true })
+
+    await waitFor(() => {
+      expect(result.current.providerChainEntries[0]?.reasoningEffort).toBe('ultra')
+    })
+    expect(result.current.providerChainEntries[0]?.fastMode).toBe(true)
+    expect(result.current.hasSelectionChanges).toBe(false)
+  })
+
+  it('marks the form dirty when only the reasoning level changes', async () => {
+    const { result } = hydratedWithChain({ reasoningEffort: 'low' })
+    await waitFor(() => expect(result.current.providerChainEntries).toHaveLength(1))
+    expect(result.current.hasSelectionChanges).toBe(false)
+
+    act(() => {
+      result.current.setProviderChainEntries((entries) =>
+        entries.map((entry) => ({ ...entry, reasoningEffort: 'high' })),
+      )
+    })
+
+    await waitFor(() => expect(result.current.hasSelectionChanges).toBe(true))
+  })
+
+  it('marks the form dirty when only fast mode is toggled', async () => {
+    const { result } = hydratedWithChain({ fastMode: true })
+    await waitFor(() => expect(result.current.providerChainEntries).toHaveLength(1))
+    expect(result.current.hasSelectionChanges).toBe(false)
+
+    act(() => {
+      result.current.setProviderChainEntries((entries) =>
+        entries.map((entry) => ({ ...entry, fastMode: false })),
+      )
+    })
+
+    await waitFor(() => expect(result.current.hasSelectionChanges).toBe(true))
+  })
+
+  it('goes clean again when the change is reverted', async () => {
+    const { result } = hydratedWithChain({ reasoningEffort: 'low' })
+    await waitFor(() => expect(result.current.providerChainEntries).toHaveLength(1))
+
+    act(() => {
+      result.current.setProviderChainEntries((entries) =>
+        entries.map((entry) => ({ ...entry, reasoningEffort: 'high' })),
+      )
+    })
+    await waitFor(() => expect(result.current.hasSelectionChanges).toBe(true))
+
+    act(() => {
+      result.current.setProviderChainEntries((entries) =>
+        entries.map((entry) => ({ ...entry, reasoningEffort: 'low' })),
+      )
+    })
+    await waitFor(() => expect(result.current.hasSelectionChanges).toBe(false))
+  })
+})

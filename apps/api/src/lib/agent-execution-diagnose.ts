@@ -151,24 +151,42 @@ export async function collectAgentExecutionChecks(agent: AgentRow): Promise<Diag
   // Provider, but an imported Agent or a direct API write can still leave one
   // behind, and diagnose is then the only place it would ever be noticed.
   //
+  // EVERY entry is checked, not just the bound one. A control belongs to its
+  // chain entry, so a mismatch on a fallback is just as real — and strictly
+  // harder to notice, because it only bites once the primary has already failed
+  // and nobody is watching that run closely.
+  //
+  // Each entry carries its own `providerKind`, so this costs no extra query.
+  //
   // Whether the *model* accepts a given level is deliberately not checked here:
   // that answer only exists in a live probe, the model can still change mid-Run
   // through fallback, and the CLI already rejects a bad level with the accepted
   // set named in its error.
-  const configuredEffort = String(config.reasoningEffort ?? '').trim()
-  if (configuredEffort && !adapter.manifest.capabilities.reasoningEffort) {
-    checks.push({
-      id: 'provider_reasoning_effort_unsupported',
-      severity: 'warn',
-      message: `A reasoning level ("${configuredEffort}") is configured, but ${cliDisplayName(adapter.manifest.displayName)} has no such setting, so it is ignored on every run. Clear it, or bind a Provider that supports one.`,
-    })
-  }
-  if (config.fastMode === true && !adapter.manifest.capabilities.fastMode) {
-    checks.push({
-      id: 'provider_fast_mode_unsupported',
-      severity: 'warn',
-      message: `Fast mode is on, but ${cliDisplayName(adapter.manifest.displayName)} has no fast mode, so runs proceed at normal speed. Turn it off, or bind a Provider that supports one.`,
-    })
+  const chain = Array.isArray(config.providerChain) ? config.providerChain : []
+  const bindingsToCheck = chain.length > 0 ? chain : [config]
+  for (const [index, binding] of bindingsToCheck.entries()) {
+    const kind = 'providerKind' in binding ? binding.providerKind : provider.kind
+    const manifest = providerCatalog.get(kind)?.manifest ?? adapter.manifest
+    // Named only when there is more than one, so a single-Provider Agent keeps
+    // the message it had.
+    const where = bindingsToCheck.length > 1 ? ` on chain entry ${index + 1}` : ''
+    const cliName = cliDisplayName(manifest.displayName)
+
+    const configuredEffort = String(binding.reasoningEffort ?? '').trim()
+    if (configuredEffort && !manifest.capabilities.reasoningEffort) {
+      checks.push({
+        id: 'provider_reasoning_effort_unsupported',
+        severity: 'warn',
+        message: `A reasoning level ("${configuredEffort}") is configured${where}, but ${cliName} has no such setting, so it is ignored on every run. Clear it, or bind a Provider that supports one.`,
+      })
+    }
+    if (binding.fastMode === true && !manifest.capabilities.fastMode) {
+      checks.push({
+        id: 'provider_fast_mode_unsupported',
+        severity: 'warn',
+        message: `Fast mode is on${where}, but ${cliName} has no fast mode, so runs proceed at normal speed. Turn it off, or bind a Provider that supports one.`,
+      })
+    }
   }
 
   const authMode = (await config).authMode ?? adapter.manifest.capabilities.defaultAuthMode

@@ -690,7 +690,12 @@ function entryIdentity(entry: unknown): string | null {
   return null
 }
 
-function describeArrayRemoval(path: string, before: unknown[], next: unknown): string | null {
+function describeArrayRemoval(
+  path: string,
+  before: unknown[],
+  next: unknown,
+  nested: boolean,
+): string | null {
   const after = Array.isArray(next) ? next : []
 
   // Lists of primitives — skills, mcpServerIds — compare by value, which is
@@ -698,9 +703,15 @@ function describeArrayRemoval(path: string, before: unknown[], next: unknown): s
   if (!before.some(isPlainObject)) {
     const kept = new Set(after.map((entry) => JSON.stringify(entry)))
     const removed = before.filter((entry) => !kept.has(JSON.stringify(entry)))
-    return removed.length > 0
-      ? `${path}: removes ${removed.length} (${removed.map(String).join(', ')})`
-      : null
+    if (removed.length === 0) return null
+    // Only at the top level, where the members are ids the user picked. Reached
+    // by recursing into `config`, a member is freeform data the repo treats as
+    // secret-bearing — `agents get` prints its keys and never its values for
+    // exactly this reason — so the count is all that may be said.
+    if (nested) {
+      return `${path}: removes ${removed.length} ${removed.length === 1 ? 'entry' : 'entries'}`
+    }
+    return `${path}: removes ${removed.length} (${removed.map(String).join(', ')})`
   }
 
   const beforeIds = before.map(entryIdentity)
@@ -716,9 +727,15 @@ function describeArrayRemoval(path: string, before: unknown[], next: unknown): s
   return lost > 0 ? `${path}: removes ${lost} ${lost === 1 ? 'entry' : 'entries'}` : null
 }
 
-function collectRemovals(path: string, before: unknown, next: unknown, findings: string[]): void {
+function collectRemovals(
+  path: string,
+  before: unknown,
+  next: unknown,
+  findings: string[],
+  nested = false,
+): void {
   if (Array.isArray(before)) {
-    const finding = describeArrayRemoval(path, before, next)
+    const finding = describeArrayRemoval(path, before, next, nested)
     if (finding) findings.push(finding)
     return
   }
@@ -736,7 +753,7 @@ function collectRemovals(path: string, before: unknown, next: unknown, findings:
     for (const [key, value] of Object.entries(next)) {
       const previous = before[key]
       if (previous === undefined || previous === null) continue
-      collectRemovals(`${path}.${key}`, previous, value, findings)
+      collectRemovals(`${path}.${key}`, previous, value, findings, true)
     }
     return
   }

@@ -2,17 +2,23 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { FastModeAvailability, ModelCapabilities, ReasoningEffortOption } from '@a2wave/shared'
+import type {
+  FastModeAvailability,
+  FastModeState,
+  ModelCapabilities,
+  ReasoningEffortOption,
+} from '@a2wave/shared'
+import { FAST_MODE_REASON_MAX, fastModeStateEnum } from '@a2wave/shared'
 import { Agent as UndiciAgent } from 'undici'
 import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
+import { resolveProviderUrl } from '../lib/url-safety.js'
 import {
-  UnsafeUrlError,
   createPinnedLookup,
   resolvePublicUrl,
   safeFetch,
+  UnsafeUrlError,
 } from '../lib/url-safety-core.js'
-import { resolveProviderUrl } from '../lib/url-safety.js'
 import { BaseCliAgentEngine, type CliEngineBaseConfig, stripPromptArg } from './cli-engine-base.js'
 import { toDisplayExecParams } from './exec-params.js'
 import { createHeartbeatTracker } from './heartbeat.js'
@@ -138,7 +144,7 @@ async function probeFastModeAvailability(
         available: body.enabled,
         ...(body.enabled || typeof body.disabled_reason !== 'string'
           ? {}
-          : { reason: body.disabled_reason.slice(0, 64) }),
+          : { reason: body.disabled_reason.slice(0, FAST_MODE_REASON_MAX) }),
       }
     } finally {
       await dispatcher.close().catch(() => {})
@@ -173,12 +179,20 @@ async function probeFastModeAvailability(
  * strictly more than "off" and strictly less than "served".
  *
  * `cooldown` survives because the served speed cannot express it.
+ *
+ * The CLI's own token is validated against the closed set rather than forwarded.
+ * It is third-party text that ends up in the run record, the web log and a
+ * terminal, and every other value discovered in this file is already capped or
+ * shape-checked (`disabled_reason.slice(0, 64)`, the effort-level regex). An
+ * unrecognised state degrades to absent, which the UI already renders as "the
+ * engine said nothing" — strictly better than echoing bytes nobody defined.
  */
 export function resolveFastModeState(
   servedSpeed: unknown,
   claimedState: unknown,
-): string | undefined {
-  const claimed = typeof claimedState === 'string' ? claimedState : undefined
+): FastModeState | undefined {
+  const parsed = fastModeStateEnum.safeParse(claimedState)
+  const claimed = parsed.success ? parsed.data : undefined
   if (typeof servedSpeed !== 'string') return claimed
   if (servedSpeed === 'fast') return 'on'
   return claimed === 'on' ? 'denied' : (claimed ?? 'off')
