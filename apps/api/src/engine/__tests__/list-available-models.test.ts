@@ -1061,6 +1061,53 @@ describe('reasoning effort discovery', () => {
 
     expect(result.modelCapabilities?.['gpt-5.6-sol']?.reasoningEfforts).toEqual([{ value: 'high' }])
   })
+
+  it('codex: reports unknown, not "none", when every level token is unreadable', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const catalog = JSON.stringify({
+      models: [
+        {
+          slug: 'gpt-5.6-sol',
+          visibility: 'list',
+          supported_reasoning_levels: [{ effort: 'Very High' }, { effort: 'MAX' }],
+        },
+      ],
+    })
+
+    const promise = codex.listAvailableModels({ authMode: 'apiKey' })
+    settle(child, catalog, 0)
+    const result = await promise
+
+    // The CLI clearly HAS levels; this code just could not read its vocabulary.
+    // An empty array would tell the operator "this model takes no reasoning
+    // level" — a claim discovery never made — and grey out a usable control.
+    expect(result.modelCapabilities?.['gpt-5.6-sol']).toBeUndefined()
+  })
+
+  it('codex: clips a level description to the length the schema allows', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const catalog = JSON.stringify({
+      models: [
+        {
+          slug: 'gpt-5.6-sol',
+          visibility: 'list',
+          supported_reasoning_levels: [{ effort: 'high', description: 'x'.repeat(400) }],
+        },
+      ],
+    })
+
+    const promise = codex.listAvailableModels({ authMode: 'apiKey' })
+    settle(child, catalog, 0)
+    const result = await promise
+
+    // The route returns the adapter result verbatim, so this slice is the only
+    // thing keeping the payload inside `reasoningEffortOptionSchema`'s max(200).
+    expect(
+      result.modelCapabilities?.['gpt-5.6-sol']?.reasoningEfforts?.[0]?.description,
+    ).toHaveLength(200)
+  })
 })
 
 /**

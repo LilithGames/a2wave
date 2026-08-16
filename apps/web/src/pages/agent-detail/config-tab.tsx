@@ -1,16 +1,3 @@
-import { PromptEditor } from '@/components/prompt-editor'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
-import { useAllAgents } from '@/hooks/use-agents'
-import { useCurrentUser } from '@/hooks/use-auth'
-import { useProbeModels } from '@/hooks/use-providers'
-import { resolveCollectionIcon } from '@/lib/collection-icons'
-import { selectFilterOption } from '@/lib/select-filter'
-import { findUndefinedVariables } from '@/lib/template-utils'
 import type { Agent, ProviderDto, ScmSource } from '@a2wave/shared'
 import { ADMIN_MCP_NAMES, INTERNAL_MCP_NAMES, PROVIDER_CHAIN_MAX } from '@a2wave/shared'
 import { InputNumber, Radio, Select, Tag, Tooltip } from 'antd'
@@ -36,6 +23,19 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { PromptEditor } from '@/components/prompt-editor'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import { useAllAgents } from '@/hooks/use-agents'
+import { useCurrentUser } from '@/hooks/use-auth'
+import { useProbeModels } from '@/hooks/use-providers'
+import { resolveCollectionIcon } from '@/lib/collection-icons'
+import { selectFilterOption } from '@/lib/select-filter'
+import { findUndefinedVariables } from '@/lib/template-utils'
 import { EnvSection } from './env-section'
 import { McpServerTools, mcpServerHasToolPreview } from './mcp-server-tools'
 import {
@@ -51,6 +51,7 @@ import {
   resolveModelProbeErrorTranslation,
   visibleCredentialFieldsFor,
 } from './provider-capabilities'
+import { applyProviderEntryPatch } from './provider-chain'
 import { RouteSection } from './route-section'
 import type { AgentFormMethods, EnvEntry, ProviderChainEntry, RemoteEntry } from './types'
 import { WorkspaceSection } from './workspace-section'
@@ -410,39 +411,7 @@ export function ConfigTab({
   const updateProviderEntry = useCallback(
     (id: string, patch: Partial<ProviderChainEntry>) => {
       setProviderChainEntries((prev) =>
-        prev.map((entry) => {
-          if (entry.id !== id) return entry
-          // 凭证类字段 *或 providerId* 变化时，自动失效已 probe 的动态模型列表。
-          // providerId 监听很关键：避免切 Provider 后 UI 残留上一个 Provider 的 dynamicModels
-          // （表现为顶部"已拉取 N 个"标记不刷新）。
-          // 但 patch 显式传 dynamicModels / probeError / probing 时不覆盖（probe 流程自身用）。
-          const credChanged =
-            ('providerId' in patch && patch.providerId !== entry.providerId) ||
-            ('authMode' in patch && patch.authMode !== entry.authMode) ||
-            ('authHeaderStyle' in patch && patch.authHeaderStyle !== entry.authHeaderStyle) ||
-            ('providerBaseUrl' in patch && patch.providerBaseUrl !== entry.providerBaseUrl) ||
-            ('providerApiKey' in patch && patch.providerApiKey !== entry.providerApiKey) ||
-            ('providerOauthToken' in patch && patch.providerOauthToken !== entry.providerOauthToken)
-          const reset =
-            credChanged &&
-            !('dynamicModels' in patch) &&
-            !('probeError' in patch) &&
-            !('probing' in patch)
-          return reset
-            ? {
-                ...entry,
-                ...patch,
-                dynamicModels: undefined,
-                // The levels belong to the previous credential's models. Keeping
-                // a chosen level across the switch would offer, and save, a
-                // token the new Provider may not accept.
-                modelCapabilities: undefined,
-                fastModeAvailability: undefined,
-                reasoningEffort: undefined,
-                probeError: undefined,
-              }
-            : { ...entry, ...patch }
-        }),
+        prev.map((entry) => (entry.id === id ? applyProviderEntryPatch(entry, patch) : entry)),
       )
     },
     [setProviderChainEntries],

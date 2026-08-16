@@ -345,4 +345,77 @@ describe('reasoning controls in the snapshot', () => {
 
     expect(config.reasoningEffort).toBe('high')
   })
+
+  /**
+   * `null` is a real answer — "captured while the control was unset" — and it
+   * must NOT be read as the pre-change "no opinion". Key presence is what tells
+   * them apart, because a task queued with fast mode off that then inherits a
+   * later toggle is exactly the drift the snapshot exists to prevent.
+   */
+  it('keeps a control that was frozen as unset, even if the Agent turned it on since', async () => {
+    const agent = createTestAgent()
+    const live = {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      reasoningEffort: 'ultra',
+      fastMode: true,
+      providerChain: [
+        {
+          providerId: 'prv_1',
+          providerName: 'Claude Code',
+          engineType: 'claude-code',
+          model: 'claude-opus-4-8',
+          reasoningEffort: 'ultra',
+          fastMode: true,
+        },
+      ],
+    }
+
+    const config = applyEvaluationSnapshot(
+      live as never,
+      {
+        providerId: 'prv_1',
+        model: 'claude-opus-4-8',
+        systemPrompt: '',
+        reasoningEffort: null,
+        fastMode: null,
+      } as never,
+      agent as never,
+    )
+
+    expect(config.reasoningEffort).toBeUndefined()
+    expect(config.fastMode).toBeUndefined()
+    const chain = config.providerChain as Array<Record<string, unknown>>
+    expect(chain[0]?.reasoningEffort).toBeUndefined()
+    expect(chain[0]?.fastMode).toBeUndefined()
+  })
+
+  it('still inherits when the row predates the fields entirely', async () => {
+    const agent = createTestAgent()
+    const live = {
+      providerId: 'prv_1',
+      providerName: 'Claude Code',
+      model: 'claude-opus-4-8',
+      fastMode: true,
+      providerChain: [
+        {
+          providerId: 'prv_1',
+          providerName: 'Claude Code',
+          engineType: 'claude-code',
+          model: 'claude-opus-4-8',
+          fastMode: true,
+        },
+      ],
+    }
+
+    // No `fastMode` key at all — the shape written before this feature landed.
+    const config = applyEvaluationSnapshot(
+      live as never,
+      { providerId: 'prv_1', model: 'claude-opus-4-8', systemPrompt: '' } as never,
+      agent as never,
+    )
+
+    expect(config.fastMode).toBe(true)
+  })
 })

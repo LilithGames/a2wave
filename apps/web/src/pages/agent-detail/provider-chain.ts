@@ -38,6 +38,52 @@ function projectedCredential(
   return valueOrNull(chainValue)
 }
 
+/**
+ * Apply one patch to a chain entry, discarding what the previous credential
+ * owned when the patch switches credentials.
+ *
+ * The discarded set is everything a probe produced or a probe result made valid:
+ * the model list, the per-model levels, the fast-mode entitlement, and BOTH
+ * chosen controls. Keeping a level would offer, and save, a token the new
+ * Provider may not accept; keeping fast mode would leave a switch turned on
+ * behind a Provider whose CLI has no such setting and whose UI therefore no
+ * longer renders it.
+ *
+ * A patch that itself carries `dynamicModels` / `probeError` / `probing` is
+ * exempt: that is the probe flow writing its own results back, and resetting
+ * them here would erase the answer as it arrived.
+ *
+ * Extracted from the component so the discard rule is testable — it was
+ * previously a closure inside a `useCallback`, and the one field it forgot
+ * (`fastMode`) went unnoticed because nothing could assert on it.
+ */
+export function applyProviderEntryPatch(
+  entry: ProviderChainEntry,
+  patch: Partial<ProviderChainEntry>,
+): ProviderChainEntry {
+  const credChanged =
+    ('providerId' in patch && patch.providerId !== entry.providerId) ||
+    ('authMode' in patch && patch.authMode !== entry.authMode) ||
+    ('authHeaderStyle' in patch && patch.authHeaderStyle !== entry.authHeaderStyle) ||
+    ('providerBaseUrl' in patch && patch.providerBaseUrl !== entry.providerBaseUrl) ||
+    ('providerApiKey' in patch && patch.providerApiKey !== entry.providerApiKey) ||
+    ('providerOauthToken' in patch && patch.providerOauthToken !== entry.providerOauthToken)
+  const isProbeWriteback = 'dynamicModels' in patch || 'probeError' in patch || 'probing' in patch
+
+  if (!credChanged || isProbeWriteback) return { ...entry, ...patch }
+
+  return {
+    ...entry,
+    ...patch,
+    dynamicModels: undefined,
+    modelCapabilities: undefined,
+    fastModeAvailability: undefined,
+    reasoningEffort: undefined,
+    fastMode: undefined,
+    probeError: undefined,
+  }
+}
+
 export function serializeProviderChainEntries(
   entries: ProviderChainEntry[],
 ): SerializedProviderChainItem[] {

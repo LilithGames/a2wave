@@ -86,7 +86,12 @@ describe('claude-code reasoning arguments', () => {
   it('passes the configured level as --effort', async () => {
     const args = await runWith({ reasoningEffort: 'xhigh' })
 
-    expect(args).toEqual(expect.arrayContaining(['--effort', 'xhigh']))
+    // Adjacency, not membership: `arrayContaining` passes on
+    // `['--effort', '--model', 'opus', 'xhigh']`, where the CLI would read
+    // `--model` as the level and fail at spawn.
+    const index = args.indexOf('--effort')
+    expect(index).toBeGreaterThan(-1)
+    expect(args[index + 1]).toBe('xhigh')
   })
 
   it('turns fast mode on through --settings, the only headless entry point', async () => {
@@ -117,7 +122,9 @@ describe('claude-code reasoning arguments', () => {
     const args = await runWith({ reasoningEffort: 'high', fastMode: true }, 'sess_1')
 
     expect(args).toEqual(expect.arrayContaining(['--resume', 'sess_1']))
-    expect(args).toEqual(expect.arrayContaining(['--effort', 'high']))
+    const index = args.indexOf('--effort')
+    expect(index).toBeGreaterThan(-1)
+    expect(args[index + 1]).toBe('high')
     expect(args).toContain('--settings')
   })
 })
@@ -398,10 +405,50 @@ describe('codex run log completeness', () => {
     expect(init?.model).toBe('gpt-5.6-sol')
   })
 
-  it('records a duration measured by the platform', async () => {
+  it('records a duration measured by the platform, not a wall-clock timestamp', async () => {
     const result = (await entriesOf({})).find((entry) => entry.type === 'result')
 
     expect(typeof result?.durationMs).toBe('number')
     expect(result?.durationMs).toBeGreaterThanOrEqual(0)
+    // The upper bound is what distinguishes an elapsed delta from `Date.now()`:
+    // returning the raw epoch also satisfies "a non-negative number", and would
+    // print a ~1.7-trillion-ms run duration everywhere it surfaces.
+    expect(result?.durationMs).toBeLessThan(60_000)
+  })
+
+  // codex reports nothing at all about the served tier, so `requested` is the
+  // most the platform can claim — and claiming it is what puts the Fast marker
+  // on the run summary and `fastMode=requested` in the CLI log.
+  it('records that fast mode was requested, which is all codex ever admits', async () => {
+    const result = (await entriesOf({ fastMode: true })).find((entry) => entry.type === 'result')
+
+    expect(result?.fastModeState).toBe('requested')
+  })
+
+  it('claims nothing about fast mode when none was asked for', async () => {
+    const result = (await entriesOf({})).find((entry) => entry.type === 'result')
+
+    // Absent, never `off`: the engine did not answer, and inventing a verdict is
+    // exactly what the claude-code path treats as a bug.
+    expect(result?.fastModeState).toBeUndefined()
+  })
+
+  // Both controls travel as blanket-redacted `-c` overrides, so the exec params
+  // are the only place their values survive for someone reading a slow run.
+  it('names both controls in the exec params the CLI and web read', async () => {
+    const params = (await entriesOf({ reasoningEffort: 'ultra', fastMode: true })).find(
+      (entry) => entry.type === 'exec_params',
+    )?.params as Record<string, unknown>
+
+    expect(params.reasoningEffort).toBe('ultra')
+    expect(params.fastMode).toBe(true)
+  })
+
+  it('leaves both out of the exec params when neither is configured', async () => {
+    const params = (await entriesOf({})).find((entry) => entry.type === 'exec_params')
+      ?.params as Record<string, unknown>
+
+    expect(params).not.toHaveProperty('reasoningEffort')
+    expect(params).not.toHaveProperty('fastMode')
   })
 })

@@ -378,12 +378,12 @@ export function StreamLogsTimeline({
     execParams && 'params' in execParams && typeof execParams.params.reasoningEffort === 'string'
       ? execParams.params.reasoningEffort
       : undefined
-  // Marked unless there is positive evidence it did not happen. Engines differ
-  // in how much they admit — Claude reports the served speed, codex reports
-  // nothing about the tier at all — and surfacing that gap as a different
-  // marker made an ordinary codex run look broken. Only `denied`, where the
-  // engine explicitly said it served standard, drops the marker; the result row
-  // inside carries the exact wording either way.
+  // Marked only for the two states where the run plausibly got the faster path:
+  // `on` (the server said so) and `requested` (the engine reports nothing about
+  // the tier — codex never does — so the request going out unchallenged is the
+  // most that can be claimed). `denied` and `cooldown` are both positive
+  // evidence it did NOT happen, and `off` was never asked for; all three drop
+  // the marker, and the result row inside carries the exact wording.
   const fastState =
     resultEntry && 'fastModeState' in resultEntry ? resultEntry.fastModeState : undefined
   const fastMarker =

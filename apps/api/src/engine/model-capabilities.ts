@@ -26,10 +26,18 @@ export function isReasoningEffortValue(value: unknown): value is string {
   return reasoningEffortValueSchema.safeParse(value).success
 }
 
-/** Build the option list for one model, dropping tokens that fail the shape check. */
+/**
+ * Build the option list for one model, dropping tokens that fail the shape check.
+ *
+ * Returns `undefined` — not `[]` — when the source offered levels but none of
+ * them survived. An empty array is the positive claim "this model takes no
+ * effort setting", and the picker says so to the operator; a source whose
+ * vocabulary this code simply could not read has made no such claim, and
+ * "unknown" is the honest answer. Only a genuinely empty input yields `[]`.
+ */
 export function toReasoningEffortOptions(
   levels: Array<{ value: unknown; description?: unknown }>,
-): ReasoningEffortOption[] {
+): ReasoningEffortOption[] | undefined {
   const options: ReasoningEffortOption[] = []
   for (const level of levels) {
     if (!isReasoningEffortValue(level.value)) continue
@@ -39,6 +47,7 @@ export function toReasoningEffortOptions(
         : { value: level.value },
     )
   }
+  if (options.length === 0 && levels.length > 0) return undefined
   return options
 }
 

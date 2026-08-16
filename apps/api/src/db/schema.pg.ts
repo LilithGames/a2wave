@@ -1245,8 +1245,11 @@ export const evaluationTasks = pgTable(
         providerId: string | null
         providerName: string | null
         model: string | null
-        reasoningEffort: string | null
-        fastMode: boolean | null
+        // Optional, because no migration backfilled them: every row written
+        // before these controls existed has neither key, and declaring them
+        // required would promise a reader a value that is actually `undefined`.
+        reasoningEffort?: string | null
+        fastMode?: boolean | null
         systemPrompt: string
         capturedAt: string
       }>()

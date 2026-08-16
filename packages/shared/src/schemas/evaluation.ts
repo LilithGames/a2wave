@@ -97,6 +97,15 @@ export const evaluationConfigSnapshotSchema = z.object({
   /** Denormalized so the snapshot survives provider deletion. */
   providerName: z.string().nullable().default(null),
   model: z.string().nullable().default(null),
+  /**
+   * Frozen beside the model, because the two execution controls belong to the
+   * binding rather than to the Agent. Without them two tasks that differed only
+   * in reasoning depth read as identical, which is what the snapshot exists to
+   * prevent. `null` covers both "not set" and a row written before they existed
+   * — the default keeps those rows parsing.
+   */
+  reasoningEffort: z.string().nullable().default(null),
+  fastMode: z.boolean().nullable().default(null),
   systemPrompt: z.string().default(''),
   capturedAt: z.coerce.date(),
 })

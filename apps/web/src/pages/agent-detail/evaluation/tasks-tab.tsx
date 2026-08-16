@@ -1,3 +1,8 @@
+import { Select } from 'antd'
+import { AlertTriangle, FlaskConical, Play, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -21,13 +26,8 @@ import {
 import { useScmSources } from '@/hooks/use-scm-sources'
 import { confirm } from '@/lib/confirm'
 import { formatRelativeTime } from '@/lib/utils'
-import { Select } from 'antd'
-import { AlertTriangle, FlaskConical, Play, Trash2 } from 'lucide-react'
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useSearchParams } from 'react-router-dom'
 import { TaskDetail } from './task-detail'
-import { TaskStatusBadge, isTaskPending } from './task-status-badge'
+import { isTaskPending, TaskStatusBadge } from './task-status-badge'
 
 interface TasksTabProps {
   agentId: string
@@ -131,7 +131,22 @@ function snapshotDelta(
   const a = task.configSnapshot
   const b = previous.configSnapshot
   if (!a || !b) return null
-  if (a.model !== b.model || a.providerId !== b.providerId) return 'model'
+  // Reasoning effort and fast mode ride with the model, and a change to either
+  // moves the result as surely as swapping the model does — two tasks differing
+  // only in reasoning depth are exactly the pair this flag exists to separate.
+  //
+  // Compared through `?? null`, because a task frozen before these fields
+  // existed carries `undefined` while a new one carries `null`. Comparing those
+  // directly flags every boundary pair as "config changed" — a warning about a
+  // difference that is entirely in the storage format.
+  if (
+    a.model !== b.model ||
+    a.providerId !== b.providerId ||
+    (a.reasoningEffort ?? null) !== (b.reasoningEffort ?? null) ||
+    (a.fastMode ?? null) !== (b.fastMode ?? null)
+  ) {
+    return 'model'
+  }
   if (a.systemPrompt !== b.systemPrompt) return 'prompt'
   return null
 }

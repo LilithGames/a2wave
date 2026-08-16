@@ -1,7 +1,7 @@
-import type { EvaluationTaskRow } from '@/hooks/use-evaluation'
-import { renderWithProviders, screen } from '@/test/render'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EvaluationTaskRow } from '@/hooks/use-evaluation'
+import { renderWithProviders, screen } from '@/test/render'
 import { TasksTab } from '../tasks-tab'
 
 const useEvaluationTasks = vi.fn()
@@ -103,6 +103,8 @@ describe('TasksTab', () => {
           providerId: null,
           providerName: null,
           model: null,
+          reasoningEffort: null,
+          fastMode: null,
           systemPrompt: '',
           capturedAt: new Date('2026-07-20T00:00:00Z'),
         },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyProviderEntryPatch,
   buildProviderChainSubmission,
   serializeProviderChainEntries,
   validateProviderChain,
@@ -244,5 +245,74 @@ describe('reasoning controls survive serialization', () => {
     const [entry] = serializeProviderChainEntries([chainEntry({ fastMode: false })])
 
     expect(entry.fastMode).toBeUndefined()
+  })
+})
+
+/**
+ * Switching a chain entry's credential invalidates everything the previous one
+ * owned. The rule is easy to state and was easy to get wrong: it lived as a
+ * closure inside a `useCallback`, and the field it forgot (`fastMode`) survived
+ * a Provider swap into the saved config, where the run then dropped it silently
+ * and `diagnose` warned about a control the operator could no longer see.
+ */
+describe('applyProviderEntryPatch', () => {
+  const probed = chainEntry({
+    reasoningEffort: 'ultra',
+    fastMode: true,
+    dynamicModels: ['a', 'b'],
+    modelCapabilities: { a: { reasoningEfforts: [{ value: 'ultra' }] } },
+    fastModeAvailability: { available: true },
+    probeError: 'stale',
+  })
+
+  it('discards both controls when the Provider changes', () => {
+    const next = applyProviderEntryPatch(probed, { providerId: 'prv_2' })
+
+    expect(next.providerId).toBe('prv_2')
+    expect(next.reasoningEffort).toBeUndefined()
+    expect(next.fastMode).toBeUndefined()
+  })
+
+  it('discards everything the previous credential produced', () => {
+    const next = applyProviderEntryPatch(probed, { providerId: 'prv_2' })
+
+    expect(next.dynamicModels).toBeUndefined()
+    expect(next.modelCapabilities).toBeUndefined()
+    expect(next.fastModeAvailability).toBeUndefined()
+    expect(next.probeError).toBeUndefined()
+  })
+
+  it('treats a changed auth mode as a credential change', () => {
+    const next = applyProviderEntryPatch(probed, { authMode: 'localSession' })
+
+    expect(next.fastMode).toBeUndefined()
+    expect(next.reasoningEffort).toBeUndefined()
+  })
+
+  it('keeps both when the patch touches something unrelated', () => {
+    const next = applyProviderEntryPatch(probed, { model: 'other-model' })
+
+    expect(next.reasoningEffort).toBe('ultra')
+    expect(next.fastMode).toBe(true)
+  })
+
+  it('keeps both when the patch re-sets the same Provider', () => {
+    // `providerId in patch` is not enough — re-rendering the select with the
+    // current value must not wipe the operator's choices.
+    const next = applyProviderEntryPatch(probed, { providerId: probed.providerId })
+
+    expect(next.reasoningEffort).toBe('ultra')
+    expect(next.fastMode).toBe(true)
+  })
+
+  it('leaves a probe writing its own results back alone', () => {
+    // The probe patch carries the new credential AND its answer; resetting here
+    // would erase the answer at the moment it arrived.
+    const next = applyProviderEntryPatch(probed, {
+      providerId: 'prv_2',
+      dynamicModels: ['fresh'],
+    })
+
+    expect(next.dynamicModels).toEqual(['fresh'])
   })
 })

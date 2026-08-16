@@ -137,6 +137,25 @@ export function TaskDetail({ agentId, taskId, canWrite, onBack }: TaskDetailProp
             label={t('agentEvaluation.task.snapshotModel')}
             value={task.configSnapshot?.model ?? '—'}
           />
+          {/* Shown only when frozen: they are optional controls, and a row from
+              before they existed carries null for both. Rendering "—" for every
+              historical task would add two permanent empty columns. */}
+          {task.configSnapshot?.reasoningEffort ? (
+            <SnapshotRow
+              label={t('agentEvaluation.task.snapshotReasoningEffort')}
+              value={task.configSnapshot.reasoningEffort}
+            />
+          ) : null}
+          {typeof task.configSnapshot?.fastMode === 'boolean' ? (
+            <SnapshotRow
+              label={t('agentEvaluation.task.snapshotFastMode')}
+              value={t(
+                task.configSnapshot.fastMode
+                  ? 'agentEvaluation.task.snapshotFastModeOn'
+                  : 'agentEvaluation.task.snapshotFastModeOff',
+              )}
+            />
+          ) : null}
           <div className="flex items-center gap-1">
             <span className="text-muted-foreground">
               {t('agentEvaluation.task.snapshotPrompt')}
