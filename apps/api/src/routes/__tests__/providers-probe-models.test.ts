@@ -41,6 +41,15 @@ vi.mock('../../middleware/auth-middleware.js', () => ({
   requireAdmin: async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
+// The route allows 20 probes per minute per user, and every test here shares the
+// one 'anonymous' key. Left live, the limiter makes a test's verdict depend on
+// how many tests happen to run before it — this file was already at 16 requests,
+// so the next one added would have 429'd for a reason having nothing to do with
+// what it asserts. Rate limiting has its own tests; here it is noise.
+vi.mock('../../middleware/rate-limit.js', () => ({
+  rateLimit: () => async (_c: unknown, next: () => Promise<void>) => next(),
+}))
+
 import providersApp from '../providers.js'
 
 function buildApp() {
@@ -297,5 +306,113 @@ describe('POST /probe-models — ProviderAdapter dispatch', () => {
 
     const res = await postProbe({ kind: 'codex', authMode: 'apiKey' })
     expect(res.status).toBe(500)
+  })
+})
+
+/**
+ * The route hands the adapter's answer back verbatim, and JSON is where the one
+ * distinction the UI depends on could quietly die: **absent means "not
+ * discovered", empty means "discovered, and there are none"**. A level list that
+ * arrives as `[]` must not reach the browser as a missing key, and vice versa —
+ * the picker greys out for one and stays open for the other.
+ */
+describe('POST /probe-models — per-model capabilities and fast mode', () => {
+  it('carries the discovered levels, their defaults and the fast-mode verdict', async () => {
+    const probeModels = vi.fn().mockResolvedValue({
+      models: ['claude-opus-4-8', 'claude-haiku-4-5'],
+      modelCapabilities: {
+        'claude-opus-4-8': {
+          reasoningEfforts: [{ value: 'low' }, { value: 'high', description: 'Deeper reasoning' }],
+          defaultReasoningEffort: 'low',
+        },
+      },
+      fastMode: { available: true },
+    })
+    providerCatalogGetMock.mockReturnValue({ probeModels })
+
+    const res = await postProbe({ kind: 'claude-code', authMode: 'localSession' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      data: {
+        models: ['claude-opus-4-8', 'claude-haiku-4-5'],
+        modelCapabilities: {
+          'claude-opus-4-8': {
+            reasoningEfforts: [
+              { value: 'low' },
+              { value: 'high', description: 'Deeper reasoning' },
+            ],
+            defaultReasoningEffort: 'low',
+          },
+        },
+        fastMode: { available: true },
+      },
+    })
+  })
+
+  it('keeps an empty level list distinct from an absent one across the wire', async () => {
+    const probeModels = vi.fn().mockResolvedValue({
+      models: ['claude-haiku-4-5', 'proxy-model'],
+      // haiku answered "none"; proxy-model was never asked.
+      modelCapabilities: { 'claude-haiku-4-5': { reasoningEfforts: [] } },
+    })
+    providerCatalogGetMock.mockReturnValue({ probeModels })
+
+    const body = (await (
+      await postProbe({ kind: 'claude-code', authMode: 'localSession' })
+    ).json()) as {
+      data: { modelCapabilities: Record<string, { reasoningEfforts?: unknown }> }
+    }
+
+    expect(body.data.modelCapabilities['claude-haiku-4-5'].reasoningEfforts).toEqual([])
+    expect(body.data.modelCapabilities['proxy-model']).toBeUndefined()
+  })
+
+  it('carries the refusal reason, which is what disables the switch in the UI', async () => {
+    const probeModels = vi.fn().mockResolvedValue({
+      models: ['claude-opus-4-8'],
+      fastMode: { available: false, reason: 'extra_usage_disabled' },
+    })
+    providerCatalogGetMock.mockReturnValue({ probeModels })
+
+    const body = (await (
+      await postProbe({ kind: 'claude-code', authMode: 'localSession' })
+    ).json()) as {
+      data: { fastMode: unknown }
+    }
+
+    expect(body.data.fastMode).toEqual({ available: false, reason: 'extra_usage_disabled' })
+  })
+
+  it('omits both fields entirely when discovery reported neither', async () => {
+    const probeModels = vi.fn().mockResolvedValue({ models: ['deepseek-v4-flash'] })
+    providerCatalogGetMock.mockReturnValue({ probeModels })
+
+    const body = (await (
+      await postProbe({
+        kind: 'claude-code',
+        authMode: 'apiKey',
+        apiKey: 'sk-xxx',
+        baseUrl: 'https://llm-proxy.example.com',
+      })
+    ).json()) as { data: Record<string, unknown> }
+
+    // Absent, not null: a null would be a discovered answer, and there was none.
+    expect(Object.keys(body.data)).toEqual(['models'])
+  })
+
+  it('still carries the models when only the fast-mode probe could answer', async () => {
+    const probeModels = vi.fn().mockResolvedValue({
+      models: ['claude-opus-4-8'],
+      fastMode: { available: true },
+    })
+    providerCatalogGetMock.mockReturnValue({ probeModels })
+
+    const res = await postProbe({ kind: 'claude-code', authMode: 'localSession' })
+    const body = (await res.json()) as { data: Record<string, unknown> }
+
+    expect(res.status).toBe(200)
+    expect(body.data.models).toEqual(['claude-opus-4-8'])
+    expect(body.data.modelCapabilities).toBeUndefined()
   })
 })

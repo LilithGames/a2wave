@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test'
 import {
-  type ProviderSummary,
   createAgentWithPayload,
   deleteAgentAs,
   getAdminToken,
   getAgent,
   listProviders,
+  type ProviderSummary,
 } from '../../utils/api-helpers'
 import { loginAsAdmin } from '../../utils/auth'
 
@@ -173,6 +173,13 @@ test.describe('Agent provider chain compatibility', () => {
       await expect(page.getByTestId('provider-chain-item-0')).toContainText(claude.name, {
         timeout: 8000,
       })
+
+      // Both controls live in the entry's collapsed body — a saved chain renders
+      // every entry closed, so the row has to be opened before either exists.
+      const header = page.getByTestId('provider-chain-header-0')
+      await expect(header).toHaveAttribute('aria-expanded', 'false')
+      await header.click()
+      await expect(header).toHaveAttribute('aria-expanded', 'true')
 
       const fastMode = page.getByTestId('provider-chain-fast-mode-0')
       await expect(fastMode).toBeVisible()

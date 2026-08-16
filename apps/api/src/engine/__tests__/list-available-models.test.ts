@@ -1062,3 +1062,169 @@ describe('reasoning effort discovery', () => {
     expect(result.modelCapabilities?.['gpt-5.6-sol']?.reasoningEfforts).toEqual([{ value: 'high' }])
   })
 })
+
+/**
+ * Fast-mode eligibility is asked of an INTERNAL Anthropic endpoint, not a
+ * published contract. The whole design rests on it failing OPEN: a probe that
+ * cannot answer must leave the control usable, because the alternative is
+ * greying out a working feature on the strength of a 404. Only a definite
+ * `enabled: false` from Anthropic itself disables it.
+ */
+describe('claude-code fast mode eligibility probe', () => {
+  const claude = new ClaudeCodeEngine({
+    path: 'claude',
+    apiKey: '',
+    baseUrl: '',
+    timeoutMinutes: 5,
+    force: false,
+    approveMcps: true,
+    defaultWorkDir: '/tmp',
+  })
+
+  const MODELS_URL = 'https://api.anthropic.com/v1/models'
+  const FAST_MODE_URL = 'https://api.anthropic.com/api/claude_code_penguin_mode'
+
+  let fetchSpy: ReturnType<typeof vi.spyOn>
+  let fastModeRequests: Array<{ url: string; headers: Headers }>
+
+  beforeEach(() => {
+    mockDnsLookup.mockReset()
+    mockDnsLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    fastModeRequests = []
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
+  })
+
+  afterEach(() => {
+    fetchSpy.mockRestore()
+  })
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  /** Route by URL: the models call and the eligibility call hit the same spy. */
+  function route(fastMode: () => Promise<Response>) {
+    fetchSpy.mockImplementation(async (input: unknown, init?: unknown) => {
+      const url = String(input)
+      if (url.includes('claude_code_penguin_mode')) {
+        fastModeRequests.push({
+          url,
+          headers: new Headers((init as RequestInit | undefined)?.headers),
+        })
+        return fastMode()
+      }
+      return json({ data: [{ id: 'claude-opus-4-8' }] })
+    })
+  }
+
+  const probe = () => claude.listAvailableModels({ authMode: 'oauth', oauthToken: 'sk-ant-oat01' })
+
+  it('reports the entitlement when Anthropic grants it', async () => {
+    route(async () => json({ enabled: true }))
+
+    expect((await probe()).fastMode).toEqual({ available: true })
+  })
+
+  it('carries the refusal reason, which is what the UI shows instead of a dead switch', async () => {
+    route(async () => json({ enabled: false, disabled_reason: 'extra_usage_disabled' }))
+
+    expect((await probe()).fastMode).toEqual({
+      available: false,
+      reason: 'extra_usage_disabled',
+    })
+  })
+
+  it('clips an over-long reason rather than passing it through to the UI', async () => {
+    route(async () => json({ enabled: false, disabled_reason: 'x'.repeat(200) }))
+
+    expect((await probe()).fastMode?.reason).toHaveLength(64)
+  })
+
+  it('carries no reason when the answer is yes', async () => {
+    route(async () => json({ enabled: true, disabled_reason: 'stale field' }))
+
+    expect((await probe()).fastMode).not.toHaveProperty('reason')
+  })
+
+  it('sends the OAuth token as a bearer with the beta header the endpoint requires', async () => {
+    route(async () => json({ enabled: true }))
+
+    await probe()
+
+    expect(fastModeRequests).toHaveLength(1)
+    expect(fastModeRequests[0].headers.get('authorization')).toBe('Bearer sk-ant-oat01')
+    expect(fastModeRequests[0].headers.get('anthropic-beta')).toBe('oauth-2025-04-20')
+  })
+
+  it('stays silent on a non-200 rather than reporting the feature unavailable', async () => {
+    route(async () => json({ error: 'not found' }, 404))
+
+    const result = await probe()
+
+    // The distinction the whole probe rests on: absent means "not answered",
+    // and the switch stays usable. `available: false` would grey it out.
+    expect(result.fastMode).toBeUndefined()
+    expect(result.models).toEqual(['claude-opus-4-8'])
+  })
+
+  it('stays silent when the body omits the field it is supposed to answer with', async () => {
+    route(async () => json({ disabled_reason: 'extra_usage_disabled' }))
+
+    expect((await probe()).fastMode).toBeUndefined()
+  })
+
+  it('stays silent when the field is present but not a boolean', async () => {
+    route(async () => json({ enabled: 'true' }))
+
+    expect((await probe()).fastMode).toBeUndefined()
+  })
+
+  it('stays silent on unparseable JSON', async () => {
+    route(async () => new Response('<html>gateway</html>', { status: 200 }))
+
+    expect((await probe()).fastMode).toBeUndefined()
+  })
+
+  it('stays silent when the request throws, and still returns the models', async () => {
+    route(async () => {
+      throw new Error('ECONNRESET')
+    })
+
+    const result = await probe()
+
+    expect(result.fastMode).toBeUndefined()
+    expect(result.models).toEqual(['claude-opus-4-8'])
+  })
+
+  it('stays silent when the request times out', async () => {
+    route(async () => {
+      throw Object.assign(new Error('The operation was aborted'), { name: 'TimeoutError' })
+    })
+
+    expect((await probe()).fastMode).toBeUndefined()
+  })
+
+  it('never asks a proxy a question only Anthropic can answer', async () => {
+    route(async () => json({ enabled: true }))
+
+    const result = await claude.listAvailableModels({
+      authMode: 'apiKey',
+      baseUrl: 'https://llm-proxy.example.com',
+      apiKey: 'sk-xxx',
+    })
+
+    expect(fastModeRequests).toEqual([])
+    expect(result.fastMode).toBeUndefined()
+  })
+
+  it('asks the entitlement endpoint, which is a different path on the same host', async () => {
+    route(async () => json({ enabled: true }))
+
+    await probe()
+
+    expect(fastModeRequests[0].url).toBe(FAST_MODE_URL)
+    expect(fastModeRequests[0].url).not.toBe(MODELS_URL)
+  })
+})
