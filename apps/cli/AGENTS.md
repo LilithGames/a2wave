@@ -212,7 +212,7 @@ nothing listed the valid values — an asymmetry worse than the feature being ab
 | `a2wave agents update <id\|name> --remove-skill <name\|id>` | Remove a Skill |
 | `a2wave agents update <id\|name> --add-mcp <name\|id>` | Add an MCP Server |
 | `a2wave agents update <id\|name> --remove-mcp <name\|id>` | Remove an MCP Server |
-| `a2wave agents apply -f agent.yaml` | Idempotent apply: look up by name; POST if absent, otherwise PATCH only changed fields |
+| `a2wave agents apply -f agent.yaml` | Idempotent apply: look up by name; POST if absent, otherwise PATCH only changed fields. **`config` is replaced wholesale, not merged** — a YAML naming only `providerChain` discards `timeoutMinutes`, `maxRetries` and every other key it did not repeat, so a partial config is a data loss dressed as an edit. `describeDestructiveDiff` walks nested objects and arrays for exactly this, upgrading such an apply to `high-risk-write` and naming what goes (`config: removes 6 keys (…)`, `config.providerChain: removes 1 (pc_codex)`). Array entries are matched by **identity** (`id`, else `name`, else `providerId`), so editing one binding's reasoning effort is an edit, not a removal — deep equality would have called every touched entry unmounted |
 | `a2wave agents apply -f agent.yaml --dry-run` | Only print the changes that would be made; no write API calls |
 | `a2wave agents apply -f agent.yaml --no-publish` | Ignore the publish block in the yaml; stay in draft |
 | `a2wave agents apply --example` | Print a full example yaml to stdout (redirect to a file as a starter template) |
