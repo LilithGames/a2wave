@@ -554,6 +554,19 @@ maxConcurrency: 1                         # Concurrency limit 1-5
 # Free-form config (passed through to agent.config, any structure)
 # config:
 #   customKey: customValue
+#
+#   # Provider chain: fallback order, up to 5 entries. Reasoning effort and fast
+#   # mode belong to a chain ENTRY, not to the Agent — the legal effort levels
+#   # follow the model, so one Agent-wide value would be invalid for at least one
+#   # entry. Omit either control to leave the CLI's own default in place.
+#   providerChain:
+#     - providerId: prv_xxxxxxxx
+#       model: gpt-5.6-sol
+#       reasoningEffort: ultra            # Discovered per model; never a fixed list (codex has ultra, Claude does not)
+#       fastMode: true                    # Only requested — the plan, model and endpoint each hold a veto
+#     - providerId: prv_yyyyyyyy          # Fallback: used when the entry above fails
+#       model: claude-opus-4-8
+#       reasoningEffort: high
 
 # Agent-level environment variables; \${ENV} placeholders are expanded by the CLI at apply time
 env:

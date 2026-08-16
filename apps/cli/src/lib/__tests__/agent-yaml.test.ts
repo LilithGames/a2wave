@@ -151,6 +151,51 @@ describe('EXAMPLE_AGENT_YAML', () => {
     expect(EXAMPLE_AGENT_YAML).toContain('protocolVersion: "0.3"')
     expect(EXAMPLE_AGENT_YAML).toContain('Omitting mode/version preserves legacy direct A2A 0.3')
   })
+
+  // The two controls ride inside the free-form `config` passthrough, so nothing
+  // in the CLI names them — the example is the only place a user can learn they
+  // exist, and where the per-model (not per-Agent) placement is stated.
+  it('documents the per-model reasoning effort and fast mode controls', () => {
+    expect(EXAMPLE_AGENT_YAML).toContain('providerChain:')
+    expect(EXAMPLE_AGENT_YAML).toContain('reasoningEffort:')
+    expect(EXAMPLE_AGENT_YAML).toContain('fastMode:')
+  })
+})
+
+describe('provider chain effort / fast mode passthrough', () => {
+  it('carries both controls into the create payload untouched', () => {
+    const doc: AgentYamlDoc = {
+      name: 'bot',
+      config: {
+        providerChain: [
+          { providerId: 'prv_1', model: 'gpt-5.6-sol', reasoningEffort: 'ultra', fastMode: true },
+          { providerId: 'prv_2', model: 'claude-opus-4-8', reasoningEffort: 'high' },
+        ],
+      },
+    }
+
+    const payload = toCreatePayload(doc, {})
+
+    expect(payload.config).toEqual(doc.config)
+  })
+
+  it('diffs a changed effort level so apply is not a no-op', () => {
+    const existing = {
+      config: { providerChain: [{ providerId: 'prv_1', reasoningEffort: 'low' }] },
+    }
+    const proposed = {
+      config: { providerChain: [{ providerId: 'prv_1', reasoningEffort: 'ultra' }] },
+    }
+
+    expect(computeDiff(existing, proposed)).toEqual(proposed)
+  })
+
+  it('treats an unchanged chain as no diff regardless of key order', () => {
+    const existing = { config: { providerChain: [{ reasoningEffort: 'ultra', fastMode: true }] } }
+    const proposed = { config: { providerChain: [{ fastMode: true, reasoningEffort: 'ultra' }] } }
+
+    expect(computeDiff(existing, proposed)).toEqual({})
+  })
 })
 
 describe('resolveRefs', () => {

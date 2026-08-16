@@ -489,6 +489,85 @@ describe('eval tasks get — task-level failure reason', () => {
   })
 })
 
+describe('eval tasks get — frozen config snapshot', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  // The snapshot exists so two tasks can be compared. Effort and fast mode are
+  // frozen alongside the model, so hiding them makes two runs that differed only
+  // in reasoning depth print as identical.
+  it('prints the frozen reasoning effort and fast mode next to provider/model', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce({
+      data: {
+        id: 'evt_1',
+        setName: 's',
+        status: 'completed',
+        configSnapshot: {
+          providerName: 'Codex',
+          model: 'gpt-5.6-sol',
+          reasoningEffort: 'ultra',
+          fastMode: true,
+        },
+        results: [],
+      },
+    })
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1' } })
+
+    const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    expect(out).toContain('provider=Codex')
+    expect(out).toContain('model=gpt-5.6-sol')
+    expect(out).toContain('effort=ultra')
+    expect(out).toContain('fastMode=true')
+  })
+
+  it('reports fast mode that was frozen off, which is not the same as unset', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce({
+      data: {
+        id: 'evt_1',
+        setName: 's',
+        status: 'completed',
+        configSnapshot: { providerName: 'Claude', model: 'opus', fastMode: false },
+        results: [],
+      },
+    })
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1' } })
+
+    const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    expect(out).toContain('fastMode=false')
+    expect(out).not.toContain('effort=')
+  })
+
+  it('omits both controls when the snapshot froze neither', async () => {
+    mockResolveAgentId.mockResolvedValueOnce('agt_1')
+    mockGet.mockResolvedValueOnce({
+      data: {
+        id: 'evt_1',
+        setName: 's',
+        status: 'completed',
+        configSnapshot: { providerName: 'Claude', model: 'opus' },
+        results: [],
+      },
+    })
+
+    await sub('tasks', 'get').run({ args: { agent: 'Bot', task: 'evt_1' } })
+
+    const out = consoleSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
+    expect(out).toContain('Snapshot: provider=Claude model=opus')
+    expect(out).not.toContain('effort=')
+    expect(out).not.toContain('fastMode=')
+  })
+})
+
 describe('eval run --fail-on-fail gates on replay errors, not just verdicts', () => {
   let prevExitCode: string | number | undefined
 

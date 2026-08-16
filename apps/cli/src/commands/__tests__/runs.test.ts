@@ -65,6 +65,79 @@ describe('formatLog', () => {
   it('returns empty string for system type', () => {
     expect(formatLog({ type: 'system', ts: 0 })).toBe('')
   })
+
+  it('reports the served fast-mode state on the result line', () => {
+    expect(
+      formatLog({
+        type: 'result',
+        subtype: 'success',
+        durationMs: 1234,
+        fastModeState: 'on',
+        ts: 0,
+      }),
+    ).toBe('[done] success (1234ms) fastMode=on')
+  })
+
+  it('reports a denied fast-mode request instead of hiding it', () => {
+    expect(formatLog({ type: 'result', subtype: 'success', fastModeState: 'denied', ts: 0 })).toBe(
+      '[done] success fastMode=denied',
+    )
+  })
+
+  it('leaves the result line alone when the engine reported no fast-mode state', () => {
+    expect(formatLog({ type: 'result', subtype: 'success', durationMs: 5, ts: 0 })).toBe(
+      '[done] success (5ms)',
+    )
+  })
+
+  it('names the model on the init entry', () => {
+    expect(formatLog({ type: 'system', subtype: 'init', model: 'gpt-5.6-sol', ts: 0 })).toBe(
+      '[init] model=gpt-5.6-sol',
+    )
+  })
+
+  it('stays silent for an init entry carrying no model', () => {
+    expect(formatLog({ type: 'system', subtype: 'init', ts: 0 })).toBe('')
+  })
+
+  it('reports the reasoning effort and fast-mode request from exec_params', () => {
+    expect(
+      formatLog({
+        type: 'exec_params',
+        engine: 'codex',
+        params: { cmd: 'codex', reasoningEffort: 'ultra', fastMode: true },
+        ts: 0,
+      }),
+    ).toBe('[params] reasoningEffort=ultra fastMode=true')
+  })
+
+  it('reports the effort alone when fast mode was not requested', () => {
+    expect(
+      formatLog({
+        type: 'exec_params',
+        engine: 'claude-code',
+        params: { cmd: 'claude', reasoningEffort: 'high' },
+        ts: 0,
+      }),
+    ).toBe('[params] reasoningEffort=high')
+  })
+
+  it('reports fast mode alone when no effort was set', () => {
+    expect(
+      formatLog({
+        type: 'exec_params',
+        engine: 'claude-code',
+        params: { cmd: 'claude', fastMode: true },
+        ts: 0,
+      }),
+    ).toBe('[params] fastMode=true')
+  })
+
+  it('stays silent for exec_params carrying neither control', () => {
+    expect(
+      formatLog({ type: 'exec_params', engine: 'codex', params: { cmd: 'codex' }, ts: 0 }),
+    ).toBe('')
+  })
 })
 
 describe('handleSSELine', () => {

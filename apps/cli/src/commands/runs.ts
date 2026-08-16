@@ -93,7 +93,7 @@ function printPagination(p: Pagination | undefined): void {
 }
 
 interface StreamLogEntry {
-  type: 'system' | 'assistant' | 'tool_call' | 'result' | 'error' | 'retry'
+  type: 'system' | 'assistant' | 'tool_call' | 'result' | 'error' | 'retry' | 'exec_params'
   text?: string
   message?: string
   toolName?: string
@@ -101,7 +101,28 @@ interface StreamLogEntry {
   attempt?: number
   nextAttemptIn?: number
   durationMs?: number
+  /** Model the engine actually started with; carried on the `init` system entry. */
+  model?: string
+  /** Served fast-mode verdict (`on` / `off` / `denied` / `requested`), when the engine reported one. */
+  fastModeState?: string
+  engine?: string
+  params?: Record<string, unknown>
   ts: number
+}
+
+/**
+ * The reasoning effort and fast-mode request are named fields of `exec_params`
+ * rather than argv tokens, because both engines pass them through blanket-redacted
+ * flags (`-c key=value` / `--settings`). Printing the whole params object would dump
+ * paths and redaction markers into the log, so only the two controls are rendered.
+ */
+function formatExecParams(params: Record<string, unknown> | undefined): string {
+  const parts: string[] = []
+  if (typeof params?.reasoningEffort === 'string') {
+    parts.push(`reasoningEffort=${params.reasoningEffort}`)
+  }
+  if (params?.fastMode === true) parts.push('fastMode=true')
+  return parts.length > 0 ? `[params] ${parts.join(' ')}` : ''
 }
 
 export function formatLog(entry: StreamLogEntry): string {
@@ -111,11 +132,21 @@ export function formatLog(entry: StreamLogEntry): string {
     case 'tool_call':
       return `[tool:${entry.toolName}] ${entry.subtype}`
     case 'result':
-      return `[done] ${entry.subtype ?? ''}${entry.durationMs ? ` (${entry.durationMs}ms)` : ''}`
+      return (
+        `[done] ${entry.subtype ?? ''}${entry.durationMs ? ` (${entry.durationMs}ms)` : ''}` +
+        // Printed verbatim, including `off` and `denied`: unlike the web summary,
+        // which is a one-line scan, this log is what someone reads when a run was
+        // slower than the config promised — and "requested but refused" is the answer.
+        `${entry.fastModeState ? ` fastMode=${entry.fastModeState}` : ''}`
+      )
     case 'error':
       return `[error] ${entry.message ?? ''}`
     case 'retry':
       return `[retry] attempt ${entry.attempt}, retrying in ${entry.nextAttemptIn}ms`
+    case 'exec_params':
+      return formatExecParams(entry.params)
+    case 'system':
+      return entry.subtype === 'init' && entry.model ? `[init] model=${entry.model}` : ''
     default:
       return ''
   }

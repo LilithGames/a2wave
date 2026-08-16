@@ -66,6 +66,42 @@ const ARTIFACT_POLICY_DEFAULTS: ArtifactPolicy = {
   shareExpiryDays: 7,
 }
 
+/**
+ * The one part of the freeform `config` the CLI renders by value.
+ *
+ * `config` is printed as bare key names because it can hold credentials, but
+ * that rule also hid the Agent's entire execution plan — which models run, in
+ * what order, at which reasoning depth. These four fields are schema-declared
+ * (`providerChainItemSchema`) and carry no secret; the credential fields sitting
+ * beside them in the same object are never read here.
+ */
+interface ProviderChainEntryView {
+  providerId?: string | null
+  model?: string | null
+  reasoningEffort?: string | null
+  fastMode?: boolean | null
+  enabled?: boolean
+}
+
+function readProviderChain(config: Record<string, unknown> | null | undefined) {
+  const chain = config?.providerChain
+  if (!Array.isArray(chain) || chain.length === 0) return null
+  return chain as ProviderChainEntryView[]
+}
+
+function formatProviderChainEntry(entry: ProviderChainEntryView, index: number): string {
+  const parts = [
+    `${index + 1}. ${entry.providerId || '(no provider)'}`,
+    entry.model ? `model=${entry.model}` : null,
+    entry.reasoningEffort ? `effort=${entry.reasoningEffort}` : null,
+    // Only an explicit `true` is worth a line: fast mode is off by default, and
+    // the level it was requested at is what a reader is scanning for.
+    entry.fastMode === true ? 'fastMode=true' : null,
+    entry.enabled === false ? '[disabled]' : null,
+  ].filter(Boolean)
+  return parts.join('  ')
+}
+
 const AUTO_SHARE_VALUES = ['off', 'on'] as const
 const SHARE_ACCESS_LEVELS = ['authenticated', 'public'] as const
 
@@ -212,10 +248,23 @@ export const agentsCommand = defineCommand({
             : (a.workspaceType ?? 'temp')
         console.log(`Workspace:     ${workspace}`)
         console.log(`Max Concurr.:  ${a.maxConcurrency ?? 1}`)
+        const providerChain = readProviderChain(a.config)
+        // A chain-less Agent keeps its single model here; with a chain, each
+        // entry names its own and this line would just repeat the first.
+        if (!providerChain && typeof a.config?.model === 'string') {
+          console.log(`Model:         ${a.config.model}`)
+        }
         if (a.showLocalChildOutput !== undefined || a.showRemoteChildOutput !== undefined) {
           console.log(
             `Child output:  local=${a.showLocalChildOutput ? 'on' : 'off'} remote=${a.showRemoteChildOutput ? 'on' : 'off'}`,
           )
+        }
+
+        if (providerChain) {
+          console.log('\n--- Provider Chain ---')
+          for (const [index, entry] of providerChain.entries()) {
+            console.log(formatProviderChainEntry(entry, index))
+          }
         }
 
         if (a.env && Object.keys(a.env).length > 0) {

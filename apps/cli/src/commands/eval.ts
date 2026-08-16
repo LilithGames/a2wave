@@ -57,7 +57,17 @@ interface EvaluationTask {
   setName: string
   status: string
   summary?: EvaluationTaskSummary | null
-  configSnapshot?: { providerName?: string | null; model?: string | null } | null
+  configSnapshot?: {
+    providerName?: string | null
+    model?: string | null
+    /**
+     * Frozen beside the model, because a chain entry owns its own effort and
+     * fast-mode setting. Two tasks that differ only in reasoning depth are
+     * otherwise indistinguishable, which defeats the point of the snapshot.
+     */
+    reasoningEffort?: string | null
+    fastMode?: boolean | null
+  } | null
   /** Task-level failure reason (e.g. the snapshotted provider was unbound). */
   error?: string | null
   createdAt?: string
@@ -662,8 +672,16 @@ function printTask(t: EvaluationTask, verbose = false): void {
   console.log(`Set:      ${t.setName}`)
   console.log(`Status:   ${t.status}`)
   if (t.configSnapshot) {
-    const { providerName, model } = t.configSnapshot
-    console.log(`Snapshot: provider=${providerName ?? 'n/a'} model=${model ?? 'n/a'}`)
+    const { providerName, model, reasoningEffort, fastMode } = t.configSnapshot
+    // Both controls are optional in a way `n/a` would misrepresent: an unset
+    // effort means the CLI's own default was used, and `fastMode: false` is a
+    // deliberate off, not a missing value. So they appear only when frozen.
+    const extras = [
+      reasoningEffort ? `effort=${reasoningEffort}` : null,
+      typeof fastMode === 'boolean' ? `fastMode=${fastMode}` : null,
+    ].filter(Boolean)
+    const suffix = extras.length > 0 ? ` ${extras.join(' ')}` : ''
+    console.log(`Snapshot: provider=${providerName ?? 'n/a'} model=${model ?? 'n/a'}${suffix}`)
   }
   // A task can fail as a whole (e.g. its snapshotted provider was unbound before
   // it started), which is separate from any individual case failing.

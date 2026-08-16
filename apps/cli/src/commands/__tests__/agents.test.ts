@@ -356,6 +356,143 @@ describe('agentsCommand', () => {
       expect(consoleSpy).toHaveBeenCalledWith('\n--- System Prompt ---')
       expect(consoleSpy).toHaveBeenCalledWith('You are a helpful bot.')
     })
+
+    // The chain lives inside the freeform `config`, which is printed as bare key
+    // names because it can hold credentials. That rule hid the entire execution
+    // plan: which models run, in what order, at which reasoning depth. These
+    // fields are schema-declared and carry no secret, so they are rendered.
+    describe('provider chain', () => {
+      function agentWithChain(chain: unknown[], extraConfig: Record<string, unknown> = {}) {
+        return {
+          data: {
+            id: 'agt_1',
+            name: 'Bot A',
+            type: 'cursor',
+            status: 'active',
+            publishStatus: 'draft',
+            description: null,
+            skills: [],
+            config: { providerChain: chain, ...extraConfig },
+          },
+        }
+      }
+
+      it('renders each entry with its model, effort and fast mode', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            {
+              providerId: 'prv_claude',
+              model: 'claude-opus-4-8',
+              reasoningEffort: 'low',
+              fastMode: true,
+              enabled: true,
+            },
+            {
+              providerId: 'prv_codex',
+              model: 'gpt-5.6-luna',
+              reasoningEffort: 'xhigh',
+              enabled: true,
+            },
+          ]),
+        )
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain('--- Provider Chain ---')
+        expect(out).toContain('1. prv_claude  model=claude-opus-4-8  effort=low  fastMode=true')
+        expect(out).toContain('2. prv_codex  model=gpt-5.6-luna  effort=xhigh')
+      })
+
+      it('never prints the credential fields that sit beside them', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            {
+              providerId: 'prv_claude',
+              model: 'opus',
+              providerApiKey: 'sk-live-must-not-leak',
+              providerOauthToken: 'oauth-must-not-leak',
+              providerBaseUrl: 'https://proxy.internal/v1',
+              enabled: true,
+            },
+          ]),
+        )
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain('model=opus')
+        expect(out).not.toContain('sk-live-must-not-leak')
+        expect(out).not.toContain('oauth-must-not-leak')
+        expect(out).not.toContain('proxy.internal')
+      })
+
+      it('marks a disabled entry so the fallback order reads correctly', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([{ providerId: 'prv_x', model: 'opus', enabled: false }]),
+        )
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        expect(consoleSpy.mock.calls.flat().join('\n')).toContain(
+          '1. prv_x  model=opus  [disabled]',
+        )
+      })
+
+      it('names an entry with no provider bound yet rather than printing undefined', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(agentWithChain([{ providerId: null, enabled: true }]))
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain('1. (no provider)')
+        expect(out).not.toContain('undefined')
+      })
+
+      // A chain-less Agent keeps its single model at config.model. Without this
+      // the CLI showed no model at all for the most common Agent shape.
+      it('falls back to the single config model when there is no chain', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce({
+          data: {
+            id: 'agt_1',
+            name: 'Bot A',
+            type: 'cursor',
+            status: 'active',
+            publishStatus: 'draft',
+            description: null,
+            skills: [],
+            config: { model: 'claude-opus-4-8', readOnly: false },
+          },
+        })
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain('Model:         claude-opus-4-8')
+        expect(out).not.toContain('--- Provider Chain ---')
+      })
+
+      it('still lists the remaining config keys without their values', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([{ providerId: 'prv_x', model: 'opus', enabled: true }], {
+            timeoutMinutes: 10,
+          }),
+        )
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain('config:')
+        expect(out).toContain('timeoutMinutes')
+        expect(out).not.toContain('timeoutMinutes: 10')
+      })
+    })
   })
 
   describe('update', () => {

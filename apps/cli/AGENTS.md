@@ -204,7 +204,7 @@ nothing listed the valid values — an asymmetry worse than the feature being ab
 | Command | Description |
 |------|------|
 | `a2wave agents list` | List all Agents |
-| `a2wave agents get <id\|name>` | View Agent details (incl. Skills, System Prompt) |
+| `a2wave agents get <id\|name>` | View Agent details (incl. Skills, System Prompt). Prints a **Provider Chain** block — `<n>. <providerId>  model=…  effort=…  fastMode=true  [disabled]` — rendering the only part of the freeform `config` shown by value. The rest of `config` stays a bare key list because it can hold credentials, but that rule also hid the whole execution plan: which models run, in what order, at which reasoning depth. The four rendered fields are schema-declared (`providerChainItemSchema`) and carry no secret; the `providerApiKey` / `providerOauthToken` / `providerBaseUrl` sitting beside them in the same object are never read. An Agent with no chain shows its single `Model:` line instead |
 | `a2wave agents update <id\|name> --name "..."` | Update name |
 | `a2wave agents update <id\|name> --description "..."` | Update description |
 | `a2wave agents update <id\|name> --system-prompt "..."` | Update System Prompt |
@@ -369,7 +369,7 @@ Cases file format (YAML or JSON — a bare list, or `cases:` wrapping one):
       expectedResponse: "12"
 ```
 
-> Evaluations do **not** write to the `runs` table; auditability comes from an `evaluation_task.execute` audit entry. Verdicts are manual in v1. Each task freezes a provider/model/prompt snapshot.
+> Evaluations do **not** write to the `runs` table; auditability comes from an `evaluation_task.execute` audit entry. Verdicts are manual in v1. Each task freezes a provider/model/effort/fast-mode/prompt snapshot, printed by `eval tasks get` as `Snapshot: provider=… model=… effort=… fastMode=…`. The last two appear only when the task actually froze them — an absent effort means the CLI's own default was used, while `fastMode=false` is a deliberate off, so `n/a` would misreport both.
 
 > Delete commands (`agents delete` / `skills delete`) replace the old convention of "delete only via the Web UI":
 > because deletion is irreversible, an interactive terminal asks for confirmation by default, and non-interactive use (pipes/CI) requires an explicit `--force`.
@@ -450,6 +450,22 @@ workspace:
   # source: my-repo                   # → scm_xxx
 
 maxConcurrency: 1                     # 1-5
+
+# Free-form passthrough. The provider chain lives here, and reasoning effort /
+# fast mode belong to a chain ENTRY rather than to the Agent: legal effort levels
+# follow the model, so one Agent-wide value would be invalid for at least one
+# entry. Omitting a control passes nothing and leaves the CLI's own default.
+# Neither is validated client-side — `providerChainItemSchema` owns that.
+config:
+  providerChain:
+    - providerId: prv_xxxxxxxx
+      model: gpt-5.6-sol
+      reasoningEffort: ultra            # Discovered per model; never a fixed list
+      fastMode: true                    # Only requested — plan/model/endpoint each hold a veto
+    - providerId: prv_yyyyyyyy          # Fallback entry
+      model: claude-opus-4-8
+      reasoningEffort: high
+
 env:
   LARK_APP_ID:
     value: ${LARK_APP_ID}             # ${ENV} / ${ENV:-default} expanded client-side at apply time
@@ -488,7 +504,7 @@ Referenced resources support both forms: `provider: name` or `provider: prv_xxx`
 | `a2wave runs list [--agent <name\|id>]` | List runs, optionally filtered by Agent |
 | `a2wave runs list --page 2 --limit 50` | Paginate (`--limit` clamps to the API's 1..100 window; a footer shows the next page) |
 | `a2wave runs list --status failed` | Filter by status. **Narrows the current page only** — the API has no status filter, so the CLI says so in the human output, and stamps a `filter` block into `--json` so a partial count cannot be read as a total |
-| `a2wave runs get <id>` | View Run details and execution logs. Prints **every** step of a multi-turn run, ordered by `order` |
+| `a2wave runs get <id>` | View Run details and execution logs. Prints **every** step of a multi-turn run, ordered by `order`. Log lines name what the run actually got, not only what was configured: `[init] model=…`, `[params] reasoningEffort=… fastMode=true` (the request), and `[done] … fastMode=<state>` (the verdict the engine served — `on` / `off` / `denied` / `requested`, printed verbatim, since "requested but refused" is exactly what someone debugging a slow run needs). `[params]` renders only those two named fields, never the whole params object, because every other value is a path or a redaction marker |
 | `a2wave runs logs <id> [-o file]` | Download the NDJSON sidecar log; stdout by default. Not subject to the `MAX_STREAM_LOGS` cap that truncates the DB copy shown by `runs get`, but it has **its own** limits: the server stops at **256 MiB** and writes a cap marker, and can record `dropped` markers under sustained backpressure. Streamed to disk/stdout rather than buffered; `-o` writes to a temp file and renames on success, so an interrupted download never destroys a previous log |
 | `a2wave runs cancel <id>` | Cancel a queued or running run (400 when it is already terminal) |
 | `a2wave runs rerun <id> [--wait]` | Replay a run with its original intent and attachments. The server starts it, so the CLI **never** calls `/execute` afterwards. `--wait` polls to a terminal status and exits 1 on failure |
