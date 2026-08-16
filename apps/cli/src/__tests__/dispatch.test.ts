@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -15,6 +17,34 @@ import { describe, expect, it } from 'vitest'
  * Anything asserting how the process actually behaves has to run the process.
  */
 const ENTRY = resolve(dirname(fileURLToPath(import.meta.url)), '../index.ts')
+
+/**
+ * Run the installed tsx binary directly rather than through `npx`.
+ *
+ * These tests assert on the child's stderr, and `npx` puts npm between the
+ * assertion and the process: this repo's `.npmrc` carries pnpm-only keys
+ * (`only-built-dependencies[]`), which npm answers with
+ * `npm warn Unknown project config` on stderr — ahead of the CLI's own output.
+ * `JSON.parse(stderr)` then fails on npm's prose, and the test reports a broken
+ * error envelope when the envelope is fine. Skipping npm also skips its cold
+ * start, which is most of why this file needs a 60s timeout.
+ */
+const TSX_BIN = resolve(dirname(ENTRY), '../node_modules/.bin/tsx')
+const RUNNER = existsSync(TSX_BIN)
+  ? { cmd: TSX_BIN, prefix: [] as string[] }
+  : { cmd: 'npx', prefix: ['tsx'] }
+
+/**
+ * An empty HOME, so the child reads no `~/.a2wave/config.json`.
+ *
+ * "No credential" is the precondition every case here depends on — it is what
+ * makes each data command fail fast and exercise the error path. Inheriting the
+ * developer's real HOME makes that precondition a property of the machine: on a
+ * laptop logged into an instance, `resolveCredential` answers "no stored
+ * credential for <this url>" instead of "not logged in", and the assertions fail
+ * on a message that is entirely correct.
+ */
+const FAKE_HOME = mkdtempSync(join(tmpdir(), 'a2wave-dispatch-home-'))
 
 // citty colours its usage, so the rendered line is
 // `USAGE\e[22m\e[24m \e[36ma2wave` — the escapes sit between the two words a
@@ -36,11 +66,17 @@ function run(args: string[]): { stdout: string; stderr: string; code: number } {
   // would compare against an empty string and pass for the wrong reason.
   const { TEST, VITEST, VITEST_WORKER_ID, NODE_ENV, ...cleanEnv } = process.env
   try {
-    const stdout = execFileSync('npx', ['tsx', ENTRY, ...args], {
+    const stdout = execFileSync(RUNNER.cmd, [...RUNNER.prefix, ENTRY, ...args], {
       encoding: 'utf-8',
       // No instance is reachable, which is the point: every data command fails
       // fast on the missing credential and exercises the error path.
-      env: { ...cleanEnv, A2WAVE_URL: 'http://127.0.0.1:59999', A2WAVE_DEBUG: '' },
+      env: {
+        ...cleanEnv,
+        HOME: FAKE_HOME,
+        USERPROFILE: FAKE_HOME,
+        A2WAVE_URL: 'http://127.0.0.1:59999',
+        A2WAVE_DEBUG: '',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     return { stdout: stripAnsi(stdout), stderr: '', code: 0 }
@@ -54,9 +90,9 @@ function run(args: string[]): { stdout: string; stderr: string; code: number } {
   }
 }
 
-// Each case spawns `npx tsx` on the real entry point, which is slow to cold
-// start — well past vitest's 5s default once several run in one file. The cost
-// is the point: nothing cheaper observes how the process actually behaves.
+// Each case spawns tsx on the real entry point, which is slow to cold start —
+// well past vitest's 5s default once several run in one file. The cost is the
+// point: nothing cheaper observes how the process actually behaves.
 describe('dispatch', { timeout: 60_000 }, () => {
   it('reports a CliError as one clean line, with no stack trace', () => {
     const { stderr, code } = run(['agents', 'list'])
