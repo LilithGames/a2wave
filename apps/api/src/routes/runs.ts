@@ -1035,6 +1035,15 @@ app.post('/:id/rerun', async (c) => {
       .returning()
   )[0]
 
+  const slotResult = await tryAcquireSlot(taskQueueDb, agentId, newRunId, agent.maxConcurrency ?? 1)
+  if (slotResult === 'queue_full') {
+    await db.delete(runs).where(eq(runs.id, newRunId))
+    return c.json({ error: 'Queue is full' }, 429)
+  }
+
+  // Audit after the slot was acquired, so a request rejected for a full queue
+  // (whose run row is deleted again) leaves no entry claiming a rerun that
+  // never happened — the same ordering POST /runs/:id/execute uses.
   logAudit(c, {
     action: 'run.rerun',
     resource: 'run',
@@ -1042,11 +1051,6 @@ app.post('/:id/rerun', async (c) => {
     details: { originalRunId: id },
   })
 
-  const slotResult = await tryAcquireSlot(taskQueueDb, agentId, newRunId, agent.maxConcurrency ?? 1)
-  if (slotResult === 'queue_full') {
-    await db.delete(runs).where(eq(runs.id, newRunId))
-    return c.json({ error: 'Queue is full' }, 429)
-  }
   if (slotResult === 'queued') {
     if (rerunContext) registerPendingContext(newRunId, rerunContext)
     return c.json({ data: { ...newRun, status: 'queued' } }, 202)

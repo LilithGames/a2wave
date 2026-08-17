@@ -940,6 +940,17 @@ app.post('/:id/sync', async (c) => {
     return c.json({ error: 'Sync already in progress' }, 409)
   }
 
+  // Audited after the status CAS and the checkout lock both won, so a request
+  // rejected with 409 leaves no entry claiming a sync that never started. The
+  // background job dials an external host with the row's stored credential and
+  // carries no actor of its own, so this is the only record of who triggered it.
+  logAudit(c, {
+    action: 'scm_source.sync',
+    resource: 'scm_source',
+    resourceId: id,
+    details: { type: source.type },
+  })
+
   syncScmSource(id, { statusAlreadyAcquired: true, checkoutAlreadyAcquired: true }).catch((err) => {
     logger.error({ sourceId: id, error: err }, 'Background sync failed')
   })
@@ -959,15 +970,35 @@ app.post('/:id/check', async (c) => {
     return c.json({ error: 'SCM source not found' }, 404)
   }
 
+  // Same reasoning as POST /probe: this makes an outbound connection with the
+  // row's stored credential and writes no other record, so the audit entry is
+  // the only trace it happened (Iron Rule 5). Endpoint recorded redacted.
+  const auditCheck = (ok: boolean) =>
+    logAudit(c, {
+      action: 'scm_source.check',
+      resource: 'scm_source',
+      resourceId: id,
+      details: {
+        type: source.type,
+        endpoint: probeEndpointForAudit({
+          ...(source.config as unknown as P4Config | GitConfig),
+          type: source.type,
+        } as Parameters<typeof probeEndpointForAudit>[0]),
+        ok,
+      },
+    })
+
   if (source.type === 'p4') {
     const config = source.config as unknown as P4Config
     const result = await checkP4Connection(config, source.localPath)
+    auditCheck(result.ok)
     return c.json({ data: result })
   }
 
   if (source.type === 'git') {
     const config = source.config as unknown as GitConfig
     const result = await checkGitConnection(config)
+    auditCheck(result.ok)
     return c.json({ data: result })
   }
 

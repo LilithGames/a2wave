@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import {
   chatAppConfigSchema,
@@ -1020,6 +1020,34 @@ export async function importAgentFromZip(
       userId,
     })
 
+    // Skill files are written INSIDE the transaction, as its last step. Writing
+    // them after the commit meant an ENOSPC/EDQUOT here left committed skills
+    // rows whose storagePath was empty or half-written — the operator saw a 500
+    // and reasonably concluded nothing was imported, while every later run of
+    // the Agent silently mounted an incomplete skill package. Throwing here now
+    // rolls the rows back; the directories are cleaned up so a retry starts
+    // from a clean slate rather than adding an "(Imported)" duplicate set.
+    const createdDirs: string[] = []
+    try {
+      for (const dir of pendingDirs) {
+        if (!existsSync(dir)) createdDirs.push(dir)
+        ensureDir(dir)
+      }
+      for (const { path, data } of pendingFileWrites) {
+        writeFileSync(path, data)
+      }
+    } catch (err) {
+      for (const dir of createdDirs) {
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // Best-effort: the rethrown error is what the operator acts on, and
+          // the transaction rollback is what keeps the database consistent.
+        }
+      }
+      throw err
+    }
+
     return {
       agent: { id: agentId, name: agentName },
       mcpServers: importedMcps,
@@ -1027,14 +1055,6 @@ export async function importAgentFromZip(
       warnings,
     }
   })
-
-  // Transaction succeeded — now write skill files to disk
-  for (const dir of pendingDirs) {
-    ensureDir(dir)
-  }
-  for (const { path, data } of pendingFileWrites) {
-    writeFileSync(path, data)
-  }
 
   return result
 }

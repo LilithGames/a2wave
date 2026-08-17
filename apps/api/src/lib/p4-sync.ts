@@ -298,7 +298,10 @@ export async function executeP4Sync(
     else if (stdout) parts.push(stdout)
     else if (parts.length === 0) parts.push(error instanceof Error ? error.message : String(error))
 
-    return { ok: false, message: `P4 sync failed: ${parts.join(' — ')}` }
+    // Same redaction the connection check applies: p4d can echo the connection
+    // string (including P4PASSWD) back on failure, and this message is persisted
+    // to scmSources.lastSyncError and shipped to the sync-error webhook.
+    return { ok: false, message: `P4 sync failed: ${sanitizeCredentials(parts.join(' — '))}` }
   }
 }
 

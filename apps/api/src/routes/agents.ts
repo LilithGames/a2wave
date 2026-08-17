@@ -2335,6 +2335,11 @@ app.post('/:id/regenerate-api-key', async (c) => {
     .update(agents)
     .set({ endpointApiKey: newApiKey, updatedAt: new Date() })
     .where(eq(agents.id, id))
+
+  // Rotating a live credential breaks every integration holding the old key;
+  // the trail is exactly what answers "who rotated this, and when".
+  logAudit(c, { action: 'agent.regenerate_api_key', resource: 'agent', resourceId: id })
+
   return c.json({ data: { endpointApiKey: newApiKey } })
 })
 
@@ -2350,6 +2355,9 @@ app.post('/:id/regenerate-a2a-api-key', async (c) => {
     .update(agents)
     .set({ a2aEndpointApiKey: newApiKey, updatedAt: new Date() })
     .where(eq(agents.id, id))
+
+  logAudit(c, { action: 'agent.regenerate_a2a_api_key', resource: 'agent', resourceId: id })
+
   return c.json({ data: { a2aEndpointApiKey: newApiKey } })
 })
 

@@ -455,6 +455,32 @@ describe('executeP4Sync', () => {
     expect(result.message).toContain('Permission denied')
   })
 
+  it('redacts credentials echoed back in the sync failure output', async () => {
+    makeSpawnMock(0) // p4Login succeeds
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (err: Error & { stderr?: string; code?: string }) => void
+      const err = new Error('sync failed') as Error & { stderr?: string; code?: string }
+      // p4d echoes the connection string back on failure.
+      err.stderr = 'Connect to server failed; P4PASSWD=s3cr3t-token check $P4PORT'
+      err.code = '1'
+      cb(err)
+    })
+
+    const config: P4Config = {
+      ...p4ConfigDefaults,
+      p4port: 'ssl:h:1666',
+      p4user: 'u',
+      p4passwd: 's3cr3t-token',
+      p4client: 'c',
+    }
+    const result = await executeP4Sync(config, '/repo')
+    expect(result.ok).toBe(false)
+    // The message is persisted to lastSyncError and shipped to an outbound
+    // webhook, so it must never carry the password.
+    expect(result.message).not.toContain('s3cr3t-token')
+    expect(result.message).toContain('P4PASSWD=***')
+  })
+
   it('reports timeout on ETIMEDOUT', async () => {
     makeSpawnMock(0) // p4Login succeeds
     mockExecFile.mockImplementation((...args: unknown[]) => {

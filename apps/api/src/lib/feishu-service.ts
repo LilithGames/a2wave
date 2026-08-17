@@ -2143,7 +2143,11 @@ class FeishuConnectionManager {
     const executeJob = async () => {
       let imageTempDir: string | undefined
       let fileTempDir: string | undefined
-      let rootTempDir: string | undefined
+      // Tracked separately for the same reason imageTempDir/fileTempDir are: a
+      // root message can carry both images and a file, and a single variable
+      // would leak whichever download root it was overwritten with.
+      let rootImageTempDir: string | undefined
+      let rootFileTempDir: string | undefined
       let lifecycleParams:
         | {
             taskId: string
@@ -2222,7 +2226,7 @@ class FeishuConnectionManager {
                   'Feishu: extracting images from topic root message',
                 )
                 const rootDownloadRootDir = buildFeishuImageDownloadRootDir(agentId, runId)
-                rootTempDir = rootDownloadRootDir
+                rootImageTempDir = rootDownloadRootDir
                 const rootDownloadDir = buildFeishuMessageResourceDownloadDir(rootDownloadRootDir)
                 const downloaded = await downloadFeishuImages(
                   freshClient,
@@ -2240,7 +2244,7 @@ class FeishuConnectionManager {
                     rootMeta.fileKey,
                   )
                   const rootDownloadRootDir = buildFeishuFileDownloadRootDir(agentId, runId)
-                  rootTempDir = rootDownloadRootDir
+                  rootFileTempDir = rootDownloadRootDir
                   const rootDownloadDir = buildFeishuMessageResourceDownloadDir(rootDownloadRootDir)
                   const rootDl = await downloadFeishuFile(
                     freshClient,
@@ -2815,9 +2819,11 @@ class FeishuConnectionManager {
           )
         }
       } finally {
-        if (imageTempDir) cleanupFeishuMessageResourceDownloadRoot(imageTempDir)
-        if (fileTempDir) cleanupFeishuMessageResourceDownloadRoot(fileTempDir)
-        if (rootTempDir) cleanupFeishuMessageResourceDownloadRoot(rootTempDir)
+        // Awaited: the run must not be reported terminal while its download
+        // roots are still being torn down.
+        for (const dir of [imageTempDir, fileTempDir, rootImageTempDir, rootFileTempDir]) {
+          if (dir) await cleanupFeishuMessageResourceDownloadRoot(dir)
+        }
         // Event has reached a terminal state (success or failure) — the DB
         // tombstone is no longer needed for restart recovery.
         await removePending()

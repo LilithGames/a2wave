@@ -1059,8 +1059,30 @@ export function mergeMemoryTopics(
     ].slice(0, MEMORY_TOPIC_KEYWORD_LIMIT),
     updatedAt: new Date().toISOString(),
   }
-  writeMemoryFile(agentId, target.path, renderMemoryTopicFile(metadata, mergedBody))
-  for (const source of sources) archiveMemoryTopic(agentId, source.topicId)
+  // The target is rewritten destructively and the sources are archived one by
+  // one, so a failure partway through would otherwise leave the target holding
+  // a source's facts while that source is still active — duplicated content
+  // that also makes the retry fail permanently (the archived sources no longer
+  // read back). Restore everything on the way out, the way splitMemoryTopic does.
+  const targetBefore = readMemoryFile(agentId, target.path)
+  const archived: string[] = []
+  try {
+    writeMemoryFile(agentId, target.path, renderMemoryTopicFile(metadata, mergedBody))
+    for (const source of sources) {
+      archiveMemoryTopic(agentId, source.topicId)
+      archived.push(source.topicId)
+    }
+  } catch (err) {
+    try {
+      for (const topicId of archived) reactivateMemoryTopic(agentId, topicId)
+      writeMemoryFile(agentId, target.path, targetBefore)
+      rebuildMemoryMain(agentId)
+    } catch {
+      // Preserve the original error; repair tooling can recover from the
+      // archived copies, which are written before their source is removed.
+    }
+    throw err
+  }
   rebuildMemoryMain(agentId)
   return readMemoryTopic(agentId, targetTopicId)
 }

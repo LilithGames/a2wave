@@ -14,9 +14,6 @@ vi.mock('../logger.js', () => ({
 import { env } from '../../env.js'
 import { readMemoryFile, writeMemoryFile } from '../memory-storage.js'
 import {
-  MEMORY_MAIN_FILE,
-  MEMORY_TOPIC_HARD_TOKENS,
-  MemoryTopicError,
   applyInsightToTopics,
   archiveMemoryTopic,
   detectMemoryHierarchyMode,
@@ -24,6 +21,10 @@ import {
   getValidatedMemoryMain,
   hashMemoryBlock,
   listMemoryTopics,
+  MEMORY_MAIN_FILE,
+  MEMORY_TOPIC_HARD_TOKENS,
+  MemoryTopicError,
+  mergeMemoryTopics,
   parseMemoryTopicFile,
   reactivateMemoryTopic,
   readMemoryTopic,
@@ -33,6 +34,7 @@ import {
   replaceTopicBody,
   selectMemoryTopicForRecall,
   splitMemoryTopic,
+  topicPath,
 } from '../memory-topics.js'
 
 let testRoot: string
@@ -488,6 +490,60 @@ describe('memory-topics', () => {
     const reactivated = reactivateMemoryTopic('agt_test', topicId)
     expect(reactivated.status).toBe('active')
     expect(readMemoryFile('agt_test', MEMORY_MAIN_FILE)).toContain(`\`${topicId}\``)
+  })
+
+  it('restores the merge target when archiving a source fails midway', async () => {
+    // Distinct scopes/keywords so each insight opens its own topic instead of
+    // being merged into the previous one; two items each clears the
+    // "insufficient_new_topic_content" guard on new-topic creation.
+    const target = applyInsightToTopics('agt_test', insight())
+    const sourceA = applyInsightToTopics(
+      'agt_test',
+      insight({
+        title: 'Billing invoices',
+        scope: 'Billing invoice lifecycle.',
+        description: 'Invoice rules.',
+        keywords: ['billing', 'invoice'],
+        items: ['Invoices settle nightly.', 'Refunds post next day.'],
+      }),
+    )
+    const sourceB = applyInsightToTopics(
+      'agt_test',
+      insight({
+        title: 'Render pipeline',
+        scope: 'GPU render pipeline stages.',
+        description: 'Render rules.',
+        keywords: ['render', 'gpu'],
+        items: ['Shaders compile at boot.', 'Frame budget is 16ms.'],
+      }),
+    )
+    const targetTopicId = target.topic?.topicId as string
+    const sourceAId = sourceA.topic?.topicId as string
+    const sourceBId = sourceB.topic?.topicId as string
+    expect(targetTopicId && sourceAId && sourceBId).toBeTruthy()
+
+    const targetBefore = readMemoryTopic('agt_test', targetTopicId).body
+    const mainBefore = readMemoryFile('agt_test', MEMORY_MAIN_FILE)
+
+    // mergeMemoryTopics reads every source up front, writes the target, then
+    // archives the sources in a loop. Occupy source B's archive destination
+    // with a *directory*, so its archive write throws EISDIR after source A
+    // already archived cleanly — the same shape as a mid-loop ENOSPC/EIO.
+    const sourceBArchivePath = topicPath({
+      topicId: sourceBId,
+      title: 'Render pipeline',
+      status: 'archived',
+    })
+    mkdirSync(join(testRoot, 'agt_test', sourceBArchivePath), { recursive: true })
+
+    expect(() => mergeMemoryTopics('agt_test', [sourceAId, sourceBId], targetTopicId)).toThrow()
+
+    // The target must not be left holding merged content while a source is
+    // still active — that duplicates facts and makes the retry unrecoverable.
+    expect(readMemoryTopic('agt_test', targetTopicId).body).toBe(targetBefore)
+    expect(readMemoryTopic('agt_test', sourceAId).status).toBe('active')
+    expect(readMemoryTopic('agt_test', sourceBId).status).toBe('active')
+    expect(readMemoryFile('agt_test', MEMORY_MAIN_FILE)).toBe(mainBefore)
   })
 
   it('splits a topic only when every source block is copied verbatim exactly once', async () => {
