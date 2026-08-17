@@ -1,5 +1,4 @@
-import { execSync } from 'node:child_process'
-import { constants, accessSync } from 'node:fs'
+import { accessSync, constants } from 'node:fs'
 import { dirname } from 'node:path'
 import { count } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -9,15 +8,7 @@ import { runs } from '../db/schema.js'
 import { engineRegistry } from '../engine/index.js'
 import { env } from '../env.js'
 import { isReady } from '../lib/readiness.js'
-
-function getVersion(): string {
-  if (process.env.APP_VERSION) return process.env.APP_VERSION
-  try {
-    return execSync('git describe --tags --always').toString().trim()
-  } catch {
-    return 'dev'
-  }
-}
+import { getVersion } from '../lib/version.js'
 
 async function checkDatabase(): Promise<{ ok: boolean; error?: string; tables?: number }> {
   try {

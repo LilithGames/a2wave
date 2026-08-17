@@ -1,15 +1,16 @@
+import type { InputRef } from 'antd'
+import { Input } from 'antd'
+import { Loader2, Waves } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import oidcIconUrl from '@/assets/sso-icons/oidc.svg'
 import samlIconUrl from '@/assets/sso-icons/saml.svg'
 import { BrandWaveField } from '@/components/brand-wave-field'
 import { Button } from '@/components/ui/button'
 import { type SsoLoginMethod, useAuthStatus, useLogin, useOauthConfig } from '@/hooks/use-auth'
+import { useVersion } from '@/hooks/use-version'
 import { formatApiError } from '@/lib/api-error'
-import { Input } from 'antd'
-import type { InputRef } from 'antd'
-import { Loader2, Waves } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 
 /**
  * 'login'（默认）换 a2wave 登录态；'bind' 把 SSO 身份钉到当前用户；
@@ -144,6 +145,9 @@ export function LoginPage() {
     isError: oauthConfigFailed,
   } = useOauthConfig()
   const usernameRef = useRef<InputRef>(null)
+  // Called before the early returns below so hook order stays stable across the
+  // loading / needSetup branches.
+  const { data: version } = useVersion()
   const login = useLogin()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -370,8 +374,14 @@ export function LoginPage() {
           </div>
         </div>
 
-        {/* Footer */}
-        <p className="mt-6 text-center text-2xs text-muted-foreground">{t('app.copyright')}</p>
+        {/* Footer — copyright plus, once known, the running server's version.
+            The version is appended rather than given its own line: it is a
+            short meta string and the footer is already this page's meta zone. */}
+        <p data-testid="login-footer" className="mt-6 text-center text-2xs text-muted-foreground">
+          {version
+            ? t('app.copyrightWithVersion', { copyright: t('app.copyright'), version })
+            : t('app.copyright')}
+        </p>
       </div>
     </div>
   )

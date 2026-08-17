@@ -3,7 +3,8 @@
     "name": "A2WAVE",
     "subtitle": "Agent 工作流",
     "tagline": "基于成熟 Agent CLI，构建企业 Agent。",
-    "copyright": "© 2026 Lilith Games 版权所有"
+    "copyright": "© 2026 Lilith Games 版权所有",
+    "copyrightWithVersion": "{{copyright}} · {{version}}"
   },
   "about": {
     "menuItem": "关于",

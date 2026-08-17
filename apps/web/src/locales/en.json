@@ -3,7 +3,8 @@
     "name": "A2WAVE",
     "subtitle": "Agent Workflow",
     "tagline": "Build enterprise agents on mature agent CLIs.",
-    "copyright": "© 2026 Lilith Games. All rights reserved."
+    "copyright": "© 2026 Lilith Games. All rights reserved.",
+    "copyrightWithVersion": "{{copyright}} · {{version}}"
   },
   "about": {
     "menuItem": "About",

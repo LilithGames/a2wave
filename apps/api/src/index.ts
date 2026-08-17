@@ -110,6 +110,7 @@ import uploadsRoutes from './routes/uploads.js'
 import { adminInvitationRoutes, publicInvitationRoutes } from './routes/user-invitations.js'
 import userLookupRoutes from './routes/user-lookup.js'
 import usersRoutes from './routes/users.js'
+import versionRoutes from './routes/version.js'
 
 // Provider CLIs are installed at runtime under A2WAVE_CLI_INSTALL_ROOT; make sure
 // that root is on PATH before anything spawns a CLI. The image bakes in the
@@ -200,6 +201,8 @@ app.get('/api/openapi.json', (c) => c.json(openApiSpec))
 
 // --- Public routes (no auth) ---
 app.route('/api/health', healthRoutes)
+// Public on purpose: the login footer renders the version before any session exists.
+app.route('/api/version', versionRoutes)
 app.route('/api/changelog', changelogRoutes)
 app.route('/api/gateway', gatewayRoutes)
 app.route('/api/oauth', oauthGatewayRoutes)

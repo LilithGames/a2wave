@@ -1,3 +1,6 @@
+import { Github, ScrollText } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import {
@@ -7,10 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { useQuery } from '@tanstack/react-query'
-import { Github, ScrollText } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
+import { useVersion } from '@/hooks/use-version'
 
 /** 开源仓库地址；仓库迁移时同步修改。 */
 export const GITHUB_REPO_URL = 'https://github.com/LilithGames/a2wave'
@@ -22,17 +22,7 @@ interface AboutDialogProps {
 
 export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
   const { t } = useTranslation()
-  const { data: version } = useQuery({
-    queryKey: ['health', 'version'],
-    queryFn: async () => {
-      const res = await fetch('/api/health', { credentials: 'include' })
-      if (!res.ok) throw new Error('Failed to fetch health')
-      const data = (await res.json()) as { version?: string }
-      return data.version ?? null
-    },
-    staleTime: Number.POSITIVE_INFINITY,
-    enabled: open,
-  })
+  const { data: version } = useVersion()
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} width={520}>
