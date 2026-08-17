@@ -23,6 +23,13 @@ updates:
       production-minor-patch:
         dependency-type: production
         update-types: [minor, patch]
+    ignore:
+      # @types/node must track the Node runtime we actually build and run on.
+      # `engines` requires >=22 and every CI job pins node-version: 22, so a major
+      # bump type-checks our code against an API surface the runtime does not have.
+      # Raise this together with the engines floor and the workflow pins.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
     labels: [dependencies]
 
   - package-ecosystem: github-actions
