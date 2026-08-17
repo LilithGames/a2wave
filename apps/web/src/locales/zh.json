@@ -162,8 +162,8 @@
     "nextPage": "下一页",
     "fastMode": {
       "on": "快速模式已生效",
-      "requested": "已请求快速模式，该引擎不回报实际执行速度",
-      "denied": "已请求快速模式，服务端按普通速度执行",
+      "requested": "快速模式已请求",
+      "denied": "快速模式被拒",
       "off": "快速模式未生效",
       "cooldown": "快速模式冷却中",
       "unknown": "快速模式：{{state}}"

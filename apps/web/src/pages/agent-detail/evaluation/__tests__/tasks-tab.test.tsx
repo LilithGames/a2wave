@@ -116,6 +116,87 @@ describe('TasksTab', () => {
 })
 
 /**
+ * The "config changed" flag is what stops a pass-rate drop being read as a model
+ * regression when something else moved. Reasoning effort and fast mode ride with
+ * the model, so a change to either has to raise it — two tasks that differ only
+ * in reasoning depth are exactly the pair the frozen fields were added for.
+ */
+describe('TasksTab config-change flag', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  // The suite runs under the default locale, so match both wordings rather than
+  // pinning one language.
+  const CHANGED_MODEL = /模型有变更|model changed/i
+  const CHANGED_ANY = /模型有变更|提示词有变更|model changed|prompt changed/i
+
+  const snapshot = (overrides: Record<string, unknown> = {}) => ({
+    providerId: 'prv_1',
+    providerName: 'Anthropic',
+    model: 'claude-opus-4-8',
+    reasoningEffort: 'low',
+    fastMode: false,
+    systemPrompt: '',
+    capturedAt: new Date('2026-07-20T00:00:00Z'),
+    ...overrides,
+  })
+
+  /** Newest first, matching the list order the component reads `previous` from. */
+  const renderPair = (newer: Record<string, unknown>, older: Record<string, unknown>) =>
+    renderTasks([
+      makeTask({ id: 'evt_new', configSnapshot: snapshot(newer) as never }),
+      makeTask({ id: 'evt_old', configSnapshot: snapshot(older) as never }),
+    ])
+
+  it('flags a task whose reasoning level differs from the previous run', () => {
+    renderPair({ reasoningEffort: 'ultra' }, { reasoningEffort: 'low' })
+
+    expect(screen.getByText(CHANGED_MODEL)).toBeInTheDocument()
+  })
+
+  it('flags a task whose fast mode differs', () => {
+    renderPair({ fastMode: true }, { fastMode: false })
+
+    expect(screen.getByText(CHANGED_MODEL)).toBeInTheDocument()
+  })
+
+  it('stays quiet when both runs used the same configuration', () => {
+    renderPair({}, {})
+
+    expect(screen.queryByText(CHANGED_ANY)).toBeNull()
+  })
+
+  /**
+   * The regression this guards: a task frozen before these fields existed
+   * carries `undefined` where a new one carries `null`. Compared directly, every
+   * pair straddling the change would be flagged — a warning about a difference
+   * that is entirely in the storage format.
+   */
+  it('does not flag a pre-change task against a new one that configured nothing', () => {
+    renderTasks([
+      // New row: the fields exist and were frozen as "not configured".
+      makeTask({
+        id: 'evt_new',
+        configSnapshot: snapshot({ reasoningEffort: null, fastMode: null }) as never,
+      }),
+      // Older row: written before the fields existed, so it carries neither key.
+      makeTask({
+        id: 'evt_old',
+        configSnapshot: {
+          providerId: 'prv_1',
+          providerName: 'Anthropic',
+          model: 'claude-opus-4-8',
+          systemPrompt: '',
+          capturedAt: new Date('2026-07-19T00:00:00Z'),
+        } as never,
+      }),
+    ])
+
+    // `undefined` vs `null` is a storage-format difference, not a config change.
+    expect(screen.queryByText(CHANGED_MODEL)).toBeNull()
+  })
+})
+
+/**
  * A P4 Agent evaluates inside the one shared checkout: a P4 client is
  * server-side state bound to a single Root, so a2wave has no worktree to hand
  * the task. Anything else touching that source mid-run — a chat run, a sync —

@@ -54,7 +54,9 @@ describe('StreamLogsTimeline', () => {
     it('states that the request was refused, which the switch cannot show', () => {
       renderWithProviders(<StreamLogsTimeline logs={[resultWith('denied')]} defaultOpen />)
 
-      expect(screen.getByText(/served at standard speed/)).toBeInTheDocument()
+      // Distinct from `off` (never asked) and from the Provider having no fast
+      // mode at all — that case never renders the switch, let alone this row.
+      expect(screen.getByText(/fast mode denied/)).toBeInTheDocument()
     })
 
     it('says nothing when the engine reported no verdict', () => {

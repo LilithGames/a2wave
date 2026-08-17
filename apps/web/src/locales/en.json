@@ -162,8 +162,8 @@
     "nextPage": "Next",
     "fastMode": {
       "on": "fast mode served",
-      "requested": "fast mode requested; this engine does not report the served speed",
-      "denied": "fast mode requested, served at standard speed",
+      "requested": "fast mode requested",
+      "denied": "fast mode denied",
       "off": "fast mode off",
       "cooldown": "fast mode cooling down",
       "unknown": "fast mode: {{state}}"
