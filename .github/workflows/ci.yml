@@ -452,7 +452,7 @@ jobs:
       # rather than on anything this gate is meant to catch.
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @a2wave/shared build
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # Build here rather than inside the script so the layers can be cached
       # between runs. A fresh runner has no layer cache, so every run was
       # re-downloading the pinned p4 binary from the Perforce CDN — 20MB of
@@ -460,7 +460,7 @@ jobs:
       # our own storage code. `--load` puts the image in the local daemon, which
       # is where the script's ownership matrix looks for it.
       - name: Build the image (cached)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
