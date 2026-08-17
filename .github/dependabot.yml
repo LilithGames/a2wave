@@ -6,6 +6,19 @@
 #
 # Grouped deliberately: a monorepo of this size produces enough weekly PRs to
 # drown the review queue, and a lockfile-only bump is not worth one PR per package.
+#
+# Major versions are not proposed automatically. The first three weeks of this
+# config produced 22 PRs of which 10 were closed unmerged, and every unmerged
+# one but a grouped rollup was a major: @types/node -> 26 (twice), node -> 25,
+# jose -> 6, @vitejs/plugin-react -> 6. A major needs a migration plan, a
+# maintainer's judgement, and often a runtime bump alongside it — none of which
+# a weekly bot PR carries. Worse, declining one does not settle it: the same
+# @types/node major was reopened a week later. Majors are now adopted
+# deliberately, by a human, when the surrounding work is ready for them.
+#
+# This does NOT delay security fixes. Dependabot security updates are driven by
+# advisories, not by this file's `ignore` and `groups` rules, so a vulnerable
+# dependency is still raised immediately even when its fix is a major.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -16,19 +29,19 @@ updates:
     # pnpm workspaces resolve from the single root lockfile, so one entry covers
     # every app and package.
     versioning-strategy: increase-if-necessary
+    # Two rollups, split only by whether a bump can reach production. Grouping on
+    # `patterns` rather than `update-types` keeps a package in its group no matter
+    # which update types it has pending — an earlier `update-types`-scoped group
+    # let openid-client 6.8.4 -> 6.8.5 escape into a PR of its own.
     groups:
       dev-dependencies:
         dependency-type: development
-        update-types: [minor, patch]
-      production-minor-patch:
+        patterns: ['*']
+      production-dependencies:
         dependency-type: production
-        update-types: [minor, patch]
+        patterns: ['*']
     ignore:
-      # @types/node must track the Node runtime we actually build and run on.
-      # `engines` requires >=22 and every CI job pins node-version: 22, so a major
-      # bump type-checks our code against an API surface the runtime does not have.
-      # Raise this together with the engines floor and the workflow pins.
-      - dependency-name: '@types/node'
+      - dependency-name: '*'
         update-types: [version-update:semver-major]
     labels: [dependencies]
 
@@ -47,4 +60,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      # The Dockerfile's node:22-slim base must stay in step with the toolchain:
+      # `engines` requires node >=22 and every workflow pins node-version: 22.
+      # Bumping the image alone ships a runtime the repository does not test on.
+      # Raise it together with the engines floor and the workflow pins.
+      - dependency-name: node
+        update-types: [version-update:semver-major]
     labels: [dependencies, docker]
