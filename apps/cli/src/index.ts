@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { defineCommand, runCommand, showUsage } from 'citty'
+import { defineCommand, runCommand } from 'citty'
 import { agentsCommand } from './commands/agents.js'
 import { apiCommand } from './commands/api.js'
 import { channelsCommand } from './commands/channels.js'
@@ -25,6 +25,7 @@ import { updateCommand } from './commands/update.js'
 import { whoamiCommand } from './commands/whoami.js'
 import { CliError, toErrorEnvelope } from './errors.js'
 import { readAgentMeta } from './lib/agent-meta.js'
+import { renderUsage } from './lib/render-usage.js'
 import { setRootCommand } from './lib/root-registry.js'
 import { getVersion } from './version.js'
 
@@ -186,16 +187,22 @@ function resolveForUsage(root: CommandNode, rawArgs: string[]): [CommandNode, Co
 }
 
 /**
- * citty's usage, followed by the node's risk label.
+ * The usage page, followed by the node's risk label.
  *
- * Appended rather than woven in: `renderUsage` is citty's, and reimplementing
- * it to insert one line would put the whole usage layout under our maintenance
- * for the sake of a suffix. Only leaves carry a label — a group node does no
- * work of its own, so a risk there would have to be the max of its children,
- * which is a number nobody maintains.
+ * `renderUsage` is ours rather than citty's: citty padded the last column to
+ * the widest description, so a 250-character `api` description forced every
+ * row of `a2wave --help` out to 332 columns and each one wrapped into a
+ * blank-looking second line. See src/lib/render-usage.ts.
+ *
+ * Printed with `console.log` rather than through consola, which suppresses
+ * output whenever it believes it is under test.
+ *
+ * Only leaves carry a risk label — a group node does no work of its own, so a
+ * risk there would have to be the max of its children, which is a number
+ * nobody maintains.
  */
 async function showUsageWithRisk(cmd: CommandNode, parent?: CommandNode): Promise<void> {
-  await showUsage(cmd as never, parent as never)
+  console.log(`${await renderUsage(cmd, parent)}\n`)
   const risk = readAgentMeta(cmd)?.risk
   if (risk) console.log(`Risk: ${risk}`)
 }
