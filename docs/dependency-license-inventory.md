@@ -114,9 +114,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @gilbarbara/deep-equal | 0.4.1 | MIT |
 | @gilbarbara/hooks | 0.11.0 | MIT |
 | @gilbarbara/types | 0.2.2 | MIT |
-| @hono/node-server | 2.1.0 | MIT |
+| @hono/node-server | 2.1.1 | MIT |
 | @hono/swagger-ui | 0.6.1 | MIT |
-| @hookform/resolvers | 5.7.1 | MIT |
+| @hookform/resolvers | 5.8.0 | MIT |
 | @inquirer/ansi | 2.0.5 | MIT |
 | @inquirer/checkbox | 5.1.5 | MIT |
 | @inquirer/confirm | 6.0.13 | MIT |
@@ -144,7 +144,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @lezer/lr | 1.4.10 | MIT |
 | @marijn/find-cluster-break | 1.0.3 | MIT |
 | @modelcontextprotocol/sdk | 1.30.0 | MIT |
-| @node-rs/argon2 | 2.0.2 | MIT |
+| @node-rs/argon2 | 2.1.0 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
 | @oxc-project/types | 0.143.0, 0.144.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
@@ -367,7 +367,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | data-urls | 5.0.0 | MIT |
 | date-fns | 4.1.0 | MIT |
 | dateformat | 4.6.3 | MIT |
-| dayjs | 1.11.21 | MIT |
+| dayjs | 1.11.21, 1.11.22 | MIT |
 | debug | 4.4.3 | MIT |
 | decimal.js | 10.6.0 | MIT |
 | decimal.js-light | 2.5.1 | MIT |
@@ -464,10 +464,10 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | hast-util-to-jsx-runtime | 2.3.6 | MIT |
 | hast-util-whitespace | 3.0.0 | MIT |
 | help-me | 5.0.0 | MIT |
-| hono | 4.13.1 | MIT |
+| hono | 4.13.2 | MIT |
 | html-encoding-sniffer | 4.0.0 | MIT |
 | html-escaper | 2.0.2 | MIT |
-| html-parse-stringify | 3.0.1 | MIT |
+| html-parse-stringify | 3.1.0 | MIT |
 | html-url-attributes | 3.0.1 | MIT |
 | htmlparser2 | 10.1.0, 12.0.0 | MIT |
 | http-errors | 2.0.1 | MIT |
@@ -475,7 +475,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | https-proxy-agent | 5.0.1, 7.0.6 | MIT |
 | human-signals | 5.0.0, 8.0.1 | Apache-2.0 |
 | husky | 9.1.7 | MIT |
-| i18next | 25.8.13 | MIT |
+| i18next | 25.10.10 | MIT |
 | iconv-lite | 0.6.3, 0.7.3 | MIT |
 | ieee754 | 1.2.1 | BSD-3-Clause |
 | immer | 11.1.15 | MIT |
@@ -507,7 +507,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | istanbul-lib-report | 3.0.1 | BSD-3-Clause |
 | istanbul-reports | 3.2.0 | BSD-3-Clause |
 | jiti | 2.7.0 | MIT |
-| jose | 5.10.0, 6.2.3, 6.2.8 | MIT |
+| jose | 5.10.0, 6.2.3, 6.2.8, 6.2.9 | MIT |
 | joycon | 3.1.1 | MIT |
 | js-md4 | 0.3.2 | MIT |
 | js-tokens | 4.0.0, 10.0.0 | MIT |
@@ -538,7 +538,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | long | 5.3.2 | Apache-2.0 |
 | longest-streak | 3.1.0 | MIT |
 | lru-cache | 5.1.1, 10.4.3 | ISC |
-| lucide-react | 0.469.0 | ISC |
+| lucide-react | 0.577.0 | ISC |
 | lz-string | 1.5.0 | MIT |
 | magic-bytes.js | 1.13.0 | MIT |
 | magic-string | 0.30.21 | MIT |
@@ -620,7 +620,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | node-releases | 2.0.27 | MIT |
 | npm-run-path | 5.3.0, 6.0.0 | MIT |
 | nwsapi | 2.2.23 | MIT |
-| oauth4webapi | 3.8.6 | MIT |
+| oauth4webapi | 3.8.7 | MIT |
 | object-assign | 4.1.1 | MIT |
 | object-inspect | 1.13.4 | MIT |
 | obug | 2.1.4 | MIT |
@@ -628,7 +628,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | on-finished | 2.4.1 | MIT |
 | once | 1.4.0 | ISC |
 | onetime | 6.0.0, 7.0.0 | MIT |
-| openid-client | 6.8.4 | MIT |
+| openid-client | 6.8.5 | MIT |
 | oxc-parser | 0.143.0 | MIT |
 | oxc-resolver | 11.24.2 | MIT |
 | p-finally | 1.0.0 | MIT |
@@ -689,7 +689,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | react | 19.2.8 | MIT |
 | react-dom | 19.2.8 | MIT |
 | react-hook-form | 7.85.0 | MIT |
-| react-i18next | 16.5.4 | MIT |
+| react-i18next | 16.6.6 | MIT |
 | react-innertext | 1.1.5 | MIT |
 | react-is | 17.0.2, 19.2.8 | MIT |
 | react-joyride | 3.2.0 | MIT |
@@ -724,7 +724,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | safe-buffer | 5.2.1 | MIT |
 | safe-stable-stringify | 2.5.0 | MIT |
 | safer-buffer | 2.1.2 | MIT |
-| sanitize-html | 2.17.6 | MIT |
+| sanitize-html | 2.17.7 | MIT |
 | sax | 1.6.0 | BlueOak-1.0.0 |
 | saxes | 6.0.0 | ISC |
 | scheduler | 0.27.0 | MIT |
