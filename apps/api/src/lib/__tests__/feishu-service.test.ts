@@ -274,6 +274,7 @@ vi.mock('../streaming-card-registry.js', () => ({
 // ── Import after mocks ───────────────────────────────────────────
 
 import { asyncQuery } from '../../test/async-query.js'
+import { P2P_SESSION_TIMEOUT_MS } from '../feishu-message-context.js'
 import {
   buildDebugInfoSuffix,
   buildFeishuContext,
@@ -289,7 +290,6 @@ import {
   feishuSafeFileNameForDisk,
   fetchFeishuUserInfo,
   getEffectiveReplyMode,
-  lookupPreviousChatId,
   normalizeFeishuConfig,
   prependAtMention,
   quoteAnchorId,
@@ -1096,42 +1096,9 @@ describe('quoteAnchorId', () => {
   })
 })
 
-// ── lookupPreviousChatId ─────────────────────────────────────────
-
-describe('lookupPreviousChatId', () => {
-  beforeEach(() => {
-    mockDbGet.mockReset()
-  })
-
-  it('命中有效 chatId 时返回 chatId', async () => {
-    mockDbGet.mockReturnValue({ result: { chatId: 'chat_123' }, updatedAt: new Date() })
-    expect(await lookupPreviousChatId('agt_001', 'th_001')).toBe('chat_123')
-  })
-
-  it('超出超时时间时返回 null', async () => {
-    const old = new Date(Date.now() - 3 * 60 * 60 * 1000) // 3 hours ago
-    mockDbGet.mockReturnValue({ result: { chatId: 'chat_123' }, updatedAt: old })
-    expect(await lookupPreviousChatId('agt_001', 'th_001')).toBeNull()
-  })
-
-  it('sessionTimeoutMs=Infinity 时永不超时', async () => {
-    const old = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // 7 days ago
-    mockDbGet.mockReturnValue({ result: { chatId: 'chat_123' }, updatedAt: old })
-    expect(await lookupPreviousChatId('agt_001', 'th_001', Number.POSITIVE_INFINITY)).toBe(
-      'chat_123',
-    )
-  })
-
-  it('result 无 chatId 时返回 null', async () => {
-    mockDbGet.mockReturnValue({ result: {}, updatedAt: new Date() })
-    expect(await lookupPreviousChatId('agt_001', 'th_001')).toBeNull()
-  })
-
-  it('无匹配 run 时返回 null', async () => {
-    mockDbGet.mockReturnValue(undefined)
-    expect(await lookupPreviousChatId('agt_001', 'th_001')).toBeNull()
-  })
-})
+// lookupPreviousChatId is covered in feishu-session-lookup.test.ts, against a real
+// in-memory SQLite: its behaviour is an ordering decision, which a mocked query builder
+// cannot express.
 
 // ── buildFeishuContext ───────────────────────────────────────────
 
@@ -3157,6 +3124,105 @@ describe('handleMessage via dispatcher', () => {
     expect(mockFinishRunError).not.toHaveBeenCalled()
   })
 
+  // ── session resume window ────────────────────────────────────
+
+  describe('session resume window', () => {
+    const STALE_MS = P2P_SESSION_TIMEOUT_MS * 1.5
+    const FRESH_MS = P2P_SESSION_TIMEOUT_MS / 4
+
+    /** One row plays both parts: the agent, and the session's last completed run. */
+    function agentWithLastRun(finishedAgoMs: number) {
+      const finishedAt = Date.now() - finishedAgoMs
+      return {
+        ...makeAgent(),
+        result: { chatId: 'chat_old' },
+        createdAt: new Date(finishedAt - 30 * 1000),
+        updatedAt: new Date(finishedAt),
+      }
+    }
+
+    const resumedChatId = () => mockExecuteWithRetry.mock.calls[0][1].chatId
+
+    // The production incident: quoting a three-day-old direct message revived that whole
+    // conversation. root_id takes no part in choosing a P2P session, yet it used to push
+    // the one line the chat has to an infinite expiry.
+    it('opens a new session for a quoted reply past the timeout', async () => {
+      mockDbGet.mockReturnValue(agentWithLastRun(STALE_MS))
+      await dispatch(
+        makeData({
+          chat_type: 'p2p',
+          thread_id: undefined,
+          message_id: 'om_p2p_quote_stale',
+          root_id: 'om_root_days_ago',
+          content: JSON.stringify({ text: 'take a look at this' }),
+        }),
+      )
+      expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+      expect(resumedChatId()).toBeUndefined()
+    })
+
+    it('resumes a quoted reply that is still inside the timeout', async () => {
+      mockDbGet.mockReturnValue(agentWithLastRun(FRESH_MS))
+      await dispatch(
+        makeData({
+          chat_type: 'p2p',
+          thread_id: undefined,
+          message_id: 'om_p2p_quote_fresh',
+          root_id: 'om_root_recent',
+          content: JSON.stringify({ text: 'carry on from there' }),
+        }),
+      )
+      expect(resumedChatId()).toBe('chat_old')
+    })
+
+    it('resumes a group reply chain past the timeout, since root_id is its session key', async () => {
+      mockDbGet.mockReturnValue(agentWithLastRun(STALE_MS))
+      await dispatch(
+        makeData({
+          chat_type: 'group',
+          thread_id: undefined,
+          message_id: 'om_group_reply_stale',
+          root_id: 'om_root_chain',
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_test' } }],
+          content: JSON.stringify({ text: '@_user_1 carry on from there' }),
+        }),
+      )
+      expect(resumedChatId()).toBe('chat_old')
+    })
+
+    it('opens a new session for a plain direct message past the timeout', async () => {
+      mockDbGet.mockReturnValue(agentWithLastRun(STALE_MS))
+      await dispatch(
+        makeData({
+          chat_type: 'p2p',
+          thread_id: undefined,
+          message_id: 'om_p2p_plain_stale',
+          content: JSON.stringify({ text: 'new question' }),
+        }),
+      )
+      expect(resumedChatId()).toBeUndefined()
+    })
+
+    // /new is the only way to reset a direct-message session. Sent as a quoted reply it
+    // used to derive the 'thread' context, fall through allowedContexts, and reach the
+    // engine as the literal prompt "/new" with the old session still attached.
+    it('honours /new sent as a quoted reply in a direct message', async () => {
+      mockDbGet.mockReturnValue(agentWithLastRun(FRESH_MS))
+      await dispatch(
+        makeData({
+          chat_type: 'p2p',
+          thread_id: undefined,
+          message_id: 'om_p2p_quote_new_cmd',
+          root_id: 'om_root_recent',
+          content: JSON.stringify({ text: '/new start over' }),
+        }),
+      )
+      expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+      expect(mockExecuteWithRetry.mock.calls[0][1].prompt).toBe('start over')
+      expect(resumedChatId()).toBeUndefined()
+    })
+  })
+
   // ── L3 集成测：pipeline/commands router 切入 + C15 失败 reply ──
 
   describe('pipeline/commands router (PR-1)', () => {
@@ -3419,8 +3485,10 @@ describe('handleMessage via dispatcher', () => {
       expect(payload.prompt).toBe('/new go')
     })
 
-    it('I-H1g: /new 在 P2P 话题回复里不作为命令处理 → prompt=原文', async () => {
-      // root_id !== message_id ⇒ isThreadReply=true → disallowed context → 普通文本透传。
+    it('I-H1g: /new is still a command inside a P2P reply, prompt is stripped', async () => {
+      // root_id !== message_id ⇒ isThreadReply=true, which used to derive the 'thread'
+      // context and fall through, sending "/new go" to the engine as ordinary text. A
+      // direct message has no other way to reset its session, so it stays in 'p2p'.
       mockDbGet.mockReturnValue(makeAgent())
       await dispatch(
         makeData({
@@ -3432,7 +3500,8 @@ describe('handleMessage via dispatcher', () => {
       )
       expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
       const payload = mockExecuteWithRetry.mock.calls[0][1]
-      expect(payload.prompt).toBe('/new go')
+      expect(payload.prompt).toBe('go')
+      expect(payload.chatId).toBeUndefined()
     })
 
     it('I-H1h: 群聊里 bare /new 不作为命令处理 → prompt=原文', async () => {

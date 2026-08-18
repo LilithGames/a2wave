@@ -1,16 +1,19 @@
 /**
- * /new — 强制开启新 LLM 会话。
+ * /new — force a fresh LLM session.
  *
- * applySession 返回 override:null → 调用方把 previousChatId 清空。
- * 三 engine 都通过（无 provider 限定）。瞬时操作无 longRunningAck。
+ * applySession returns override:null, so the caller clears previousChatId.
+ * Passes on every engine (no provider restriction). Instantaneous, so no longRunningAck.
  *
- * emptyTextFallback：bare `/new`（无附带文本）也走完整 pipeline，让引擎产生一条
- * completed run + 新 chatId，使下次 lookupPreviousChatId 不再命中旧 session。
+ * emptyTextFallback: a bare `/new` (no trailing text) still runs the whole pipeline, so
+ * the engine produces one completed run with a new chatId and the next
+ * lookupPreviousChatId stops resolving the old session.
  *
- * allowedContexts: ['p2p']：群聊和 thread reply 各自有原生的"开新会话"方式（群里
- * 发顶层消息、话题回复链外发新话题），只有 P2P 顶层用户无法主动重置会话——所以
- * /new 仅在 P2P 顶层有效，群/thread 里发 "/new ..." 等同普通文本，dispatcher
- * 不激活命令逻辑，也不剥前缀。
+ * allowedContexts: ['p2p'] — a group chat has its own native ways to start over (post a
+ * new top-level message, or start a new topic outside the current reply chain), so the
+ * command is unnecessary there and "/new ..." stays ordinary text: the dispatcher does
+ * not activate the command and does not strip the prefix. A direct message has no such
+ * escape, quoted reply included — deriveCurrentContext keeps every P2P message in the
+ * 'p2p' context precisely so a quote cannot swallow the command.
  */
 import { createCommandPlugin } from '../factory.js'
 

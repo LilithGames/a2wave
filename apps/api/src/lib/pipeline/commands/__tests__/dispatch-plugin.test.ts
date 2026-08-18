@@ -103,8 +103,9 @@ describe('commandDispatchPlugin.onAuthenticated — emptyTextFallback 注入', (
 })
 
 describe('commandDispatchPlugin.onAuthenticated — allowedContexts fall-through', () => {
-  // /new 仅在 P2P 顶层生效；群/thread 里等同无命中，不挂 pendingCommandPlugin，
-  // 也不修改 strippedText，让下游按普通文本处理整条消息。
+  // /new applies to every direct message, quoted replies included; in a group chat and in
+  // a group reply chain it behaves as if unmatched — no pendingCommandPlugin, strippedText
+  // untouched — so downstream handles the whole message as ordinary text.
 
   const dispatch = createCommandDispatchPlugin([newPlugin])
 
@@ -124,11 +125,16 @@ describe('commandDispatchPlugin.onAuthenticated — allowedContexts fall-through
     expect((ctx as MatchedCtx).strippedText).toBe('/new go')
   })
 
-  it('disallowed context (p2p thread): 不处理命令，原文透传', async () => {
+  // A quoted reply in a direct message used to derive 'thread' and fall through,
+  // so `/new` reached the engine as literal prompt text: no session reset, and the
+  // Agent answered the string "/new". P2P keys its session on chat_id, so a quote
+  // splits no independent line off — there is nothing to fall through to.
+  it('allowed context (p2p quoted reply): matches, a quote is not a thread', async () => {
     const ctx = makeCtx('/new go', { chatType: 'p2p', isThreadReply: true })
     await dispatch.onAuthenticated?.(ctx as AuthenticatedCtx)
-    expect((ctx as MatchedCtx).pendingCommandPlugin).toBeUndefined()
-    expect((ctx as MatchedCtx).strippedText).toBe('/new go')
+    expect((ctx as MatchedCtx).matchedCommand).toBe('new')
+    expect((ctx as MatchedCtx).strippedText).toBe('go')
+    expect((ctx as MatchedCtx).pendingCommandPlugin).toBeDefined()
   })
 
   it('disallowed context (group thread): 不处理命令，原文透传', async () => {

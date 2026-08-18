@@ -6,7 +6,7 @@ import { basename, dirname, join } from 'node:path'
 import { finished } from 'node:stream/promises'
 import type { FeishuConfig } from '@a2wave/shared'
 import * as lark from '@larksuiteoapi/node-sdk'
-import { and, desc, eq, isNull, lt, or } from 'drizzle-orm'
+import { and, eq, isNull, lt, or } from 'drizzle-orm'
 import WebSocket from 'ws'
 import { db } from '../db/client.js'
 import { agents, feishuCardCallbacks, feishuPendingMessages, runSteps, runs } from '../db/schema.js'
@@ -40,7 +40,11 @@ import {
   parseInteractiveCardSpec,
   summarizeCardAction,
 } from './feishu-interactive-card.js'
-import { buildTriggerSessionId, quoteAnchorId } from './feishu-message-context.js'
+import {
+  buildTriggerSessionId,
+  quoteAnchorId,
+  resolveSessionTimeoutMs,
+} from './feishu-message-context.js'
 import {
   type FeishuEventPayload,
   type FeishuMessagePayload,
@@ -55,6 +59,7 @@ import {
   supportsFeishuReplyMention,
   warnFeishuTopicCreatorUnavailable,
 } from './feishu-reply-mention.js'
+import { lookupPreviousChatId } from './feishu-session-lookup.js'
 import {
   buildFeishuFileHint,
   mergeFeishuTopicRootText,
@@ -841,47 +846,6 @@ export function prependAtMention(msgType: string, content: string, senderOpenId:
     /* malformed content, return as-is */
   }
   return content
-}
-
-// P2P 会话超时：2 小时内无交互则开启新会话；话题/回复链会话永不超时。
-const P2P_SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000
-
-/**
- * 查找同一会话中最近一次已完成 run 的 chatId，用于向 LLM 引擎传递历史上下文以恢复对话。
- * - 每次 run 完成后，引擎将 LLM 返回的 chatId 写入 runs.result.chatId
- * - 下次同 triggerSessionId 的消息到来时，取出该 chatId 传给引擎，实现多轮对话连续
- * - sessionTimeoutMs 控制超时：超时后返回 null，引擎会开启全新会话
- *   - 话题/回复链（有 thread_id 或 root_id）：调用方传入 Infinity，永不超时
- *   - P2P / 群聊独立 @：使用 P2P_SESSION_TIMEOUT_MS（2 小时）
- */
-export async function lookupPreviousChatId(
-  agentId: string,
-  triggerSessionId: string,
-  sessionTimeoutMs = P2P_SESSION_TIMEOUT_MS,
-): Promise<string | null> {
-  const row = (
-    await db
-      .select({ result: runs.result, updatedAt: runs.updatedAt })
-      .from(runs)
-      .where(
-        and(
-          eq(runs.initiatorAgentId, agentId),
-          eq(runs.triggerSessionId, triggerSessionId),
-          eq(runs.status, 'completed'),
-        ),
-      )
-      .orderBy(desc(runs.createdAt))
-      .limit(1)
-  )[0]
-
-  if (!row || !row.updatedAt) return null
-
-  const elapsed = Date.now() - row.updatedAt.getTime()
-  if (elapsed > sessionTimeoutMs) return null
-
-  const result = row.result as Record<string, unknown> | undefined
-  const chatId = result?.chatId
-  return typeof chatId === 'string' ? chatId : null
 }
 
 /**
@@ -1897,13 +1861,7 @@ class FeishuConnectionManager {
           ? await lookupPreviousChatId(agentId, triggerSessionId, Number.POSITIVE_INFINITY)
           : undefined))
       : triggerSessionId
-        ? await lookupPreviousChatId(
-            agentId,
-            triggerSessionId,
-            message.thread_id || message.root_id
-              ? Number.POSITIVE_INFINITY
-              : P2P_SESSION_TIMEOUT_MS,
-          )
+        ? await lookupPreviousChatId(agentId, triggerSessionId, resolveSessionTimeoutMs(message))
         : undefined
     // chatIdOverride 和 preAck 由 commandsPlugin.onBeforeRun 在 runCtx 上设置；
     // 必须在 executeJob 内 emit('onBeforeRun') 之后再 apply，因为 runId/taskId/payload

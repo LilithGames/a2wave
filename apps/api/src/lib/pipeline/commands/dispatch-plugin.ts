@@ -19,8 +19,14 @@ import type { CommandPlugin } from './types.js'
 const PRIORITY_DISPATCH = 10
 
 function deriveCurrentContext(ctx: AuthenticatedCtx): 'p2p' | 'group' | 'thread' {
-  // isThreadReply 优先于 chatType：话题/回复链中的消息一律算 'thread'，
-  // 这样想"在所有 thread 上禁用 X"的 command 只需写 allowedContexts: ['p2p','group']。
+  // A direct message is never 'thread', even when it is a quoted reply. P2P keys its
+  // session on chat_id (see resolveSessionTimeoutMs), so a quote splits no independent
+  // line off and the user has no in-chat way to reset the session other than a command
+  // — deriving 'thread' there silently swallowed /new into the prompt text.
+  if (ctx.messageContext.chatType === 'p2p') return 'p2p'
+  // In a group chat root_id IS the reply chain's session key, so a chain is its own
+  // line and counts as 'thread'. A command meaning "disabled in every thread" then only
+  // needs allowedContexts: ['p2p','group'].
   if (ctx.messageContext.isThreadReply) return 'thread'
   return ctx.messageContext.chatType
 }

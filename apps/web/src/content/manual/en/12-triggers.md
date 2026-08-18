@@ -181,6 +181,20 @@ Once that is done, open the Feishu Bot card's **Configure** dialog on the Channe
 > [!WARNING]
 > **One App, one connection**. Within a single API process, a given Feishu App ID may hold only **one** active WebSocket — **first come, first served; later starters must not preempt**. Multiple Agents connecting to Feishu must each use a **separate Feishu app**. The connection status is shown directly on the Feishu card in the Channels tab (a preempted app reads "no connection on this instance"), and also in the Agent's "Full Diagnosis".
 
+### Session continuity
+
+Within one session line the Agent can see the previous rounds of context. How the lines are drawn, and when one is automatically restarted, depends on the chat surface:
+
+| Surface | How a session line is drawn | When a new session starts |
+|---------|-----------------------------|---------------------------|
+| Direct message | The whole direct chat is **one** line | More than **2 hours** since the last round finished; or send `/new` to restart immediately |
+| @-mention in a group | Each @-mention starts its own line | Every new @-mention is a new session |
+| Reply to the bot in a group | One reply chain is one line | Start another reply chain; a chain never expires on idle time |
+| Topic group | One topic is one line | Open a new topic; a topic never expires on idle time |
+
+> [!NOTE]
+> Quoting an older message in a direct chat does **not** bring that round's context back — a direct chat has a single session line, so it makes no difference which message you quote, and past 2 hours it still starts a new session. To keep the old context, continue within the 2 hours; to start from scratch right away, send `/new` (direct messages only — in groups and topics, just start a new message or topic).
+
 ### Interactive cards
 
 Once you set the reply content type to **`interactive_card`**, whenever the Agent needs you to **confirm an action** or **fill in / choose information** to continue, it will directly send a clickable, fillable Feishu card (confirm/cancel buttons, dropdown single-select, multi-select, text input, date, etc.) instead of asking you to type out an answer. After you act and submit, the result returns as a new round of input to **the same session**, and the Agent continues accordingly.
