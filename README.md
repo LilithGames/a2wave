@@ -28,7 +28,7 @@ Discord, an HTTP API, or a schedule.
 
 Describe an Agent in natural language, bind a model provider, extend it with Skills
 and MCP servers, publish. a2wave handles credential injection, run queueing, audit
-trails, permissions, and delivery.
+trails, permissions, and delivery — all managed from a built-in web dashboard.
 
 **a2wave orchestrates; it does not execute.** No bundled LLM inference, no sandbox
 runtime, no drag-and-drop DAG editor — execution comes from the underlying CLIs, and
@@ -56,6 +56,8 @@ rebuild its reasoning as a graph.
 - 🌊 **Publish to multiple channels** — one Agent, reachable via HTTP API, Feishu,
   Slack, Discord, A2A, schedules, GitLab / GitHub repository triggers, and a
   first-party chat page.
+- 🖥️ **Web dashboard** — build and publish Agents, manage providers, Skills, MCP
+  servers and SCM sources, watch runs, and browse the audit trail from one console.
 - 🧩 **Extend by composition** — add capabilities through Skills and MCP servers
   (stdio / SSE / HTTP / proxy groups) instead of forking the platform.
 - 🔗 **Agent-to-agent calls** — Agents reach other Agents over A2A, including ones
@@ -85,75 +87,35 @@ adversary already inside.
 > Exposing a2wave to untrusted users or running untrusted Agent configurations is out
 > of scope — add your own isolation layer. Full statement: [SECURITY.md](./SECURITY.md).
 
-## Quick Start (CLI)
-
-Installs the published image, writes `docker-compose.yml` + `.env`, starts the
-container and waits until it is healthy — no clone, no build:
+## Quick Start
 
 ```bash
 npm i -g a2wave
 a2wave setup
 ```
 
-To deploy with the bundled PostgreSQL container:
+One command installs the published image, writes `docker-compose.yml` + `.env`,
+starts the container and waits until it is healthy — no clone, no build. Then open
+the **web dashboard** at **http://localhost:3502**: the first login claims the admin
+account, and everything from there — creating an Agent, binding a model provider,
+publishing it to channels — happens in the dashboard. The in-app manual at `/wiki`
+walks through your first Agent end to end.
+
+To deploy with the bundled PostgreSQL container (experimental — see
+[Database Backend](#database-backend) first):
 
 ```bash
-a2wave setup \
-  --yes \
-  --with-postgres \
-  --dir "$HOME/a2wave-pg" \
-  --port 3512
+a2wave setup --yes --with-postgres --dir "$HOME/a2wave-pg" --port 3512
 ```
 
-The CLI automatically selects the versioned image matching its own release. Keep
-the install directory stable across upgrades: the version belongs in the CLI and
-image, not in `$HOME/a2wave-pg`. PostgreSQL support is currently experimental; see
-[Database Backend](#database-backend) before using it in production.
+The CLI selects the versioned image matching its own release; upgrade later with
+`a2wave setup --upgrade` from the same install directory. The generated deployment
+includes a dedicated `a2wave-workspace` volume — new Git sources use managed paths
+there automatically. P4 sources instead require an absolute mounted path covered by
+the existing P4 Client `Root` or `AltRoots`.
 
-The generated deployment includes a dedicated `a2wave-workspace` volume. New Git
-sources use managed paths there automatically, so nobody needs to create or guess a
-directory inside the container. P4 sources instead require an absolute mounted path
-covered by the existing P4 Client `Root` or `AltRoots`.
-
-> [!NOTE]
-> PostgreSQL setup flags were added after CLI v0.7.2 and are not present in the
-> published `a2wave@0.7.2` package. Before using this command, verify that
-> `a2wave setup --help` lists `--with-postgres`.
-
-## Quick Start (Docker)
-
-From a clone, building the image yourself:
-
-```bash
-cp .env.example .env       # no edits needed
-docker compose up -d --build
-```
-
-Or run the published image directly:
-
-```bash
-docker pull ghcr.io/lilithgames/a2wave:latest
-```
-
-Visit **http://localhost:3502**. Then create an Agent, bind a model provider, and
-publish it — the in-app manual at `/wiki` walks through the first one end to end.
-
-> If `ADMIN_PASSWORD` is left empty, the first person to reach the setup page claims
-> the admin account. Set it in `.env` to close that window.
-
-> [!IMPORTANT]
-> **On macOS**, add this to `.env` first. `/data/workspace` is outside Docker
-> Desktop's shared host paths, so use a directory under your home folder. Pinning
-> the container UID/GID also avoids VirtioFS reporting host binds as root-owned.
->
-> ```bash
-> A2WAVE_WORKSPACE_DIR=$HOME/a2wave-workspace
-> A2WAVE_RUN_AS_UID=10001
-> A2WAVE_RUN_AS_GID=10001
-> ```
-
-Every setting has a working default; see [`.env.example`](./.env.example) for the
-full list, and [Configuration](./docs/agent/configuration.md) for what each one does.
+Every generated setting has a working default; see
+[Configuration](./docs/agent/configuration.md) for what each one does.
 
 ## Local Development
 
@@ -166,6 +128,10 @@ pnpm dev                   # API :3502 + Web :3501
 pnpm stop                  # free the ports if a previous run left orphans
 ```
 
+A clone also ships a [`docker-compose.yml`](./docker-compose.yml) for building and
+running the image from source (`cp .env.example .env && docker compose up -d --build`
+— on macOS read the workspace-mount notes inside the compose file first).
+
 Development guides, API reference and database operations: [AGENTS.md](./AGENTS.md).
 CLI install / upgrade / publish: [CLI Installation & Publishing](./docs/agent/cli-install-publish.md).
 
@@ -174,31 +140,14 @@ CLI install / upgrade / publish: [CLI Installation & Publishing](./docs/agent/cl
 `DATABASE_URL` alone picks the backend: a `postgres://` scheme means PostgreSQL,
 anything else is a SQLite file path.
 
-**SQLite (default, supported)** — nothing to configure; the Quick Start above gives
-you one container with the database on a named volume.
+**SQLite (default, supported)** — nothing to configure; `a2wave setup` gives you one
+container with the database on a named volume.
 
-**PostgreSQL ≥ 9.6 (experimental)** — start with the `postgres` profile, which adds
-the bundled database container:
-
-```bash
-# PostgreSQL requires an explicit AUTH_SECRET. Append a generated value —
-# do not paste the command itself as the value.
-echo "AUTH_SECRET=$(openssl rand -hex 32)" >> .env
-echo "DATABASE_URL=postgres://a2wave:a2wave@postgres:5432/a2wave" >> .env
-
-docker compose --profile postgres up -d
-```
-
-Migrations run on boot and pick the matching lineage; the API waits for the database
-healthcheck, so a cold start is safe. The database port is not published to the host
-— change `POSTGRES_PASSWORD` before using this outside a local trial.
-
-> [!IMPORTANT]
-> `postgres` in that URL is the **compose service name**, resolvable only on the
-> compose network. Host-run commands (`pnpm dev`, `pnpm db:migrate`) read the same
-> `.env` and will fail on it. To run containerised PostgreSQL and local SQLite side
-> by side, keep `DATABASE_URL` out of `.env` and pass it per command — see
-> [docs/agent/postgresql.md](./docs/agent/postgresql.md#running-docker-postgresql-alongside-a-local-sqlite-instance).
+**PostgreSQL ≥ 9.6 (experimental)** — deploy the bundled sidecar with
+`a2wave setup --with-postgres`, or point at an external server with
+`--database-url postgres://…`. Migrations run on boot and pick the matching lineage;
+the API waits for the database healthcheck, so a cold start is safe. The sidecar's
+port is not published to the host.
 
 > [!WARNING]
 > PostgreSQL is **experimental** and not recommended for production: it passes the

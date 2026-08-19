@@ -26,7 +26,8 @@ a2wave 把你已经在用的 Agent CLI——**Claude Code、Cursor Agent、OpenA
 受治理的共享服务，可从飞书、Slack、Discord、HTTP API 或定时任务直接触达。
 
 用自然语言描述一个 Agent，绑定模型 Provider，用 Skills 和 MCP Server 扩展能力，然后发布。
-凭证注入、运行排队、审计留痕、权限控制和消息投递，都交给 a2wave。
+凭证注入、运行排队、审计留痕、权限控制和消息投递，都交给 a2wave——全部在内置的 Web
+控制台中管理。
 
 **a2wave 只做编排，不做执行。** 不内置 LLM 推理、不内置沙箱运行时、也没有拖拽式 DAG
 编辑器——执行能力来自底层 CLI，编排用自然语言表达。这些边界是强制约束的，详见
@@ -50,6 +51,8 @@ a2wave 把你已经在用的 Agent CLI——**Claude Code、Cursor Agent、OpenA
   Trae、Kimi、Pi 均可作为可互换的执行引擎，按需从锁定并校验哈希的 lockfile 安装。
 - 🌊 **一次发布，多渠道触达** —— 同一个 Agent 可通过 HTTP API、飞书、Slack、Discord、
   A2A 协议、定时任务、GitLab / GitHub 仓库触发和平台自建聊天页触达。
+- 🖥️ **Web 控制台** —— 构建与发布 Agent、管理 Provider / Skill / MCP Server / 代码源、
+  查看运行记录与审计留痕，都在同一个 Web 界面完成。
 - 🧩 **以组合方式扩展** —— 通过 Skills 与 MCP Server（stdio / SSE / HTTP / 代理分组）
   增加能力，而不是 fork 平台本身。
 - 🔗 **Agent 之间互相调用** —— 基于 A2A 协议调用其他 Agent，包括部署在你的实例之外的。
@@ -74,72 +77,31 @@ Shell 执行、注入的凭证。平台刻意**不**在作者之间做沙箱隔�
 > 把 a2wave 暴露给不可信用户，或运行不可信的 Agent 配置，超出当前设计范围——请自行添加
 > 隔离层。完整说明见 [SECURITY.md](./SECURITY.md)。
 
-## 快速开始（CLI）
-
-自动拉取已发布的镜像，生成 `docker-compose.yml` 与 `.env`，启动容器并等待健康检查通过
-—— 无需克隆仓库，也无需自行构建：
+## 快速开始
 
 ```bash
 npm i -g a2wave
 a2wave setup
 ```
 
-如需同时部署内置 PostgreSQL 容器：
+一条命令完成部署：拉取已发布的镜像，生成 `docker-compose.yml` 与 `.env`，启动容器并等待
+健康检查通过——无需克隆仓库，也无需自行构建。然后打开 **Web 控制台**
+**http://localhost:3502**：首次登录即认领 admin 账号，之后的一切——创建 Agent、绑定模型
+Provider、发布到各个渠道——都在控制台里完成。应用内手册 `/wiki` 有完整的第一个 Agent
+上手流程。
+
+如需同时部署内置 PostgreSQL 容器（实验性，请先阅读[数据库后端](#数据库后端)）：
 
 ```bash
-a2wave setup \
-  --yes \
-  --with-postgres \
-  --dir "$HOME/a2wave-pg" \
-  --port 3512
+a2wave setup --yes --with-postgres --dir "$HOME/a2wave-pg" --port 3512
 ```
 
-CLI 会自动选择与自身版本一致的版本化镜像。升级时应继续使用同一个安装目录：版本号属于
-CLI 和镜像，不应写进 `$HOME/a2wave-pg`。PostgreSQL 目前仍是实验性功能，生产环境使用前请先阅读
-[数据库后端](#数据库后端)。
-
-生成的部署会包含独立的 `a2wave-workspace` 命名卷。新建 Git 代码源时，a2wave 会自动在该卷中
-分配托管路径，无需进入容器创建或猜测目录。P4 代码源则必须填写已挂载的绝对路径，并确保该路径
+CLI 会自动选择与自身版本一致的版本化镜像；后续在同一个安装目录里用
+`a2wave setup --upgrade` 升级。生成的部署包含独立的 `a2wave-workspace` 命名卷，新建 Git
+代码源时会自动在该卷中分配托管路径。P4 代码源则必须填写已挂载的绝对路径，并确保该路径
 被现有 P4 Client 的 `Root` 或 `AltRoots` 覆盖。
 
-> [!NOTE]
-> PostgreSQL 部署参数是在 CLI v0.7.2 之后加入的，已发布的 `a2wave@0.7.2` 包中并不包含。
-> 执行上述命令前，请先确认 `a2wave setup --help` 已列出 `--with-postgres`。
-
-## 快速开始（Docker）
-
-从仓库克隆并自行构建镜像：
-
-```bash
-cp .env.example .env       # 开箱即用，无需修改
-docker compose up -d --build
-```
-
-或直接使用已发布的镜像：
-
-```bash
-docker pull ghcr.io/lilithgames/a2wave:latest
-```
-
-访问 **http://localhost:3502**，然后创建 Agent、绑定模型 Provider 并发布。应用内手册
-`/wiki` 有完整的第一个 Agent 上手流程。
-
-> 如果 `ADMIN_PASSWORD` 留空，谁先打开 setup 页面谁就拿到 admin 账号。在 `.env` 中设置
-> 它可以关闭这个窗口。
-
-> [!IMPORTANT]
-> **macOS 用户**请先把以下配置加入 `.env`。`/data/workspace` 不在 Docker Desktop 默认
-> 共享的宿主机路径中，因此需要改为用户目录下的路径；同时固定容器 UID/GID，避免 VirtioFS
-> 将宿主机 bind mount 报告为 root 所有。
->
-> ```bash
-> A2WAVE_WORKSPACE_DIR=$HOME/a2wave-workspace
-> A2WAVE_RUN_AS_UID=10001
-> A2WAVE_RUN_AS_GID=10001
-> ```
-
-所有配置项都有可用默认值，完整列表见 [`.env.example`](./.env.example)，逐项说明见
-[配置说明](./docs/agent/configuration.md)。
+生成的所有配置项都有可用默认值，逐项说明见[配置说明](./docs/agent/configuration.md)。
 
 ## 本地开发
 
@@ -152,6 +114,10 @@ pnpm dev                   # API :3502 + Web :3501
 pnpm stop                  # 上次运行留下孤儿进程占用端口时用它释放
 ```
 
+克隆仓库后也可用自带的 [`docker-compose.yml`](./docker-compose.yml) 从源码构建并运行镜像
+（`cp .env.example .env && docker compose up -d --build`——macOS 用户请先阅读 compose
+文件内关于工作区挂载的说明）。
+
 更多开发指南、API 文档与数据库操作见 [AGENTS.md](./AGENTS.md)。
 CLI 的安装、升级与发布见 [CLI 安装与发布](./docs/agent/cli-install-publish.md)。
 
@@ -160,27 +126,13 @@ CLI 的安装、升级与发布见 [CLI 安装与发布](./docs/agent/cli-instal
 后端仅由 `DATABASE_URL` 决定：`postgres://` 协议表示 PostgreSQL，其他一律当作 SQLite
 文件路径。
 
-**SQLite（默认，官方支持）** —— 无需任何配置，上面的快速开始即是单容器部署，数据库位于
+**SQLite（默认，官方支持）** —— 无需任何配置，`a2wave setup` 即是单容器部署，数据库位于
 命名卷上。
 
-**PostgreSQL ≥ 9.6（实验性）** —— 用 `postgres` profile 启动，它会带上内置的数据库容器：
-
-```bash
-# PostgreSQL 下 AUTH_SECRET 必填。请生成后追加，不要把命令本身当作值粘贴进去：
-echo "AUTH_SECRET=$(openssl rand -hex 32)" >> .env
-echo "DATABASE_URL=postgres://a2wave:a2wave@postgres:5432/a2wave" >> .env
-
-docker compose --profile postgres up -d
-```
-
-迁移在启动时自动执行并选择对应的迁移谱系；API 会先等待数据库健康检查通过，冷启动是安全
-的。数据库端口不会发布到宿主机——本地试用之外的场景请先修改 `POSTGRES_PASSWORD`。
-
-> [!IMPORTANT]
-> URL 里的 `postgres` 是 **compose 服务名**，只在 compose 网络内可解析。宿主机上运行的
-> 命令（`pnpm dev`、`pnpm db:migrate`）读的是同一份 `.env`，会解析失败。若要让容器内的
-> PostgreSQL 与本地 SQLite 并存，请把 `DATABASE_URL` 移出 `.env`，改为按命令传入——见
-> [docs/agent/postgresql.md](./docs/agent/postgresql.md#running-docker-postgresql-alongside-a-local-sqlite-instance)。
+**PostgreSQL ≥ 9.6（实验性）** —— 用 `a2wave setup --with-postgres` 部署内置的数据库
+sidecar 容器，或用 `--database-url postgres://…` 指向外部数据库。迁移在启动时自动执行并
+选择对应的迁移谱系；API 会先等待数据库健康检查通过，冷启动是安全的。sidecar 的数据库端口
+不会发布到宿主机。
 
 > [!WARNING]
 > PostgreSQL 目前是**实验性**的，尚不推荐用于生产：它能通过完整测试套件与端到端冒烟测试，
