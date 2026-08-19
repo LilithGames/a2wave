@@ -140,13 +140,13 @@ OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用�
 curl ".../api/public/agents/metadata?agentIds=agt_1,agt_2"
 ```
 
-返回字段包括 Agent 名称、配置页描述、是否开启 OAuth 渠道，以及 OAuth 访问范围：
+返回字段包括 Agent 名称、配置页描述、OAuth 渠道当前是否可用，以及 OAuth 访问范围：
 
 | 字段 | 说明 |
 |------|------|
 | `name` | Agent 名称 |
 | `description` | Agent 配置页的描述 |
-| `oauthEnabled` | 发布渠道是否包含 OAuth |
+| `oauthEnabled` | Agent 已发布 OAuth 渠道，且平台已配置企业 OIDC 与非空的 OAuth 渠道受众时为 `true`；只开启 Agent 渠道但平台尚不能验签时为 `false` |
 | `oauthAccessMode` | `all_idaas_users` 表示全体企业用户；`specified_users` 表示仅名单内的指定企业用户 |
 
 未发布、已停止或不存在的 Agent 会统一返回 `exists: false`，不会暴露草稿信息。

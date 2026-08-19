@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 vi.mock('../../db/client.js', () => ({
   db: {
@@ -16,6 +16,11 @@ vi.mock('../../db/schema.js', () => ({
     publishChannels: 'agents.publishChannels',
     oauthAccessMode: 'agents.oauthAccessMode',
   },
+}))
+
+const isOauthChannelConfigured = vi.fn()
+vi.mock('../../lib/oidc.js', () => ({
+  isOauthChannelConfigured: () => isOauthChannelConfigured(),
 }))
 
 import { db } from '../../db/client.js'
@@ -39,6 +44,7 @@ describe('Public metadata routes', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    isOauthChannelConfigured.mockResolvedValue(true)
     const mod = await import('../public-metadata.js')
     app = new Hono()
     app.route('/api/public', mod.default)
@@ -126,6 +132,41 @@ describe('Public metadata routes', () => {
         },
       ],
     })
+  })
+
+  it('reports OAuth as disabled when the platform channel is not configured', async () => {
+    isOauthChannelConfigured.mockResolvedValue(false)
+    ;(db.select as Mock).mockReturnValue(
+      selectChain([
+        {
+          id: 'agt_1',
+          name: 'Agent One',
+          description: 'desc',
+          publishStatus: 'published',
+          publishChannels: ['oauth'],
+          oauthAccessMode: 'all_idaas_users',
+        },
+      ]),
+    )
+
+    const res = await app.request('/api/public/agents/metadata?agentId=agt_1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      data: [
+        {
+          agentId: 'agt_1',
+          exists: true,
+          metadata: {
+            name: 'Agent One',
+            description: 'desc',
+            oauthEnabled: false,
+            oauthAccessMode: 'all_idaas_users',
+          },
+        },
+      ],
+    })
+    expect(isOauthChannelConfigured).toHaveBeenCalledTimes(1)
   })
 
   it('hides missing, draft, and stopped agents behind exists=false', async () => {

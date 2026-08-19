@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { db } from '../db/client.js'
 import { agents } from '../db/schema.js'
 import { normalizeOauthAccessMode } from '../lib/gateway-auth-errors.js'
+import { isOauthChannelConfigured } from '../lib/oidc.js'
 
 const MAX_AGENT_IDS = 50
 
@@ -26,22 +27,25 @@ app.get('/agents/metadata', async (c) => {
     return c.json({ error: `agentIds supports at most ${MAX_AGENT_IDS} IDs` }, 400)
   }
 
-  const rows = await db
-    .select({
-      id: agents.id,
-      name: agents.name,
-      description: agents.description,
-      publishStatus: agents.publishStatus,
-      publishChannels: agents.publishChannels,
-      oauthAccessMode: agents.oauthAccessMode,
-    })
-    .from(agents)
-    .where(inArray(agents.id, requestedIds))
+  const [rows, oauthChannelConfigured] = await Promise.all([
+    db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        description: agents.description,
+        publishStatus: agents.publishStatus,
+        publishChannels: agents.publishChannels,
+        oauthAccessMode: agents.oauthAccessMode,
+      })
+      .from(agents)
+      .where(inArray(agents.id, requestedIds)),
+    isOauthChannelConfigured(),
+  ])
 
   const byId = new Map(rows.map((agent) => [agent.id, agent]))
   const data = requestedIds.map((agentId) => {
     const agent = byId.get(agentId)
-    if (!agent || agent.publishStatus !== 'published') {
+    if (agent?.publishStatus !== 'published') {
       return { agentId, exists: false, metadata: null }
     }
 
@@ -52,7 +56,7 @@ app.get('/agents/metadata', async (c) => {
       metadata: {
         name: agent.name,
         description: agent.description ?? '',
-        oauthEnabled: publishChannels.includes('oauth'),
+        oauthEnabled: publishChannels.includes('oauth') && oauthChannelConfigured,
         oauthAccessMode: normalizeOauthAccessMode(agent.oauthAccessMode),
       },
     }

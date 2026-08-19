@@ -146,13 +146,13 @@ If an external system only needs to display public info about published Agents, 
 curl ".../api/public/agents/metadata?agentIds=agt_1,agt_2"
 ```
 
-The returned fields include the Agent name, the description from its config page, whether the OAuth channel is enabled, and the OAuth access mode:
+The returned fields include the Agent name, the description from its config page, whether the OAuth channel is currently available, and the OAuth access mode:
 
 | Field | Description |
 |------|------|
 | `name` | Agent name |
 | `description` | Description from the Agent's config page |
-| `oauthEnabled` | Whether the publish channels include OAuth |
+| `oauthEnabled` | `true` when the Agent publishes OAuth and the platform has enterprise OIDC plus a non-empty OAuth channel audience configured; `false` when the Agent switch is on but the platform cannot yet verify callers |
 | `oauthAccessMode` | `all_idaas_users` means all enterprise users; `specified_users` means only the addresses on the allowlist |
 
 Agents that are unpublished, stopped, or nonexistent uniformly return `exists: false`, without exposing draft information.
