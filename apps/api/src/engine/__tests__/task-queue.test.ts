@@ -29,6 +29,7 @@ function createMockDb(overrides: Partial<TaskQueueDb> = {}): TaskQueueDb {
     getRunStatus: vi.fn().mockResolvedValue('running'),
     getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
     updateRunStatus: vi.fn().mockResolvedValue(undefined),
+    requeueForResume: vi.fn().mockResolvedValue(undefined),
     tryTransitionRunStatus: vi.fn().mockResolvedValue(true),
     failRunSteps: vi.fn().mockResolvedValue(undefined),
     failRunWithError: vi.fn().mockResolvedValue(undefined),
@@ -566,13 +567,23 @@ describe('recoverOnStartup', () => {
     })
     const onExecute = vi.fn()
     const canResume = vi.fn().mockResolvedValue(true)
+    const onRunRequeued = vi.fn()
 
-    const stats = await recoverOnStartup(db, onExecute, () => ['agt_1'], { canResume })
+    const stats = await recoverOnStartup(db, onExecute, () => ['agt_1'], {
+      canResume,
+      onRunRequeued,
+    })
 
-    expect(canResume).toHaveBeenCalledWith('run_r')
-    // Still settled as failed — the row is the record of the interrupted
-    // attempt — but requeued so the next turn resumes it.
-    expect(db.updateRunStatus).toHaveBeenCalledWith('run_r', 'queued')
+    // The row carries no failure code yet, so recovery must tell the check
+    // which interruption it is about to apply — reading it off the row is the
+    // bug that made this feature inert.
+    expect(canResume).toHaveBeenCalledWith('run_r', 'SERVER_RESTART_DURING_EXEC')
+    // requeueForResume, not updateRunStatus: it also clears the stale result
+    // and the dead owner id.
+    expect(db.requeueForResume).toHaveBeenCalledWith('run_r')
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
+    // The dead process's SCM lease is released, exactly as the fail path does.
+    expect(onRunRequeued).toHaveBeenCalledWith(expect.objectContaining({ id: 'run_r' }))
     expect(stats.runningResumed).toBe(1)
     expect(stats.runningAborted).toBe(0)
   })

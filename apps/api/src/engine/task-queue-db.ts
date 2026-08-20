@@ -125,6 +125,23 @@ export const taskQueueDb: TaskQueueDb = {
       .where(eq(runs.id, runId))
   },
 
+  async requeueForResume(runId: string): Promise<void> {
+    await db
+      .update(runs)
+      .set({
+        status: 'queued',
+        // The interruption is being resumed, not reported: a leftover error
+        // would be re-read as the run's verdict on its next execution.
+        result: null,
+        // Ownership describes a running run, and this process is not the one
+        // that claimed it. Left set, the row matches the orphaned-run reaper's
+        // dead-owner predicate and gets settled out from under the resume.
+        ownerInstanceId: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+  },
+
   async admitRun(agentId: string, runId: string, maxConcurrency: number) {
     try {
       return await withScmWorkloadAdmission(

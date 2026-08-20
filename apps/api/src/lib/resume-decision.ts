@@ -15,6 +15,15 @@ export const MAX_RESUME_ATTEMPTS = 3
  *
  * Only these are safe to continue. Anything else failed on its own merits and
  * must not be resurrected by recovery.
+ *
+ * Reachability differs between the two, and the difference is not an oversight:
+ * SERVER_RESTART_DURING_EXEC is what startup recovery is about to apply to a
+ * still-`running` row, and is the live path. INSTANCE_STOPPED_DURING_EXEC is
+ * written by the dead-instance reaper, which settles the row to `failed` in the
+ * same update — and nothing requeues a `failed` row today, so no caller
+ * currently reaches this branch with that code. It is accepted here so that
+ * teaching the reaper to requeue is a one-line change rather than a semantic
+ * one; until then, treat reaped runs as not resumed.
  */
 const INTERRUPTION_CODES: ReadonlySet<string> = new Set<FailureReasonCode>([
   'SERVER_RESTART_DURING_EXEC',
@@ -30,13 +39,20 @@ export interface ResumeCandidate {
   failureCode: FailureReasonCode | string
   /** True when the owning Agent no longer exists. */
   agentMissing?: boolean
+  /** True when the user explicitly asked to start a fresh session. */
+  sessionResetRequested?: boolean
 }
 
 export type ResumeDecision =
   | { resume: true; chatId: string; attempt: number }
   | {
       resume: false
-      reason: 'no-session' | 'attempts-exhausted' | 'not-interrupted' | 'agent-missing'
+      reason:
+        | 'no-session'
+        | 'attempts-exhausted'
+        | 'not-interrupted'
+        | 'agent-missing'
+        | 'session-reset'
     }
 
 /**
@@ -51,6 +67,11 @@ export function decideResume(candidate: ResumeCandidate): ResumeDecision {
   // Checked first: nothing else can rescue a run whose Agent is gone, and
   // startup recovery archives these as dangling.
   if (candidate.agentMissing) return { resume: false, reason: 'agent-missing' }
+
+  // An explicit reset is the user saying "start clean". Resuming anyway would
+  // put them back in the session they just discarded, so the opt-out wins over
+  // every automatic continuation below.
+  if (candidate.sessionResetRequested) return { resume: false, reason: 'session-reset' }
 
   if (!INTERRUPTION_CODES.has(candidate.failureCode)) {
     return { resume: false, reason: 'not-interrupted' }

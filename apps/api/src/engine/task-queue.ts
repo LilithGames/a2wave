@@ -59,6 +59,15 @@ export interface TaskQueueDb {
   getRunStatus(runId: string): Promise<string | undefined>
   getAgentMaxConcurrency(agentId: string): Promise<number | undefined>
   updateRunStatus(runId: string, status: string): Promise<void>
+  /**
+   * Return an interrupted run to the queue so it can be resumed.
+   *
+   * Distinct from `updateRunStatus(runId, 'queued')`: it also clears the stale
+   * `result` and the now-dead `ownerInstanceId`. Leaving either behind would
+   * let the next execution be judged by the old error, and would leave the row
+   * matching the orphaned-run reaper's dead-owner predicate.
+   */
+  requeueForResume(runId: string): Promise<void>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -328,7 +337,13 @@ export interface RecoveryHooks {
    * recorded a session id is requeued instead, so a deploy restart continues
    * the user's work rather than abandoning it.
    */
-  canResume?: (runId: string) => Promise<boolean>
+  canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
+  /**
+   * Invoked for every run recovery requeues for resume, mirroring
+   * `onRunFailed`. Both settle an interrupted run, so both must release the
+   * external state (SCM workload lease) the dead process still holds.
+   */
+  onRunRequeued?: (run: RunRow) => Promise<void> | void
 }
 
 export interface RecoveryStats {
@@ -378,7 +393,12 @@ export async function recoverOnStartup(
         let resumable = false
         if (hooks.canResume) {
           try {
-            resumable = await hooks.canResume(run.id)
+            // The row is still 'running' and carries no failure code yet, so
+            // the check is told which interruption is about to be applied.
+            resumable = await hooks.canResume(
+              run.id,
+              FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code,
+            )
           } catch (error) {
             // A resume decision that fails must not strand the row as
             // 'running'; falling through to the fail path is the safe default.
@@ -386,7 +406,21 @@ export async function recoverOnStartup(
           }
         }
         if (resumable) {
-          await db.updateRunStatus(run.id, 'queued')
+          // Requeue as if the run had never been admitted: clear the stale
+          // result so the next execution is not judged by the old error, and
+          // drop the dead owner so the orphaned-run reaper cannot settle a row
+          // this recovery just rescued.
+          await db.requeueForResume(run.id)
+          // Same workload release the fail path performs via onRunFailed. A run
+          // interrupted while holding an SCM lease would otherwise keep it and
+          // contend with its own promotion, wedging in 'queued'.
+          if (hooks.onRunRequeued) {
+            try {
+              await hooks.onRunRequeued(run)
+            } catch (error) {
+              logger.warn({ error, runId: run.id }, 'requeue hook failed')
+            }
+          }
           stats.runningResumed++
           continue
         }

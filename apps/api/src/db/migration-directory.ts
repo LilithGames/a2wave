@@ -41,7 +41,7 @@ export function resolveRepoRoot(): string {
  * Throws rather than returning a non-existent path: a silently wrong folder
  * makes a migration test read as passing when it never ran the migration.
  */
-export function resolveMigrationDir(folder: 'drizzle' | 'drizzle-pg' | (string & {})): string {
+export function resolveMigrationDir(folder: string): string {
   const candidate = resolve(resolveRepoRoot(), 'apps/api', folder)
   if (!existsSync(candidate)) {
     throw new Error(`Migration folder not found: ${folder} (looked in ${candidate})`)

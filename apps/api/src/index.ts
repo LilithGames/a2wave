@@ -683,7 +683,16 @@ void ensureAdminExists()
         // A run that recorded the session it was already in is requeued and
         // continued instead of abandoned, so a deploy restart does not throw
         // away work in progress.
-        canResume: async (runId) => (await resolveResumeChatId(runId)) !== null,
+        canResume: async (runId, assumeFailureCode) =>
+          (await resolveResumeChatId(runId, assumeFailureCode)) !== null,
+        onRunRequeued: async (run) => {
+          // Mirrors onRunFailed: a requeued run is just as done with the dead
+          // process's SCM lease as a failed one, and keeping it held would let
+          // the run contend with its own promotion.
+          if (!isPostgres) {
+            await releaseRecoveredScmWorkload({ type: 'run', workloadId: run.id })
+          }
+        },
         onRunFailed: async (run, reason) => {
           if (run.triggerSource === 'a2a' && run.triggerSessionId) {
             await recoveryA2aStore

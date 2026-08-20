@@ -107,6 +107,55 @@ describe('resolveResumeChatId', () => {
   it('returns null for a run that no longer exists', async () => {
     expect(await resolveResumeChatId('run_missing')).toBeNull()
   })
+
+  it('resumes a still-running row whose interruption code has not been written yet', async () => {
+    // What startup recovery actually sees. The previous process was killed, so
+    // the row is still 'running' with no failure code — nothing has settled it
+    // yet. Requiring a code here made the whole feature dead code: every
+    // candidate read as 'not-interrupted' and took the fail path.
+    await seedRun({ status: 'running', executionMetadata: { liveChatId: 'sess_live' } })
+    expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBe('sess_live')
+  })
+
+  it('still refuses a running row that never recorded a session', async () => {
+    await seedRun({ status: 'running' })
+    expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBeNull()
+  })
+
+  it('honours an explicit session reset over an automatic resume', async () => {
+    // oauthResetSession is the user saying "start clean". An automatic resume
+    // that ignored it would put them back in the session they just discarded.
+    await seedRun({
+      status: 'running',
+      triggerSource: 'oauth',
+      executionMetadata: { liveChatId: 'sess_live', oauthResetSession: true },
+    })
+    expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBeNull()
+  })
+})
+
+describe('the interrupted-run scenario end to end', () => {
+  beforeEach(async () => {
+    await db.delete(runs)
+  })
+
+  it('resumes a run the container restart killed, and converges after the budget', async () => {
+    // Exactly what startup recovery holds: still 'running', no failure code,
+    // owned by the process that just died, with a session recorded mid-flight.
+    await seedRun({
+      status: 'running',
+      ownerInstanceId: 'dead-instance',
+      executionMetadata: { liveChatId: 'sess_live' },
+    })
+
+    const code = 'SERVER_RESTART_DURING_EXEC'
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(await resolveResumeChatId('run_1', code)).toBe('sess_live')
+      await recordResumeAttempt('run_1')
+    }
+    // Four restarts in a row stop resuming rather than looping forever.
+    expect(await resolveResumeChatId('run_1', code)).toBeNull()
+  })
 })
 
 describe('recordResumeAttempt', () => {
