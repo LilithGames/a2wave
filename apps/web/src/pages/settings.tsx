@@ -11,6 +11,7 @@ import {
   Globe,
   Image,
   Key,
+  KeyRound,
   Loader2,
   Lock,
   Package,
@@ -27,6 +28,7 @@ import type { FieldValues, UseFormReturn } from 'react-hook-form'
 import { Controller, useForm } from 'react-hook-form'
 import { Trans, useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
+import { CliTokensCard } from '@/components/cli-tokens-card'
 import { FaviconUpload } from '@/components/favicon-upload'
 import { SsoMethodsCard } from '@/components/sso-methods-card'
 import {
@@ -56,6 +58,7 @@ const SETTINGS_TABS = [
   { id: 'branding', labelKey: 'settings.tabs.branding', icon: Image },
   { id: 'webhook', labelKey: 'settings.tabs.webhook', icon: Bell },
   { id: 'auth', labelKey: 'settings.tabs.auth', icon: ShieldCheck },
+  { id: 'cli', labelKey: 'settings.tabs.cli', icon: KeyRound },
 ] as const satisfies ReadonlyArray<{ id: string; labelKey: string; icon: LucideIcon }>
 
 type SettingsTabId = (typeof SETTINGS_TABS)[number]['id']
@@ -1242,6 +1245,8 @@ export function SettingsPage() {
         )}
 
         {/* Auth & Security section */}
+        {activeTab === 'cli' && <CliTokensCard />}
+
         {activeTab === 'auth' && (
           <>
             {/* 登录方式配置（企业 SSO / OIDC / SAML；DB 为主 env 兜底，改完即时生效） */}

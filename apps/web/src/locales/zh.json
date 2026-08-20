@@ -1113,7 +1113,8 @@
       "attachments": "上传附件",
       "branding": "品牌外观",
       "webhook": "通知 Webhook",
-      "auth": "企业登录"
+      "auth": "企业登录",
+      "cli": "CLI 访问"
     },
     "faviconRemove": "移除图标",
     "faviconUpload": "上传图标"
@@ -2287,6 +2288,8 @@
       "auth.setup.completed": "完成初始管理员设置",
       "auth.share.access_denied": "分享访问被拒绝",
       "auth.share.access_granted": "分享访问已放行",
+      "cli_token.created": "创建 CLI 令牌",
+      "cli_token.revoked": "吊销 CLI 令牌",
       "data_retention.sweep": "数据保留清理",
       "evaluation_case.create": "创建评测用例",
       "evaluation_case.delete": "删除评测用例",
@@ -2359,6 +2362,7 @@
     "resources": {
       "agent": "Agent",
       "artifact": "产物",
+      "cli_token": "CLI 令牌",
       "data_retention": "数据保留",
       "device_authorization": "设备登录请求",
       "evaluation_case": "评测用例",
@@ -2579,5 +2583,37 @@
     "warning": "绝不要批准别人发给你的验证码。",
     "invalidCode": "验证码无效，请检查后重试。",
     "notFound": "该验证码已过期或已被使用，请在终端重新发起登录。"
+  },
+  "cli": {
+    "title": "CLI 访问",
+    "desc": "供 a2wave CLI、CI 任务和脚本使用的长期令牌，每个都可以单独吊销。",
+    "create": "新建令牌",
+    "createTitle": "创建 CLI 令牌",
+    "name": "名称",
+    "namePlaceholder": "这个令牌给谁用？例如：CI runner",
+    "nameRequired": "必须填名称——这是之后区分令牌的唯一方式。",
+    "expiry": "有效期",
+    "expiryNever": "永不过期",
+    "expiryDays": "{{count}} 天",
+    "expiryHint": "不设过期时间的令牌会一直有效，直到你手动吊销。",
+    "created": "令牌已创建",
+    "createdWarning": "请立即复制——它不会再次显示。",
+    "copy": "复制",
+    "copied": "已复制",
+    "done": "完成",
+    "empty": "还没有 CLI 令牌。",
+    "colName": "名称",
+    "colPrefix": "令牌",
+    "colLastUsed": "最近使用",
+    "colExpires": "过期时间",
+    "colCreated": "创建时间",
+    "never": "从未使用",
+    "revoke": "吊销",
+    "revokeConfirm": "确定吊销这个令牌？正在使用它的地方会立刻失效。",
+    "revoked": "已吊销",
+    "expired": "已过期",
+    "sessionTtl": "会话令牌有效期",
+    "sessionTtlValue": "{{days}} 天",
+    "sessionTtlHint": "适用于浏览器和登录签发的令牌。由环境变量 AUTH_SESSION_TTL_DAYS 设置，改后需重启——出于安全考虑刻意不放在页面上修改。"
   }
 }

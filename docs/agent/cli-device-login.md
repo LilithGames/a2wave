@@ -218,6 +218,7 @@ documented as a fallback rather than the recommended path.
 ## 8. Related reading
 
 - IdP SSO login for the CLI: [cli-oauth.md](./cli-oauth.md)
+- Unattended automation credentials: [cli-tokens.md](./cli-tokens.md)
 - OAuth invocation channel for published Agents: [oauth-channel.md](./oauth-channel.md)
 - Code generation and poll pacing: [`apps/api/src/lib/device-code.ts`](../../apps/api/src/lib/device-code.ts)
 - Endpoints: [`apps/api/src/routes/auth-device.ts`](../../apps/api/src/routes/auth-device.ts)

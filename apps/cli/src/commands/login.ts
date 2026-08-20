@@ -23,6 +23,42 @@ function isRemoteShell(): boolean {
   return !!(process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT)
 }
 
+/**
+ * Adopt a token minted in the web UI.
+ *
+ * Verified against /auth/me before being written: a mistyped or already-revoked
+ * token would otherwise be saved silently and fail on some later command, far
+ * from the point where it could be understood.
+ */
+async function cliTokenLogin(url: string, token: string): Promise<void> {
+  const baseUrl = url.replace(/\/+$/, '')
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'a2wave-cli' },
+    })
+  } catch (err) {
+    throw new CliError(`Could not reach ${baseUrl}: ${(err as Error).message}`)
+  }
+  if (!res.ok) {
+    throw new CliError(
+      `The token was rejected (${res.status}). Check that it was copied in full and has not been revoked.`,
+    )
+  }
+
+  let username: string | undefined
+  try {
+    username = ((await res.json()) as { data?: { username?: string } }).data?.username
+  } catch {
+    // A non-JSON body does not invalidate the token; the 200 already proved it.
+  }
+
+  const existing = loadConfig() ?? { token: '' }
+  saveConfig({ ...existing, url: baseUrl, token })
+  saveCredential(baseUrl, token)
+  console.log(`Login successful ✓${username ? ` (${username})` : ''}`)
+}
+
 export const loginCommand = defineCommand({
   meta: {
     name: 'login',
@@ -44,6 +80,11 @@ export const loginCommand = defineCommand({
       default: true,
       description: 'Launch a browser for SSO. Use --no-browser to only reuse the existing cache',
     },
+    token: {
+      type: 'string',
+      description:
+        'Use a CLI token created in the web UI (Settings → CLI access). Non-interactive; ideal for CI',
+    },
     device: {
       type: 'boolean',
       description:
@@ -57,9 +98,17 @@ export const loginCommand = defineCommand({
   run: async (ctx) => {
     const args = (ctx?.args ?? {}) as {
       'idaas-token'?: string
+      token?: string
       browser?: boolean
       device?: boolean
       password?: boolean
+    }
+
+    // A CLI token is already a credential — nothing to negotiate, so this wins over
+    // every interactive path including the SSH device-grant default.
+    if (args.token) {
+      await cliTokenLogin(resolveUrl(), args.token)
+      return
     }
 
     // Device grant: explicitly asked for, or the only flow that can work here.

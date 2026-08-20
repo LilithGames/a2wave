@@ -57,6 +57,28 @@ Containers and CI are not auto-detected; ask for the flow explicitly with `a2wav
 > you. The confirmation page shows the IP, client, and time of the request — approve only if you
 > started that login yourself. A code is valid for 10 minutes and can be used only once.
 
+### Signing in with a CLI token (CI / unattended)
+
+Device login needs a human to click Approve, and CI has no human. For that, use a
+**CLI token**: create one under Settings → CLI access, give it a name (e.g. `CI runner`),
+pick a lifetime, and copy the value.
+
+> [!WARNING]
+> **The token is shown only once.** Once you close the panel it cannot be recovered.
+> Store it in your secret manager straight away.
+
+```bash
+a2wave config set-url https://a2wave.example.com
+a2wave login --token a2wc_xxxxxxxxxxxx
+```
+
+A token carries the **full permissions of whoever created it** and cannot be scoped
+down. Mint **one per machine or job**, so a leak can be contained by revoking just
+that one without disturbing anything else.
+
+The same page shows each token's **last used** time, so you can tell which ones are
+forgotten and safe to revoke. Revocation takes effect immediately.
+
 ## Five-Minute Quick Start
 
 1. **Configure a Provider**: go to "Providers", pick one of the presets **Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI**. Credentials and models are configured on the Agent: enter credentials (API Key or OAuth, or use the server login session), then click "Fetch models" and pick one. See [Provider Execution Engine](/wiki/providers) for details.

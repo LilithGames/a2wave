@@ -1113,7 +1113,8 @@
       "attachments": "Attachments",
       "branding": "Branding",
       "webhook": "Notification Webhook",
-      "auth": "Enterprise Login"
+      "auth": "Enterprise Login",
+      "cli": "CLI Access"
     },
     "faviconRemove": "Remove favicon",
     "faviconUpload": "Upload favicon"
@@ -2260,6 +2261,8 @@
       "auth.setup.completed": "Complete initial administrator setup",
       "auth.share.access_denied": "Share access denied",
       "auth.share.access_granted": "Share access granted",
+      "cli_token.created": "Create CLI token",
+      "cli_token.revoked": "Revoke CLI token",
       "data_retention.sweep": "Data retention sweep",
       "evaluation_case.create": "Create evaluation case",
       "evaluation_case.delete": "Delete evaluation case",
@@ -2332,6 +2335,7 @@
     "resources": {
       "agent": "Agent",
       "artifact": "Artifact",
+      "cli_token": "CLI token",
       "data_retention": "Data retention",
       "device_authorization": "Device login request",
       "evaluation_case": "Evaluation case",
@@ -2579,5 +2583,37 @@
     "warning": "Never approve a code that someone else sent you.",
     "invalidCode": "That code is not valid. Check it and try again.",
     "notFound": "This code has expired or was already used. Start a new login in your terminal."
+  },
+  "cli": {
+    "title": "CLI access",
+    "desc": "Long-lived tokens for the a2wave CLI, CI jobs, and scripts. Each one can be revoked on its own.",
+    "create": "New token",
+    "createTitle": "Create a CLI token",
+    "name": "Name",
+    "namePlaceholder": "What will use this token? e.g. CI runner",
+    "nameRequired": "A name is required — it is the only way to tell tokens apart later.",
+    "expiry": "Expires",
+    "expiryNever": "Never",
+    "expiryDays": "{{count}} days",
+    "expiryHint": "A token with no expiry keeps working until you revoke it.",
+    "created": "Token created",
+    "createdWarning": "Copy it now — it will not be shown again.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "done": "Done",
+    "empty": "No CLI tokens yet.",
+    "colName": "Name",
+    "colPrefix": "Token",
+    "colLastUsed": "Last used",
+    "colExpires": "Expires",
+    "colCreated": "Created",
+    "never": "Never used",
+    "revoke": "Revoke",
+    "revokeConfirm": "Revoke this token? Anything using it will stop working immediately.",
+    "revoked": "Revoked",
+    "expired": "Expired",
+    "sessionTtl": "Session token lifetime",
+    "sessionTtlValue": "{{days}} day(s)",
+    "sessionTtlHint": "Applies to browser and login-issued tokens. Set by the AUTH_SESSION_TTL_DAYS environment variable and requires a restart — it is deliberately not editable here."
   }
 }

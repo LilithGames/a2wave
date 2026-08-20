@@ -1591,3 +1591,59 @@ export const deviceAuthorizations = sqliteTable(
     expiresAtIdx: index('device_authorizations_expires_at_idx').on(table.expiresAt),
   }),
 )
+
+// ============================================================
+// CLI tokens — long-lived, individually revocable API credentials
+// ============================================================
+/**
+ * A named bearer credential a user creates in the web UI and pastes into a CLI
+ * or CI job.
+ *
+ * Distinct from a session JWT on purpose. A session token is short-lived, tied
+ * to `users.tokenVersion`, and revoked wholesale when that bumps — which is
+ * right for a browser but wrong for automation, where a password change would
+ * silently break every pipeline. These are stored server-side so each one can be
+ * named, listed, and revoked on its own, and given a lifetime measured in days
+ * rather than the session TTL.
+ *
+ * Only the SHA-256 is persisted. The plaintext is shown once at creation and is
+ * unrecoverable afterwards: a database read must not yield a working credential.
+ */
+export const cliTokens = sqliteTable(
+  'cli_tokens',
+  {
+    id: text('id').primaryKey(), // clt_xxx
+    /** SHA-256 (hex) of the token. The plaintext never touches the database. */
+    tokenHash: text('token_hash').notNull().unique(),
+    /**
+     * Short prefix of the plaintext, shown in the list so a user can tell two
+     * tokens apart without being able to reconstruct either.
+     */
+    tokenPrefix: text('token_prefix').notNull(),
+    /** User-supplied label ("CI runner", "laptop"). The only way to identify one later. */
+    name: text('name').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Null means no expiry. Deliberately allowed: a CI credential that silently
+     * dies mid-quarter is worse than one an admin can see and revoke, and the
+     * list surfaces age precisely so it stays visible.
+     */
+    expiresAt: integer('expires_at', { mode: 'timestamp' }),
+    /**
+     * Stamped on use, best-effort. This is what makes an unused token
+     * identifiable — without it nobody can tell which credentials are safe to
+     * revoke, and they accumulate forever.
+     */
+    lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
+    revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The list is per-user and ordered newest first.
+    userIdIdx: index('cli_tokens_user_id_idx').on(table.userId),
+  }),
+)

@@ -67,7 +67,7 @@ Read the topic doc before touching its area.
 | [design-tokens.md](docs/agent/design-tokens.md) · [i18n.md](docs/agent/i18n.md) | Design tokens / antd alignment; i18n conventions |
 | [audit-logging.md](docs/agent/audit-logging.md) | `logAudit()` usage, action/resource copy |
 | [e2e.md](docs/agent/e2e.md) · [e2e/AGENTS.md](e2e/AGENTS.md) | E2E environment, layout, fixtures |
-| [oauth-channel.md](docs/agent/oauth-channel.md) · [cli-oauth.md](docs/agent/cli-oauth.md) · [cli-device-login.md](docs/agent/cli-device-login.md) | Auth methods, CLI OAuth, headless device login |
+| [oauth-channel.md](docs/agent/oauth-channel.md) · [cli-oauth.md](docs/agent/cli-oauth.md) · [cli-device-login.md](docs/agent/cli-device-login.md) · [cli-tokens.md](docs/agent/cli-tokens.md) | Auth methods, CLI OAuth, headless device login, CLI tokens |
 | [run-channel-context.md](docs/agent/run-channel-context.md) · [a2a-task-lifecycle.md](docs/agent/a2a-task-lifecycle.md) | Call-context shape, A2A task lifecycle |
 | [configuration.md](docs/agent/configuration.md) · [cli-install-publish.md](docs/agent/cli-install-publish.md) | Env configuration, CLI install/publish |
 | [apps/api/AGENTS.md](apps/api/AGENTS.md) | Database operation rules, API-app conventions |

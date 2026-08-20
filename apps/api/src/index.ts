@@ -86,6 +86,7 @@ import authDeviceRoutes from './routes/auth-device.js'
 import authOidcRoutes from './routes/auth-oidc.js'
 import authSamlRoutes from './routes/auth-saml.js'
 import changelogRoutes from './routes/changelog.js'
+import cliTokenRoutes from './routes/cli-tokens.js'
 import docsRoutes from './routes/docs.js'
 import e2eRoutes from './routes/e2e.js'
 import evaluationRoutes, {
@@ -272,6 +273,12 @@ if (env.NODE_ENV === 'development' && env.E2E_STRICT_AUTH) {
   app.use('/api/e2e', authMiddleware, requireAdmin)
   app.route('/api/e2e', e2eRoutes)
 }
+
+// CLI tokens are personal credentials: every route is scoped to the caller, so a
+// normal session guard is the whole authorization model.
+app.use('/api/cli-tokens', authMiddleware)
+app.use('/api/cli-tokens/*', authMiddleware)
+app.route('/api/cli-tokens', cliTokenRoutes)
 
 // --- Protected routes (require auth) ---
 app.use('/api/agents/*', (c, next) => {

@@ -30,6 +30,12 @@ export const AUDIT_ACTIONS = {
   AUTH_DEVICE_DENIED: 'auth.device.denied',
   AUTH_DEVICE_CLAIMED: 'auth.device.claimed',
 
+  // CLI tokens — long-lived credentials a user mints for automation. Creation and
+  // revocation are the whole lifecycle; use is not audited (it would write an entry
+  // per API call), which is what lastUsedAt exists for instead.
+  CLI_TOKEN_CREATED: 'cli_token.created',
+  CLI_TOKEN_REVOKED: 'cli_token.revoked',
+
   // Auth — 「SSO 验证即可看」分享访客（不建 a2wave 账号）
   AUTH_SHARE_ACCESS_GRANTED: 'auth.share.access_granted',
   AUTH_SHARE_ACCESS_DENIED: 'auth.share.access_denied',

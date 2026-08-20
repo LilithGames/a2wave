@@ -315,3 +315,39 @@ describe('loginCommand — device grant (remote machines)', () => {
     expect(mockDeviceLogin).not.toHaveBeenCalled()
   })
 })
+
+describe('loginCommand — CLI token', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    mockResolveUrl.mockReturnValue('https://a2wave.test')
+    mockLoadConfig.mockReturnValue({ token: '' })
+    delete process.env.SSH_CONNECTION
+  })
+
+  it('stores a token minted in the web UI without any interactive step', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { username: 'ada' } }), { status: 200 }),
+    )
+    await runLogin({ token: 'a2wc_secret' })
+    expect(mockSaveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://a2wave.test', token: 'a2wc_secret' }),
+    )
+    expect(mockSaveCredential).toHaveBeenCalledWith('https://a2wave.test', 'a2wc_secret')
+  })
+
+  it('verifies the token before saving, so a typo fails now rather than later', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+    await expect(runLogin({ token: 'a2wc_bad' })).rejects.toThrow(/token/i)
+    expect(mockSaveConfig).not.toHaveBeenCalled()
+  })
+
+  it('takes precedence over the SSH device-grant default', async () => {
+    process.env.SSH_CONNECTION = '10.0.0.1 22 10.0.0.2 22'
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { username: 'ada' } }), { status: 200 }),
+    )
+    await runLogin({ token: 'a2wc_secret' })
+    expect(mockDeviceLogin).not.toHaveBeenCalled()
+  })
+})
