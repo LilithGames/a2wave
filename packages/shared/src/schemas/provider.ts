@@ -281,14 +281,13 @@ const PRESET_PROVIDER_DEFS: PresetProvider[] = [
     checkScript: 'claude --version',
     skillsDir: '.claude/skills',
     mcpConfigPath: '.mcp.json',
-    // `--effort` first shipped in 2.1.47 (2.1.45 rejects it; 2.1.46 was never
-    // published). An unknown option is fatal to the CLI's argument parser, so a
-    // build below this floor fails at spawn the moment an Agent configures a
-    // reasoning level. `--settings` is older and already present at that
-    // version, so one floor covers both. The floor guards the FLAG only: which
-    // levels are legal is a property of the model and is discovered per
-    // credential — 2.1.47 itself advertised just low/medium/high.
-    minVersion: '2.1.47',
+    // Result `origin` shipped in 2.1.126 and lets the stream adapter separate
+    // the user answer from task-notification follow-ups and internal Agent
+    // traffic. Version 2.1.208 then fixed truncated stream-json output and
+    // missing Result frames for large `claude -p` responses. Both are required
+    // for the adapter's lossless final-output contract. (`--effort` and inline
+    // `--settings`, the other versioned flags used here, predate this floor.)
+    minVersion: '2.1.208',
   },
   {
     kind: 'codex',

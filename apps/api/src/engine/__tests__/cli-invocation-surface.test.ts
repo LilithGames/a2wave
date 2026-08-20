@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PRESET_PROVIDERS, PROVIDER_KINDS, isVersionAtLeast } from '@a2wave/shared'
+import { isVersionAtLeast, PRESET_PROVIDERS, PROVIDER_KINDS } from '@a2wave/shared'
 import { describe, expect, it } from 'vitest'
 import { extractCliSurface } from './helpers/extract-cli-surface.js'
 
@@ -126,6 +126,10 @@ describe('CLI invocation surface contract', () => {
 })
 
 describe('Provider CLI lock pins', () => {
+  it('requires Claude Code with origin-aware reliable Result streams', () => {
+    expect(presetOf('claude-code')?.minVersion).toBe('2.1.208')
+  })
+
   it('never pins a version below the Provider minVersion floor', () => {
     for (const preset of PRESET_PROVIDERS) {
       const pinned = lock.providers.find((entry) => entry.kind === preset.kind)
