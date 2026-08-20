@@ -1,13 +1,13 @@
-import { Button } from '@/components/ui/button'
-import { copyToClipboard } from '@/lib/utils'
 import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { copyText } from '@/lib/clipboard'
 
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
-    await copyToClipboard(text)
+    if (!(await copyText(text))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

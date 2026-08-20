@@ -1,14 +1,15 @@
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useProviders } from '@/hooks/use-providers'
-import { cn, copyToClipboard } from '@/lib/utils'
 import type { Agent, AgentType } from '@a2wave/shared'
 import { Tooltip } from 'antd'
 import { Check, Copy, Pin } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useProviders } from '@/hooks/use-providers'
+import { copyText } from '@/lib/clipboard'
+import { cn } from '@/lib/utils'
 
 const agentTypeLabelKeys: Record<AgentType, string> = {
   llm: 'agent.typeLlm',
@@ -22,7 +23,7 @@ function CopyIdButton({ text, ariaLabel }: { text: string; ariaLabel: string }) 
   const handleCopy = async (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    await copyToClipboard(text)
+    if (!(await copyText(text))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

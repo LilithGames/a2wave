@@ -35,7 +35,8 @@ import {
 } from '@/hooks/use-auth'
 import { message } from '@/lib/antd-static'
 import { formatApiError } from '@/lib/api-error'
-import { cn, copyToClipboard } from '@/lib/utils'
+import { copyText } from '@/lib/clipboard'
+import { cn } from '@/lib/utils'
 import { resolveSsoMethods, startSsoMethod } from '@/pages/login'
 
 /** Install command for the a2wave CLI, published to the public npm registry. */
@@ -255,10 +256,9 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-surface-hover transition-colors"
         onClick={async () => {
           setOpen(false)
-          try {
-            await copyToClipboard(CLI_INSTALL_COMMAND)
+          if (await copyText(CLI_INSTALL_COMMAND)) {
             message.success(t('auth.cliCommandCopied'))
-          } catch {
+          } else {
             message.error(t('auth.cliCommandCopyFailed'))
           }
         }}

@@ -17,22 +17,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-/** Clipboard fallback for non-secure contexts (e.g. LAN HTTP access) */
-export async function copyToClipboard(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  document.execCommand('copy')
-  document.body.removeChild(textarea)
-}
-
 /** Generate a unique ID, with fallback for non-secure contexts (e.g. LAN HTTP) */
 export function uniqueId(): string {
   return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)

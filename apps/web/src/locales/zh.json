@@ -110,7 +110,7 @@
     "executionFailed": "执行失败"
   },
   "runLog": {
-    "copyRunId": "复制 Run ID",
+    "copyRunId": "复制 Run ID 与内容",
     "steps": "执行步骤",
     "input": "输入",
     "output": "输出",

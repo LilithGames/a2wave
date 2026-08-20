@@ -110,7 +110,7 @@
     "executionFailed": "Execution failed"
   },
   "runLog": {
-    "copyRunId": "Copy Run ID",
+    "copyRunId": "Copy Run ID and prompt",
     "steps": "Steps",
     "input": "Input",
     "output": "Output",

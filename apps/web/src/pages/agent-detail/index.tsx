@@ -1,31 +1,3 @@
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { EmojiPicker } from '@/components/ui/emoji-picker'
-import { Input } from '@/components/ui/input'
-import { Skeleton } from '@/components/ui/skeleton'
-import { UnsavedChangesDialog } from '@/components/unsaved-changes-dialog'
-import {
-  CHAT_CONNECTIONS_QUERY_KEY,
-  FEISHU_CONNECTIONS_QUERY_KEY,
-  useUpdateAgent,
-} from '@/hooks/use-agents'
-import {
-  type AgentDiagnoseClipboardPayload,
-  formatAgentDiagnoseClipboardText,
-} from '@/lib/agent-diagnose-clipboard'
-import { message, modal } from '@/lib/antd-static'
-import { api } from '@/lib/api'
-import { formatApiError } from '@/lib/api-error'
-import { cn, copyToClipboard } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { Dropdown, Tabs, Tooltip } from 'antd'
 import {
@@ -62,6 +34,35 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { EmojiPicker } from '@/components/ui/emoji-picker'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { UnsavedChangesDialog } from '@/components/unsaved-changes-dialog'
+import {
+  CHAT_CONNECTIONS_QUERY_KEY,
+  FEISHU_CONNECTIONS_QUERY_KEY,
+  useUpdateAgent,
+} from '@/hooks/use-agents'
+import {
+  type AgentDiagnoseClipboardPayload,
+  formatAgentDiagnoseClipboardText,
+} from '@/lib/agent-diagnose-clipboard'
+import { message, modal } from '@/lib/antd-static'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/api-error'
+import { copyText } from '@/lib/clipboard'
+import { cn } from '@/lib/utils'
 import { ArtifactsTab } from './artifacts-tab'
 import { ConfigTab } from './config-tab'
 import { CopyButton } from './copy-button'
@@ -215,7 +216,7 @@ export function AgentDetailPage() {
       severityWarn: t('agentDetail.diagnoseSeverityWarn'),
       severityInfo: t('agentDetail.diagnoseSeverityInfo'),
     })
-    await copyToClipboard(text)
+    if (!(await copyText(text))) return
     setDiagnoseCopied(true)
     window.setTimeout(() => setDiagnoseCopied(false), 2000)
   }, [diagnoseResult, t])
@@ -746,7 +747,7 @@ export function AgentDetailPage() {
                                   `/agents/${id}/share`,
                                   {},
                                 )
-                                await copyToClipboard(res.data.shareUrl)
+                                await copyText(res.data.shareUrl)
                                 modal.success({
                                   title: t('agentDetail.shareLinkCopied'),
                                   content: t('agentDetail.shareLinkExpiry', {

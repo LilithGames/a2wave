@@ -1,7 +1,3 @@
-import { FullLogViewer } from '@/components/full-log-viewer'
-import { StreamLogsTimeline } from '@/components/stream-log-item'
-import type { StreamLogEntry } from '@/hooks/use-agents'
-import { useRun } from '@/hooks/use-runs'
 import {
   Check,
   Copy,
@@ -16,6 +12,10 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { FullLogViewer } from '@/components/full-log-viewer'
+import { StreamLogsTimeline } from '@/components/stream-log-item'
+import type { StreamLogEntry } from '@/hooks/use-agents'
+import { useRun } from '@/hooks/use-runs'
 
 /**
  * Normalize an error value into a renderable string. Failure reasons may be
@@ -83,10 +83,11 @@ function CurrentToolBadge({ toolName, startedAt }: { toolName: string; startedAt
     </span>
   )
 }
+
 import { Button } from '@/components/ui/button'
-import { getArtifactDownloadUrl, useArtifacts, useDeleteArtifact } from '@/hooks/use-artifacts'
 import type { Artifact } from '@/hooks/use-artifacts'
-import { copyToClipboard } from '@/lib/utils'
+import { getArtifactDownloadUrl, useArtifacts, useDeleteArtifact } from '@/hooks/use-artifacts'
+import { copyText } from '@/lib/clipboard'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -180,7 +181,9 @@ export function RunLogContent({ runId }: { runId: string }) {
 
   const handleCopy = async () => {
     if (!run) return
-    await copyToClipboard(run.id)
+    // Intent alone is untraceable; lead with the id so pasted text names its run.
+    const payload = run.intent ? `${run.id}\n\n${run.intent}` : run.id
+    if (!(await copyText(payload))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -211,6 +214,7 @@ export function RunLogContent({ runId }: { runId: string }) {
               onClick={handleCopy}
               className="p-0.5 rounded hover:bg-surface-hover transition-colors"
               title={t('runLog.copyRunId')}
+              aria-label={t('runLog.copyRunId')}
             >
               {copied ? (
                 <Check className="h-3.5 w-3.5 text-success" />

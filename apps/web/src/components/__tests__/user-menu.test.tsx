@@ -1,7 +1,7 @@
-import { ThemeProvider } from '@/components/theme-provider'
-import { renderWithProviders, screen, waitFor, within } from '@/test/render'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ThemeProvider } from '@/components/theme-provider'
+import { renderWithProviders, screen, waitFor, within } from '@/test/render'
 import { CLI_INSTALL_COMMAND, UserMenu } from '../user-menu'
 
 const { messageSuccess, messageError } = vi.hoisted(() => ({
@@ -30,12 +30,9 @@ vi.mock('@/hooks/use-auth', () => ({
   useChangePassword: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
-const { copyToClipboard } = vi.hoisted(() => ({ copyToClipboard: vi.fn() }))
+const { copyText } = vi.hoisted(() => ({ copyText: vi.fn() }))
 
-vi.mock('@/lib/utils', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/utils')>('@/lib/utils')
-  return { ...actual, copyToClipboard: (text: string) => copyToClipboard(text) }
-})
+vi.mock('@/lib/clipboard', () => ({ copyText: (text: string) => copyText(text) }))
 
 beforeEach(() => {
   authState.user = { username: 'testadmin', role: 'admin', locale: 'zh' }
@@ -112,8 +109,8 @@ describe('UserMenu — get CLI', () => {
   beforeEach(() => {
     messageSuccess.mockReset()
     messageError.mockReset()
-    copyToClipboard.mockReset()
-    copyToClipboard.mockResolvedValue(undefined)
+    copyText.mockReset()
+    copyText.mockResolvedValue(true)
   })
 
   it('copies the CLI install command and toasts on success', async () => {
@@ -128,7 +125,7 @@ describe('UserMenu — get CLI', () => {
     await user.click(await screen.findByRole('button', { name: '获取 CLI' }))
 
     await waitFor(() => {
-      expect(copyToClipboard).toHaveBeenCalledWith(CLI_INSTALL_COMMAND)
+      expect(copyText).toHaveBeenCalledWith(CLI_INSTALL_COMMAND)
     })
     // Exact, not a substring: `toContain('a2wave')` would still pass if the
     // package name regressed to the old `a2wave-cli`.
@@ -140,7 +137,7 @@ describe('UserMenu — get CLI', () => {
   })
 
   it('toasts an error when the clipboard write fails', async () => {
-    copyToClipboard.mockRejectedValue(new Error('denied'))
+    copyText.mockResolvedValue(false)
     const user = userEvent.setup()
     renderWithProviders(
       <ThemeProvider>

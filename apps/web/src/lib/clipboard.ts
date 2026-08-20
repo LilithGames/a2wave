@@ -24,12 +24,18 @@ export async function copyText(text: string): Promise<boolean> {
   scratch.value = text
   // Keep it off-screen and non-interactive so the page does not visibly jump.
   scratch.setAttribute('readonly', '')
+  // Off-screen rather than transparent: a zero-opacity node counts as hidden to
+  // some engines, which makes the selection — and so the copy — a no-op.
   scratch.style.position = 'fixed'
-  scratch.style.opacity = '0'
-  scratch.style.pointerEvents = 'none'
-  document.body.appendChild(scratch)
+  scratch.style.top = '0'
+  scratch.style.left = '-9999px'
+  // A dialog traps focus to its own subtree, so a scratch node parented on
+  // <body> never receives the selection and the copy silently no-ops.
+  const host = document.activeElement?.closest('[role="dialog"]') ?? document.body
+  host.appendChild(scratch)
   try {
     scratch.select()
+    scratch.setSelectionRange(0, text.length)
     return document.execCommand('copy')
   } catch {
     return false

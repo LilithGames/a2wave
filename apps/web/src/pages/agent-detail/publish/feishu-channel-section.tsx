@@ -10,17 +10,18 @@
  * The `data-tour` anchors are load-bearing: the onboarding tour drives the
  * Feishu FTUE by querying them (see components/onboarding/onboarding-tour.tsx).
  */
-import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { message } from '@/lib/antd-static'
-import { copyToClipboard } from '@/lib/utils'
-import { CopyButton } from '@/pages/agent-detail/copy-button'
+
 import { Checkbox, InputNumber, Popover, Radio, Switch } from 'antd'
 import { Eye, EyeOff, Globe, Info } from 'lucide-react'
 import type { CSSProperties, RefObject } from 'react'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { message } from '@/lib/antd-static'
+import { copyText } from '@/lib/clipboard'
+import { CopyButton } from '@/pages/agent-detail/copy-button'
 
 export type FeishuReplyMode = 'quote' | 'new' | 'none'
 export type FeishuTopicReplyMode = 'topic_reply' | 'none'
@@ -261,7 +262,7 @@ export function FeishuChannelSection({
                 size="sm"
                 className="h-7 shrink-0 text-xs"
                 onClick={async () => {
-                  await copyToClipboard(feishuAppScopesJson)
+                  if (!(await copyText(feishuAppScopesJson))) return
                   message.success(t('agentPublish.feishuScopesJsonCopied'))
                 }}
               >
