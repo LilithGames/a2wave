@@ -7,12 +7,13 @@ import { createLiveSessionRecorder } from '../live-session-recorder.js'
  * life of a run.
  */
 describe('createLiveSessionRecorder', () => {
-  let persist: Mock<(runId: string, sessionId: string) => Promise<void>>
+  let persist: Mock<(runId: string, sessionId: string) => Promise<boolean>>
 
   beforeEach(() => {
+    // true = "the run row was found and updated".
     persist = vi
-      .fn<(runId: string, sessionId: string) => Promise<void>>()
-      .mockResolvedValue(undefined)
+      .fn<(runId: string, sessionId: string) => Promise<boolean>>()
+      .mockResolvedValue(true)
   })
 
   it('persists the session id on the line that first carries it', async () => {
@@ -47,6 +48,17 @@ describe('createLiveSessionRecorder', () => {
     expect(persist).toHaveBeenLastCalledWith('run_1', 'sess_b')
   })
 
+  it('stands down permanently once the run row is reported gone', async () => {
+    // A settled-and-archived run never comes back, so continuing to query for
+    // it would cost a round-trip per remaining line of output.
+    persist.mockResolvedValue(false)
+    const record = createLiveSessionRecorder({ runId: 'run_1', persist })
+    await record(JSON.stringify({ session_id: 'sess_a' }))
+    await record(JSON.stringify({ session_id: 'sess_b' }))
+    await record(JSON.stringify({ session_id: 'sess_c' }))
+    expect(persist).toHaveBeenCalledTimes(1)
+  })
+
   it('never rejects: a failed write must not kill the run it is protecting', async () => {
     persist.mockRejectedValue(new Error('database is locked'))
     const record = createLiveSessionRecorder({ runId: 'run_1', persist })
@@ -54,7 +66,7 @@ describe('createLiveSessionRecorder', () => {
   })
 
   it('retries on the next line after a failed write', async () => {
-    persist.mockRejectedValueOnce(new Error('database is locked')).mockResolvedValue(undefined)
+    persist.mockRejectedValueOnce(new Error('database is locked')).mockResolvedValue(true)
     const record = createLiveSessionRecorder({ runId: 'run_1', persist })
     const line = JSON.stringify({ session_id: 'sess_a' })
     await record(line)

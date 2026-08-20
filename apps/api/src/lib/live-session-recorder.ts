@@ -3,7 +3,8 @@ import { logger } from './logger.js'
 
 export interface LiveSessionRecorderOptions {
   runId: string
-  persist: (runId: string, sessionId: string) => Promise<void>
+  /** Resolves false when the run row is gone, so the recorder can stand down. */
+  persist: (runId: string, sessionId: string) => Promise<boolean>
 }
 
 /**
@@ -19,8 +20,14 @@ export function createLiveSessionRecorder(
 ): (line: string) => Promise<void> {
   const { runId, persist } = options
   let recorded: string | null = null
+  let runGone = false
 
   return async (line: string): Promise<void> => {
+    // The reaper can settle and archive a run while its CLI still streams.
+    // Once the row is gone it never comes back, so keep querying for it would
+    // cost a round-trip per remaining line of output.
+    if (runGone) return
+
     const sessionId = extractLiveSessionId(line)
     // Every subsequent line repeats the id; only a change is worth a write.
     // A change is real on provider fallback, where the new CLI opens its own
@@ -28,7 +35,10 @@ export function createLiveSessionRecorder(
     if (!sessionId || sessionId === recorded) return
 
     try {
-      await persist(runId, sessionId)
+      if (!(await persist(runId, sessionId))) {
+        runGone = true
+        return
+      }
       recorded = sessionId
     } catch (error) {
       // Losing this write costs resumability, not correctness — the run itself

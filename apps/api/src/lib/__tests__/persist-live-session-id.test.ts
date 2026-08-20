@@ -5,6 +5,7 @@
  * own, so the risk is not "does it store a string" but "does it destroy a
  * neighbouring field". A fake would happily hide exactly that.
  */
+import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../db/client.js', async () => {
@@ -38,7 +39,10 @@ vi.mock('../../db/client.js', async () => {
     );
   `)
   const schema = await import('../../db/schema.js')
-  return { db: drizzle(sqlite, { schema }), sqlite, isPostgres: false }
+  // `sqliteDatabase` is the name resolveDeps reads; exporting only `sqlite`
+  // leaves withTransaction on its unwrapped fallback, which would silently
+  // stop these tests from exercising real isolation.
+  return { db: drizzle(sqlite, { schema }), sqlite, sqliteDatabase: sqlite, isPostgres: false }
 })
 
 const { db } = await import('../../db/client.js')
@@ -99,6 +103,35 @@ describe('persistLiveSessionId', () => {
   it('does not create a row for a run that no longer exists', async () => {
     await persistLiveSessionId('run_missing', 'sess_a')
     expect(await db.select().from(runs)).toHaveLength(0)
+  })
+
+  it('reports whether it wrote, so a caller can stop retrying a vanished run', async () => {
+    await seedRun()
+    expect(await persistLiveSessionId('run_1', 'sess_a')).toBe(true)
+    // The reaper can settle and archive a run while its CLI is still
+    // streaming; re-querying for every remaining output line is pure waste.
+    expect(await persistLiveSessionId('run_missing', 'sess_a')).toBe(false)
+  })
+
+  it('does not resurrect metadata a concurrent writer cleared mid-flight', async () => {
+    // The consume-once handoff in execute-chat-run strips queuedTurn and the
+    // attachment fields once they are materialized into a step. A
+    // read-modify-write that read before that commit and wrote after would put
+    // them back, replaying a user message the platform already consumed.
+    await seedRun({
+      executionMetadata: { queuedTurn: { prompt: 'hello' }, runtimeAdminRequesterUserId: 'usr_1' },
+    })
+    await persistLiveSessionId('run_1', 'sess_a', {
+      beforeWrite: async () => {
+        await db
+          .update(runs)
+          .set({ executionMetadata: { runtimeAdminRequesterUserId: 'usr_1' } })
+          .where(eq(runs.id, 'run_1'))
+      },
+    })
+    const metadata = await loadMetadata()
+    expect(metadata).not.toHaveProperty('queuedTurn')
+    expect(metadata).toEqual({ runtimeAdminRequesterUserId: 'usr_1', liveChatId: 'sess_a' })
   })
 
   it('leaves updatedAt alone so it cannot vouch for a stalled run', async () => {

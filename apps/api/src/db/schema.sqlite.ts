@@ -672,6 +672,13 @@ export const runs = sqliteTable(
       oauthPreviousChatId?: string
       oauthResetSession?: boolean
       /**
+       * Provider session id of a run that is still executing, recorded as the
+       * CLI announces it so a run killed mid-flight still names its resume
+       * target. Unlike the fields below it is NOT consumed-and-cleared by the
+       * handoff in execute-chat-run: it describes the attempt in progress.
+       */
+      liveChatId?: string
+      /**
        * Attachment refs for the queued path (persisted, so they are not lost to TTL expiry or a
        * restart the way an in-memory-only pending context would be).
        * token = staged replay (consumption is authorized); uri = external http(s) replay (the A2A

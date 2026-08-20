@@ -12,14 +12,24 @@ export function tapLiveSessionId(
   taskId: string,
   onStdoutLine: (line: string) => void,
 ): (line: string) => void {
+  const runId = extractRunId(taskId)
+  // Evaluation replays (`eval/<task>/<case>/<seq>`) and memory tasks
+  // (`mem_<agent>_<ts>_<seq>`) own no run row, and extractRunId falls back to
+  // returning the whole task id rather than failing. Without this guard each
+  // would issue a SELECT that can never match — per line, since OpenCode
+  // repeats its session id on every event it emits.
+  if (!runId.startsWith('run_')) return onStdoutLine
+
   const record = createLiveSessionRecorder({
-    runId: extractRunId(taskId),
+    runId,
     // Imported lazily so the engine layer does not open a database connection
     // at module load; engines are constructed in contexts (version probes,
     // model listing) that legitimately have no database.
     persist: async (runId, sessionId) => {
       const { persistLiveSessionId } = await import('../lib/persist-live-session-id.js')
-      await persistLiveSessionId(runId, sessionId)
+      // Return the verdict rather than swallowing it: false means the run row
+      // is gone, which is what lets the recorder stand down.
+      return await persistLiveSessionId(runId, sessionId)
     },
   })
 

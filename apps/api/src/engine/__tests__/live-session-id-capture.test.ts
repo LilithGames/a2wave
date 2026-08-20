@@ -29,6 +29,24 @@ describe('extractLiveSessionId', () => {
     expect(extractLiveSessionId(line)).toBe('oc_77')
   })
 
+  it("reads Pi's id, which is only a session id under type 'session'", () => {
+    const line = JSON.stringify({ type: 'session', id: 'pi_9' })
+    expect(extractLiveSessionId(line)).toBe('pi_9')
+  })
+
+  it("ignores a bare id on any other line, since 'id' means everything elsewhere", () => {
+    expect(extractLiveSessionId(JSON.stringify({ type: 'tool_call', id: 'call_1' }))).toBeNull()
+    expect(extractLiveSessionId(JSON.stringify({ id: 'msg_1' }))).toBeNull()
+  })
+
+  it('prefers the id matching the line type when a line carries several', () => {
+    // A proxied envelope can carry an outer session_id and an inner thread_id;
+    // resolving by array position rather than meaning picks a resume target
+    // the CLI never opened.
+    const line = JSON.stringify({ type: 'thread.started', thread_id: 'th_1', session_id: 'sess_1' })
+    expect(extractLiveSessionId(line)).toBe('th_1')
+  })
+
   it('returns null for a line carrying no session id', () => {
     expect(extractLiveSessionId(JSON.stringify({ type: 'assistant', text: 'hi' }))).toBeNull()
   })
