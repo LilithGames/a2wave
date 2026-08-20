@@ -238,12 +238,23 @@ app.use('/api/auth/logout', authMiddleware)
 app.use('/api/auth/oidc/*', authRateLimit)
 app.use('/api/auth/saml/*', authRateLimit)
 // Device grant: /code and /token are public by necessity — the calling machine has no
-// credential yet. Both are rate limited: /code writes a row per call and /token is polled
-// in a loop, so an unlimited caller could fill the table or brute-force a device code.
+// credential yet. Both are rate limited, but NOT on the shared auth bucket: one login
+// polls every 5s, so a single session spends ~13 requests/min of authRateLimit's 30,
+// and two concurrent logins behind one NAT egress IP (an office, a CI fleet) would
+// 429 each other out of a login that was about to succeed. Sized for the poll loop
+// instead, while still bounding table growth and device-code guessing.
+const deviceLoginRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  trustProxy: env.TRUSTED_PROXY,
+  trustedProxyAddresses: env.TRUSTED_PROXY_ADDRESSES.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+})
 // The browser half (/pending, /approve, /deny) decides on behalf of a real user, so it
 // requires a session like any other authenticated route.
-app.use('/api/auth/device/code', authRateLimit)
-app.use('/api/auth/device/token', authRateLimit)
+app.use('/api/auth/device/code', deviceLoginRateLimit)
+app.use('/api/auth/device/token', deviceLoginRateLimit)
 app.use('/api/auth/device/pending', authMiddleware)
 app.use('/api/auth/device/approve', authMiddleware)
 app.use('/api/auth/device/deny', authMiddleware)

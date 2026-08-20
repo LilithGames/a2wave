@@ -24,7 +24,10 @@ test.describe('Device login', () => {
     await page.getByRole('button', { name: '批准' }).click()
     await expect(page.getByText('设备已授权')).toBeVisible()
 
+    // Polled immediately after approval, inside the 5s pacing window: pacing must
+    // gate pending grants only, or a fast approval is punished with a backoff.
     const claimed = await pollDeviceToken(device.deviceCode)
+    expect(claimed.error).toBeUndefined()
     expect(claimed.token).toBeTruthy()
 
     // The token must be a real session, not just a well-formed string.

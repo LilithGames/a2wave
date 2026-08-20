@@ -98,6 +98,22 @@ describe('DevicePage', () => {
     expect(await screen.findByText(/已过期或已被使用/)).toBeInTheDocument()
   })
 
+  it('distinguishes a rejected code from a lapsed one', async () => {
+    apiGetMock.mockRejectedValue(new Error('INVALID_USER_CODE'))
+    renderPage('?code=WDJB-MJHT')
+    expect(await screen.findByText(/验证码无效/)).toBeInTheDocument()
+  })
+
+  it('explains an approve that fails because the code lapsed mid-decision', async () => {
+    // Without the code registered in KNOWN_CODES this renders generic "unknown error"
+    // copy, which tells the user nothing about what to do next.
+    apiGetMock.mockResolvedValue(pendingDevice())
+    apiPostMock.mockRejectedValue(new Error('DEVICE_REQUEST_NOT_FOUND'))
+    renderPage('?code=WDJB-MJHT')
+    await userEvent.click(await screen.findByRole('button', { name: /^批准$/ }))
+    expect(await screen.findByText(/已过期或已被使用/)).toBeInTheDocument()
+  })
+
   it('keeps continue disabled until the code is well-formed', async () => {
     renderPage()
     const button = screen.getByRole('button', { name: /继续/ })

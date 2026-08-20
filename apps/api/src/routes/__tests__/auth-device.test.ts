@@ -53,13 +53,19 @@ vi.mock('../../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
-vi.mock('../../env.js', () => ({
-  env: { TRUSTED_PROXY: false, TRUSTED_PROXY_ADDRESSES: '', PUBLIC_BASE_URL: 'https://a2w.test' },
+const { envMock } = vi.hoisted(() => ({
+  envMock: {
+    TRUSTED_PROXY: false,
+    TRUSTED_PROXY_ADDRESSES: '',
+    NODE_ENV: 'development',
+    PORT: 3502,
+  },
 }))
+vi.mock('../../env.js', () => ({ env: envMock }))
 
-const getServerUrlMock = vi.fn(async () => 'https://a2w.test')
+const getPublicOriginMock = vi.fn(async (): Promise<string | null> => 'https://a2w.test')
 vi.mock('../../lib/server-url.js', () => ({
-  getServerUrl: () => getServerUrlMock(),
+  getPublicOrigin: () => getPublicOriginMock(),
 }))
 
 import deviceRoutes from '../auth-device.js'
@@ -135,6 +141,8 @@ beforeEach(() => {
   })
   logAuditMock.mockReset()
   signTokenMock.mockClear()
+  getPublicOriginMock.mockReset().mockResolvedValue('https://a2w.test')
+  envMock.NODE_ENV = 'development'
 })
 
 afterEach(() => vi.restoreAllMocks())
@@ -154,6 +162,77 @@ describe('POST /device/code', () => {
     expect(data.verificationUriComplete).toBe(`https://a2w.test/device?code=${data.userCode}`)
     expect(data.interval).toBe(5)
     expect(data.expiresIn).toBe(600)
+  })
+
+  it('builds the verification link from explicit config, never an inferred Host header', async () => {
+    // POST /code is unauthenticated, so an attacker can be the first request of a
+    // fresh process. A header-inferred origin would let them pin every later
+    // login's printed URL to their own domain and harvest live user codes.
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', {
+      method: 'POST',
+      headers: { Host: 'evil.example', 'X-Forwarded-Host': 'evil.example' },
+    })
+    const { data } = (await res.json()) as { data: { verificationUri: string } }
+    expect(data.verificationUri).toBe('https://a2w.test/device')
+    expect(data.verificationUri).not.toContain('evil.example')
+  })
+
+  it('refuses to start a login in production when no public origin is configured', async () => {
+    // Printing an unusable localhost link to a remote shell is worse than failing:
+    // the user cannot open it and has no idea why.
+    getPublicOriginMock.mockResolvedValue(null)
+    envMock.NODE_ENV = 'production'
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', { method: 'POST' })
+    expect(res.status).toBe(503)
+    expect((await res.json()).error).toBe('PUBLIC_BASE_URL_NOT_SET')
+  })
+
+  it('falls back to localhost outside production so local dev still works', async () => {
+    getPublicOriginMock.mockResolvedValue(null)
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const { data } = (await res.json()) as { data: { verificationUri: string } }
+    expect(data.verificationUri).toBe('http://localhost:3502/device')
+  })
+
+  it('retries on a user-code collision instead of surfacing a constraint error', async () => {
+    // The unique index is the arbiter; a SELECT-then-INSERT would let a concurrent
+    // /code slip in between and turn a retryable collision into a 500.
+    let calls = 0
+    dbInsert.mockImplementation(() => {
+      calls += 1
+      if (calls === 1) throw new Error('UNIQUE constraint failed: user_code')
+      return makeChain()
+    })
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(calls).toBe(2)
+  })
+
+  it('does not disguise a database outage as a code-allocation failure', async () => {
+    // Retrying five times on a dead database wastes the call and reports a cause
+    // that sends the operator looking in the wrong place.
+    dbInsert.mockImplementation(() => {
+      throw new Error('connection terminated unexpectedly')
+    })
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', { method: 'POST' })
+    expect(res.status).not.toBe(503)
+    expect(dbInsert).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up with a retryable status when a code cannot be allocated', async () => {
+    dbInsert.mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: user_code')
+    })
+    queueSelects({ get: null })
+    const res = await makeApp(null).request('/api/auth/device/code', { method: 'POST' })
+    expect(res.status).toBe(503)
+    expect((await res.json()).error).toBe('DEVICE_CODE_ALLOCATION_FAILED')
   })
 
   it('never persists the device code in the clear', async () => {
@@ -215,6 +294,28 @@ describe('POST /device/token', () => {
     expect(logAuditMock.mock.calls.at(-1)?.[1].action).toBe('auth.device.claimed')
   })
 
+  it('hands over the token even when the approval landed inside the poll interval', async () => {
+    // Pacing exists to stop a client hammering a *pending* grant. Applying it to an
+    // approved one punishes a fast approval: the CLI backs off further each time.
+    queueSelects(
+      {
+        get: pendingRow({
+          status: 'approved',
+          userId: 'usr_1',
+          lastPolledAt: new Date(Date.now() - 500),
+        }),
+      },
+      { get: { id: 'usr_1', username: 'ada', role: 'user', tokenVersion: 1, isActive: true } },
+    )
+    const res = await makeApp(null).request('/api/auth/device/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceCode: 'dc' }),
+    })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { data: { token: string } }).data.token).toBe('TOKEN')
+  })
+
   it('refuses a device code that already produced a token', async () => {
     // The CLI has its token; a second presentation of the same code is a replay,
     // not a retry, and must not mint a second one.
@@ -263,6 +364,21 @@ describe('POST /device/token', () => {
     expect((await res.json()).error).toBe('expired_token')
   })
 
+  it('closes the grant when the account is disabled, so a poll loop cannot flood the audit log', async () => {
+    queueSelects(
+      { get: pendingRow({ status: 'approved', userId: 'usr_1' }) },
+      { get: { id: 'usr_1', username: 'ada', role: 'user', tokenVersion: 1, isActive: false } },
+    )
+    await makeApp(null).request('/api/auth/device/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceCode: 'dc' }),
+    })
+    // Marking it denied makes the audit entry once-per-grant and short-circuits
+    // every later poll on the `denied` branch above.
+    expect(dbUpdate.mock.results[0]?.value.set.mock.calls[0][0].status).toBe('denied')
+  })
+
   it('refuses to issue a token for an account that has since been disabled', async () => {
     queueSelects(
       { get: pendingRow({ status: 'approved', userId: 'usr_1' }) },
@@ -302,6 +418,14 @@ describe('GET /device/pending', () => {
     const res = await makeApp().request('/api/auth/device/pending?userCode=zzz')
     expect(res.status).toBe(400)
     expect(dbSelect).not.toHaveBeenCalled()
+  })
+
+  it('404s an already-decided request rather than rendering an approvable screen', async () => {
+    // Opening the link twice otherwise shows a live-looking Approve button for a
+    // grant that was already claimed, and the click fails with a generic error.
+    queueSelects({ get: pendingRow({ status: 'claimed', userId: 'usr_1' }) })
+    const res = await makeApp().request('/api/auth/device/pending?userCode=WDJB-MJHT')
+    expect(res.status).toBe(404)
   })
 
   it('404s an expired request instead of offering it for approval', async () => {

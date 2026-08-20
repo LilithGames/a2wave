@@ -125,15 +125,16 @@ guessing wrong would push a local user onto a two-step flow for no reason.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/auth/device/code` | none (rate limited) | Start a login; returns both codes |
+| `POST /api/auth/device/code` | none (rate limited) | Start a login; returns both codes. 503 `PUBLIC_BASE_URL_NOT_SET` in production when no public origin is configured |
 | `POST /api/auth/device/token` | none (rate limited) | CLI poll; RFC 8628 error codes |
 | `GET /api/auth/device/pending?userCode=` | session | What the approver is about to authorize |
 | `POST /api/auth/device/approve` | session | Bind the request to the caller |
 | `POST /api/auth/device/deny` | session | Refuse it |
 
 The first two are unauthenticated by necessity — the calling machine has no credential yet,
-which is the entire point. Both are rate limited: `/code` writes a row per call, and `/token`
-is polled in a loop.
+which is the entire point. Both are rate limited, but on **their own bucket** rather than the
+shared `authRateLimit`: one login polls every 5s (~13 requests/min), so two concurrent logins
+behind a single NAT egress IP would otherwise 429 each other out of the shared 30/min budget.
 
 State machine: `pending → approved → claimed` is the success path; `denied` and expiry are
 terminal. `claimed` is terminal too, which is what makes a device code single-use.
@@ -142,6 +143,11 @@ terminal. `claimed` is terminal too, which is what makes a device code single-us
 
 ## 6. Security properties
 
+- **The verification URL comes from explicit configuration**, never from an inferred `Host` /
+  `X-Forwarded-Host` header. `/code` is unauthenticated, so an attacker who beat real traffic to
+  a freshly restarted instance could otherwise pin every later login's printed link to their own
+  domain and harvest live user codes. In production an unset public origin fails the request
+  rather than printing an unusable link; outside production it falls back to localhost.
 - **The device code is stored only as SHA-256.** A database read must not yield something
   replayable against the token endpoint. No salt: the input is already 256 bits of CSPRNG.
 - **The user code omits `I`, `O`, `U`, `1`, `0`** so it survives being read aloud or retyped,
@@ -175,15 +181,16 @@ terminal. `claimed` is terminal too, which is what makes a device code single-us
 | Body | Meaning | CLI behavior |
 |---|---|---|
 | `authorization_pending` | Nobody has approved yet | Keep polling |
-| `slow_down` | Polled inside `interval` | Add 5s to the interval, keep polling |
+| `slow_down` | Polled inside `interval` **while still pending** | Add 5s to the interval, keep polling |
 | `access_denied` | Refused in the browser, or the account is disabled | Stop, report |
 | `expired_token` | Expired, unknown, or already claimed | Stop, tell the user to start over |
 
 | Symptom | Cause |
 |---|---|
 | `does not support device login (404)` | Server predates this feature; upgrade it or use `--idaas-token` |
-| Terminal shows a `localhost` URL | `artifacts.publicBaseUrl` is unset, so `getServerUrl()` fell back. Set it, otherwise the printed link is unusable from another machine |
 | Code expired before approval | 10-minute TTL; run `a2wave login` again |
+| `PUBLIC_BASE_URL_NOT_SET` (503) | Production instance with no `artifacts.publicBaseUrl`. Set it, or the printed link would be a localhost address the remote machine cannot open |
+| HTTP 429 during polling | The CLI backs off (honouring `Retry-After`) and keeps polling; it does not abandon the login |
 
 Audit tracing:
 

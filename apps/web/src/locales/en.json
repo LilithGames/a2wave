@@ -521,6 +521,9 @@
     "skillFolderNoMd": "No SKILL.md found in the folder; cannot create skill"
   },
   "apiError": {
+    "DEVICE_REQUEST_NOT_FOUND": "This code has expired or was already used. Start a new login in your terminal.",
+    "INVALID_USER_CODE": "That code is not valid. Check it and try again.",
+    "PUBLIC_BASE_URL_NOT_SET": "Device login needs a public address. Ask an administrator to set it in Settings.",
     "SCM_INITIAL_SYNC_REQUIRED": "This SCM source has not completed initial sync and cannot be used by an Agent",
     "INVALID_CREDENTIALS": "Invalid username or password",
     "ACCOUNT_DISABLED": "Account is disabled",

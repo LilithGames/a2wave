@@ -18,10 +18,12 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { deviceAuthorizations, users } from '../db/schema.js'
+import { env } from '../env.js'
 import { logAudit } from '../lib/audit.js'
 import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { signToken } from '../lib/auth.js'
 import { resolveClientIp } from '../lib/client-ip.js'
+import { isUniqueViolation } from '../lib/db-errors.js'
 import {
   DEVICE_CODE_TTL_SECONDS,
   DEVICE_POLL_INTERVAL_SECONDS,
@@ -32,7 +34,7 @@ import {
   normalizeUserCode,
 } from '../lib/device-code.js'
 import { createId } from '../lib/id.js'
-import { getServerUrl } from '../lib/server-url.js'
+import { getPublicOrigin } from '../lib/server-url.js'
 
 const app = new Hono()
 
@@ -46,16 +48,52 @@ const USER_AGENT_MAX_LENGTH = 200
  */
 const USER_CODE_MAX_ATTEMPTS = 5
 
-async function allocateUserCode(): Promise<string | null> {
+async function insertWithFreshUserCode(row: {
+  deviceCodeHash: string
+  clientIp: string | null
+  userAgent: string | null
+  expiresAt: Date
+  createdAt: Date
+}): Promise<string | null> {
   for (let attempt = 0; attempt < USER_CODE_MAX_ATTEMPTS; attempt++) {
-    const candidate = generateUserCode()
-    const existing = await db
-      .select({ id: deviceAuthorizations.id })
-      .from(deviceAuthorizations)
-      .where(eq(deviceAuthorizations.userCode, candidate))
-      .limit(1)
-    if (existing.length === 0) return candidate
+    const userCode = generateUserCode()
+    try {
+      await db.insert(deviceAuthorizations).values({
+        id: createId('dev'),
+        userCode,
+        status: 'pending',
+        userId: null,
+        ...row,
+      })
+      return userCode
+    } catch (err) {
+      // The unique constraint is the arbiter, not a preceding SELECT: checking
+      // first leaves a window in which a concurrent /code inserts the same code,
+      // turning a retryable collision into an unhandled 500. Only a duplicate is
+      // retryable — anything else (the database being down) must surface as itself
+      // rather than as five retries and a misleading allocation failure.
+      if (!isUniqueViolation(err)) throw err
+    }
   }
+  return null
+}
+
+/**
+ * Origin the verification link is printed with.
+ *
+ * Deliberately NOT `getServerUrl()`. That helper falls back to a Host /
+ * X-Forwarded-Host value cached from the process's first request, and `/code` is
+ * unauthenticated — so an attacker who beats real traffic to a freshly restarted
+ * instance would pin every later login's printed URL to their own domain and
+ * harvest live user codes. Same rule the OIDC/SAML callbacks follow: a
+ * security-sensitive URL comes from explicit configuration or not at all.
+ */
+async function resolveVerificationOrigin(): Promise<string | null> {
+  const explicit = await getPublicOrigin()
+  if (explicit) return explicit
+  // Local development has no publicBaseUrl and does not need one; in production
+  // a localhost link is unusable from the remote shell that has to open it.
+  if (env.NODE_ENV !== 'production') return `http://localhost:${env.PORT}`
   return null
 }
 
@@ -63,26 +101,24 @@ async function allocateUserCode(): Promise<string | null> {
  * POST /auth/device/code — start a login. Public: the caller has no credential yet.
  */
 app.post('/code', async (c) => {
-  const userCode = await allocateUserCode()
-  if (!userCode) {
-    return c.json({ error: 'DEVICE_CODE_ALLOCATION_FAILED' }, 503)
+  const origin = await resolveVerificationOrigin()
+  if (!origin) {
+    // Fail closed rather than print a link the user cannot open.
+    return c.json({ error: 'PUBLIC_BASE_URL_NOT_SET' }, 503)
   }
 
   const deviceCode = generateDeviceCode()
   const now = new Date()
-  const expiresAt = new Date(now.getTime() + DEVICE_CODE_TTL_SECONDS * 1000)
-
-  await db.insert(deviceAuthorizations).values({
-    id: createId('dev'),
+  const userCode = await insertWithFreshUserCode({
     deviceCodeHash: hashDeviceCode(deviceCode),
-    userCode,
-    status: 'pending',
-    userId: null,
     clientIp: resolveClientIp(c) ?? null,
     userAgent: c.req.header('User-Agent')?.slice(0, USER_AGENT_MAX_LENGTH) ?? null,
-    expiresAt,
+    expiresAt: new Date(now.getTime() + DEVICE_CODE_TTL_SECONDS * 1000),
     createdAt: now,
   })
+  if (!userCode) {
+    return c.json({ error: 'DEVICE_CODE_ALLOCATION_FAILED' }, 503)
+  }
 
   // Neither code goes into `details`: the audit page renders it verbatim to every
   // admin, and both are live credentials for the next ten minutes.
@@ -92,7 +128,7 @@ app.post('/code', async (c) => {
     details: { expiresIn: DEVICE_CODE_TTL_SECONDS },
   })
 
-  const baseUrl = (await getServerUrl()).replace(/\/+$/, '')
+  const baseUrl = origin.replace(/\/+$/, '')
   return c.json({
     data: {
       deviceCode,
@@ -132,11 +168,14 @@ app.post('/token', async (c) => {
   // of this code is a replay rather than a retry.
   if (row.status === 'claimed') return c.json({ error: 'expired_token' }, 400)
 
-  if (isPolledTooSoon(row.lastPolledAt, now)) {
-    return c.json({ error: 'slow_down', interval: DEVICE_POLL_INTERVAL_SECONDS }, 400)
-  }
-
+  // Pacing applies only while the grant is still pending. Applying it to an
+  // approved one would punish a fast approval — the client backs off further on
+  // every slow_down, so approving inside the interval delays the token it was
+  // already entitled to.
   if (row.status === 'pending') {
+    if (isPolledTooSoon(row.lastPolledAt, now)) {
+      return c.json({ error: 'slow_down', interval: DEVICE_POLL_INTERVAL_SECONDS }, 400)
+    }
     await db
       .update(deviceAuthorizations)
       .set({ lastPolledAt: now })
@@ -150,13 +189,23 @@ app.post('/token', async (c) => {
   // Re-checked at claim time, not just at approval: an account can be disabled in
   // between, and this is the moment a long-lived credential would be handed out.
   if (!user?.isActive) {
-    logAudit(c, {
-      action: AUDIT_ACTIONS.AUTH_DEVICE_DENIED,
-      resource: 'device_authorization',
-      resourceId: row.id,
-      userId: row.userId,
-      details: { reason: 'ACCOUNT_DISABLED' },
-    })
+    // Close the grant rather than only refusing this poll. Leaving it `approved`
+    // re-audits on every subsequent poll, so a client that keeps polling to the
+    // rate-limit ceiling writes hundreds of entries for one refusal.
+    const closed = await db
+      .update(deviceAuthorizations)
+      .set({ status: 'denied' })
+      .where(and(eq(deviceAuthorizations.id, row.id), eq(deviceAuthorizations.status, 'approved')))
+      .returning()
+    if (closed.length > 0) {
+      logAudit(c, {
+        action: AUDIT_ACTIONS.AUTH_DEVICE_DENIED,
+        resource: 'device_authorization',
+        resourceId: row.id,
+        userId: row.userId,
+        details: { reason: 'ACCOUNT_DISABLED' },
+      })
+    }
     return c.json({ error: 'access_denied' }, 400)
   }
 
@@ -206,7 +255,9 @@ async function loadPendingByUserCode(rawCode: string) {
     .where(eq(deviceAuthorizations.userCode, userCode))
     .limit(1)
 
-  if (!row || row.expiresAt.getTime() <= Date.now()) {
+  // Already-decided rows are withheld too, matching the contract above: showing an
+  // approvable screen for a claimed grant only ends in a failed click.
+  if (!row || row.expiresAt.getTime() <= Date.now() || row.status !== 'pending') {
     return { error: 'DEVICE_REQUEST_NOT_FOUND' as const, row: null }
   }
   return { error: null, row }
@@ -247,9 +298,9 @@ async function decide(c: Context, approve: boolean) {
 
   const { error, row } = await loadPendingByUserCode(parsed.data.userCode)
   if (error === 'INVALID_USER_CODE') return c.json({ error }, 400)
-  // An already-decided request must not be reopened: otherwise replaying the page
-  // could flip a denial back into an approval.
-  if (row?.status !== 'pending') return c.json({ error: 'DEVICE_REQUEST_NOT_FOUND' }, 400)
+  // Non-pending rows are already withheld by loadPendingByUserCode, so replaying the
+  // page cannot flip a denial back into an approval.
+  if (!row) return c.json({ error: 'DEVICE_REQUEST_NOT_FOUND' }, 400)
 
   const userId = c.get('userId' as never) as string
   const now = new Date()

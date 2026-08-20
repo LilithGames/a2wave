@@ -111,6 +111,36 @@ describe('deviceLogin', () => {
     expect(sleeps.at(-1)).toBeGreaterThan(sleeps[0])
   })
 
+  it('waits out a rate limit instead of aborting the login', async () => {
+    // authRateLimit returns { error: { code, message } } — an object, not a string.
+    // Treating it as a poll outcome kills a login that would have succeeded, with
+    // an unreadable message.
+    mockFetch
+      .mockResolvedValueOnce(codeResponse())
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: { get: () => '1' },
+        json: async () => ({ error: { code: 'RATE_LIMITED', message: 'too many' } }),
+      })
+      .mockResolvedValueOnce(pollSuccess())
+
+    await deviceLogin({ url: URL_BASE, openBrowser: false, sleep: async () => {} })
+
+    expect(mockSaveConfig).toHaveBeenCalledWith(expect.objectContaining({ token: 'a2w_tok' }))
+  })
+
+  it('never renders a non-string error as [object Object]', async () => {
+    mockFetch.mockResolvedValueOnce(codeResponse()).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { code: 'X' } }),
+    })
+    await expect(
+      deviceLogin({ url: URL_BASE, openBrowser: false, sleep: async () => {} }),
+    ).rejects.toThrow(/^(?!.*\[object Object\]).*$/s)
+  })
+
   it("reports a refusal in the user's terms rather than as a protocol code", async () => {
     mockFetch
       .mockResolvedValueOnce(codeResponse())

@@ -65,14 +65,16 @@ async function requestDeviceCode(baseUrl: string): Promise<DeviceCodeResponse> {
  * Poll outcome, mapped to what the user should do about it. The RFC's own codes
  * are protocol detail; a person waiting at a prompt needs a sentence.
  */
-function describePollFailure(error: string): string {
+function describePollFailure(error: string | null, status: number): string {
   switch (error) {
     case 'access_denied':
       return 'Login was denied in the browser.'
     case 'expired_token':
       return 'The login request expired or was already used. Run `a2wave login` again.'
     default:
-      return `Login failed: ${error}`
+      // Anything else is a server-side fault rather than a grant outcome; report the
+      // status, which is actionable, instead of stringifying an unknown payload.
+      return `Login failed (HTTP ${status})${error ? `: ${error}` : ''}.`
   }
 }
 
@@ -132,15 +134,30 @@ export async function deviceLogin(params: DeviceLoginParams): Promise<void> {
       return
     }
 
-    const { error } = (await res.json().catch(() => ({ error: 'unknown_error' }))) as {
-      error?: string
+    // Rate limiting is not a poll outcome: the grant is still live and the user may
+    // already be approving it. Backing off is the only correct response — aborting
+    // would kill a login that was about to succeed.
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('Retry-After'))
+      intervalSeconds =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter
+          : intervalSeconds + SLOW_DOWN_INCREMENT_SECONDS
+      console.log(`  (rate limited, retrying in ${intervalSeconds}s)`)
+      continue
     }
+
+    const body = (await res.json().catch(() => null)) as { error?: unknown } | null
+    // The middleware's error is an object ({ code, message }); the device endpoints'
+    // is a bare RFC 8628 string. Only a string can be a poll outcome, and coercing
+    // the object would render it as "[object Object]" in the user's terminal.
+    const error = typeof body?.error === 'string' ? body.error : null
     if (error === 'authorization_pending') continue
     if (error === 'slow_down') {
       intervalSeconds += SLOW_DOWN_INCREMENT_SECONDS
       continue
     }
-    throw new CliError(describePollFailure(error ?? 'unknown_error'))
+    throw new CliError(describePollFailure(error, res.status))
   }
 
   throw new CliError('Login request expired before it was approved. Run `a2wave login` again.')

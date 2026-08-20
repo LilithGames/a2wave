@@ -56,7 +56,11 @@ export function DevicePage() {
 
   const codeValid = USER_CODE_PATTERN.test(code)
 
-  const { data: pending, error: lookupError } = useQuery({
+  const {
+    data: pending,
+    error: lookupError,
+    isFetching,
+  } = useQuery({
     queryKey: ['device-authorization', submittedCode],
     queryFn: () =>
       api
@@ -178,14 +182,22 @@ export function DevicePage() {
             autoFocus
           />
 
-          {lookupError && <p className="mt-3 text-sm text-destructive">{t('device.notFound')}</p>}
+          {lookupError && (
+            <p className="mt-3 text-sm text-destructive">
+              {/* A rejected code and a lapsed one are different user mistakes and get
+                  different copy; both are settled answers, so neither retries. */}
+              {(lookupError as Error).message === 'INVALID_USER_CODE'
+                ? t('device.invalidCode')
+                : t('device.notFound')}
+            </p>
+          )}
 
           <Button
             className="mt-6 w-full"
-            disabled={!codeValid}
+            disabled={!codeValid || isFetching}
             onClick={() => setSubmittedCode(normalize(code))}
           >
-            {t('device.continue')}
+            {isFetching ? t('common.loading') : t('device.continue')}
           </Button>
         </div>
       )}
