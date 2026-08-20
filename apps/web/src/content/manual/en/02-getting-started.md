@@ -27,6 +27,36 @@ Administrators can go to "Settings → Enterprise Login" to see the effective st
 > [!IMPORTANT]
 > a2wave is an enterprise-grade platform: **anonymous invocation is not supported, and authentication is never skipped**.
 
+### Signing in from the command line
+
+Point the CLI at your instance, then sign in:
+
+```bash
+a2wave config set-url https://a2wave.example.com
+a2wave login
+```
+
+On your own machine, `a2wave login` opens a browser and completes SSO directly.
+
+**On a remote machine** (SSH, a container, CI) there is no browser to open, so `a2wave login`
+switches to **device login** automatically: the terminal shows a short code, you open the
+printed page on any machine where you are already signed in to a2wave, enter the code and
+confirm, and the terminal finishes on its own.
+
+```
+  Open this page:  https://a2wave.example.com/device
+  Enter this code: WDJB-MJHT
+
+  Waiting for approval… (Ctrl-C to cancel)
+```
+
+Containers and CI are not auto-detected; ask for the flow explicitly with `a2wave login --device`.
+
+> [!WARNING]
+> **Never approve a code that someone else sent you.** Approving it lets that machine sign in as
+> you. The confirmation page shows the IP, client, and time of the request — approve only if you
+> started that login yourself. A code is valid for 10 minutes and can be used only once.
+
 ## Five-Minute Quick Start
 
 1. **Configure a Provider**: go to "Providers", pick one of the presets **Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI**. Credentials and models are configured on the Agent: enter credentials (API Key or OAuth, or use the server login session), then click "Fetch models" and pick one. See [Provider Execution Engine](/wiki/providers) for details.

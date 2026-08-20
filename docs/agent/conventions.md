@@ -3,7 +3,7 @@
 - **Language**: English is the primary language of this repo — code comments,
   commit messages, docs, and log/error messages are written in English.
 - **IDs**: `agt_`, `prv_`, `mcp_`, `skl_`, `skg_`, `scm_`, `run_`, `rst_`, `msg_`,
-  `usr_`, `aud_`, `art_`, `kbd_`, `att_`, `evs_`, `evc_`, `evt_`, `evr_` prefixes.
+  `usr_`, `aud_`, `art_`, `kbd_`, `att_`, `evs_`, `evc_`, `evt_`, `evr_`, `dev_` prefixes.
 - **Naming**: camelCase (TS), snake_case (DB).
 - **Imports**: `@/` → `apps/web/src/`, `@a2wave/shared` for shared.
 - **Commits**: conventional (`feat:`, `fix:`, `refactor:`).

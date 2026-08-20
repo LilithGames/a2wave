@@ -134,13 +134,19 @@ From the second time on, if the cached IdP token is still within its validity wi
 a2wave login --idaas-token "<jwt>"
 ```
 
-### 5.4 Cache only, browser not allowed
+### 5.4 Remote machine with no browser (SSH / container / CI)
+
+The loopback flow cannot complete there — see
+[cli-device-login.md](./cli-device-login.md), which `a2wave login` selects
+automatically over SSH.
+
+### 5.5 Cache only, browser not allowed
 
 ```bash
 a2wave login --no-browser     # errors out if the cache is invalid
 ```
 
-### 5.5 Fall back to password login
+### 5.6 Fall back to password login
 
 ```bash
 a2wave login --password       # explicitly use the old username/password interaction
@@ -148,7 +154,7 @@ a2wave login --password       # explicitly use the old username/password interac
 
 > When `passwordLoginEnabled=false`, password login is rejected.
 
-### 5.6 Port conflict
+### 5.7 Port conflict
 
 The OAuth flow needs to listen locally on `127.0.0.1:20265`. If the port is occupied, the CLI errors out immediately and prompts:
 
@@ -204,6 +210,7 @@ Successful logins go through `auth.oauth.login` (plaintext email); failures go t
 
 ## 7. Related reading
 
+- Headless / remote login (device grant): [cli-device-login.md](./cli-device-login.md)
 - OAuth invocation channel for published Agents: [oauth-channel.md](./oauth-channel.md)
 - External JWT signature verification policy: [`apps/api/src/lib/jwt-auth.ts`](../../apps/api/src/lib/jwt-auth.ts)
 - SSO token cache path resolution: [`apps/cli/src/lib/token-cache.ts`](../../apps/cli/src/lib/token-cache.ts)

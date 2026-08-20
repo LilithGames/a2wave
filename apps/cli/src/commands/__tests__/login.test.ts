@@ -19,6 +19,11 @@ vi.mock('../oauth.js', () => ({
   oauthLogin: (...args: unknown[]) => mockOauthLogin(...args),
 }))
 
+const mockDeviceLogin = vi.fn()
+vi.mock('../device-login.js', () => ({
+  deviceLogin: (...args: unknown[]) => mockDeviceLogin(...args),
+}))
+
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
@@ -251,5 +256,62 @@ describe('loginCommand — --password (legacy)', () => {
     } finally {
       sim.restore()
     }
+  })
+})
+
+/** Invoke the command without a non-null assertion at every call site. */
+const runLogin = (args: Record<string, unknown>) =>
+  (loginCommand.run as (c: { args: Record<string, unknown> }) => Promise<void>)({ args })
+
+describe('loginCommand — device grant (remote machines)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    mockResolveUrl.mockReturnValue('https://a2wave.test')
+    delete process.env.SSH_CONNECTION
+    delete process.env.A2WAVE_SSO_URL
+  })
+
+  it('--device goes straight to the device grant against the resolved instance', async () => {
+    await runLogin({ device: true })
+    expect(mockDeviceLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://a2wave.test' }),
+    )
+    expect(mockOauthLogin).not.toHaveBeenCalled()
+  })
+
+  it('picks the device grant automatically over SSH, where the loopback flow cannot work', async () => {
+    // The loopback listener would bind on the remote box while the IdP redirects
+    // the local browser — the callback can never arrive.
+    process.env.SSH_CONNECTION = '10.0.0.1 22 10.0.0.2 22'
+    await runLogin({})
+    expect(mockDeviceLogin).toHaveBeenCalled()
+    expect(mockOauthLogin).not.toHaveBeenCalled()
+  })
+
+  it('still prefers the loopback SSO flow on a local machine', async () => {
+    await runLogin({})
+    expect(mockOauthLogin).toHaveBeenCalled()
+    expect(mockDeviceLogin).not.toHaveBeenCalled()
+  })
+
+  it('does not tell the device grant to open a browser when there is none', async () => {
+    process.env.SSH_CONNECTION = '10.0.0.1 22 10.0.0.2 22'
+    await runLogin({})
+    expect(mockDeviceLogin).toHaveBeenCalledWith(expect.objectContaining({ openBrowser: false }))
+  })
+
+  it('lets --idaas-token win over the SSH default, so CI stays non-interactive', async () => {
+    process.env.SSH_CONNECTION = '10.0.0.1 22 10.0.0.2 22'
+    await runLogin({ 'idaas-token': 'jwt-x' })
+    expect(mockOauthLogin).toHaveBeenCalledWith(expect.objectContaining({ idaasToken: 'jwt-x' }))
+    expect(mockDeviceLogin).not.toHaveBeenCalled()
+  })
+
+  it('lets --no-browser win over the SSH default rather than silently going interactive', async () => {
+    process.env.SSH_CONNECTION = '10.0.0.1 22 10.0.0.2 22'
+    await runLogin({ browser: false })
+    expect(mockOauthLogin).toHaveBeenCalledWith(expect.objectContaining({ cacheOnly: true }))
+    expect(mockDeviceLogin).not.toHaveBeenCalled()
   })
 })

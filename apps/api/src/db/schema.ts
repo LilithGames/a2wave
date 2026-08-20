@@ -54,3 +54,4 @@ export const instanceHeartbeats = active.instanceHeartbeats
 export const evaluationResults = active.evaluationResults
 export const cliInstallations = active.cliInstallations
 export const gitTriggerStates = active.gitTriggerStates
+export const deviceAuthorizations = active.deviceAuthorizations

@@ -1530,3 +1530,64 @@ export const gitTriggerStates = sqliteTable(
     pk: primaryKey({ columns: [table.agentId, table.channel, table.repoKey] }),
   }),
 )
+
+// ============================================================
+// Device authorizations — RFC 8628 device grant for headless `a2wave login`
+// ============================================================
+/**
+ * One row per `a2wave login` started on a machine that cannot host the loopback
+ * SSO callback (SSH, container, CI). The CLI polls with the device code while
+ * the user approves the matching user code in a browser that already has a
+ * session; approval binds the row to that user and the next poll claims a token.
+ *
+ * The device code is a bearer credential for token issuance, so only its SHA-256
+ * is stored — a database read must not yield something that can be replayed
+ * against POST /auth/device/token. The user code is stored in the clear because
+ * the approver has to read it off their terminal and match it on screen; it is
+ * short-lived, single-use, and only actionable by an already-authenticated user.
+ */
+export const deviceAuthorizations = sqliteTable(
+  'device_authorizations',
+  {
+    id: text('id').primaryKey(), // dev_xxx
+    /** SHA-256 (hex) of the device code. The plaintext never touches the database. */
+    deviceCodeHash: text('device_code_hash').notNull().unique(),
+    /**
+     * Human-transcribed code, uppercase Crockford-style alphabet with I/O/U/0/1
+     * removed so it survives being read aloud or retyped. Unique because approval
+     * looks it up directly; collisions are retried at generation time.
+     */
+    userCode: text('user_code').notNull().unique(),
+    /**
+     * pending → approved → claimed is the success path. `claimed` is terminal and
+     * makes the device code single-use: a replay after the CLI has taken its token
+     * is indistinguishable from a stolen code, so it is refused rather than served.
+     */
+    status: text('status', { enum: ['pending', 'approved', 'denied', 'claimed'] })
+      .notNull()
+      .default('pending'),
+    /** Approver; null while pending. Deleting the user must not erase the audit trail. */
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * Where the login was started, captured at request time and shown on the
+     * approve page. This is the only signal the approver has to tell their own
+     * remote shell apart from an attacker who phoned them a code, so it is
+     * recorded even though nothing else reads it.
+     */
+    clientIp: text('client_ip'),
+    userAgent: text('user_agent'),
+    /** Expiry is enforced on read; a lapsed row is treated as expired regardless of status. */
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    /** Drives the RFC 8628 `slow_down` response when a client polls faster than `interval`. */
+    lastPolledAt: integer('last_polled_at', { mode: 'timestamp' }),
+    approvedAt: integer('approved_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The expiry sweep scans by expires_at; without this it is a full scan of a
+    // table that takes a row per login attempt.
+    expiresAtIdx: index('device_authorizations_expires_at_idx').on(table.expiresAt),
+  }),
+)

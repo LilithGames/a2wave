@@ -522,3 +522,36 @@ export async function createScmSource(
   const body = (await res.json()) as { data: ScmSourceSummary }
   return body.data
 }
+
+export interface DeviceCodeResponse {
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
+  expiresIn: number
+  interval: number
+}
+
+/** Start a device login the way a headless CLI would. No auth: that is the point. */
+export async function startDeviceLogin(): Promise<DeviceCodeResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/device/code`, {
+    method: 'POST',
+    headers: { 'User-Agent': 'a2wave-cli/e2e' },
+  })
+  if (!res.ok) throw new Error(`Device code request failed: ${res.status}`)
+  const body = (await res.json()) as { data: DeviceCodeResponse }
+  return body.data
+}
+
+/** Poll once, returning either the issued token or the RFC 8628 error code. */
+export async function pollDeviceToken(
+  deviceCode: string,
+): Promise<{ token?: string; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/device/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceCode }),
+  })
+  const body = (await res.json()) as { data?: { token: string }; error?: string }
+  return res.ok ? { token: body.data?.token } : { error: body.error }
+}

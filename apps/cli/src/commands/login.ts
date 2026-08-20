@@ -3,14 +3,32 @@ import { defineCommand } from 'citty'
 import { clearConfig, loadConfig, resolveUrl, saveConfig, saveCredential } from '../config.js'
 import { CliError } from '../errors.js'
 import { readSecret } from '../lib/prompt.js'
+import { deviceLogin } from './device-login.js'
 import { oauthLogin } from './oauth.js'
+
+/**
+ * Whether this shell is attached to a machine the user is not sitting at.
+ *
+ * The loopback SSO flow binds a listener here and asks an IdP to redirect a
+ * browser to it; over SSH that browser is on the *other* machine, so the callback
+ * can never arrive and the login hangs until it times out. The device grant is
+ * the flow that works, so it becomes the default rather than something the user
+ * has to know to ask for.
+ *
+ * Only SSH is detected. A container or CI job has no reliable marker, and guessing
+ * wrong would push a local user onto a two-step flow for no reason — they can pass
+ * --device.
+ */
+function isRemoteShell(): boolean {
+  return !!(process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT)
+}
 
 export const loginCommand = defineCommand({
   meta: {
     name: 'login',
     agentMeta: { risk: 'write' },
     description:
-      'Log in to a2wave. Defaults to SSO (OAuth) browser login with no arguments needed; the token is written to the SSO token cache + ~/.a2wave/config.json.',
+      'Log in to a2wave. Defaults to SSO (OAuth) browser login with no arguments needed; over SSH it switches to device login (approve a code from another machine). The token is written to the SSO token cache + ~/.a2wave/config.json.',
   },
   args: {
     'idaas-token': {
@@ -26,6 +44,11 @@ export const loginCommand = defineCommand({
       default: true,
       description: 'Launch a browser for SSO. Use --no-browser to only reuse the existing cache',
     },
+    device: {
+      type: 'boolean',
+      description:
+        'Device login: show a code to approve in a browser on another machine. Default over SSH',
+    },
     password: {
       type: 'boolean',
       description: 'Legacy username + password login (requires a2wave config set-url to be set)',
@@ -35,7 +58,22 @@ export const loginCommand = defineCommand({
     const args = (ctx?.args ?? {}) as {
       'idaas-token'?: string
       browser?: boolean
+      device?: boolean
       password?: boolean
+    }
+
+    // Device grant: explicitly asked for, or the only flow that can work here.
+    // --idaas-token and --no-browser are both explicit non-interactive choices, so
+    // they keep precedence over the SSH default; otherwise a CI job that happens to
+    // run over SSH would start waiting for a human to approve a code.
+    const wantsDevice =
+      args.device ||
+      (isRemoteShell() && !args.password && !args['idaas-token'] && args.browser !== false)
+    if (wantsDevice) {
+      // Unlike the IdP flow, this one talks to the a2wave instance itself, so it
+      // needs a URL up front.
+      await deviceLogin({ url: resolveUrl(), openBrowser: !isRemoteShell() })
+      return
     }
 
     // Default: pure IDaaS OAuth; does not touch any a2wave URL

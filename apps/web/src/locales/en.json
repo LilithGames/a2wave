@@ -2242,6 +2242,10 @@
       "agent.update": "Update Agent",
       "artifact.delete": "Delete artifact",
       "auth.change-password": "Change password",
+      "auth.device.approved": "Device login approved",
+      "auth.device.claimed": "Device login token issued",
+      "auth.device.denied": "Device login denied",
+      "auth.device.requested": "Device login requested",
       "auth.login": "Sign in",
       "auth.logout": "Sign out",
       "auth.oauth.exchange_failed": "Enterprise identity token exchange failed",
@@ -2326,6 +2330,7 @@
       "agent": "Agent",
       "artifact": "Artifact",
       "data_retention": "Data retention",
+      "device_authorization": "Device login request",
       "evaluation_case": "Evaluation case",
       "evaluation_result": "Evaluation result",
       "evaluation_set": "Evaluation set",
@@ -2548,5 +2553,28 @@
         "desc": "The account for this link has already been created. Please sign in."
       }
     }
+  },
+  "device": {
+    "title": "Authorize a device",
+    "desc": "Enter the code shown in your terminal to sign that machine in to a2wave.",
+    "codeLabel": "Device code",
+    "codePlaceholder": "XXXX-XXXX",
+    "continue": "Continue",
+    "confirmTitle": "Authorize this sign-in?",
+    "confirmDesc": "A device is asking to sign in as you. Only approve it if you started this login yourself.",
+    "requestedFrom": "Requested from",
+    "client": "Client",
+    "requestedAt": "Requested at",
+    "unknownAddress": "Unknown address",
+    "unknownClient": "Unknown client",
+    "approve": "Approve",
+    "deny": "Deny",
+    "approved": "Device authorized",
+    "approvedDesc": "Return to your terminal — it will continue automatically.",
+    "denied": "Device login denied",
+    "deniedDesc": "The device was not signed in. You can close this page.",
+    "warning": "Never approve a code that someone else sent you.",
+    "invalidCode": "That code is not valid. Check it and try again.",
+    "notFound": "This code has expired or was already used. Start a new login in your terminal."
   }
 }

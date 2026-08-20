@@ -32,6 +32,7 @@ import { backfillWorkspacesPaths } from './lib/backfill-workspaces-path.js'
 import { bootstrapFromEnv } from './lib/bootstrap.js'
 import { ensureInstallRootOnPath, recoverInterruptedInstalls } from './lib/cli-installer.js'
 import { startDataRetentionSweeper } from './lib/data-retention.js'
+import { startDeviceAuthorizationSweeper } from './lib/device-authorization-sweep.js'
 import { discordConnectionManager } from './lib/discord-service.js'
 import { AppError } from './lib/errors.js'
 import { executeChatRun } from './lib/execute-chat-run.js'
@@ -81,6 +82,7 @@ import artifactsRoutes from './routes/artifacts.js'
 import attachmentsRoutes from './routes/attachments.js'
 import auditLogsRoutes from './routes/audit-logs.js'
 import authRoutes from './routes/auth.js'
+import authDeviceRoutes from './routes/auth-device.js'
 import authOidcRoutes from './routes/auth-oidc.js'
 import authSamlRoutes from './routes/auth-saml.js'
 import changelogRoutes from './routes/changelog.js'
@@ -235,10 +237,21 @@ app.use('/api/auth/logout', authMiddleware)
 // 标准 SSO 登录（OIDC / SAML）：公开未鉴权的浏览器跳转流，回调触发验签 + 建号，限流
 app.use('/api/auth/oidc/*', authRateLimit)
 app.use('/api/auth/saml/*', authRateLimit)
+// Device grant: /code and /token are public by necessity — the calling machine has no
+// credential yet. Both are rate limited: /code writes a row per call and /token is polled
+// in a loop, so an unlimited caller could fill the table or brute-force a device code.
+// The browser half (/pending, /approve, /deny) decides on behalf of a real user, so it
+// requires a session like any other authenticated route.
+app.use('/api/auth/device/code', authRateLimit)
+app.use('/api/auth/device/token', authRateLimit)
+app.use('/api/auth/device/pending', authMiddleware)
+app.use('/api/auth/device/approve', authMiddleware)
+app.use('/api/auth/device/deny', authMiddleware)
 // 邀请注册：公开未鉴权（受邀人此时还没有账号），且 accept 会建号 + Argon2 哈希（CPU 放大），
 // code 又是 URL 里的 bearer 凭据，必须限流，否则可被枚举探测。
 app.use('/api/auth/invitations/*', authRateLimit)
 app.route('/api/auth/invitations', publicInvitationRoutes)
+app.route('/api/auth/device', authDeviceRoutes)
 app.route('/api/auth/oidc', authOidcRoutes)
 app.route('/api/auth/saml', authSamlRoutes)
 app.route('/api/auth', authRoutes)
@@ -710,6 +723,10 @@ void ensureAdminExists()
     // Daily history retention: prune terminal runs (+cascaded steps/messages) and
     // audit logs older than settings.dataRetention.retentionDays (default 60).
     startDataRetentionSweeper()
+    // Device-login rows die 10 minutes in and hold no history, so they are swept
+    // on their own schedule rather than under the configurable retention policy —
+    // which an operator can disable, leaving a row per login attempt forever.
+    startDeviceAuthorizationSweeper()
     // Restore Feishu WS connections for published agents, then replay any
     // pending message events that were persisted before the last shutdown.
     // We wait for connections so replayPendingEvent can find an active client.

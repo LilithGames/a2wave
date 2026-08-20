@@ -2269,6 +2269,10 @@
       "agent.update": "更新 Agent",
       "artifact.delete": "删除产物",
       "auth.change-password": "修改密码",
+      "auth.device.approved": "批准设备登录",
+      "auth.device.claimed": "设备登录已签发令牌",
+      "auth.device.denied": "拒绝设备登录",
+      "auth.device.requested": "设备登录请求",
       "auth.login": "登录",
       "auth.logout": "退出登录",
       "auth.oauth.exchange_failed": "企业身份换取令牌失败",
@@ -2353,6 +2357,7 @@
       "agent": "Agent",
       "artifact": "产物",
       "data_retention": "数据保留",
+      "device_authorization": "设备登录请求",
       "evaluation_case": "评测用例",
       "evaluation_result": "评测结果",
       "evaluation_set": "评测集",
@@ -2548,5 +2553,28 @@
         "desc": "此链接对应的账号已创建，请直接登录。"
       }
     }
+  },
+  "device": {
+    "title": "授权设备登录",
+    "desc": "输入终端里显示的验证码，为那台机器完成 a2wave 登录。",
+    "codeLabel": "设备验证码",
+    "codePlaceholder": "XXXX-XXXX",
+    "continue": "继续",
+    "confirmTitle": "确认授权此次登录？",
+    "confirmDesc": "有设备正在请求以你的身份登录。只有当这次登录确实由你发起时才批准。",
+    "requestedFrom": "请求来源",
+    "client": "客户端",
+    "requestedAt": "请求时间",
+    "unknownAddress": "地址未知",
+    "unknownClient": "客户端未知",
+    "approve": "批准",
+    "deny": "拒绝",
+    "approved": "设备已授权",
+    "approvedDesc": "回到终端，登录会自动继续。",
+    "denied": "已拒绝设备登录",
+    "deniedDesc": "该设备未登录，可以关闭本页面。",
+    "warning": "绝不要批准别人发给你的验证码。",
+    "invalidCode": "验证码无效，请检查后重试。",
+    "notFound": "该验证码已过期或已被使用，请在终端重新发起登录。"
   }
 }

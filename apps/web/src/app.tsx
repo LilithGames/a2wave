@@ -23,6 +23,7 @@ const DashboardPage = lazy(() =>
 )
 const LoginPage = lazy(() => import('./pages/login').then((m) => ({ default: m.LoginPage })))
 const InvitePage = lazy(() => import('./pages/invite').then((m) => ({ default: m.InvitePage })))
+const DevicePage = lazy(() => import('./pages/device').then((m) => ({ default: m.DevicePage })))
 const ShareLoginPage = lazy(() =>
   import('./pages/share-login').then((m) => ({ default: m.ShareLoginPage })),
 )
@@ -201,6 +202,9 @@ export const router = createBrowserRouter([
           { path: '/users', element: <UsersPage /> },
           { path: '/audit-logs', element: <AuditLogsPage /> },
           { path: '/changelog', element: <ChangelogPage /> },
+          // Authenticated on purpose: approving a device grant lends this session to a
+          // machine that has none, so the approver must already be signed in.
+          { path: '/device', element: <DevicePage /> },
           { path: '/wiki', element: <WikiPage /> },
           { path: '/wiki/:slug', element: <WikiPage /> },
           { path: '*', element: <NotFoundPage /> },

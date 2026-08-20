@@ -21,6 +21,15 @@ export const AUDIT_ACTIONS = {
   /** Legacy SSO row stamped with the protocol that established its binding. */
   AUTH_OAUTH_PROTOCOL_BACKFILLED: 'auth.oauth.protocol_backfilled',
   AUTH_OAUTH_EXCHANGE_FAILED: 'auth.oauth.exchange_failed',
+  // Auth — device grant (RFC 8628): headless `a2wave login` approved from a browser.
+  // Requested/claimed are written by the unauthenticated CLI endpoints; approved/denied
+  // by the browser session that decided. All four matter: they are the only record that
+  // a token was issued to a machine that never held a credential of its own.
+  AUTH_DEVICE_REQUESTED: 'auth.device.requested',
+  AUTH_DEVICE_APPROVED: 'auth.device.approved',
+  AUTH_DEVICE_DENIED: 'auth.device.denied',
+  AUTH_DEVICE_CLAIMED: 'auth.device.claimed',
+
   // Auth — 「SSO 验证即可看」分享访客（不建 a2wave 账号）
   AUTH_SHARE_ACCESS_GRANTED: 'auth.share.access_granted',
   AUTH_SHARE_ACCESS_DENIED: 'auth.share.access_denied',
