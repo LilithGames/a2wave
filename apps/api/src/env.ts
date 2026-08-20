@@ -166,7 +166,14 @@ export const envSchema = z
     ),
     /** 浏览器 cookie 和 API/CLI bearer token 登录态有效期（天）；默认 1 天以保持旧部署 24h 行为。 */
     // Security-sensitive: session lifetime. Deliberately not numberEnv — an empty string should fail loudly (see the numberEnv comment).
-    AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(1),
+    /**
+     * 7 days: a working week, so an ordinary user signs in about once per week
+     * rather than every morning. Deliberately not longer — a session cookie has
+     * no per-session revoke, so its lifetime is the whole containment story if
+     * one is stolen. Automation that needs months uses a CLI token instead,
+     * which can be named, tracked by last use, and deleted on its own.
+     */
+    AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
     NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
     /**
      * 显式控制 auth cookie 是否带 Secure + 是否走 __Host- 前缀。未设置时默认按 NODE_ENV

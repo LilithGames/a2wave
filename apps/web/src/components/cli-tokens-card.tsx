@@ -138,13 +138,16 @@ export function CliTokensCard() {
       width: 80,
       render: (_: unknown, record: CliToken) => (
         <Tooltip title={t('common.delete')}>
+          {/* Neutral until hover, matching the users table: a row of permanently red
+              icons reads as a warning state rather than an available action. */}
           <Button
             variant="ghost"
             size="sm"
             aria-label={t('common.delete')}
+            className="text-muted-foreground hover:text-destructive"
             onClick={() => handleDelete(record)}
           >
-            <Trash2 className="h-4 w-4 text-destructive" />
+            <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </Tooltip>
       ),
@@ -301,11 +304,7 @@ function CreateTokenDialog({
               aria-label={t('cli.copy')}
               className="shrink-0"
             >
-              {copied ? (
-                <Check className="h-4 w-4 text-emerald-500" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
+              {copied ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
               {copied ? t('cli.copied') : t('cli.copy')}
             </Button>
           </div>

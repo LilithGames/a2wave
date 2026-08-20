@@ -26,7 +26,7 @@ CLI tokens are the opposite shape:
 | | Session JWT | CLI token |
 |---|---|---|
 | Form | Signed, stateless | Opaque, stored server-side |
-| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 1) | Chosen per token, or none |
+| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 7) | Chosen per token, or none |
 | Revocation | All at once, via `tokenVersion` | One at a time |
 | Identity | Anonymous among a user's tokens | Named, with last-used time |
 
@@ -120,8 +120,8 @@ from a browser. The CLI access page displays the current value read-only so nobo
 has to open `.env` to find out what it is.
 
 ```bash
-# .env — range 1~365, default 1
-AUTH_SESSION_TTL_DAYS=7
+# .env — range 1~365, default 7
+AUTH_SESSION_TTL_DAYS=30
 ```
 
 Changing it affects only newly issued tokens; existing ones keep their original

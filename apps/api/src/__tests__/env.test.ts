@@ -195,9 +195,9 @@ describe('envSchema', () => {
       expect(result.success).toBe(true)
     })
 
-    it('defaults auth session ttl to 1 day for backward compatibility', async () => {
+    it('defaults auth session ttl to a working week', async () => {
       const result = envSchema.parse(validProductionEnv)
-      expect(result.AUTH_SESSION_TTL_DAYS).toBe(1)
+      expect(result.AUTH_SESSION_TTL_DAYS).toBe(7)
     })
 
     it('accepts configurable auth session ttl days', async () => {

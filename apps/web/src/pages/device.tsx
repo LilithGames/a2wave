@@ -93,7 +93,7 @@ export function DevicePage() {
         <div className="rounded-xl border border-border bg-card p-8 text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
             {outcome === 'approved' ? (
-              <Check className="h-6 w-6 text-emerald-500" />
+              <Check className="h-6 w-6 text-success" />
             ) : (
               <X className="h-6 w-6 text-muted-foreground" />
             )}
@@ -135,9 +135,11 @@ export function DevicePage() {
             </div>
           </dl>
 
-          <div className="mt-6 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-            <p className="text-xs text-amber-700 dark:text-amber-500">{t('device.warning')}</p>
+          {/* Semantic warning tokens rather than raw amber: those carry dark-mode
+              values, which a hardcoded shade does not. */}
+          <div className="mt-6 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle p-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <p className="text-xs text-warning">{t('device.warning')}</p>
           </div>
 
           {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
