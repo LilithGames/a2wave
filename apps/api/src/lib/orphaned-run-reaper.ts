@@ -29,16 +29,30 @@ import { withScmPathMutation } from './scm-path-plan.js'
  * stopped heartbeat can, which is the same rule every other durable mark uses.
  */
 
-/** Non-terminal statuses; the same set startup recovery and the lease reaper settle. */
-const REAPABLE_RUN_STATUSES = ['running', 'pending', 'queued'] as const
+/**
+ * Only `running` — deliberately narrower than startup recovery's set.
+ *
+ * Ownership is stamped when a run is claimed for execution and cleared when it
+ * is queued, so `running` is the only status the column describes. A queued or
+ * pending row with an owner would be a leftover from an earlier turn of a
+ * reused conversation row, and reaping it would drop a message that a live
+ * instance is legitimately holding. Age alone never justifies settling those.
+ */
+const REAPABLE_RUN_STATUSES = ['running'] as const
 
 export interface OrphanedRunCandidate {
   id: string
   agentId: string
   ownerInstanceId: string | null
   /**
-   * When this run was claimed. Compared against the owner's boot instant so a
-   * reused instance id cannot vouch for a run its previous life started.
+   * Last write to the run row, used as a lower bound on "still being touched".
+   *
+   * Compared against the owner's boot instant so a reused instance id cannot
+   * vouch for a run its previous life started. This is `updatedAt`, which
+   * later writers also bump, so it is not the claim instant: the boot-instant
+   * fence can therefore fire less often than a true claim time would, never
+   * more. That direction is the safe one — a missed reap self-corrects once
+   * the heartbeat threshold passes, whereas a false reap kills live work.
    */
   startedAt: Date
 }
@@ -60,29 +74,29 @@ export interface OrphanedRunReaperDeps {
   now: () => Date
 }
 
-async function listOrphanedRunCandidates(): Promise<OrphanedRunCandidate[]> {
+export async function listOrphanedRunCandidates(): Promise<OrphanedRunCandidate[]> {
+  // Keyed on the run row itself, NOT a join to run_steps. The step row is
+  // written well after the run reaches 'running' (workdir resolution and
+  // attachment materialization come first), so a process killed in that
+  // window leaves a stamped 'running' run with zero steps — the narrowest and
+  // likeliest crash window, which an inner join would silently hide forever.
+  // initiatorAgentId is already on the row and is the same key
+  // countOccupiedRunSlots and scheduleNext use.
   const rows = await db
     .select({
       id: runs.id,
-      agentId: runSteps.agentId,
+      agentId: runs.initiatorAgentId,
       ownerInstanceId: runs.ownerInstanceId,
       startedAt: runs.updatedAt,
     })
     .from(runs)
-    .innerJoin(runSteps, eq(runSteps.runId, runs.id))
     .where(and(inArray(runs.status, [...REAPABLE_RUN_STATUSES]), isNotNull(runs.ownerInstanceId)))
-  // One row per run: a run has a step per attempt, and they share an Agent.
-  // A step with no Agent cannot be requeued after settlement, so skip it and
-  // leave the row for an operator rather than settling it into a dead end.
-  const byRun = new Map<string, OrphanedRunCandidate>()
-  for (const row of rows) {
-    if (!row.agentId || byRun.has(row.id)) continue
-    byRun.set(row.id, { ...row, agentId: row.agentId })
-  }
-  return [...byRun.values()]
+  // A run with no Agent cannot be requeued after settlement; startup recovery
+  // archives those as dangling, so leave them to it rather than half-settling.
+  return rows.flatMap((row) => (row.agentId ? [{ ...row, agentId: row.agentId }] : []))
 }
 
-async function claimRunForReap(runId: string): Promise<boolean> {
+export async function claimRunForReap(runId: string): Promise<boolean> {
   const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
   return withScmPathMutation(async (tx) => {
     const claimed = await tx

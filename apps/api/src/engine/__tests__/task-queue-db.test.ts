@@ -165,6 +165,7 @@ describe('taskQueueDb queue admission', () => {
     vi.clearAllMocks()
     mockListActiveExecutionLeases.mockReturnValue([])
     mockActivateScmWorkloadInMutation.mockResolvedValue(true)
+    statusWrites = []
   })
 
   /**
@@ -186,12 +187,18 @@ describe('taskQueueDb queue admission', () => {
         })),
       })),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({
-          where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue(updated) })),
-        })),
+        set: vi.fn((values: Record<string, unknown>) => {
+          statusWrites.push(values)
+          return {
+            where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue(updated) })),
+          }
+        }),
       })),
     }
   }
+
+  /** Payloads passed to `.set()` during admission, for ownership assertions. */
+  let statusWrites: Array<Record<string, unknown>> = []
 
   it('rolls admission back when the Run row disappeared before the status claim', async () => {
     const tx = admissionTx([[], []], [])
@@ -217,6 +224,38 @@ describe('taskQueueDb queue admission', () => {
       hasScmLease: true,
       scmLeaseActivated: true,
     })
+  })
+
+  it('stamps the owning instance when admission acquires a slot', async () => {
+    // admitRun is the primary admission path — every trigger reaches it. An
+    // unstamped 'running' row is invisible to the orphaned-run reaper, so a
+    // crash would strand it exactly as it did before the reaper existed.
+    const tx = admissionTx([[], []], [{ id: 'run_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: null }) => unknown) =>
+        callback(tx, { leaseId: null }),
+    )
+
+    await taskQueueDb.admitRun?.('agt_1', 'run_1', 1)
+
+    expect(statusWrites.at(-1)).toMatchObject({ status: 'running' })
+    expect(statusWrites.at(-1)?.ownerInstanceId).toBeTruthy()
+  })
+
+  it('clears any stale owner when admission queues the run', async () => {
+    // A conversation run row is reused across turns. If an earlier turn's
+    // owner survived into a queued turn, the reaper would read the row as
+    // abandoned and fail work a live instance is legitimately holding.
+    const tx = admissionTx([[], [], [{ value: 0 }]], [{ id: 'run_2' }])
+    mockListActiveExecutionLeases.mockReturnValue([{ runId: 'run_prev', agentId: 'agt_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: null }) => unknown) =>
+        callback(tx, { leaseId: null }),
+    )
+
+    await taskQueueDb.admitRun?.('agt_1', 'run_2', 1)
+
+    expect(statusWrites.at(-1)).toMatchObject({ status: 'queued', ownerInstanceId: null })
   })
 
   it('rolls immediate SCM admission back when its durable lease cannot be activated', async () => {

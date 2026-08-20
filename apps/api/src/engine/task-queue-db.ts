@@ -174,7 +174,17 @@ export const taskQueueDb: TaskQueueDb = {
           }
           const updated = await executor
             .update(runs)
-            .set({ status: slot === 'acquired' ? 'running' : 'queued', updatedAt: new Date() })
+            .set({
+              status: slot === 'acquired' ? 'running' : 'queued',
+              // Stamp on acquisition, clear on queue. This is the primary
+              // admission path, so without the stamp most runs would carry no
+              // owner and the reaper could never settle them. Clearing on the
+              // queued branch matters just as much: a conversation run row is
+              // reused across turns, and a leftover owner from an earlier turn
+              // would make a legitimately queued run look abandoned.
+              ownerInstanceId: slot === 'acquired' ? processInstanceId : null,
+              updatedAt: new Date(),
+            })
             .where(eq(runs.id, runId))
             .returning({ id: runs.id })
           if (updated.length === 0) {
