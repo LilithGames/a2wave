@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders, screen, waitFor } from '@/test/render'
 import { CliTokensCard } from '../cli-tokens-card'
 
-const { apiGetMock, apiPostMock, apiDeleteMock, confirmMock, copyTextMock } = vi.hoisted(() => ({
-  copyTextMock: vi.fn(),
-  apiGetMock: vi.fn(),
-  apiPostMock: vi.fn(),
-  apiDeleteMock: vi.fn(),
-  confirmMock: vi.fn(),
-}))
+const { apiGetMock, apiPostMock, apiDeleteMock, confirmMock, copyTextMock, messageErrorMock } =
+  vi.hoisted(() => ({
+    copyTextMock: vi.fn(),
+    messageErrorMock: vi.fn(),
+    apiGetMock: vi.fn(),
+    apiPostMock: vi.fn(),
+    apiDeleteMock: vi.fn(),
+    confirmMock: vi.fn(),
+  }))
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -17,6 +19,13 @@ vi.mock('@/lib/api', () => ({
     post: (path: string, body: unknown) => apiPostMock(path, body),
     delete: (path: string) => apiDeleteMock(path),
   },
+}))
+
+// message is bound by AntdStaticBridge, which the test harness never renders, so
+// without this the copy-failure path throws on an undefined import.
+vi.mock('@/lib/antd-static', () => ({
+  message: { error: messageErrorMock, success: vi.fn() },
+  AntdStaticBridge: () => null,
 }))
 
 vi.mock('@/lib/clipboard', () => ({ copyText: (t: string) => copyTextMock(t) }))
@@ -54,6 +63,7 @@ beforeEach(() => {
   // Run the confirmed action straight away so the destructive path is exercised.
   confirmMock.mockReset().mockImplementation((opts: { onOk?: () => unknown }) => opts.onOk?.())
   copyTextMock.mockReset().mockResolvedValue(true)
+  messageErrorMock.mockReset()
 })
 
 describe('CliTokensCard', () => {
@@ -99,6 +109,8 @@ describe('CliTokensCard', () => {
     await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
     await userEvent.click(await screen.findByRole('button', { name: /复制/ }))
     expect(screen.queryByText('已复制')).not.toBeInTheDocument()
+    // And says so, rather than failing silently on a value that cannot be recovered.
+    expect(messageErrorMock).toHaveBeenCalled()
   })
 
   it('refuses to create a nameless token', async () => {
