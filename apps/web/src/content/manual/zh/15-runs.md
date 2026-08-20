@@ -11,13 +11,13 @@ Run 是 Agent 的一次执行记录。无论通过哪种方式触发，每次执
 | `running` | 正在执行 |
 | `completed` | 成功完成 |
 | `failed` | 执行出错 |
-| `cancelled` | 被取消 / 被驱逐 |
+| `cancelled` | 被取消 / 被驱逐 / 触发它的 MR 在排队期间已合并或关闭 |
 
 并发由 Agent 的 `maxConcurrency` 控制：有空槽立即跑，否则进队列。
 
 ## 触发来源与调用链
 
-每条 Run 都标注来源：`debug`（Web 调试）/ `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app`（对话网页）。运行列表会把已知的调用来源按以下顺序显示在输入意图前：
+每条 Run 都标注来源：`debug`（Web 调试）/ `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app`（对话网页）/ `glab`（GitLab 仓库触发）/ `gh`（GitHub 仓库触发）。运行列表会把已知的调用来源按以下顺序显示在输入意图前：
 
 | 可用信息 | 显示示例 |
 |----------|----------|

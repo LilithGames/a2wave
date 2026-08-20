@@ -15,6 +15,7 @@ import {
   materializeForRun,
   refsToSources,
 } from './attachment-materializer.js'
+import { gitTriggerRunSkipReason } from './git-trigger-run-preflight.js'
 import { WorktreeBranchLockedError, WorktreeDirtyError } from './git-workspace.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
@@ -77,6 +78,33 @@ export async function executeChatRun(
     logger.info({ runId, status: run.status }, 'Skipping execution for a non-running run')
     completeExecutionLease(runId)
     return
+  }
+
+  /**
+   * A `glab` / `gh` run fired for an OPEN request that has since been merged or
+   * closed is already moot — the poll saw it open, but the run only reaches
+   * execution once the queue and the preceding runs let it through, and a
+   * fast-moving repository merges well inside that window. Executing anyway
+   * costs a full Agent turn to conclude "already merged, nothing to review".
+   *
+   * Checked here, before the workspace, attachments and Agent config, because
+   * the entire point is to spend one CLI call instead of that turn. Fails open
+   * on any probe error, and never applies to a `closed`-event run.
+   */
+  const gitTriggerOrigin = run.executionMetadata?.gitTriggerOrigin
+  // `queued === false` means the manager dispatched this run straight away, so
+  // no meaningful time passed between the poll and now. Absent (older rows) is
+  // treated as queued: one redundant probe beats missing a stale run.
+  if (gitTriggerOrigin && gitTriggerOrigin.queued !== false) {
+    const skipReason = await gitTriggerRunSkipReason(gitTriggerOrigin).catch((err) => {
+      logger.warn({ err, runId, agentId }, 'git-trigger preflight failed; executing anyway')
+      return null
+    })
+    if (skipReason) {
+      logger.info({ runId, agentId, ...gitTriggerOrigin }, 'Skipping stale git-trigger run')
+      await cancelStaleGitTriggerRun(runId, agentId, skipReason)
+      return
+    }
   }
 
   // Native chat events persist their channel context before acknowledgement. Restore it when a
@@ -337,6 +365,62 @@ async function cleanupPreparedExecution(
     context: { type: 'run', runId, agentId, phase: 'pre-execution' },
   })
   completeExecutionLease(runId)
+}
+
+/**
+ * Terminalize a run whose triggering request finished before it started.
+ *
+ * `cancelled`, not `failed`: nothing went wrong, the work simply became
+ * unnecessary — and the run lists already separate the two, so an operator sees
+ * "skipped because the MR merged" rather than a red failure to investigate.
+ *
+ * The transition retries for the same reason `failRunBeforeLifecycle` does, and
+ * it is not optional here: every caller invokes `executeChatRun` as
+ * `void executeChatRun(...)`, so a rejected write is an unhandled rejection
+ * nobody acts on, leaving the row `running` and its concurrency slot pinned
+ * forever. The orphan reaper cannot clear it either — its verdict is instance
+ * ownership, and this instance is alive and heartbeating. At `maxConcurrency: 1`
+ * that parks the agent's entire queue.
+ */
+async function cancelStaleGitTriggerRun(
+  runId: string,
+  agentId: string,
+  reason: string,
+): Promise<void> {
+  let ownsTerminalTransition = false
+  await retryUntilSuccess(
+    async () => {
+      const transition = await db
+        .update(runs)
+        .set({ status: 'cancelled', result: { error: reason }, updatedAt: new Date() })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .returning({ id: runs.id })
+      ownsTerminalTransition = didChangeOneRow(transition)
+      if (ownsTerminalTransition) return
+
+      // Lost the CAS: someone else terminalized it. Settled either way, so stop.
+      const current = (
+        await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1)
+      )[0]
+      if (current?.status !== 'running') return
+      throw new Error('Run is still running after the staleness-cancellation transition')
+    },
+    {
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      onFailure: (transitionError, retryDelayMs) => {
+        logger.error(
+          { err: transitionError, runId, agentId, retryDelayMs },
+          'Failed to cancel a stale git-trigger run; retaining the workload lease and retrying',
+        )
+      },
+    },
+  )
+
+  await cleanupPreparedExecution(runId, agentId)
+  if (ownsTerminalTransition) {
+    void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+  }
 }
 
 export async function failRunBeforeLifecycle(

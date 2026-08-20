@@ -48,6 +48,34 @@ requests across nine unrelated namespaces**, exhausting the whole tick page budg
 on its own. It could therefore never prove the open set was seen, and `closed`
 would have been permanently suspended.
 
+## Staleness preflight
+
+The poll sees an open request; the Run may only execute minutes later, behind
+the queue and whatever runs precede it. A repository that merges within a minute
+of opening therefore produces Runs whose subject is already merged — measured on
+a real deployment, one such Run burned 25K input + 46K cached tokens to conclude
+"already merged, nothing to review".
+
+So a queued Run re-probes its own request before doing any work, and terminates
+as **`cancelled`** if it left the open set. Three rules keep that from becoming a
+new failure mode:
+
+- Only for `opened` / `updated` / `commented`. A `closed`-event Run's subject is
+  *supposed* to be gone.
+- Only when the Run actually **queued**. An immediately-dispatched Run starts
+  milliseconds after the listing, so probing it would double the channel's forge
+  call volume to re-answer the question the poll just answered. The marker is
+  written by `triggerRun`; absent (pre-existing rows) means probe, since one
+  wasted call beats missing a stale Run.
+- **Fails open** on every ambiguous verdict — CLI missing, timeout, non-zero
+  exit, unparsable output, GitLab's transient `locked`. A broken probe must never
+  cancel legitimate work.
+
+The cancellation retries like any other terminal transition: callers invoke
+`executeChatRun` as `void`, so a rejected write is an unhandled rejection that
+would leave the row `running` with its concurrency slot pinned — and the orphan
+reaper cannot recover it, because the instance is alive and heartbeating.
+
 ## Paging budget
 
 - Wide scopes page up to `GIT_TRIGGER_MAX_PAGES`.

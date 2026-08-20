@@ -187,6 +187,38 @@ async function pruneRemovedRepoStates(
   }
 }
 
+/**
+ * Clear the `queued` marker on a run that took a slot immediately.
+ *
+ * Best-effort: failing to clear it only costs that run one redundant forge
+ * probe, which must never be worth failing a dispatch over.
+ */
+async function markGitTriggerRunUnqueued(runId: string): Promise<void> {
+  try {
+    const [row] = await db
+      .select({ executionMetadata: runs.executionMetadata })
+      .from(runs)
+      .where(eq(runs.id, runId))
+      .limit(1)
+    const origin = row?.executionMetadata?.gitTriggerOrigin
+    if (!origin) return
+    await db
+      .update(runs)
+      .set({
+        executionMetadata: {
+          ...row.executionMetadata,
+          gitTriggerOrigin: { ...origin, queued: false },
+        },
+      })
+      .where(eq(runs.id, runId))
+  } catch (err) {
+    logger.warn(
+      { err, runId },
+      'git-trigger: could not clear the queued marker; run will be probed',
+    )
+  }
+}
+
 class GitTriggerManager {
   private jobs = new Map<string, NodeJS.Timeout>()
   /** Guards against a slow poll overlapping the next tick on the same channel. */
@@ -660,6 +692,27 @@ class GitTriggerManager {
       status: 'pending',
       triggerSource: provider,
       triggerUserName: channelResult.displayName ?? undefined,
+      /**
+       * Persisted so the pre-execution staleness check can still identify the
+       * request after the poll's process is gone. A queued run executes in a
+       * later lifetime, where the in-memory channel context no longer exists —
+       * and the whole point of that check is to catch a request merged during
+       * exactly that gap.
+       */
+      executionMetadata: {
+        gitTriggerOrigin: {
+          provider,
+          event,
+          project,
+          ...(repo.host ? { host: repo.host } : {}),
+          number: request.number,
+          // Overwritten below once the queue's verdict is known. Defaults to
+          // true so a crash between the insert and that update leaves the run
+          // probed rather than silently unchecked — one extra CLI call is the
+          // cheaper mistake.
+          queued: true,
+        },
+      },
     })
 
     registerPendingContext(runId, { channel: channelResult.ctx })
@@ -713,6 +766,15 @@ class GitTriggerManager {
       logger.info({ agentId: agent.id, provider, runId }, 'git-trigger: run queued')
       return 'dispatched'
     }
+
+    /**
+     * Dispatched immediately, so the request cannot have gone stale: execution
+     * starts milliseconds after the poll listed it as open. Recording that
+     * spares this run the pre-execution forge probe, which would otherwise
+     * double the channel's call volume to re-answer a question the poll just
+     * answered.
+     */
+    await markGitTriggerRunUnqueued(runId)
 
     executeChatRun(agent.id, runId).catch((err) =>
       logger.error({ err, agentId: agent.id, runId }, 'git-trigger: run execution failed'),

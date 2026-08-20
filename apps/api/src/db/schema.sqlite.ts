@@ -713,6 +713,28 @@ export const runs = sqliteTable(
        * handoff in execute-chat-run.ts).
        */
       queuedTurn?: boolean
+      /**
+       * The merge/pull request a `glab` / `gh` run was fired for.
+       *
+       * Persisted (rather than left in the in-memory channel context) because
+       * the pre-execution staleness check runs when the run leaves the queue —
+       * possibly in a later process lifetime — and needs to re-probe the forge
+       * for the request's current state.
+       */
+      gitTriggerOrigin?: {
+        provider: 'glab' | 'gh'
+        event: string
+        project: string
+        host?: string
+        number: number
+        /**
+         * Whether the run waited in the queue. Only a queued run can have gone
+         * stale, so an immediately-dispatched one skips the probe entirely.
+         * Absent on rows written before this field existed — treated as queued,
+         * which costs one redundant probe rather than missing a stale run.
+         */
+        queued?: boolean
+      }
       /** Persisted Slack/Discord context for queued and restart execution. */
       nativeChatContext?: Record<string, unknown>
       /** Durable remote identifiers resolved only after native event reservation/acknowledgement. */

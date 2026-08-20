@@ -605,6 +605,63 @@ async function fetchGitHubNodes(project: string, host?: string): Promise<unknown
 }
 
 /**
+ * Live state of one merge/pull request, as reported by the forge right now.
+ *
+ * `unknown` is the deliberate answer to every failure shape — CLI missing,
+ * timeout, non-zero exit, unparsable output, an unrecognised state value
+ * (GitLab's transient `locked` included). The one caller uses this to decide
+ * whether a queued Run may be skipped, and a transient forge error must fail
+ * open into "run it" rather than silently cancelling legitimate work.
+ */
+export type GitTriggerRequestLiveState = 'open' | 'merged' | 'closed' | 'unknown'
+
+/**
+ * Fetch the current state of a single merge/pull request. Never throws.
+ *
+ * Exists for the pre-execution staleness check: a trigger fires while the
+ * request is open, but the Run may leave the queue minutes later, after the
+ * request was already merged. One cheap CLI call here is what lets execution
+ * decline before any tokens are spent.
+ */
+export async function fetchRequestState(
+  provider: GitTriggerProvider,
+  project: string,
+  number: number,
+  host?: string,
+): Promise<GitTriggerRequestLiveState> {
+  const binary = CLI_BINARY[provider]
+  const path =
+    provider === 'glab'
+      ? `projects/${encodeURIComponent(project)}/merge_requests/${number}`
+      : `repos/${project}/pulls/${number}`
+  try {
+    const result = await runStatusProbe(binary, ['api', path], {
+      timeoutMs: POLL_TIMEOUT_MS,
+      logTag: `git-trigger:${provider}`,
+      env: hostEnv(provider, host),
+    })
+    if (result.notFound || result.timedOut || result.exitCode !== 0) return 'unknown'
+
+    const parsed = extractJson(result.stdout) as { state?: unknown; merged?: unknown } | null
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.state !== 'string') return 'unknown'
+
+    if (provider === 'glab') {
+      if (parsed.state === 'opened') return 'open'
+      if (parsed.state === 'merged') return 'merged'
+      if (parsed.state === 'closed') return 'closed'
+      return 'unknown'
+    }
+    // GitHub reports merged PRs as state=closed; `merged` carries the distinction.
+    if (parsed.state === 'open') return 'open'
+    if (parsed.state === 'closed') return parsed.merged === true ? 'merged' : 'closed'
+    return 'unknown'
+  } catch (err) {
+    logger.warn({ err, provider, project, number, host }, 'git-trigger: request state probe threw')
+    return 'unknown'
+  }
+}
+
+/**
  * Build the GitLab listing path for one watch entry and page.
  *
  * The three scopes are three collections, not three filters — GitLab exposes a

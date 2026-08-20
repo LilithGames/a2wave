@@ -48,6 +48,9 @@ vi.mock('../../db/client.js', () => {
         const resolve = () => {
           if (table.__name === 'agents') return agentRow
           const values = Object.fromEntries(eqCalls)
+          if (table.__name === 'runs') {
+            return runRows.find((candidate) => candidate.id === values.id)
+          }
           const key = `${values.agentId}|${values.channel}|${values.repoKey}`
           return stateRows.get(key)
         }
@@ -87,7 +90,22 @@ vi.mock('../../db/client.js', () => {
             }),
         }),
     }),
-    update: () => ({ set: () => ({ where: () => asyncQuery({ run: () => {} }) }) }),
+    // Run rows are mutated in place so a post-insert update (the queued marker)
+    // is observable; a no-op update would make that assertion vacuously read
+    // back the inserted value.
+    update: (table: { __name?: string }) => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () =>
+          asyncQuery({
+            run: () => {
+              if (table.__name !== 'runs') return
+              const id = Object.fromEntries(eqCalls).id
+              const row = runRows.find((candidate) => candidate.id === id)
+              if (row) Object.assign(row, values)
+            },
+          }),
+      }),
+    }),
     delete: () => ({ where: () => asyncQuery({ run: () => {} }) }),
   }
   return { db }
@@ -101,7 +119,7 @@ vi.mock('../../db/schema.js', () => ({
     channel: 'channel',
     repoKey: 'repoKey',
   },
-  runs: { __name: 'runs', id: 'id' },
+  runs: { __name: 'runs', id: 'id', executionMetadata: 'executionMetadata' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -554,5 +572,104 @@ describe('config guards', () => {
   it('refuses to start on an invalid config', () => {
     gitTriggerManager.start('agt_1', 'glab', { provider: 'glab', repos: [] })
     expect(gitTriggerManager.getActiveJobKeys()).not.toContain('agt_1:glab')
+  })
+})
+
+describe('run origin persistence', () => {
+  /**
+   * The staleness preflight runs when the Run *executes*, which for a queued
+   * run is a different process lifetime from the poll that fired it. The
+   * in-memory channel context does not survive that, so the request identity
+   * has to be on the run row itself.
+   */
+  it('persists the fired request identity on the run row', async () => {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: { requests: {}, polledAt: 'seed' },
+      lastError: null,
+    })
+    listOpenRequests.mockResolvedValue({ requests: [pr(42)], complete: true })
+
+    await pollOnce(config({ repos: [{ project: 'group/repo', host: 'gitlab.example.com' }] }))
+
+    expect(runRows).toHaveLength(1)
+    expect(runRows[0].executionMetadata).toMatchObject({
+      gitTriggerOrigin: {
+        provider: 'glab',
+        event: 'opened',
+        project: 'group/repo',
+        host: 'gitlab.example.com',
+        number: 42,
+      },
+    })
+  })
+
+  it('records the request own project under a group scope, not the watch entry', async () => {
+    // Under a group scope the entry names a namespace; probing that would ask
+    // the forge about a merge request that does not exist there.
+    stateRows.set('agt_1|glab|group:group', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group:group',
+      state: { requests: {}, polledAt: 'seed' },
+      lastError: null,
+    })
+    listOpenRequests.mockResolvedValue({
+      requests: [pr(7, { project: 'group/sub/repo' })],
+      complete: true,
+    })
+
+    await pollOnce(config({ repos: [{ project: 'group', scope: 'group' }] }))
+
+    expect(runRows).toHaveLength(1)
+    expect(
+      (runRows[0].executionMetadata as { gitTriggerOrigin: { project: string } }).gitTriggerOrigin
+        .project,
+    ).toBe('group/sub/repo')
+  })
+})
+
+describe('run origin queued marker', () => {
+  /**
+   * The staleness preflight only makes sense for a run that waited in the
+   * queue. A run dispatched straight away starts milliseconds after the poll
+   * saw the request open, so probing it would double the channel's forge call
+   * volume to answer a question that cannot have changed.
+   */
+  function seedWarmState() {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: { requests: {}, polledAt: 'seed' },
+      lastError: null,
+    })
+    listOpenRequests.mockResolvedValue({ requests: [pr(42)], complete: true })
+  }
+
+  it('marks a queued run so it is probed before execution', async () => {
+    seedWarmState()
+    tryAcquireSlot.mockReturnValue('queued')
+
+    await pollOnce()
+
+    expect(
+      (runRows[0].executionMetadata as { gitTriggerOrigin: { queued?: boolean } }).gitTriggerOrigin
+        .queued,
+    ).toBe(true)
+  })
+
+  it('marks an immediately-dispatched run so it is not probed', async () => {
+    seedWarmState()
+    tryAcquireSlot.mockReturnValue('acquired')
+
+    await pollOnce()
+
+    expect(
+      (runRows[0].executionMetadata as { gitTriggerOrigin: { queued?: boolean } }).gitTriggerOrigin
+        .queued,
+    ).toBe(false)
   })
 })

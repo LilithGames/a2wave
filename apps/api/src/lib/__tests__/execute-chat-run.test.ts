@@ -216,6 +216,11 @@ vi.mock('../pending-job-registry.js', () => ({
   sweepPendingContexts: vi.fn(),
 }))
 
+const mockGitTriggerRunSkipReason = vi.fn<() => Promise<string | null>>(async () => null)
+vi.mock('../git-trigger-run-preflight.js', () => ({
+  gitTriggerRunSkipReason: () => mockGitTriggerRunSkipReason(),
+}))
+
 const mockResolveNativeChatAttachments = vi.fn().mockResolvedValue([])
 vi.mock('../native-chat-attachments.js', () => ({
   resolveNativeChatAttachments: (...args: unknown[]) => mockResolveNativeChatAttachments(...args),
@@ -302,6 +307,7 @@ describe('executeChatRun', () => {
       return previous?.result?.chatId
     })
     mockResolveWorkDir.mockResolvedValue('/default/work/dir')
+    mockGitTriggerRunSkipReason.mockResolvedValue(null)
     mockResolveNativeChatAttachments.mockResolvedValue([])
     mockMaterializeForRun.mockImplementation(
       async (opts: { message: string; sources?: unknown[] | undefined }) => {
@@ -1228,5 +1234,162 @@ describe('executeChatRun', () => {
     await executeChatRun('agt_1', 'run_1')
 
     expect(mockFinishRunError).toHaveBeenCalled()
+  })
+
+  // ----------------------------------------------------------
+  // Git-trigger staleness preflight
+  // ----------------------------------------------------------
+
+  /**
+   * A poll fires while a merge request is open, but the Run may only reach
+   * execution minutes later — after the request was merged. The observed cost
+   * of letting it through is a full Agent turn (25K input tokens) spent to
+   * conclude "already merged, nothing to review". The preflight replaces that
+   * with one CLI call, so the checks below are about *where* it sits: before
+   * any workspace, attachment or Agent work.
+   */
+  const gitTriggerRun = {
+    ...baseRun,
+    triggerSource: 'glab',
+    executionMetadata: {
+      gitTriggerOrigin: {
+        provider: 'glab',
+        event: 'opened',
+        project: 'group/repo',
+        number: 42,
+      },
+    },
+  }
+
+  it('cancels a git-trigger run whose request was merged before it started', async () => {
+    mockGitTriggerRunSkipReason.mockResolvedValue('MR group/repo!42 was merged')
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'cancelled',
+        result: { error: 'MR group/repo!42 was merged' },
+      }),
+    )
+    expect(mockExecuteWithRetry).not.toHaveBeenCalled()
+  })
+
+  it('runs the preflight before resolving a workspace or materializing attachments', async () => {
+    // The point of the check is saving work, so it must precede the expensive
+    // preparation — a cancelled run that already created a worktree has spent
+    // most of what the check exists to avoid.
+    mockGitTriggerRunSkipReason.mockResolvedValue('MR group/repo!42 was merged')
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockResolveWorkDir).not.toHaveBeenCalled()
+    expect(mockMaterializeForRun).not.toHaveBeenCalled()
+  })
+
+  it('releases the queue slot when a git-trigger run is skipped', async () => {
+    // Skipping must not leak the concurrency slot: the whole agent would stall
+    // behind a run that never executes.
+    mockGitTriggerRunSkipReason.mockResolvedValue('MR group/repo!42 was merged')
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockScheduleNext).toHaveBeenCalled()
+  })
+
+  it('executes normally when the request is still open', async () => {
+    mockGitTriggerRunSkipReason.mockResolvedValue(null)
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalled()
+  })
+
+  it('does not probe a run that was dispatched immediately, never queued', async () => {
+    /**
+     * The manager runs `executeChatRun` directly when a slot was free, i.e.
+     * milliseconds after the poll listed the request as open — the staleness
+     * window this check exists for does not exist there. Probing anyway would
+     * spend a second forge call per run against the same rate limits the 30s
+     * interval floor was chosen to respect, and could essentially never fire.
+     */
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...gitTriggerRun,
+        executionMetadata: {
+          gitTriggerOrigin: { ...gitTriggerRun.executionMetadata.gitTriggerOrigin, queued: false },
+        },
+      },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockGitTriggerRunSkipReason).not.toHaveBeenCalled()
+    expect(mockExecuteWithRetry).toHaveBeenCalled()
+  })
+
+  it('never probes for a run that has no git-trigger origin', async () => {
+    // Every other channel pays nothing for this feature.
+    setupSelectSequence(baseAgent, baseRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockGitTriggerRunSkipReason).not.toHaveBeenCalled()
+    expect(mockExecuteWithRetry).toHaveBeenCalled()
+  })
+
+  it('retries the cancellation transition rather than leaving the run stuck running', async () => {
+    /**
+     * Every caller invokes executeChatRun as `void executeChatRun(...)`, so a
+     * rejection here is an unhandled rejection nobody acts on — and the row
+     * stays 'running', pinning the agent's concurrency slot forever. The
+     * orphan reaper cannot recover it either: its verdict is instance
+     * ownership, and this instance is alive and heartbeating. With
+     * maxConcurrency 1 that parks the whole queue, which is why the sibling
+     * failRunBeforeLifecycle wraps the identical CAS in retryUntilSuccess.
+     */
+    vi.useFakeTimers()
+    mockGitTriggerRunSkipReason.mockResolvedValue('MR group/repo!42 was merged')
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+    mockDbRun
+      .mockImplementationOnce(() => {
+        throw new Error('SQLITE_BUSY: database is locked')
+      })
+      .mockReturnValue({ changes: 1 })
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    const pending = executeChatRun('agt_1', 'run_1')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expect(pending).resolves.toBeUndefined()
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }))
+    // The slot is released only after the row actually reached a terminal state.
+    expect(mockCompleteExecutionLease).toHaveBeenCalledWith('run_1')
+    expect(mockScheduleNext).toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('executes anyway when the preflight itself throws', async () => {
+    // Fail open: a broken probe must never cancel legitimate work.
+    mockGitTriggerRunSkipReason.mockRejectedValue(new Error('probe exploded'))
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalled()
   })
 })

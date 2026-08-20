@@ -11,13 +11,13 @@ A Run is a single execution record of an Agent. Regardless of the trigger method
 | `running` | Currently executing |
 | `completed` | Completed successfully |
 | `failed` | Errored during execution |
-| `cancelled` | Cancelled / evicted |
+| `cancelled` | Cancelled / evicted / its merge request was merged or closed while the run waited in the queue |
 
 Concurrency is controlled by the Agent's `maxConcurrency`: it runs immediately if a slot is free, otherwise it enters the queue.
 
 ## Trigger source and call provenance
 
-Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page). The run list places all known provenance layers before the input intent in this order:
+Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page) / `glab` (GitLab repository trigger) / `gh` (GitHub repository trigger). The run list places all known provenance layers before the input intent in this order:
 
 | Available information | Display example |
 |-----------------------|-----------------|
