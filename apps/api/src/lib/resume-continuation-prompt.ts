@@ -13,6 +13,18 @@
  *
  * Deliberately does not restate the original prompt. Anything repeated here
  * reads as a fresh instruction and reintroduces the replay.
+ *
+ * Measured against the real `codex exec resume`, SIGKILLing a task after its
+ * first side effect had committed and then resuming both ways:
+ *
+ *   original prompt resent -> log.txt = STEP1, STEP1, STEP2, STEP3
+ *   this continuation turn -> log.txt = STEP1, STEP2, STEP3
+ *
+ * The model reported "Completed all four steps in order without repeating
+ * STEP1". Note what that does and does not establish: the model is *told* not
+ * to repeat completed work and complied, which is not the same as the platform
+ * making repetition impossible. A tool call that completed while its result was
+ * still in flight is still, in principle, at risk.
  */
 export function buildResumeContinuationPrompt(_originalPrompt: string): string {
   return [
