@@ -124,10 +124,23 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
     try {
       const reapedRuns = await reapOrphanedRuns()
       if (reapedRuns.length > 0) {
-        logger.warn(
-          { reaped: reapedRuns },
-          'stale-lease-sweeper: failed runs abandoned by a stopped instance',
-        )
+        // Split the line by outcome: a resumed run has not ended, and logging
+        // it as failed would send an operator hunting for work that is about
+        // to continue on its own.
+        const resumed = reapedRuns.filter((run) => run.resumed)
+        const failed = reapedRuns.filter((run) => !run.resumed)
+        if (failed.length > 0) {
+          logger.warn(
+            { reaped: failed },
+            'stale-lease-sweeper: failed runs abandoned by a stopped instance',
+          )
+        }
+        if (resumed.length > 0) {
+          logger.warn(
+            { resumed },
+            'stale-lease-sweeper: requeued runs abandoned by a stopped instance to resume',
+          )
+        }
         // Settling frees a concurrency slot; nudge each Agent so queued work
         // advances now instead of waiting for an unrelated trigger.
         for (const agentId of new Set(reapedRuns.map((run) => run.agentId))) {

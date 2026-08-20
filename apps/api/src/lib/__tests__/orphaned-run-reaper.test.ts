@@ -34,6 +34,8 @@ function deps(overrides: Partial<Parameters<typeof reapOrphanedRuns>[0]> = {}) {
     isRunLocallyActive: () => false,
     claimRun: vi.fn(async () => true),
     afterRunSettled: vi.fn(async () => {}),
+    markForResume: vi.fn(async () => {}),
+    requeueRun: vi.fn(async () => {}),
     now: () => NOW,
     ...overrides,
   }
@@ -44,7 +46,7 @@ describe('reapOrphanedRuns', () => {
     const d = deps()
     const reaped = await reapOrphanedRuns(d)
 
-    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1' }])
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
     expect(d.claimRun).toHaveBeenCalledWith('run_1')
     expect(d.afterRunSettled).toHaveBeenCalledWith('run_1')
   })
@@ -76,7 +78,9 @@ describe('reapOrphanedRuns', () => {
   it('reaps a run whose owner never wrote a heartbeat row', async () => {
     const d = deps({ loadLiveness: vi.fn(async () => new Map()) })
 
-    expect(await reapOrphanedRuns(d)).toEqual([{ runId: 'run_1', agentId: 'agt_1' }])
+    expect(await reapOrphanedRuns(d)).toEqual([
+      { runId: 'run_1', agentId: 'agt_1', resumed: false },
+    ])
   })
 
   it('reaps a run whose owner rebooted after the run started', async () => {
@@ -88,7 +92,9 @@ describe('reapOrphanedRuns', () => {
       ),
     })
 
-    expect(await reapOrphanedRuns(d)).toEqual([{ runId: 'run_1', agentId: 'agt_1' }])
+    expect(await reapOrphanedRuns(d)).toEqual([
+      { runId: 'run_1', agentId: 'agt_1', resumed: false },
+    ])
   })
 
   it('skips a run with no owner recorded', async () => {
@@ -133,7 +139,9 @@ describe('reapOrphanedRuns', () => {
       }),
     })
 
-    expect(await reapOrphanedRuns(d)).toEqual([{ runId: 'run_2', agentId: 'agt_2' }])
+    expect(await reapOrphanedRuns(d)).toEqual([
+      { runId: 'run_2', agentId: 'agt_2', resumed: false },
+    ])
   })
 })
 
@@ -153,5 +161,104 @@ describe('reapOrphanedRuns — startedAt is a lower bound on activity', () => {
 
     expect(await reapOrphanedRuns(d)).toEqual([])
     expect(d.claimRun).not.toHaveBeenCalled()
+  })
+})
+
+describe('reapOrphanedRuns — resuming instead of failing', () => {
+  it('requeues a resumable run instead of settling it as failed', async () => {
+    // The whole point of the pass changing: a run that recorded the session it
+    // was already in continues from there, so a container restart does not
+    // throw away a review that is already half-written.
+    const d = deps({ canResume: vi.fn(async () => true) })
+
+    const reaped = await reapOrphanedRuns(d)
+
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).not.toHaveBeenCalled()
+    // Still reported: the caller nudges the Agent's queue either way, and a
+    // requeued run needs that nudge to be picked up.
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: true }])
+  })
+
+  it('marks the interruption before requeuing so the resumed process can read it', async () => {
+    // requeueForResume clears `result`, and execution runs in another process,
+    // so the code has to be durable in metadata before it is erased.
+    const calls: string[] = []
+    const d = deps({
+      canResume: vi.fn(async () => true),
+      markForResume: vi.fn(async () => {
+        calls.push('mark')
+      }),
+      requeueRun: vi.fn(async () => {
+        calls.push('requeue')
+      }),
+    })
+
+    await reapOrphanedRuns(d)
+
+    expect(d.markForResume).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+    expect(calls).toEqual(['mark', 'requeue'])
+  })
+
+  it('does not sync external state to failed when the run is resumed', async () => {
+    // afterRunSettled marks an A2A task failed. A resumed run is not failed,
+    // and telling its caller otherwise would end a task that is still working.
+    const d = deps({ canResume: vi.fn(async () => true) })
+
+    await reapOrphanedRuns(d)
+
+    expect(d.afterRunSettled).not.toHaveBeenCalled()
+  })
+
+  it('fails a run that cannot be resumed', async () => {
+    const d = deps({ canResume: vi.fn(async () => false) })
+
+    const reaped = await reapOrphanedRuns(d)
+
+    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.requeueRun).not.toHaveBeenCalled()
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
+  })
+
+  it('falls back to failing when the resume check throws', async () => {
+    // A resume decision that fails must not strand the row as 'running';
+    // failing is the safe default, exactly as startup recovery treats it.
+    const d = deps({
+      canResume: vi.fn(async () => {
+        throw new Error('metadata read failed')
+      }),
+    })
+
+    const reaped = await reapOrphanedRuns(d)
+
+    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
+  })
+
+  it('fails the run when the requeue itself fails', async () => {
+    // Losing the requeue must not leave the row 'running' forever; the pass
+    // still owes the caller a settled row.
+    const d = deps({
+      canResume: vi.fn(async () => true),
+      requeueRun: vi.fn(async () => {
+        throw new Error('requeue failed')
+      }),
+    })
+
+    const reaped = await reapOrphanedRuns(d)
+
+    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
+  })
+
+  it('keeps failing runs when no resume check is wired in', async () => {
+    // Back-compat: the reaper must behave exactly as before for any caller
+    // that does not opt into resuming.
+    const d = deps()
+
+    expect(await reapOrphanedRuns(d)).toEqual([
+      { runId: 'run_1', agentId: 'agt_1', resumed: false },
+    ])
+    expect(d.claimRun).toHaveBeenCalledWith('run_1')
   })
 })
