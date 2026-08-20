@@ -381,7 +381,7 @@ export async function failRunBeforeLifecycle(
       const current = (
         await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1)
       )[0]
-      if (!current || current.status !== 'running') return
+      if (current?.status !== 'running') return
       throw new Error('Run is still running after the preparation-failure transition')
     },
     {
