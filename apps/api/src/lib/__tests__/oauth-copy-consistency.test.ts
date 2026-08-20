@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { resolveRepoRoot } from '../../db/migration-directory.js'
 
-const repoRoot = resolve(process.cwd(), '../..')
+const repoRoot = resolveRepoRoot()
 
 function readRepoFile(path: string): string {
   return readFileSync(resolve(repoRoot, path), 'utf8')
