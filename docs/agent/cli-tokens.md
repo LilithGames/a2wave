@@ -52,8 +52,12 @@ paste or an already-revoked token fails immediately rather than on some later
 command.
 
 Tokens carry the **full permissions of the user who created them**. There is no
-scoping — a token can do anything its owner can. Mint one per machine or job so a
-leak can be contained by revoking just that one.
+scoping — a token can do anything its owner can, *except* mint another CLI token,
+which requires a real session. Mint one per machine or job so a leak can be
+contained by deleting just that one.
+
+> An admin's token inherits admin rights, including the password-reset endpoint.
+> Prefer creating automation tokens from a non-admin account.
 
 ---
 
@@ -65,7 +69,7 @@ their own tokens here.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/cli-tokens` | List the caller's tokens. Never returns a credential |
-| `POST /api/cli-tokens` | Mint one. The **only** time the plaintext is returned |
+| `POST /api/cli-tokens` | Mint one. The **only** time the plaintext is returned. Requires a real session — a CLI token gets `403 SESSION_REQUIRED` |
 | `DELETE /api/cli-tokens/:id` | Revoke. Takes effect on the next request |
 | `GET /api/cli-tokens/session-policy` | Read-only session lifetime, for display |
 
@@ -90,10 +94,20 @@ their own tokens here.
   request that produced it.
 - **Creation and revocation are audited**; use is not, since that would write an
   entry per API call. `details` carries the name, never the token.
-- **A stolen token cannot be escalated into account takeover.** `POST
-  /auth/change-password` requires the current password, which a token does not
-  carry, so the blast radius stays "what the owner can already do" rather than
-  "permanent control of the account".
+- **A CLI token cannot mint another CLI token.** `POST /api/cli-tokens` requires a
+  real session and answers `403 SESSION_REQUIRED` to a token-authenticated caller.
+  Without that, revoking a leaked token would contain nothing — the holder would
+  simply issue a replacement, which then appears in the owner's list as an ordinary
+  entry. Listing and deleting stay open to tokens so automation can clean up after
+  itself.
+- **Escalation is bounded by the owner's role, not prevented outright.** For a
+  `user`-role token the blast radius really is "what the owner can already do":
+  `POST /auth/change-password` requires the current password, which a token does not
+  carry. An **admin**-owned token is different — `POST /api/users/:id/reset-password`
+  is admin-only and takes no old password, so a leaked admin token *can* set
+  passwords and is equivalent to account takeover. Treat admin CLI tokens with the
+  same care as an admin password, and prefer minting them from a non-admin account
+  where the automation does not need admin rights.
 
 ---
 

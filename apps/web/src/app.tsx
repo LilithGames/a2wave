@@ -24,6 +24,9 @@ const DashboardPage = lazy(() =>
 const LoginPage = lazy(() => import('./pages/login').then((m) => ({ default: m.LoginPage })))
 const InvitePage = lazy(() => import('./pages/invite').then((m) => ({ default: m.InvitePage })))
 const DevicePage = lazy(() => import('./pages/device').then((m) => ({ default: m.DevicePage })))
+const CliAccessPage = lazy(() =>
+  import('./pages/cli-access').then((m) => ({ default: m.CliAccessPage })),
+)
 const ShareLoginPage = lazy(() =>
   import('./pages/share-login').then((m) => ({ default: m.ShareLoginPage })),
 )
@@ -205,6 +208,9 @@ export const router = createBrowserRouter([
           // Authenticated on purpose: approving a device grant lends this session to a
           // machine that has none, so the approver must already be signed in.
           { path: '/device', element: <DevicePage /> },
+          // Not under the admin-only Settings nav: a CLI token is a personal
+          // credential, so every user needs a way to reach this.
+          { path: '/cli-access', element: <CliAccessPage /> },
           { path: '/wiki', element: <WikiPage /> },
           { path: '/wiki/:slug', element: <WikiPage /> },
           { path: '*', element: <NotFoundPage /> },

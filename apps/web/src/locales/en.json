@@ -2603,17 +2603,23 @@
     "done": "Done",
     "empty": "No CLI tokens yet.",
     "colName": "Name",
-    "colPrefix": "Token",
     "colLastUsed": "Last used",
     "colExpires": "Expires",
-    "colCreated": "Created",
     "never": "Never used",
-    "revoke": "Revoke",
-    "revokeConfirm": "Revoke this token? Anything using it will stop working immediately.",
-    "revoked": "Revoked",
-    "expired": "Expired",
     "sessionTtl": "Session token lifetime",
     "sessionTtlValue": "{{days}} day(s)",
-    "sessionTtlHint": "Applies to browser and login-issued tokens. Set by the AUTH_SESSION_TTL_DAYS environment variable and requires a restart — it is deliberately not editable here."
+    "sessionTtlHint": "Applies to browser and login-issued tokens. Set by the AUTH_SESSION_TTL_DAYS environment variable and requires a restart — it is deliberately not editable here.",
+    "createDesc": "The token is shown once, immediately after it is created.",
+    "nameHint": "Used to identify this token later — a machine or job name works well.",
+    "colStatus": "Status",
+    "deleteTitle": "Delete this token?",
+    "deleteContent": "\"{{name}}\" will stop working immediately, and anything using it will lose access.",
+    "status": {
+      "active": "Active",
+      "revoked": "Deleted",
+      "expired": "Expired"
+    },
+    "pageDesc": "Tokens for the a2wave CLI, CI jobs, and scripts. Each one is yours alone and can be deleted on its own.",
+    "submit": "Create token"
   }
 }

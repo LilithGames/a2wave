@@ -70,6 +70,14 @@ app.get('/session-policy', (c) =>
 /** POST /cli-tokens — mint one. The only time the plaintext is ever returned. */
 app.post('/', async (c) => {
   const userId = c.get('userId' as never) as string
+
+  // A CLI token must not be able to mint another one. Otherwise revoking a leaked
+  // token contains nothing — the attacker simply issues a replacement, and it
+  // appears in the owner's list as an ordinary entry. Listing and deleting stay
+  // open to tokens so automation can still clean up after itself.
+  if ((c.get('authMethod' as never) as string) === 'cli_token') {
+    return c.json({ error: 'SESSION_REQUIRED' }, 403)
+  }
   const body = await c.req.json().catch(() => null)
   const parsed = createSchema.safeParse(body)
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)

@@ -61,7 +61,9 @@ describe('authenticateSessionToken with a CLI token', () => {
   it('authenticates a live token without touching JWT verification', async () => {
     dbSelect.mockImplementation(() => chain([row()]))
     const result = await authenticateSessionToken(generateCliToken())
-    expect(result).toEqual({ id: 'usr_1', role: 'user' })
+    // authMethod is what lets a route refuse an action a long-lived credential
+    // must not perform on its own — minting another token.
+    expect(result).toEqual({ id: 'usr_1', role: 'user', authMethod: 'cli_token' })
     // A CLI token is opaque, not a JWT; verifying it as one would always throw.
     expect(verifyTokenMock).not.toHaveBeenCalled()
   })
@@ -111,6 +113,7 @@ describe('authenticateSessionToken with a CLI token', () => {
     expect(await authenticateSessionToken('not-a-cli-token')).toEqual({
       id: 'usr_1',
       role: 'admin',
+      authMethod: 'session',
     })
   })
 })

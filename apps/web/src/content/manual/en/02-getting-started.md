@@ -73,11 +73,16 @@ a2wave login --token a2wc_xxxxxxxxxxxx
 ```
 
 A token carries the **full permissions of whoever created it** and cannot be scoped
-down. Mint **one per machine or job**, so a leak can be contained by revoking just
-that one without disturbing anything else.
+down — with one exception: a token cannot be used to create another token, which
+requires a real sign-in. Mint **one per machine or job**, so a leak can be contained
+by deleting just that one without disturbing anything else.
+
+> [!IMPORTANT]
+> A token created by an admin inherits admin rights, including resetting other
+> people's passwords. Prefer creating automation tokens from a regular account.
 
 The same page shows each token's **last used** time, so you can tell which ones are
-forgotten and safe to revoke. Revocation takes effect immediately.
+forgotten and safe to delete. Deletion takes effect immediately.
 
 ## Five-Minute Quick Start
 

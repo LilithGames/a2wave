@@ -1,3 +1,21 @@
+import { Button, Input, Popover, Tooltip } from 'antd'
+import i18n from 'i18next'
+import {
+  BookText,
+  Check,
+  ChevronRight,
+  Globe,
+  Info,
+  KeyRound,
+  LogOut,
+  Palette,
+  ShieldCheck,
+  Terminal,
+  X,
+} from 'lucide-react'
+import { useCallback, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { AboutDialog } from '@/components/about-dialog'
 import { ThemePickerDialog } from '@/components/theme-picker-dialog'
 import {
@@ -19,24 +37,6 @@ import { message } from '@/lib/antd-static'
 import { formatApiError } from '@/lib/api-error'
 import { cn, copyToClipboard } from '@/lib/utils'
 import { resolveSsoMethods, startSsoMethod } from '@/pages/login'
-import { Button, Input, Popover, Tooltip } from 'antd'
-import i18n from 'i18next'
-import {
-  BookText,
-  Check,
-  ChevronRight,
-  Globe,
-  Info,
-  KeyRound,
-  LogOut,
-  Palette,
-  ShieldCheck,
-  Terminal,
-  X,
-} from 'lucide-react'
-import { useCallback, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
 
 /** Install command for the a2wave CLI, published to the public npm registry. */
 export const CLI_INSTALL_COMMAND = 'npm i -g a2wave'
@@ -270,6 +270,14 @@ export function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
           target, so cmd/ctrl+click and middle-click must open it in a new tab. */}
       {/* text-foreground is explicit: as an <a> this inherits the link-blue `a`
           reset, which made it the only tinted row among identical-looking buttons. */}
+      <Link
+        to="/cli-access"
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground hover:text-foreground hover:bg-surface-hover transition-colors"
+        onClick={() => setOpen(false)}
+      >
+        <KeyRound className="h-3.5 w-3.5" />
+        {t('cli.title')}
+      </Link>
       <Link
         to="/wiki"
         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground hover:text-foreground hover:bg-surface-hover transition-colors"

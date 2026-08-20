@@ -2,8 +2,8 @@ import type { Context, Next } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '../env.js'
 import { validateAgentToken } from '../lib/agent-memory-token.js'
-import { isCookieSecure } from '../lib/auth-cookie.js'
 import { AUTH_COOKIE_NAME, LEGACY_AUTH_COOKIE_NAME } from '../lib/auth.js'
+import { isCookieSecure } from '../lib/auth-cookie.js'
 import { authenticateSessionToken } from '../lib/session-auth.js'
 
 const DEFAULT_AUTH_SECRET = 'dev-secret-change-me'
@@ -39,6 +39,7 @@ export async function authMiddleware(c: Context, next: Next) {
   if (isDevBypass) {
     c.set('userId' as never, 'usr_admin' as never)
     c.set('userRole' as never, 'admin' as never)
+    c.set('authMethod' as never, 'session' as never)
     return next()
   }
 
@@ -68,6 +69,7 @@ export async function authMiddleware(c: Context, next: Next) {
   c.set('userId' as never, user.id as never)
   // Use the current DB role; the token role is only a potentially stale issuance-time snapshot.
   c.set('userRole' as never, user.role as never)
+  c.set('authMethod' as never, user.authMethod as never)
   return next()
 }
 

@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { cliTokens, users } from '../db/schema.js'
 import { verifyToken } from './auth.js'
@@ -7,6 +7,12 @@ import { hashCliToken, isCliToken } from './cli-token.js'
 export interface AuthenticatedSessionUser {
   id: string
   role: string
+  /**
+   * How the caller proved identity. Surfaced so a route can require a *real*
+   * session for actions a long-lived credential must not perform on its own —
+   * minting another credential being the one that matters.
+   */
+  authMethod: 'session' | 'cli_token'
 }
 
 /**
@@ -41,12 +47,15 @@ async function authenticateCliToken(token: string): Promise<AuthenticatedSession
 
   // Best-effort: this is the only signal that tells a stale token from a live one,
   // so it must never fail the request that produced it.
+  // Guarded on `revokedAt` as well: this races a concurrent DELETE, and refreshing
+  // lastUsedAt after revocation would make a dead token read as "still in use" in
+  // the management list — the one signal an operator relies on there.
   db.update(cliTokens)
     .set({ lastUsedAt: new Date() })
-    .where(and(eq(cliTokens.id, row.id)))
+    .where(and(eq(cliTokens.id, row.id), isNull(cliTokens.revokedAt)))
     .catch(() => undefined)
 
-  return { id: row.userId, role: row.role }
+  return { id: row.userId, role: row.role, authMethod: 'cli_token' }
 }
 
 /** Validate a session JWT against the current user record and revocation state. */
@@ -70,7 +79,7 @@ export async function authenticateSessionToken(
       .limit(1)
 
     if (!user?.isActive || (payload.tv ?? -1) !== user.tokenVersion) return null
-    return { id: user.id, role: user.role }
+    return { id: user.id, role: user.role, authMethod: 'session' }
   } catch {
     return null
   }

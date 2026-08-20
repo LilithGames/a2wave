@@ -1,20 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, KeyRound } from 'lucide-react'
+import { Table, Tag, Tooltip } from 'antd'
+import dayjs from 'dayjs'
+import { Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
 import { formatApiError } from '@/lib/api-error'
+import { confirm } from '@/lib/confirm'
 
 interface CliToken {
   id: string
@@ -33,29 +36,33 @@ interface SessionPolicy {
 
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const
 
-function isExpired(token: CliToken): boolean {
-  return !!token.expiresAt && new Date(token.expiresAt).getTime() <= Date.now()
+type TokenStatus = 'active' | 'revoked' | 'expired'
+
+function statusOf(token: CliToken): TokenStatus {
+  if (token.revokedAt) return 'revoked'
+  if (token.expiresAt && dayjs(token.expiresAt).isBefore(dayjs())) return 'expired'
+  return 'active'
+}
+
+const STATUS_COLOR: Record<TokenStatus, string> = {
+  active: 'green',
+  revoked: 'default',
+  expired: 'orange',
 }
 
 /**
  * CLI token management.
  *
- * The plaintext comes back exactly once, from the create call, so it is held in
- * component state and shown in a dismissible panel — there is no way to recover
- * it afterwards, and the copy explicitly says so.
+ * The list is the page; creation lives behind a button, because minting a token is
+ * occasional and the form would otherwise dominate a surface people mostly visit to
+ * audit what already exists.
  */
 export function CliTokensCard() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const [createOpen, setCreateOpen] = useState(false)
 
-  const [name, setName] = useState('')
-  const [expiresInDays, setExpiresInDays] = useState<number>(90)
-  const [issued, setIssued] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-  const [error, setError] = useState('')
-  const [pendingRevoke, setPendingRevoke] = useState<CliToken | null>(null)
-
-  const { data: tokens = [] } = useQuery({
+  const { data: tokens, isLoading } = useQuery({
     queryKey: ['cli-tokens'],
     queryFn: () => api.get<CliToken[]>('/cli-tokens').then((r) => r.data),
   })
@@ -65,111 +72,243 @@ export function CliTokensCard() {
     queryFn: () => api.get<SessionPolicy>('/cli-tokens/session-policy').then((r) => r.data),
   })
 
-  const create = useMutation({
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/cli-tokens/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cli-tokens'] }),
+  })
+
+  const handleDelete = (token: CliToken) => {
+    confirm({
+      title: t('cli.deleteTitle'),
+      content: t('cli.deleteContent', { name: token.name }),
+      okText: t('common.delete'),
+      danger: true,
+      onOk: () => deleteMutation.mutateAsync(token.id),
+    })
+  }
+
+  const columns = [
+    {
+      title: t('cli.colName'),
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string, record: CliToken) => (
+        <div className="min-w-0">
+          <div className="truncate text-foreground">{name}</div>
+          {/* The prefix is all that can safely identify a token after creation. */}
+          <code className="font-mono text-xs text-muted-foreground">{record.tokenPrefix}…</code>
+        </div>
+      ),
+    },
+    {
+      title: t('cli.colStatus'),
+      key: 'status',
+      render: (_: unknown, record: CliToken) => {
+        const status = statusOf(record)
+        return <Tag color={STATUS_COLOR[status]}>{t(`cli.status.${status}`)}</Tag>
+      },
+    },
+    {
+      title: t('cli.colLastUsed'),
+      dataIndex: 'lastUsedAt',
+      key: 'lastUsedAt',
+      render: (lastUsedAt: string | null) => (
+        // "Never used" is the signal that a token is safe to delete, so it is stated
+        // rather than left as an empty cell that reads as missing data.
+        <span className="text-sm text-muted-foreground">
+          {lastUsedAt ? dayjs(lastUsedAt).format('YYYY-MM-DD HH:mm') : t('cli.never')}
+        </span>
+      ),
+    },
+    {
+      title: t('cli.colExpires'),
+      dataIndex: 'expiresAt',
+      key: 'expiresAt',
+      render: (expiresAt: string | null) => (
+        <span className="text-sm text-muted-foreground">
+          {expiresAt ? dayjs(expiresAt).format('YYYY-MM-DD') : t('cli.expiryNever')}
+        </span>
+      ),
+    },
+    {
+      title: t('users.actions'),
+      key: 'actions',
+      width: 80,
+      render: (_: unknown, record: CliToken) => (
+        <Tooltip title={t('common.delete')}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('common.delete')}
+            onClick={() => handleDelete(record)}
+          >
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </Tooltip>
+      ),
+    },
+  ]
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <KeyRound className="h-4 w-4" />
+              {t('cli.title')}
+            </CardTitle>
+            <CardDescription className="mt-1">{t('cli.desc')}</CardDescription>
+          </div>
+          <Button onClick={() => setCreateOpen(true)} className="shrink-0">
+            <Plus className="h-4 w-4" />
+            {t('cli.create')}
+          </Button>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-6">
+        <Table
+          dataSource={tokens ?? []}
+          columns={columns}
+          rowKey="id"
+          loading={isLoading}
+          pagination={false}
+          size="small"
+          locale={{ emptyText: t('cli.empty') }}
+          rowClassName={(record: CliToken) => (statusOf(record) === 'active' ? '' : 'opacity-60')}
+        />
+
+        {policy && (
+          <div className="info-panel px-4 py-3">
+            <div className="flex items-baseline justify-between gap-4">
+              <span className="text-sm font-medium text-foreground">{t('cli.sessionTtl')}</span>
+              <span className="font-mono text-sm text-foreground">
+                {t('cli.sessionTtlValue', { days: policy.sessionTtlDays })}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t('cli.sessionTtlHint')}</p>
+          </div>
+        )}
+      </CardContent>
+
+      <CreateTokenDialog open={createOpen} onOpenChange={setCreateOpen} />
+    </Card>
+  )
+}
+
+/**
+ * Mint a token.
+ *
+ * Two states in one dialog: the form, then the credential. The second state has no
+ * cancel — the token exists either way, and the only useful action left is copying
+ * it before it becomes unrecoverable.
+ */
+function CreateTokenDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [name, setName] = useState('')
+  const [expiresInDays, setExpiresInDays] = useState<number>(90)
+  const [issued, setIssued] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState('')
+
+  const reset = () => {
+    setName('')
+    setExpiresInDays(90)
+    setIssued(null)
+    setCopied(false)
+    setError('')
+  }
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) reset()
+    onOpenChange(next)
+  }
+
+  const mutation = useMutation({
     meta: { handleLocally: true },
     mutationFn: (body: { name: string; expiresInDays?: number }) =>
       api.post<{ token: string }>('/cli-tokens', body).then((r) => r.data),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['cli-tokens'] })
+      setIssued(created.token)
+      setError('')
+    },
   })
 
-  const revoke = useMutation({
-    meta: { handleLocally: true },
-    mutationFn: (id: string) => api.delete(`/cli-tokens/${id}`),
-  })
-
-  const handleCreate = async () => {
+  const handleSubmit = async () => {
     setError('')
     if (!name.trim()) {
       setError(t('cli.nameRequired'))
       return
     }
     try {
-      const result = await create.mutateAsync({
+      await mutation.mutateAsync({
         name: name.trim(),
         ...(expiresInDays > 0 ? { expiresInDays } : {}),
       })
-      setIssued(result.token)
-      setName('')
-      queryClient.invalidateQueries({ queryKey: ['cli-tokens'] })
     } catch (err) {
       setError(formatApiError(err, t))
     }
   }
 
-  const handleRevoke = async (token: CliToken) => {
-    setError('')
-    try {
-      await revoke.mutateAsync(token.id)
-      queryClient.invalidateQueries({ queryKey: ['cli-tokens'] })
-    } catch (err) {
-      setError(formatApiError(err, t))
-    } finally {
-      setPendingRevoke(null)
-    }
-  }
-
-  const copyIssued = async () => {
+  const handleCopy = async () => {
     if (!issued) return
     await navigator.clipboard.writeText(issued)
     setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <KeyRound className="h-4 w-4" />
-          {t('cli.title')}
-        </CardTitle>
-        <CardDescription>{t('cli.desc')}</CardDescription>
-      </CardHeader>
+    <Dialog open={open} onOpenChange={handleOpenChange} width={560}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{issued ? t('cli.created') : t('cli.createTitle')}</DialogTitle>
+          <DialogDescription>
+            {issued ? t('cli.createdWarning') : t('cli.createDesc')}
+          </DialogDescription>
+        </DialogHeader>
 
-      <CardContent className="space-y-6">
         {issued ? (
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
-            <p className="text-sm font-medium text-foreground">{t('cli.created')}</p>
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
-              {t('cli.createdWarning')}
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 break-all rounded bg-muted px-3 py-2 font-mono text-xs">
-                {issued}
-              </code>
-              <Button variant="outline" size="sm" onClick={copyIssued}>
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                <span className="ml-1.5">{copied ? t('cli.copied') : t('cli.copy')}</span>
-              </Button>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mt-3"
-              onClick={() => {
-                setIssued(null)
-                setCopied(false)
-              }}
-            >
-              {t('cli.done')}
+          <div className="mt-4 flex items-center gap-2">
+            <code className="flex-1 break-all rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
+              {issued}
+            </code>
+            <Button variant="outline" onClick={handleCopy} aria-label={t('cli.copy')}>
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? t('cli.copied') : t('cli.copy')}
             </Button>
           </div>
         ) : (
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="cli-token-name" required className="text-sm font-medium">
+          <div className="mt-4 space-y-4">
+            <div>
+              <label className="text-sm font-medium text-foreground" htmlFor="cli-token-name">
                 {t('cli.name')}
-              </Label>
+              </label>
               <Input
                 id="cli-token-name"
+                className="mt-1"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t('cli.namePlaceholder')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSubmit()
+                }}
+                autoFocus
               />
+              <p className="mt-1 text-xs text-muted-foreground">{t('cli.nameHint')}</p>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="cli-token-expiry" className="text-sm font-medium">
-                {t('cli.expiry')}
-              </Label>
-              <div className="flex flex-wrap gap-2">
+            <div>
+              <span className="text-sm font-medium text-foreground">{t('cli.expiry')}</span>
+              <div className="mt-1.5 flex flex-wrap gap-2">
                 {EXPIRY_CHOICES.map((days) => (
                   <Button
                     key={days}
@@ -183,92 +322,31 @@ export function CliTokensCard() {
                 ))}
               </div>
               {expiresInDays === 0 && (
-                <p className="text-xs text-muted-foreground">{t('cli.expiryHint')}</p>
+                <p className="mt-1.5 text-xs text-muted-foreground">{t('cli.expiryHint')}</p>
               )}
             </div>
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
-
-            <Button onClick={handleCreate} disabled={create.isPending}>
-              {t('cli.create')}
-            </Button>
+            {error && (
+              <div className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600">{error}</div>
+            )}
           </div>
         )}
 
-        <div>
-          {tokens.length === 0 ? (
-            <p className="py-4 text-sm text-muted-foreground">{t('cli.empty')}</p>
+        <DialogFooter>
+          {issued ? (
+            <Button onClick={() => handleOpenChange(false)}>{t('cli.done')}</Button>
           ) : (
-            <div className="divide-y divide-border/50">
-              {tokens.map((token) => (
-                <div key={token.id} className="flex items-center justify-between gap-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">
-                        {token.name}
-                      </span>
-                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-                        {token.tokenPrefix}…
-                      </code>
-                      {token.revokedAt && (
-                        <span className="text-xs text-muted-foreground">{t('cli.revoked')}</span>
-                      )}
-                      {!token.revokedAt && isExpired(token) && (
-                        <span className="text-xs text-amber-600">{t('cli.expired')}</span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {t('cli.colLastUsed')}:{' '}
-                      {token.lastUsedAt
-                        ? new Date(token.lastUsedAt).toLocaleString()
-                        : t('cli.never')}
-                      {token.expiresAt
-                        ? ` · ${t('cli.colExpires')}: ${new Date(token.expiresAt).toLocaleDateString()}`
-                        : ''}
-                    </p>
-                  </div>
-                  {!token.revokedAt && (
-                    <Button variant="ghost" size="sm" onClick={() => setPendingRevoke(token)}>
-                      {t('cli.revoke')}
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
+            <>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                {t('common.cancel')}
+              </Button>
+              <Button onClick={handleSubmit} disabled={mutation.isPending}>
+                {t('cli.submit')}
+              </Button>
+            </>
           )}
-        </div>
-
-        {policy && (
-          <div className="rounded-lg border border-border bg-muted/30 p-4">
-            <div className="flex items-baseline justify-between gap-4">
-              <span className="text-sm font-medium text-foreground">{t('cli.sessionTtl')}</span>
-              <span className="font-mono text-sm text-foreground">
-                {t('cli.sessionTtlValue', { days: policy.sessionTtlDays })}
-              </span>
-            </div>
-            <p className="mt-1.5 text-xs text-muted-foreground">{t('cli.sessionTtlHint')}</p>
-          </div>
-        )}
-      </CardContent>
-
-      <AlertDialog open={!!pendingRevoke} onOpenChange={(open) => !open && setPendingRevoke(null)}>
-        <AlertDialogContent>
-          <AlertDialogTitle>{pendingRevoke?.name}</AlertDialogTitle>
-          <AlertDialogDescription>{t('cli.revokeConfirm')}</AlertDialogDescription>
-          <AlertDialogFooter>
-            <Button variant="outline" onClick={() => setPendingRevoke(null)}>
-              {t('common.cancel')}
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => pendingRevoke && handleRevoke(pendingRevoke)}
-              disabled={revoke.isPending}
-            >
-              {t('cli.revoke')}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </Card>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

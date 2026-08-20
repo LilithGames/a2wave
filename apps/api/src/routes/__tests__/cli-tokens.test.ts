@@ -50,16 +50,15 @@ function makeChain(rows: unknown[] = []) {
   return thenable
 }
 
-function makeApp(userId = 'usr_1') {
+function makeApp(userId = 'usr_1', authMethod: 'session' | 'cli_token' = 'session') {
   const app = new Hono()
-  app.use('/api/cli-tokens/*', async (c, next) => {
+  const seed = async (c: { set: (k: never, v: never) => void }, next: () => Promise<void>) => {
     c.set('userId' as never, userId as never)
+    c.set('authMethod' as never, authMethod as never)
     await next()
-  })
-  app.use('/api/cli-tokens', async (c, next) => {
-    c.set('userId' as never, userId as never)
-    await next()
-  })
+  }
+  app.use('/api/cli-tokens/*', seed)
+  app.use('/api/cli-tokens', seed)
   app.route('/api/cli-tokens', cliTokenRoutes)
   return app
 }
@@ -157,6 +156,30 @@ describe('POST /cli-tokens', () => {
     const [, entry] = logAuditMock.mock.calls[0]
     expect(entry.action).toBe('cli_token.created')
     expect(JSON.stringify(entry.details)).not.toMatch(/a2wc_[A-Za-z0-9_-]{20}/)
+  })
+})
+
+describe('POST /cli-tokens — containment', () => {
+  it('refuses to mint a token when the caller is itself using a CLI token', async () => {
+    // Otherwise a leaked token can mint a replacement, and revoking the stolen one
+    // contains nothing — which is exactly what the docs promise it does.
+    const res = await makeApp('usr_1', 'cli_token').request('/api/cli-tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'second' }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('SESSION_REQUIRED')
+    expect(dbInsert).not.toHaveBeenCalled()
+  })
+
+  it('still lets a CLI token list and delete, so automation can clean up after itself', async () => {
+    const list = await makeApp('usr_1', 'cli_token').request('/api/cli-tokens')
+    expect(list.status).toBe(200)
+    const del = await makeApp('usr_1', 'cli_token').request('/api/cli-tokens/clt_1', {
+      method: 'DELETE',
+    })
+    expect(del.status).toBe(200)
   })
 })
 

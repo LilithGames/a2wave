@@ -2603,17 +2603,23 @@
     "done": "完成",
     "empty": "还没有 CLI 令牌。",
     "colName": "名称",
-    "colPrefix": "令牌",
     "colLastUsed": "最近使用",
     "colExpires": "过期时间",
-    "colCreated": "创建时间",
     "never": "从未使用",
-    "revoke": "吊销",
-    "revokeConfirm": "确定吊销这个令牌？正在使用它的地方会立刻失效。",
-    "revoked": "已吊销",
-    "expired": "已过期",
     "sessionTtl": "会话令牌有效期",
     "sessionTtlValue": "{{days}} 天",
-    "sessionTtlHint": "适用于浏览器和登录签发的令牌。由环境变量 AUTH_SESSION_TTL_DAYS 设置，改后需重启——出于安全考虑刻意不放在页面上修改。"
+    "sessionTtlHint": "适用于浏览器和登录签发的令牌。由环境变量 AUTH_SESSION_TTL_DAYS 设置，改后需重启——出于安全考虑刻意不放在页面上修改。",
+    "createDesc": "令牌只在创建后显示这一次。",
+    "nameHint": "用于之后识别这个令牌，建议填机器名或任务名。",
+    "colStatus": "状态",
+    "deleteTitle": "确定删除这个令牌？",
+    "deleteContent": "「{{name}}」会立即失效，正在使用它的地方将无法访问。",
+    "status": {
+      "active": "生效中",
+      "revoked": "已删除",
+      "expired": "已过期"
+    },
+    "pageDesc": "供 a2wave CLI、CI 任务和脚本使用的令牌。每个都只属于你，可以单独删除。",
+    "submit": "创建令牌"
   }
 }

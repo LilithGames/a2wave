@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders, screen, waitFor } from '@/test/render'
 import { CliTokensCard } from '../cli-tokens-card'
 
-const { apiGetMock, apiPostMock, apiDeleteMock } = vi.hoisted(() => ({
+const { apiGetMock, apiPostMock, apiDeleteMock, confirmMock } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
   apiPostMock: vi.fn(),
   apiDeleteMock: vi.fn(),
+  confirmMock: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -15,6 +16,10 @@ vi.mock('@/lib/api', () => ({
     post: (path: string, body: unknown) => apiPostMock(path, body),
     delete: (path: string) => apiDeleteMock(path),
   },
+}))
+
+vi.mock('@/lib/confirm', () => ({
+  confirm: (opts: { onOk?: () => unknown }) => confirmMock(opts),
 }))
 
 function token(over: Record<string, unknown> = {}) {
@@ -30,54 +35,76 @@ function token(over: Record<string, unknown> = {}) {
   }
 }
 
+function mockList(rows: unknown[]) {
+  apiGetMock.mockImplementation((path: string) =>
+    path.includes('session-policy')
+      ? Promise.resolve({ data: { sessionTtlDays: 1, configurable: false } })
+      : Promise.resolve({ data: rows }),
+  )
+}
+
 beforeEach(() => {
-  apiGetMock
-    .mockReset()
-    .mockImplementation((path: string) =>
-      path.includes('session-policy')
-        ? Promise.resolve({ data: { sessionTtlDays: 1, configurable: false } })
-        : Promise.resolve({ data: [token()] }),
-    )
+  apiGetMock.mockReset()
+  mockList([token()])
   apiPostMock.mockReset().mockResolvedValue({ data: { token: 'a2wc_PLAINTEXT_SECRET' } })
   apiDeleteMock.mockReset().mockResolvedValue({ data: {} })
+  // Run the confirmed action straight away so the destructive path is exercised.
+  confirmMock.mockReset().mockImplementation((opts: { onOk?: () => unknown }) => opts.onOk?.())
 })
 
 describe('CliTokensCard', () => {
-  it('lists tokens by name and prefix, never a usable credential', async () => {
+  it('leads with the list, not a creation form', async () => {
     renderWithProviders(<CliTokensCard />)
     expect(await screen.findByText('CI runner')).toBeInTheDocument()
-    expect(screen.getByText(/a2wc_abc123/)).toBeInTheDocument()
+    // The name field belongs in the dialog; showing it inline would make an
+    // occasional action dominate a page people mostly visit to audit.
+    expect(screen.queryByLabelText(/名称/)).not.toBeInTheDocument()
+  })
+
+  it('opens creation in a dialog behind the button', async () => {
+    renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
+    expect(await screen.findByText('创建 CLI 令牌')).toBeInTheDocument()
   })
 
   it('shows the plaintext once, with a warning that it will not reappear', async () => {
     renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
     await userEvent.type(await screen.findByLabelText(/名称/), 'CI runner')
-    await userEvent.click(screen.getByRole('button', { name: /新建令牌/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
     expect(await screen.findByText('a2wc_PLAINTEXT_SECRET')).toBeInTheDocument()
     expect(screen.getByText(/不会再次显示/)).toBeInTheDocument()
   })
 
   it('refuses to create a nameless token', async () => {
-    // Without a name the token cannot be told apart from another in the list.
     renderWithProviders(<CliTokensCard />)
     await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /^创建令牌$/ }))
     expect(await screen.findByText(/必须填名称/)).toBeInTheDocument()
     expect(apiPostMock).not.toHaveBeenCalled()
   })
 
   it('sends no expiry when "never" is chosen', async () => {
     renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
     await userEvent.type(await screen.findByLabelText(/名称/), 'CI')
     await userEvent.click(screen.getByRole('button', { name: /永不过期/ }))
-    await userEvent.click(screen.getByRole('button', { name: /新建令牌/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith('/cli-tokens', { name: 'CI' }))
   })
 
-  it('confirms before revoking, because anything using it breaks immediately', async () => {
+  it('confirms before deleting, because anything using it breaks immediately', async () => {
+    confirmMock.mockImplementation(() => undefined)
     renderWithProviders(<CliTokensCard />)
-    await userEvent.click(await screen.findByRole('button', { name: /^吊销$/ }))
-    expect(await screen.findByText(/会立刻失效/)).toBeInTheDocument()
+    await userEvent.click(await screen.findByRole('button', { name: /删除/ }))
+    expect(confirmMock).toHaveBeenCalled()
     expect(apiDeleteMock).not.toHaveBeenCalled()
+  })
+
+  it('deletes once confirmed', async () => {
+    renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /删除/ }))
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith('/cli-tokens/clt_1'))
   })
 
   it('surfaces the session lifetime and says it is not editable here', async () => {
@@ -86,14 +113,20 @@ describe('CliTokensCard', () => {
     expect(screen.getByText(/AUTH_SESSION_TTL_DAYS/)).toBeInTheDocument()
   })
 
-  it('marks a revoked token instead of offering to revoke it again', async () => {
-    apiGetMock.mockImplementation((path: string) =>
-      path.includes('session-policy')
-        ? Promise.resolve({ data: { sessionTtlDays: 1, configurable: false } })
-        : Promise.resolve({ data: [token({ revokedAt: new Date().toISOString() })] }),
-    )
+  it('distinguishes deleted and expired tokens from live ones', async () => {
+    mockList([
+      token({ id: 'a', name: 'gone', revokedAt: new Date().toISOString() }),
+      token({ id: 'b', name: 'stale', expiresAt: new Date(Date.now() - 1000).toISOString() }),
+      token({ id: 'c', name: 'live' }),
+    ])
     renderWithProviders(<CliTokensCard />)
-    expect(await screen.findByText(/已吊销/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^吊销$/ })).not.toBeInTheDocument()
+    expect(await screen.findByText('已删除')).toBeInTheDocument()
+    expect(screen.getByText('已过期')).toBeInTheDocument()
+    expect(screen.getByText('生效中')).toBeInTheDocument()
+  })
+
+  it('says a token was never used, since that is what makes it safe to delete', async () => {
+    renderWithProviders(<CliTokensCard />)
+    expect(await screen.findByText('从未使用')).toBeInTheDocument()
   })
 })
