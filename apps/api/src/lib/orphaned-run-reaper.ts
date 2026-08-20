@@ -92,8 +92,14 @@ export interface OrphanedRunReaperDeps {
   canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
   /** Record the interruption durably, before the requeue clears `result`. */
   markForResume?: (runId: string, failureCode: string) => Promise<void>
-  /** Status CAS back to `queued`, clearing result and ownership. */
-  requeueRun?: (runId: string) => Promise<void>
+  /**
+   * Status CAS back to `queued`, clearing result and ownership.
+   *
+   * Returns false when the transition did not happen — another replica settled
+   * the row first. Reporting that as a resume would both lie about the outcome
+   * and skip the fail path, leaving the row exactly as this pass found it.
+   */
+  requeueRun?: (runId: string) => Promise<boolean>
   now: () => Date
 }
 
@@ -171,8 +177,7 @@ async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<bo
     // execution runs in another process, so the code known here has to be
     // written down before it is erased.
     await deps.markForResume?.(runId, code)
-    await deps.requeueRun(runId)
-    return true
+    return await deps.requeueRun(runId)
   } catch (error) {
     logger.warn({ error, runId }, 'orphaned-run-reaper: resume failed; failing the run instead')
     return false

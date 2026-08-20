@@ -67,7 +67,7 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string): Promise<void>
+  requeueForResume(runId: string): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,

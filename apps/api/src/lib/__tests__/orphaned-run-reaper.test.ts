@@ -35,7 +35,7 @@ function deps(overrides: Partial<Parameters<typeof reapOrphanedRuns>[0]> = {}) {
     claimRun: vi.fn(async () => true),
     afterRunSettled: vi.fn(async () => {}),
     markForResume: vi.fn(async () => {}),
-    requeueRun: vi.fn(async () => {}),
+    requeueRun: vi.fn(async () => true),
     now: () => NOW,
     ...overrides,
   }
@@ -191,6 +191,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
       }),
       requeueRun: vi.fn(async () => {
         calls.push('requeue')
+        return true
       }),
     })
 
@@ -260,5 +261,30 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
       { runId: 'run_1', agentId: 'agt_1', resumed: false },
     ])
     expect(d.claimRun).toHaveBeenCalledWith('run_1')
+  })
+})
+
+describe('reapOrphanedRuns — the requeue is a CAS, not a promise', () => {
+  it('falls back to failing when the requeue loses the status race', async () => {
+    // requeueForResume matches on status='running'. If another replica settled
+    // the row first the UPDATE matches nothing and returns normally — so a
+    // resumed:true verdict here would be a lie, and worse, it would skip the
+    // fail path and leave the row exactly as this pass found it.
+    const d = deps({
+      canResume: vi.fn(async () => true),
+      requeueRun: vi.fn(async () => false),
+    })
+
+    const reaped = await reapOrphanedRuns(d)
+
+    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
+  })
+
+  it('reports a resume whose requeue won the race', async () => {
+    const d = deps({ canResume: vi.fn(async () => true), requeueRun: vi.fn(async () => true) })
+
+    expect(await reapOrphanedRuns(d)).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: true }])
+    expect(d.claimRun).not.toHaveBeenCalled()
   })
 })

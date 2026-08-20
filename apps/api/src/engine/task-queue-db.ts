@@ -125,8 +125,8 @@ export const taskQueueDb: TaskQueueDb = {
       .where(eq(runs.id, runId))
   },
 
-  async requeueForResume(runId: string): Promise<void> {
-    await withTransaction(async (tx) => {
+  async requeueForResume(runId: string): Promise<boolean> {
+    return await withTransaction(async (tx) => {
       const requeued = await tx
         .update(runs)
         .set({
@@ -144,8 +144,10 @@ export const taskQueueDb: TaskQueueDb = {
         .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
         .returning({ id: runs.id })
       // Only when this call made the transition; otherwise another replica
-      // already settled the run and its steps are not ours to touch.
-      if (requeued.length === 0) return
+      // already settled the run and its steps are not ours to touch. The
+      // caller needs the verdict too: the reaper falls back to failing a run
+      // whose requeue lost, rather than reporting a resume that never landed.
+      if (requeued.length === 0) return false
 
       // The killed process left its step 'running'. The resumed execution
       // appends a new step, so leaving this one would strand it forever and
@@ -154,6 +156,7 @@ export const taskQueueDb: TaskQueueDb = {
         .update(runSteps)
         .set({ status: 'failed', output: { error: FAILURE_REASONS.SERVER_RESTART_DURING_EXEC } })
         .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
+      return true
     })
   },
 
