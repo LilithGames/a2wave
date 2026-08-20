@@ -44,7 +44,8 @@ vi.mock('../../db/client.js', async () => {
 
 const { db } = await import('../../db/client.js')
 const { runs } = await import('../../db/schema.js')
-const { resolveResumeChatId, recordResumeAttempt } = await import('../resume-chat-id.js')
+const { resolveResumeChatId, recordResumeAttempt, resumeChatIdFromRow, markRunForResume } =
+  await import('../resume-chat-id.js')
 
 const NOW = new Date('2026-08-20T10:00:00Z')
 
@@ -137,6 +138,28 @@ describe('resolveResumeChatId', () => {
 describe('the interrupted-run scenario end to end', () => {
   beforeEach(async () => {
     await db.delete(runs)
+  })
+
+  it('survives the requeue handoff, which clears the result the marker lived in', async () => {
+    // The two halves run in different processes. Recovery knows the
+    // interruption code and clears `result` so the resumed run is not judged by
+    // the old error — but execution then has no code to read and, if that were
+    // the only marker, would reject its own recorded session as
+    // 'not-interrupted' and silently start fresh. The mark must outlive the
+    // handoff.
+    await seedRun({ status: 'running', executionMetadata: { liveChatId: 'sess_live' } })
+    await markRunForResume('run_1', 'SERVER_RESTART_DURING_EXEC')
+
+    // Exactly what execute-chat-run holds after the requeue: no result at all.
+    const requeued = {
+      id: 'run_1',
+      executionMetadata: null,
+      result: null,
+      initiatorAgentId: 'agt_1',
+    }
+    const row = (await db.select().from(runs))[0]
+    requeued.executionMetadata = row?.executionMetadata as never
+    expect(resumeChatIdFromRow(requeued)).toBe('sess_live')
   })
 
   it('resumes a run the container restart killed, and converges after the budget', async () => {

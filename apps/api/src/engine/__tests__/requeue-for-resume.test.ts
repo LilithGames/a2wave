@@ -38,6 +38,17 @@ vi.mock('../../db/client.js', async () => {
       created_at integer NOT NULL,
       updated_at integer NOT NULL
     );
+    CREATE TABLE run_steps (
+      id text PRIMARY KEY NOT NULL,
+      run_id text NOT NULL,
+      agent_id text,
+      "order" integer NOT NULL,
+      input text,
+      output text,
+      status text NOT NULL DEFAULT 'pending',
+      duration_ms integer,
+      created_at integer NOT NULL
+    );
   `)
   const schema = await import('../../db/schema.js')
   return { db: drizzle(sqlite, { schema }), sqlite, sqliteDatabase: sqlite, isPostgres: false }
@@ -53,7 +64,7 @@ vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
 vi.mock('../../lib/scm-path-plan.js', () => ({ withScmPathMutation: vi.fn() }))
 
 const { db } = await import('../../db/client.js')
-const { runs } = await import('../../db/schema.js')
+const { runs, runSteps } = await import('../../db/schema.js')
 const { taskQueueDb } = await import('../task-queue-db.js')
 
 const NOW = new Date('2026-08-20T10:00:00Z')
@@ -79,6 +90,7 @@ async function loadRun() {
 
 describe('taskQueueDb.requeueForResume', () => {
   beforeEach(async () => {
+    await db.delete(runSteps)
     await db.delete(runs)
   })
 
@@ -104,6 +116,38 @@ describe('taskQueueDb.requeueForResume', () => {
     await seedRun()
     await taskQueueDb.requeueForResume('run_1')
     expect((await loadRun())?.executionMetadata).toMatchObject({ liveChatId: 'sess_live' })
+  })
+
+  it('settles the step the killed process left running', async () => {
+    // The resumed execution appends a new step; leaving this one 'running'
+    // would strand it forever and read as permanently in-flight in the UI.
+    await seedRun()
+    await db.insert(runSteps).values({
+      id: 'stp_1',
+      runId: 'run_1',
+      order: 1,
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1')
+
+    expect((await db.select().from(runSteps))[0]?.status).toBe('failed')
+  })
+
+  it('leaves steps alone when the run was already settled by someone else', async () => {
+    await seedRun({ status: 'completed' })
+    await db.insert(runSteps).values({
+      id: 'stp_1',
+      runId: 'run_1',
+      order: 1,
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1')
+
+    expect((await db.select().from(runSteps))[0]?.status).toBe('running')
   })
 
   it('only acts on a running row, so it cannot revive a settled run', async () => {

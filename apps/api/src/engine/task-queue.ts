@@ -344,6 +344,13 @@ export interface RecoveryHooks {
    * external state (SCM workload lease) the dead process still holds.
    */
   onRunRequeued?: (run: RunRow) => Promise<void> | void
+  /**
+   * Record the interruption durably before the requeue erases `result`.
+   *
+   * The resumed execution is a different process and cannot see the code this
+   * recovery holds in memory.
+   */
+  onBeforeRequeue?: (runId: string, failureCode: string) => Promise<void> | void
 }
 
 export interface RecoveryStats {
@@ -406,10 +413,15 @@ export async function recoverOnStartup(
           }
         }
         if (resumable) {
+          // Mark first, requeue second. The requeue clears `result`, and the
+          // resumed execution runs in another process, so the code known here
+          // has to be written down before it is erased.
+          await hooks.onBeforeRequeue?.(run.id, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code)
           // Requeue as if the run had never been admitted: clear the stale
-          // result so the next execution is not judged by the old error, and
-          // drop the dead owner so the orphaned-run reaper cannot settle a row
-          // this recovery just rescued.
+          // result so the next execution is not judged by the old error, drop
+          // the dead owner so the orphaned-run reaper cannot settle a row this
+          // recovery just rescued, and settle the step the killed process left
+          // behind so it does not sit 'running' forever.
           await db.requeueForResume(run.id)
           // Same workload release the fail path performs via onRunFailed. A run
           // interrupted while holding an SCM lease would otherwise keep it and

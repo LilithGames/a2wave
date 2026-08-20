@@ -121,6 +121,30 @@ describe('mergeExecutionMetadata', () => {
     expect((await loadRow())?.executionMetadata).toEqual({ resumeAttempts: 6 })
   })
 
+  it('does not lose an update when a writer commits between the read and the write', async () => {
+    // The PostgreSQL shape: each caller has its own pooled client, so both can
+    // read the same value and the later write silently erases the earlier one.
+    // A transaction alone does not prevent it — only a conditional write does.
+    await seedRun({ resumeAttempts: 0 })
+    await mergeExecutionMetadata(
+      'run_1',
+      (current) => ({ resumeAttempts: ((current.resumeAttempts as number) ?? 0) + 1 }),
+      {
+        // Commits after this call's second read, i.e. inside its CAS window.
+        afterRead: async () => {
+          await db
+            .update(runs)
+            .set({ executionMetadata: { resumeAttempts: 0, liveChatId: 'sess_other' } })
+            .where(eq(runs.id, 'run_1'))
+        },
+      },
+    )
+    const stored = (await loadRow())?.executionMetadata as Record<string, unknown>
+    // The concurrent writer's field must survive rather than be clobbered.
+    expect(stored.liveChatId).toBe('sess_other')
+    expect(stored.resumeAttempts).toBe(1)
+  })
+
   it('reports false for a run that no longer exists', async () => {
     expect(await mergeExecutionMetadata('run_missing', () => ({ liveChatId: 'x' }))).toBe(false)
   })

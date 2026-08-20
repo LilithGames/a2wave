@@ -1,9 +1,9 @@
 import { and, asc, count, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
-import type { TransactionHandle } from '../db/transaction.js'
+import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { processInstanceId } from '../lib/process-instance.js'
-import type { FailureReason } from '../lib/run-failure-reasons.js'
+import { FAILURE_REASONS, type FailureReason } from '../lib/run-failure-reasons.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import {
   activateScmWorkload,
@@ -126,20 +126,35 @@ export const taskQueueDb: TaskQueueDb = {
   },
 
   async requeueForResume(runId: string): Promise<void> {
-    await db
-      .update(runs)
-      .set({
-        status: 'queued',
-        // The interruption is being resumed, not reported: a leftover error
-        // would be re-read as the run's verdict on its next execution.
-        result: null,
-        // Ownership describes a running run, and this process is not the one
-        // that claimed it. Left set, the row matches the orphaned-run reaper's
-        // dead-owner predicate and gets settled out from under the resume.
-        ownerInstanceId: null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+    await withTransaction(async (tx) => {
+      const requeued = await tx
+        .update(runs)
+        .set({
+          status: 'queued',
+          // The interruption is being resumed, not reported: a leftover error
+          // would be re-read as the run's verdict on its next execution.
+          result: null,
+          // Ownership describes a running run, and this process is not the one
+          // that claimed it. Left set, the row matches the orphaned-run
+          // reaper's dead-owner predicate and gets settled out from under the
+          // resume.
+          ownerInstanceId: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .returning({ id: runs.id })
+      // Only when this call made the transition; otherwise another replica
+      // already settled the run and its steps are not ours to touch.
+      if (requeued.length === 0) return
+
+      // The killed process left its step 'running'. The resumed execution
+      // appends a new step, so leaving this one would strand it forever and
+      // make the run read as permanently in-flight in the UI.
+      await tx
+        .update(runSteps)
+        .set({ status: 'failed', output: { error: FAILURE_REASONS.SERVER_RESTART_DURING_EXEC } })
+        .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
+    })
   },
 
   async admitRun(agentId: string, runId: string, maxConcurrency: number) {

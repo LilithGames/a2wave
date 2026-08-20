@@ -8,6 +8,17 @@ import { decideResume } from './resume-decision.js'
 /** Metadata key counting how many times this run has already been resumed. */
 export const RESUME_ATTEMPTS_KEY = 'resumeAttempts'
 
+/**
+ * Metadata key marking a run recovery requeued to be continued.
+ *
+ * The interruption has to be recorded somewhere that survives the handoff.
+ * Recovery clears `result` on requeue — deliberately, so the resumed run is not
+ * judged by the old error — and the two halves run in different processes, so
+ * the assumed code recovery passes in-memory cannot reach execution. Marking
+ * the metadata instead keeps the fact next to the session id it qualifies.
+ */
+export const RESUME_PENDING_KEY = 'resumePending'
+
 function readFailureCode(result: unknown): string {
   // Startup recovery and the reaper write a structured { code } object; normal
   // execution failures write a free-form string, which is never resumable.
@@ -65,7 +76,12 @@ export function resumeChatIdFromRow(
   assumeFailureCode?: string,
 ): string | null {
   const metadata = row.executionMetadata as
-    | { liveChatId?: unknown; resumeAttempts?: unknown; oauthResetSession?: unknown }
+    | {
+        liveChatId?: unknown
+        resumeAttempts?: unknown
+        oauthResetSession?: unknown
+        resumePending?: unknown
+      }
     | null
     | undefined
 
@@ -73,9 +89,14 @@ export function resumeChatIdFromRow(
   const decision = decideResume({
     liveChatId: typeof metadata?.liveChatId === 'string' ? metadata.liveChatId : null,
     resumeAttempts: typeof spent === 'number' ? spent : 0,
-    // The caller's assumption wins when it has one: recovery knows the code it
-    // is about to write, which the row does not carry yet.
-    failureCode: assumeFailureCode ?? readFailureCode(row.result),
+    // Three sources, in order of how directly they know the answer: the
+    // caller's assumption (recovery, which holds the code it is about to
+    // write), the durable mark recovery left behind (execution, after the
+    // requeue cleared `result`), then the row's own settled verdict.
+    failureCode:
+      assumeFailureCode ||
+      (typeof metadata?.resumePending === 'string' ? metadata.resumePending : '') ||
+      readFailureCode(row.result),
     agentMissing: !row.initiatorAgentId,
     sessionResetRequested: metadata?.oauthResetSession === true,
   })
@@ -92,11 +113,27 @@ export function resumeChatIdFromRow(
 }
 
 /**
- * Count a resume against this run's budget.
+ * Mark a run as requeued-for-resume, durably.
+ *
+ * Called by recovery just before the requeue clears `result`. Without it the
+ * feature defeats itself: the resumed execution runs in a different process, so
+ * the code recovery holds in memory cannot reach it, and the row it re-reads no
+ * longer carries one.
+ */
+export async function markRunForResume(runId: string, failureCode: string): Promise<void> {
+  await mergeExecutionMetadata(runId, () => ({ [RESUME_PENDING_KEY]: failureCode }))
+}
+
+/**
+ * Count a resume against this run's budget and consume the pending mark.
  *
  * Recorded before the attempt runs, not after: a resume that crashes the
  * process again must still have consumed its attempt, or the ceiling never
  * converges and a reproducible crash loops forever.
+ *
+ * The mark is cleared in the same write. It describes one requeue, and leaving
+ * it set would make every later turn of this conversation row look like a
+ * resume of an interruption that has already been handled.
  */
 export async function recordResumeAttempt(runId: string): Promise<void> {
   // Shares the metadata merge with persistLiveSessionId: this column has
@@ -105,6 +142,9 @@ export async function recordResumeAttempt(runId: string): Promise<void> {
   // never converges.
   await mergeExecutionMetadata(runId, (current) => {
     const spent = current[RESUME_ATTEMPTS_KEY]
-    return { [RESUME_ATTEMPTS_KEY]: (typeof spent === 'number' ? spent : 0) + 1 }
+    return {
+      [RESUME_ATTEMPTS_KEY]: (typeof spent === 'number' ? spent : 0) + 1,
+      [RESUME_PENDING_KEY]: undefined,
+    }
   })
 }
