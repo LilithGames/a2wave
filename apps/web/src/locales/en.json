@@ -2608,7 +2608,7 @@
     "never": "Never used",
     "sessionTtl": "Session token lifetime",
     "sessionTtlValue": "{{days}} day(s)",
-    "sessionTtlHint": "Applies to browser and login-issued tokens. Set by the AUTH_SESSION_TTL_DAYS environment variable and requires a restart — it is deliberately not editable here.",
+    "sessionTtlHint": "Applies to browser sign-ins and login-issued tokens — <b>not</b> to the CLI tokens above, which use the expiry you pick when creating each one. Set by the AUTH_SESSION_TTL_DAYS environment variable and requires a restart; it is deliberately not editable here.",
     "createDesc": "The token is shown once, immediately after it is created.",
     "nameHint": "Used to identify this token later — a machine or job name works well.",
     "colStatus": "Status",
@@ -2620,6 +2620,7 @@
       "expired": "Expired"
     },
     "pageDesc": "Tokens for the a2wave CLI, CI jobs, and scripts. Each one is yours alone and can be deleted on its own.",
-    "submit": "Create token"
+    "submit": "Create token",
+    "copyFailed": "Could not copy. Select the token and copy it manually."
   }
 }

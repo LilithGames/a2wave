@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders, screen, waitFor } from '@/test/render'
 import { CliTokensCard } from '../cli-tokens-card'
 
-const { apiGetMock, apiPostMock, apiDeleteMock, confirmMock } = vi.hoisted(() => ({
+const { apiGetMock, apiPostMock, apiDeleteMock, confirmMock, copyTextMock } = vi.hoisted(() => ({
+  copyTextMock: vi.fn(),
   apiGetMock: vi.fn(),
   apiPostMock: vi.fn(),
   apiDeleteMock: vi.fn(),
@@ -17,6 +18,8 @@ vi.mock('@/lib/api', () => ({
     delete: (path: string) => apiDeleteMock(path),
   },
 }))
+
+vi.mock('@/lib/clipboard', () => ({ copyText: (t: string) => copyTextMock(t) }))
 
 vi.mock('@/lib/confirm', () => ({
   confirm: (opts: { onOk?: () => unknown }) => confirmMock(opts),
@@ -50,6 +53,7 @@ beforeEach(() => {
   apiDeleteMock.mockReset().mockResolvedValue({ data: {} })
   // Run the confirmed action straight away so the destructive path is exercised.
   confirmMock.mockReset().mockImplementation((opts: { onOk?: () => unknown }) => opts.onOk?.())
+  copyTextMock.mockReset().mockResolvedValue(true)
 })
 
 describe('CliTokensCard', () => {
@@ -74,6 +78,27 @@ describe('CliTokensCard', () => {
     await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
     expect(await screen.findByText('a2wc_PLAINTEXT_SECRET')).toBeInTheDocument()
     expect(screen.getByText(/不会再次显示/)).toBeInTheDocument()
+  })
+
+  it('confirms the copy succeeded, so the user knows the secret is safe to lose', async () => {
+    renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
+    await userEvent.type(await screen.findByLabelText(/名称/), 'CI')
+    await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /复制/ }))
+    expect(copyTextMock).toHaveBeenCalledWith('a2wc_PLAINTEXT_SECRET')
+    expect(await screen.findByText('已复制')).toBeInTheDocument()
+  })
+
+  it('does not claim success when the copy actually failed', async () => {
+    // The token is unrecoverable; a false success sends the user away empty-handed.
+    copyTextMock.mockResolvedValue(false)
+    renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /新建令牌/ }))
+    await userEvent.type(await screen.findByLabelText(/名称/), 'CI')
+    await userEvent.click(screen.getByRole('button', { name: /^创建令牌$/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /复制/ }))
+    expect(screen.queryByText('已复制')).not.toBeInTheDocument()
   })
 
   it('refuses to create a nameless token', async () => {

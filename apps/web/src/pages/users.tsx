@@ -37,6 +37,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { message, modal } from '@/lib/antd-static'
 import { api } from '@/lib/api'
 import { formatApiError } from '@/lib/api-error'
+import { copyText } from '@/lib/clipboard'
 import { confirm } from '@/lib/confirm'
 
 interface User {
@@ -428,10 +429,11 @@ function InvitationsDrawer({
   })
 
   const copyLink = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(invitationUrl(code))
+    // Via copyText: navigator.clipboard is absent on a plain-HTTP origin, where this
+    // used to report a failure it could actually have avoided.
+    if (await copyText(invitationUrl(code))) {
       message.success(t('users.inviteCopied'))
-    } catch {
+    } else {
       message.error(t('users.inviteCopyFailed'))
     }
   }
@@ -728,11 +730,10 @@ function InvitationLinkBox({ invitation }: { invitation: Invitation }) {
   const url = invitationUrl(invitation.code)
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(url)
+    if (await copyText(url)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
+    } else {
       message.error(t('users.inviteCopyFailed'))
     }
   }

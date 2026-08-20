@@ -3,7 +3,7 @@ import { Table, Tag, Tooltip } from 'antd'
 import dayjs from 'dayjs'
 import { Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -15,8 +15,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { message } from '@/lib/antd-static'
 import { api } from '@/lib/api'
 import { formatApiError } from '@/lib/api-error'
+import { copyText } from '@/lib/clipboard'
 import { confirm } from '@/lib/confirm'
 
 interface CliToken {
@@ -187,7 +189,12 @@ export function CliTokensCard() {
                 {t('cli.sessionTtlValue', { days: policy.sessionTtlDays })}
               </span>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">{t('cli.sessionTtlHint')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              <Trans
+                i18nKey="cli.sessionTtlHint"
+                components={{ b: <strong className="font-medium text-foreground" /> }}
+              />
+            </p>
           </div>
         )}
       </CardContent>
@@ -261,9 +268,14 @@ function CreateTokenDialog({
 
   const handleCopy = async () => {
     if (!issued) return
-    await navigator.clipboard.writeText(issued)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    // Report the real outcome: this value is unrecoverable, so a success state on a
+    // copy that silently failed would send the user away empty-handed.
+    if (await copyText(issued)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } else {
+      message.error(t('cli.copyFailed'))
+    }
   }
 
   return (
@@ -278,11 +290,22 @@ function CreateTokenDialog({
 
         {issued ? (
           <div className="mt-4 flex items-center gap-2">
-            <code className="flex-1 break-all rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
+            {/* One line, scrollable: a 48-character secret wrapped to two lines made
+                the dialog lurch and read as if the value itself were malformed. */}
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
               {issued}
             </code>
-            <Button variant="outline" onClick={handleCopy} aria-label={t('cli.copy')}>
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            <Button
+              variant="outline"
+              onClick={handleCopy}
+              aria-label={t('cli.copy')}
+              className="shrink-0"
+            >
+              {copied ? (
+                <Check className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
               {copied ? t('cli.copied') : t('cli.copy')}
             </Button>
           </div>
