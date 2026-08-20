@@ -827,6 +827,13 @@
       "when": 1787200522854,
       "tag": "0117_silly_corsair",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "6",
+      "when": 1787209251849,
+      "tag": "0118_steady_celestials",
+      "breakpoints": true
     }
   ]
 }

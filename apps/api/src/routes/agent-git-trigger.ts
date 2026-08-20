@@ -11,6 +11,7 @@ import { discordConnectionManager } from '../lib/discord-service.js'
 import type { DiagnoseSeverity } from '../lib/feishu-diagnose.js'
 import { probeGitTriggerCli } from '../lib/git-trigger-cli.js'
 import { gitTriggerManager } from '../lib/git-trigger-manager.js'
+import { qqOfficialConnectionManager } from '../lib/qq-official-service.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
 
 type AgentRow = typeof agents.$inferSelect
@@ -82,10 +83,20 @@ export function collectNativeChatConnectionChecks(agent: AgentRow): Array<{
       registered: discordConnectionManager.isRegistered(agent.id),
       open: discordConnectionManager.isSocketOpen(agent.id),
     },
+    {
+      channel: 'qq_official' as const,
+      configured: Boolean(agent.qqOfficialConfig),
+      registered: qqOfficialConnectionManager.isRegistered(agent.id),
+      open: qqOfficialConnectionManager.isSocketOpen(agent.id),
+    },
   ]
   for (const entry of entries) {
     if (!channels.includes(entry.channel)) continue
-    const label = entry.channel === 'slack' ? 'Slack' : 'Discord'
+    const label = {
+      slack: 'Slack',
+      discord: 'Discord',
+      qq_official: 'QQ Official',
+    }[entry.channel]
     if (!entry.configured) {
       checks.push({
         id: `${entry.channel}_config_missing`,

@@ -80,6 +80,7 @@ export function resumeChatIdFromRow(
         liveChatId?: unknown
         resumeAttempts?: unknown
         oauthResetSession?: unknown
+        nativeChatResetSession?: unknown
         resumePending?: unknown
       }
     | null
@@ -98,7 +99,8 @@ export function resumeChatIdFromRow(
       (typeof metadata?.resumePending === 'string' ? metadata.resumePending : '') ||
       readFailureCode(row.result),
     agentMissing: !row.initiatorAgentId,
-    sessionResetRequested: metadata?.oauthResetSession === true,
+    sessionResetRequested:
+      metadata?.oauthResetSession === true || metadata?.nativeChatResetSession === true,
   })
 
   // A corrupt counter disables resume for this run permanently, which is the

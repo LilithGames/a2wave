@@ -116,6 +116,30 @@ export const discordChannelInfoSchema = z.object({
 })
 export type DiscordChannelInfo = z.infer<typeof discordChannelInfoSchema>
 
+// ── Channel info: QQ Official ────────────────────────────────────────────────
+const qqOfficialChannelInfoBase = {
+  app_id: z.string().min(1),
+  message_id: z.string().min(1),
+  sender_open_id: z.string().min(1),
+}
+
+export const qqOfficialChannelInfoSchema = z.discriminatedUnion('scene', [
+  z.object({
+    ...qqOfficialChannelInfoBase,
+    scene: z.literal('group'),
+    group_open_id: z.string().min(1),
+    /** QQ GROUP_AT_MESSAGE_CREATE author.member_openid. */
+    member_openid: z.string().min(1).optional(),
+    /** QQ display name when the Gateway includes author.username. */
+    username: z.string().min(1).optional(),
+  }),
+  z.object({
+    ...qqOfficialChannelInfoBase,
+    scene: z.literal('c2c'),
+  }),
+])
+export type QQOfficialChannelInfo = z.infer<typeof qqOfficialChannelInfoSchema>
+
 // ── Channel info: schedule ────────────────────────────────────────────────────
 export const scheduleChannelInfoSchema = z.object({
   schedule_id: z.string().optional(),
@@ -206,6 +230,12 @@ export const runChannelContextSchema = z.discriminatedUnion('channel_type', [
     display_name: z.string().min(1).optional(),
   }),
   z.object({
+    channel_type: z.literal('qq_official'),
+    channel_info: qqOfficialChannelInfoSchema,
+    user_info: userInfoSchema.nullable(),
+    display_name: z.string().min(1).optional(),
+  }),
+  z.object({
     channel_type: z.literal('schedule'),
     channel_info: scheduleChannelInfoSchema,
     user_info: userInfoSchema.nullable(),
@@ -250,6 +280,10 @@ export type RunChannelContextA2A = Extract<RunChannelContext, { channel_type: 'a
 export type RunChannelContextFeishu = Extract<RunChannelContext, { channel_type: 'feishu' }>
 export type RunChannelContextSlack = Extract<RunChannelContext, { channel_type: 'slack' }>
 export type RunChannelContextDiscord = Extract<RunChannelContext, { channel_type: 'discord' }>
+export type RunChannelContextQQOfficial = Extract<
+  RunChannelContext,
+  { channel_type: 'qq_official' }
+>
 export type RunChannelContextSchedule = Extract<RunChannelContext, { channel_type: 'schedule' }>
 export type RunChannelContextDebug = Extract<RunChannelContext, { channel_type: 'debug' }>
 export type RunChannelContextOAuth = Extract<RunChannelContext, { channel_type: 'oauth' }>

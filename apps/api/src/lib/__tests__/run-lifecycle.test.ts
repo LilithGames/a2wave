@@ -277,11 +277,17 @@ vi.mock('../execute-chat-run.js', () => ({
 
 const mockSendSlackResultByContext = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const mockSendDiscordResultByContext = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const mockSendQQOfficialResultByContext = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 vi.mock('../slack-service.js', () => ({
   slackConnectionManager: { sendRunResultByContext: mockSendSlackResultByContext },
 }))
 vi.mock('../discord-service.js', () => ({
   discordConnectionManager: { sendRunResultByContext: mockSendDiscordResultByContext },
+}))
+vi.mock('../qq-official-service.js', () => ({
+  qqOfficialConnectionManager: {
+    sendRunResultByContext: mockSendQQOfficialResultByContext,
+  },
 }))
 
 vi.mock('../artifact-storage.js', () => ({
@@ -443,6 +449,37 @@ describe('finishRunSuccess', () => {
     expect(agentChatContent()).toContain(`run_id=${runId}`)
     await vi.waitFor(() => {
       expect(mockSendDiscordResultByContext).toHaveBeenCalledWith(
+        agentId,
+        channel,
+        expect.stringContaining(`run_id=${runId}`),
+        [],
+      )
+    })
+  })
+
+  it('persists and delivers an empty QQ Official result as a non-sensitive fallback', async () => {
+    const channel = {
+      channel_type: 'qq_official',
+      channel_info: {
+        app_id: '102000000',
+        scene: 'c2c',
+        message_id: 'M123',
+        sender_open_id: 'U123',
+      },
+      user_info: null,
+    }
+    mockDbGet.mockReturnValueOnce({ input: { context: { channel } } })
+
+    await finishRunSuccess(baseParams, {
+      success: true,
+      output: '',
+      chatId: undefined,
+      durationMs: 0,
+    })
+
+    expect(agentChatContent()).toContain(`run_id=${runId}`)
+    await vi.waitFor(() => {
+      expect(mockSendQQOfficialResultByContext).toHaveBeenCalledWith(
         agentId,
         channel,
         expect.stringContaining(`run_id=${runId}`),
@@ -1017,6 +1054,36 @@ describe('finishRunError', () => {
       )
     })
     expect(mockSendDiscordResultByContext.mock.calls[0]?.[2]).not.toContain(
+      'secret provider failure',
+    )
+  })
+
+  it('notifies QQ Official with a safe fallback when execution fails', async () => {
+    const channel = {
+      channel_type: 'qq_official',
+      channel_info: {
+        app_id: '102000000',
+        scene: 'c2c',
+        message_id: 'M123',
+        sender_open_id: 'U123',
+      },
+      user_info: null,
+    }
+    mockDbGet
+      .mockReturnValueOnce({ input: { context: { channel } } })
+      .mockReturnValueOnce({ name: 'Test Agent' })
+
+    await finishRunError(baseParams, new Error('secret provider failure'))
+
+    await vi.waitFor(() => {
+      expect(mockSendQQOfficialResultByContext).toHaveBeenCalledWith(
+        agentId,
+        channel,
+        expect.stringContaining(`run_id=${runId}`),
+        [],
+      )
+    })
+    expect(mockSendQQOfficialResultByContext.mock.calls[0]?.[2]).not.toContain(
       'secret provider failure',
     )
   })

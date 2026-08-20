@@ -1,11 +1,11 @@
+import { describe, expect, it } from 'vitest'
 import en from '@/locales/en.json'
 import zh from '@/locales/zh.json'
-import { describe, expect, it } from 'vitest'
 import {
   CHANNEL_FILTERS,
   CHANNEL_REGISTRY,
-  VALID_PUBLISH_TABS,
   isChannelKey,
+  VALID_PUBLISH_TABS,
 } from '../channel-registry'
 
 /** Resolves a dotted i18n key against a locale bundle. */
@@ -17,9 +17,9 @@ function lookup(bundle: Record<string, unknown>, dotted: string): unknown {
 }
 
 describe('channel registry', () => {
-  it('covers all ten publish channels exactly once', () => {
-    expect(CHANNEL_REGISTRY).toHaveLength(10)
-    expect(new Set(CHANNEL_REGISTRY.map((c) => c.key)).size).toBe(10)
+  it('covers all eleven publish channels exactly once', () => {
+    expect(CHANNEL_REGISTRY).toHaveLength(11)
+    expect(new Set(CHANNEL_REGISTRY.map((c) => c.key)).size).toBe(11)
     expect([...VALID_PUBLISH_TABS].sort()).toEqual(
       [
         'a2a',
@@ -30,6 +30,7 @@ describe('channel registry', () => {
         'gh',
         'glab',
         'oauth',
+        'qq_official',
         'schedule',
         'slack',
       ].sort(),

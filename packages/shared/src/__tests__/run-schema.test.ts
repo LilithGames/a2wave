@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isActiveRunStatus, runSchema, runWithAgentSchema } from '../schemas/run.js'
+import {
+  isActiveRunStatus,
+  runSchema,
+  runTriggerSourceEnum,
+  runWithAgentSchema,
+} from '../schemas/run.js'
 
 const BASE_RUN = {
   id: 'run_1',
@@ -10,6 +15,9 @@ const BASE_RUN = {
 }
 
 describe('run caller provenance', () => {
+  it('accepts QQ Official as a trigger source', () => {
+    expect(runTriggerSourceEnum.parse('qq_official')).toBe('qq_official')
+  })
   it('preserves the immediate caller Agent name on Run contracts', () => {
     expect(
       runSchema.parse({

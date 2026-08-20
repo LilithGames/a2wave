@@ -3,7 +3,8 @@
   "literals": [
     "E2eTest123@",
     "-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----",
-    "ops-script-placeholder-secret-unused"
+    "ops-script-placeholder-secret-unused",
+    "appSecret: resolveMaskedChannelSecret("
   ],
   "paths": []
 }

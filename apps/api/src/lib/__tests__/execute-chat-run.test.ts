@@ -92,6 +92,7 @@ vi.mock('../../db/schema.js', () => ({
     triggerSessionId: 'runs.triggerSessionId',
     executionMetadata: 'runs.executionMetadata',
     createdAt: 'runs.createdAt',
+    updatedAt: 'runs.updatedAt',
   },
   runSteps: { runId: 'runSteps.runId', order: 'runSteps.order' },
   chatMessages: {},
@@ -866,6 +867,248 @@ describe('executeChatRun', () => {
       | undefined
     expect(stepInsert?.input?.context).toEqual(nativeChatContext)
     expect(mockUpdateSet).toHaveBeenCalledWith({ executionMetadata: null })
+  })
+
+  it('recovers QQ Official conversation context from the previous completed run', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'c2c',
+          message_id: 'message-2',
+          sender_open_id: 'user-1',
+        },
+        user_info: null,
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:c2c:user-1',
+        executionMetadata: { nativeChatContext },
+      },
+      {
+        result: { chatId: 'chat_qq_recovered' },
+        createdAt: new Date('2026-01-01T22:00:00.000Z'),
+      },
+      { createdAt: new Date('2026-01-01T23:00:00.000Z') },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        chatId: 'chat_qq_recovered',
+        context: nativeChatContext,
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('starts a new QQ C2C session after two hours of inactivity', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'c2c',
+          message_id: 'message-2',
+          sender_open_id: 'user-1',
+        },
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:c2c:user-1',
+        executionMetadata: { nativeChatContext },
+      },
+      {
+        result: { chatId: 'chat_expired' },
+        createdAt: new Date('2026-01-01T21:00:00.000Z'),
+      },
+      { createdAt: new Date('2026-01-01T21:59:59.999Z') },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chatId: undefined }),
+      expect.any(Object),
+    )
+  })
+
+  it('continues a QQ group session within eight hours of inactivity', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'group',
+          message_id: 'message-2',
+          sender_open_id: 'member-2',
+          member_openid: 'member-2',
+          username: 'Bob',
+          group_open_id: 'group-1',
+        },
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:group:group-1',
+        executionMetadata: { nativeChatContext },
+      },
+      {
+        result: { chatId: 'chat_group' },
+        createdAt: new Date('2026-01-01T15:00:00.000Z'),
+      },
+      { createdAt: new Date('2026-01-01T16:00:00.000Z') },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chatId: 'chat_group' }),
+      expect.any(Object),
+    )
+  })
+
+  it('starts a new QQ group session after eight hours of inactivity', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'group',
+          message_id: 'message-2',
+          sender_open_id: 'member-2',
+          member_openid: 'member-2',
+          username: 'Bob',
+          group_open_id: 'group-1',
+        },
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:group:group-1',
+        executionMetadata: { nativeChatContext },
+      },
+      {
+        result: { chatId: 'chat_group_expired' },
+        createdAt: new Date('2026-01-01T15:00:00.000Z'),
+      },
+      { createdAt: new Date('2026-01-01T15:59:59.999Z') },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chatId: undefined }),
+      expect.any(Object),
+    )
+  })
+
+  it('keeps a QQ group session active after a recent failed user message', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'group',
+          message_id: 'message-3',
+          sender_open_id: 'member-3',
+          member_openid: 'member-3',
+          username: 'Carol',
+          group_open_id: 'group-1',
+        },
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:group:group-1',
+        executionMetadata: { nativeChatContext },
+      },
+      {
+        result: { chatId: 'chat_group' },
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+      { createdAt: new Date('2026-01-01T23:45:00.000Z') },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chatId: 'chat_group' }),
+      expect.any(Object),
+    )
+  })
+
+  it('starts a new QQ C2C session when /new was persisted before queueing', async () => {
+    const nativeChatContext = {
+      channel: {
+        channel_type: 'qq_official',
+        channel_info: {
+          app_id: '102000000',
+          scene: 'c2c',
+          message_id: 'message-new',
+          sender_open_id: 'user-1',
+        },
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      {
+        ...baseRun,
+        triggerSource: 'qq_official',
+        triggerSessionId: '102000000:c2c:user-1',
+        executionMetadata: { nativeChatContext, nativeChatResetSession: true },
+      },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ chatId: undefined }),
+      expect.any(Object),
+    )
   })
 
   it('resolves persisted native attachment ids and materializes their staged refs', async () => {

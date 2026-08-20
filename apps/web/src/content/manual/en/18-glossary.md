@@ -16,7 +16,7 @@ Quick reference of a2wave's core terms. Click a link to go to the corresponding 
 - **Run** — a single Agent execution record, with states pending/queued/running/completed/failed/cancelled. See [Runs](/wiki/runs).
 - **Run Step** — an execution step within a single Run (multi-step tasks). See [Runs](/wiki/runs).
 - **Artifacts** — files generated during a Run that can be downloaded or shared online (web page / Markdown / directory). See [Artifacts & Online Sharing](/wiki/artifacts).
-- **Trigger source (triggerSource)** — a Run's origin: debug / api / feishu / slack / discord / a2a / schedule / oauth / chat_app. See [Trigger Methods](/wiki/triggers).
+- **Trigger source (triggerSource)** — a Run's origin: debug / api / feishu / slack / discord / qq_official / a2a / schedule / oauth / chat_app. See [Trigger Methods](/wiki/triggers).
 - **Gateway** — the API entry point for externally invoking published Agents (`/api/gateway/...`). See [Trigger Methods](/wiki/triggers).
 - **A2A** — the Agent-to-Agent protocol, for external Agents to discover and invoke this platform's Agents (JSON-RPC). See [Trigger Methods](/wiki/triggers).
 - **System Prompt** — the Agent's core persona and rules, supporting Mustache variables. See [Agent Management](/wiki/agents).

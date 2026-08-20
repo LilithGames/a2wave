@@ -8,6 +8,7 @@ import {
   type gitTriggerRepoStateSchema,
   type glabTriggerConfigSchema,
   PROVIDER_KINDS,
+  type qqOfficialConfigSchema,
   type RemoteSkillSource,
   SKILL_DEFAULTS,
   type scheduleConfigSchema,
@@ -558,6 +559,10 @@ export const agents = sqliteTable(
     discordConfig: text('discord_config', { mode: 'json' }).$type<
       z.input<typeof discordConfigSchema>
     >(),
+    /** QQ Official Bot WebSocket Gateway configuration JSON. */
+    qqOfficialConfig: text('qq_official_config', { mode: 'json' }).$type<
+      z.input<typeof qqOfficialConfigSchema>
+    >(),
     /** Chat app page presentation config JSON (copy only — never credentials). */
     chatAppConfig: text('chat_app_config', { mode: 'json' }).$type<
       z.input<typeof chatAppConfigSchema>
@@ -671,6 +676,8 @@ export const runs = sqliteTable(
       oauthEngineType?: string
       oauthPreviousChatId?: string
       oauthResetSession?: boolean
+      /** Native chat command requested a new provider conversation for this turn. */
+      nativeChatResetSession?: boolean
       /**
        * Provider session id of a run that is still executing, recorded as the
        * CLI announces it so a run killed mid-flight still names its resume
@@ -747,9 +754,9 @@ export const runs = sqliteTable(
          */
         queued?: boolean
       }
-      /** Persisted Slack/Discord context for queued and restart execution. */
+      /** Persisted native chat context for queued and restart execution. */
       nativeChatContext?: Record<string, unknown>
-      /** Durable remote identifiers resolved only after native event reservation/acknowledgement. */
+      /** Durable vendor identifiers resolved only after native event reservation/acknowledgement. */
       nativeAttachments?: (
         | {
             source: 'slack'
@@ -777,6 +784,7 @@ export const runs = sqliteTable(
         'feishu',
         'slack',
         'discord',
+        'qq_official',
         'a2a',
         'schedule',
         'oauth',
@@ -856,7 +864,9 @@ export const runs = sqliteTable(
       ),
     nativeChatEventUnique: uniqueIndex('runs_native_chat_event_unique')
       .on(table.initiatorAgentId, table.triggerSource, table.triggerEventId)
-      .where(sql`trigger_source IN ('slack', 'discord') AND trigger_event_id IS NOT NULL`),
+      .where(
+        sql`trigger_source IN ('slack', 'discord', 'qq_official') AND trigger_event_id IS NOT NULL`,
+      ),
     userIdIdx: index('runs_user_id_idx').on(table.userId),
     // Per-agent time series (GET /agents/:id/stats/timeseries): every query is
     // `initiator_agent_id = ? AND created_at BETWEEN ? AND ?`. The single-column

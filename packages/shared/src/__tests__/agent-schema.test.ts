@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
   a2aRouteTargetSchema,
   agentSchema,
+  CHAT_APP_SUGGESTED_QUESTIONS_MAX,
   chatAppConfigSchema,
   createAgentInput,
   discordConfigSchema,
@@ -10,6 +10,7 @@ import {
   providerChainItemSchema,
   providerChainSchema,
   publishChannelEnum,
+  qqOfficialConfigSchema,
   scheduleConfigSchema,
   slackConfigSchema,
   updateAgentInput,
@@ -322,9 +323,10 @@ describe('schedule config schema compatibility', () => {
 })
 
 describe('native chat channel schemas', () => {
-  it('accepts Slack and Discord as publish channels', () => {
+  it('accepts native chat publish channels', () => {
     expect(publishChannelEnum.parse('slack')).toBe('slack')
     expect(publishChannelEnum.parse('discord')).toBe('discord')
+    expect(publishChannelEnum.parse('qq_official')).toBe('qq_official')
   })
 
   it('applies safe Slack trigger defaults', () => {
@@ -356,6 +358,27 @@ describe('native chat channel schemas', () => {
       dmReplyMode: 'reply',
       sendArtifactsAsFile: true,
     })
+  })
+
+  it('applies safe QQ Official WebSocket defaults', () => {
+    expect(qqOfficialConfigSchema.parse({ appId: '102000000', appSecret: 'secret' })).toEqual({
+      appId: '102000000',
+      appSecret: 'secret',
+      groupTriggerOnAt: true,
+      groupReplyMode: 'reply',
+      c2cReplyMode: 'reply',
+      sendArtifactsAsFile: true,
+    })
+  })
+
+  it('drops the retired QQ all-group-messages trigger option', () => {
+    expect(
+      qqOfficialConfigSchema.parse({
+        appId: '102000000',
+        appSecret: 'secret',
+        groupTriggerOnNewMessage: true,
+      }),
+    ).not.toHaveProperty('groupTriggerOnNewMessage')
   })
 })
 

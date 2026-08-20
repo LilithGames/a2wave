@@ -1,6 +1,6 @@
 # Trigger Methods
 
-a2wave currently provides **eight publish channels**: REST API, OAuth, A2A protocol, Feishu, Slack, Discord, scheduled trigger, and chat page. A single Agent can enable multiple at once. Slack and Discord currently provide text messaging through the same direct-connection model as Feishu and will later converge on a shared chat-channel adapter.
+a2wave currently provides **eleven publish channels**: REST API, OAuth, A2A protocol, Feishu, Slack, Discord, QQ Official Bot, scheduled trigger, chat page, GitLab trigger, and GitHub trigger. A single Agent can enable multiple at once.
 
 ## Managing channels on the Channels tab
 
@@ -22,7 +22,7 @@ Once configured, click **Publish / Update Channels** at the bottom of the page t
 
 ### Connection status for chat channels
 
-Feishu, Slack and Discord each hold their own **long connection** to the platform, so their cards show a live connection status labelled with the protocol each one speaks: **WebSocket** for Feishu, **Socket Mode** for Slack, and **Gateway** for Discord. With all three enabled at once, the protocol name is what tells you which connection to go and debug.
+Feishu, Slack, Discord, and QQ Official Bot each hold their own **long connection** to the platform, so their cards show a live status labelled with the protocol each one speaks: **WebSocket**, **Socket Mode**, **Gateway**, and **Official WebSocket**, respectively.
 
 | Status | Meaning |
 |--------|---------|
@@ -244,7 +244,29 @@ Discord Attachments are downloaded under the platform-wide attachment policy and
 
 ---
 
-## 5. Chat page
+## 5. QQ Official Bot
+
+This channel uses Tencent QQ's **official WebSocket Gateway only**. It does not use NapCat or OneBot and requires no public callback URL.
+
+Open the QQ Official Bot card on the Agent's Publish tab and prepare credentials in either way:
+
+1. **Create by QR code (recommended)**: click **Scan QR to create**, scan with mobile QQ, and confirm on Tencent's page. App ID and App Secret are filled into the form automatically. Save the config, switch the channel on, and publish.
+2. **Existing bot**: enter the App ID and App Secret of an existing bot from Tencent's QQ developer platform.
+
+The first release supports QQ group @ messages and QQ direct messages. Groups trigger only on @mention; ordinary group messages do not trigger the Agent. `/new` in a group is passed to the Agent as ordinary text and does not reset the session. QQ guild channels and guild direct messages are not supported yet.
+
+QQ group conversations share one session per bot and group, so messages from different members enter the same context. Every message provides the sender's `member_openid` and, when supplied by the QQ Gateway, `username`, allowing the Agent to distinguish the current speaker. A group session continues when the previous user message arrived no more than eight hours ago; the next message after more than eight hours starts a new session automatically.
+
+QQ direct-message sessions are maintained per bot and user. A session continues when the previous user message arrived no more than two hours ago; the next message after more than two hours starts a new session automatically. Send `/new` to start a new session immediately, or `/new <text>` to process `<text>` in that new session.
+
+Replies may reference the original message, send a new message, or be disabled. QQ passive-reply anchors expire quickly; when an Agent finishes after the anchor has expired, a2wave follows AstrBot's behavior and retries as a new message. QQ groups and direct messages can upload Agent artifacts through Tencent's media API. Incoming official attachments are downloaded under the platform-wide file type, count, and size limits and then handed to the Agent.
+
+> [!WARNING]
+> Within one API process, a QQ App ID can be held by only one Agent's official Gateway connection. Use a different QQ Official Bot for each Agent. App Secrets remain visible to the Agent's trusted owner and editors so they can maintain the channel; QR binding keys and completed plaintext secrets are never written to audit details.
+
+---
+
+## 6. Chat page
 
 Publish an Agent as a shareable chat page: its profile, status and creator on the left, a full conversation window on the right. Good for handing an Agent straight to a colleague without teaching them the console first.
 
@@ -278,7 +300,7 @@ Every conversation is written to run history with the source marked `Chat Page`,
 
 ---
 
-## 6. A2A Protocol
+## 7. A2A Protocol
 
 A2A (Agent-to-Agent) lets external Agent systems discover and invoke this platform's Agents, and lets this platform's Agents route to standards-compliant remote A2A services. The platform supports **A2A 1.0 JSON-RPC** and remains compatible with **A2A 0.3 JSON-RPC**.
 
@@ -348,7 +370,7 @@ When the parent Run is canceled or reaches its timeout, the router sends `Cancel
 
 ---
 
-## 7. Scheduled trigger
+## 8. Scheduled trigger
 
 Have an Agent automatically create and execute Runs at specified times on a Cron schedule (e.g. daily code review, weekly reports, inspections). Open the Schedule Trigger card's **Configure** dialog on the Channels tab:
 
@@ -372,7 +394,7 @@ Notes: minute-level precision; each Agent can be configured with multiple schedu
 
 ## Attachments (images and files)
 
-When messaging an Agent you can include images and documents. Feishu, Slack, and Discord automatically recognize images/files in a message; API, OAuth, and the Agent test UI use a **two-step upload**, while A2A uses protocol-native parts.
+When messaging an Agent you can include images and documents. Feishu, Slack, Discord, and QQ Official Bot automatically recognize images/files in a message; API, OAuth, and the Agent test UI use a **two-step upload**, while A2A uses protocol-native parts.
 
 **Two-step upload (API / OAuth / test UI)**
 

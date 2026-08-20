@@ -9,7 +9,7 @@
  * stays a draft until the user explicitly hits Publish.
  */
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 vi.mock('../../db/client.js', () => {
   const chain = {
@@ -68,6 +68,17 @@ const discordStart = vi.fn().mockResolvedValue(undefined)
 const discordStop = vi.fn().mockResolvedValue(undefined)
 vi.mock('../../lib/discord-service.js', () => ({
   discordConnectionManager: { start: discordStart, stop: discordStop },
+}))
+
+const qqOfficialStart = vi.fn().mockResolvedValue(undefined)
+const qqOfficialStop = vi.fn().mockResolvedValue(undefined)
+vi.mock('../../lib/qq-official-service.js', () => ({
+  qqOfficialConnectionManager: {
+    start: qqOfficialStart,
+    stop: qqOfficialStop,
+    isRegistered: vi.fn(() => false),
+    isSocketOpen: vi.fn(() => false),
+  },
 }))
 
 const scheduleStart = vi.fn()
@@ -184,6 +195,7 @@ const DRAFT_AGENT = {
   feishuConfig: null,
   slackConfig: null,
   discordConfig: null,
+  qqOfficialConfig: null,
   chatAppConfig: null,
   scheduleConfig: null,
   glabConfig: null,
@@ -462,6 +474,51 @@ describe('PATCH /agents/:id/channels/:channel', () => {
       appToken: 'xapp-stored',
       botToken: 'xoxb-stored',
     })
+  })
+
+  it('saves QQ Official config without publishing and masks the secret', async () => {
+    mockDb.select.mockReturnValue(makeSelectChain(DRAFT_AGENT))
+    const captured = mockUpdateCapturing(DRAFT_AGENT)
+
+    const res = await app.request('/agents/agt_1/channels/qq_official', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: { appId: '102000000', appSecret: 'secret-plain' } }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(captured.set.qqOfficialConfig).toMatchObject({
+      appId: '102000000',
+      appSecret: 'secret-plain',
+      groupTriggerOnAt: true,
+    })
+    expect(captured.set.publishStatus).toBeUndefined()
+    expect(await res.text()).not.toContain('secret-plain')
+    expect(qqOfficialStart).not.toHaveBeenCalled()
+  })
+
+  it('restores the masked QQ Official secret and restarts a live channel', async () => {
+    const live = {
+      ...DRAFT_AGENT,
+      publishStatus: 'published',
+      publishChannels: ['api', 'qq_official'],
+      qqOfficialConfig: { appId: '102000000', appSecret: 'stored-secret' },
+    }
+    mockDb.select.mockReturnValue(makeSelectChain(live))
+    const captured = mockUpdateCapturing(live)
+
+    const res = await app.request('/agents/agt_1/channels/qq_official', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: { appId: '102000000', appSecret: '********' } }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(captured.set.qqOfficialConfig).toMatchObject({ appSecret: 'stored-secret' })
+    expect(qqOfficialStart).toHaveBeenCalledWith(
+      'agt_1',
+      expect.objectContaining({ appSecret: 'stored-secret' }),
+    )
   })
 
   it('writes an audit entry', async () => {

@@ -18,6 +18,8 @@ function baseInput(overrides: Partial<ChannelReadinessInput> = {}): ChannelReadi
     slackBotToken: '',
     discordApplicationId: '',
     discordBotToken: '',
+    qqOfficialAppId: '',
+    qqOfficialAppSecret: '',
     oauthAccessMode: 'all_idaas_users',
     oauthAllowedEmails: [],
     scheduleConfigs: [],
