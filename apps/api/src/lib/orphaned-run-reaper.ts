@@ -180,12 +180,21 @@ async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<bo
   if (!deps.canResume || !deps.requeueRun) return false
   const code = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC.code
   try {
-    if (!(await deps.canResume(runId, code))) return false
+    if (!(await deps.canResume(runId, code))) {
+      // Logged, not silent: "resumed or re-ran?" is the only question worth
+      // asking of this pass in production, and without this line the two
+      // outcomes are indistinguishable after the fact — the re-run overwrites
+      // the very metadata that would have explained the decision.
+      logger.info({ runId }, 'orphaned-run-reaper: run is not resumable; failing it')
+      return false
+    }
     // Mark first, requeue second: the requeue clears `result`, and the resumed
     // execution runs in another process, so the code known here has to be
     // written down before it is erased.
     await deps.markForResume?.(runId, code)
-    return await deps.requeueRun(runId)
+    const requeued = await deps.requeueRun(runId)
+    logger.info({ runId, requeued }, 'orphaned-run-reaper: resume requeue attempted')
+    return requeued
   } catch (error) {
     logger.warn({ error, runId }, 'orphaned-run-reaper: resume failed; failing the run instead')
     return false

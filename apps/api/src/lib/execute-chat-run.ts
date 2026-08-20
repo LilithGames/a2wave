@@ -438,7 +438,26 @@ async function resolveQueuedChatId(run: typeof runs.$inferSelect): Promise<Queue
   const resumeChatId = resumeChatIdFromRow(run)
   if (resumeChatId) {
     await recordResumeAttempt(run.id)
+    logger.info({ runId: run.id, chatId: resumeChatId }, 'Resuming an interrupted run')
     return { chatId: resumeChatId, isResume: true }
+  }
+  // A run carrying a live session that still declines to resume is the case
+  // worth explaining: it means the work is about to be redone, and the reason
+  // lives in metadata that this very execution is about to overwrite.
+  {
+    const metadata = run.executionMetadata as Record<string, unknown> | null | undefined
+    if (typeof metadata?.liveChatId === 'string') {
+      logger.warn(
+        {
+          runId: run.id,
+          liveChatId: metadata.liveChatId,
+          resumePending: metadata.resumePending ?? null,
+          resumeAttempts: metadata.resumeAttempts ?? null,
+          hasResult: run.result != null,
+        },
+        'Run had a live session but is not resuming; the task will be redone',
+      )
+    }
   }
 
   if (!run.initiatorAgentId || !run.triggerSessionId) return NOT_A_RESUME
