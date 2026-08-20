@@ -21,6 +21,7 @@ import { logger } from './logger.js'
 import { resolveNativeChatAttachments } from './native-chat-attachments.js'
 import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
+import { recordResumeAttempt, resumeChatIdFromRow } from './resume-chat-id.js'
 import { retryUntilSuccess } from './retry-until-success.js'
 import { runWithLifecycle } from './run-launcher.js'
 import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
@@ -402,6 +403,19 @@ function extractPendingAttachments(
 }
 
 async function resolveQueuedChatId(run: typeof runs.$inferSelect): Promise<string | undefined> {
+  // An interrupted run continues from the session it already opened, whatever
+  // its trigger source. Checked before the per-source lookups below because
+  // those key off triggerSessionId, which an interrupted API/debug run may not
+  // have — and because replaying the prompt would repeat side effects the CLI
+  // has already committed.
+  // Read from the row already in hand rather than re-querying: this runs for
+  // every queued execution, and only a genuine resume costs a write.
+  const resumeChatId = resumeChatIdFromRow(run)
+  if (resumeChatId) {
+    await recordResumeAttempt(run.id)
+    return resumeChatId
+  }
+
   if (!run.initiatorAgentId || !run.triggerSessionId) return undefined
 
   if (run.triggerSource === 'oauth') {

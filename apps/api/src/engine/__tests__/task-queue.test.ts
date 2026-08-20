@@ -554,6 +554,68 @@ describe('recoverOnStartup', () => {
     expect(stats.runningAborted).toBe(2)
   })
 
+  it('requeues an interrupted run that can be resumed, instead of only failing it', async () => {
+    // The whole point of recording liveChatId: a deploy restart should continue
+    // the run from its provider session rather than abandoning the user's work.
+    const db = createMockDb({
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'running' ? [{ id: 'run_r', triggerSource: 'api', triggerSessionId: null }] : [],
+      ),
+    })
+    const onExecute = vi.fn()
+    const canResume = vi.fn().mockResolvedValue(true)
+
+    const stats = await recoverOnStartup(db, onExecute, () => ['agt_1'], { canResume })
+
+    expect(canResume).toHaveBeenCalledWith('run_r')
+    // Still settled as failed — the row is the record of the interrupted
+    // attempt — but requeued so the next turn resumes it.
+    expect(db.updateRunStatus).toHaveBeenCalledWith('run_r', 'queued')
+    expect(stats.runningResumed).toBe(1)
+    expect(stats.runningAborted).toBe(0)
+  })
+
+  it('falls back to failing an interrupted run that cannot be resumed', async () => {
+    const db = createMockDb({
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'running' ? [{ id: 'run_n', triggerSource: 'api', triggerSessionId: null }] : [],
+      ),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: vi.fn().mockResolvedValue(false),
+    })
+
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledWith(
+      'run_n',
+      FAILURE_REASONS.SERVER_RESTART_DURING_EXEC,
+    )
+    expect(stats.runningResumed).toBe(0)
+    expect(stats.runningAborted).toBe(1)
+  })
+
+  it('fails the run when the resume check itself throws', async () => {
+    // A resume decision that errors must not strand the row as 'running'; the
+    // existing fail path is the safe default.
+    const db = createMockDb({
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'running' ? [{ id: 'run_e', triggerSource: 'api', triggerSessionId: null }] : [],
+      ),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: vi.fn().mockRejectedValue(new Error('database is locked')),
+    })
+
+    expect(stats.runningAborted).toBe(1)
+  })
+
   it('marks orphaned pending Runs failed with PENDING_ORPHAN_ON_STARTUP', async () => {
     const db = createMockDb({
       getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
@@ -700,6 +762,7 @@ describe('recoverOnStartup', () => {
     expect(stats).toEqual({
       pendingOrphaned: 0,
       runningAborted: 0,
+      runningResumed: 0,
       queuedPromoted: 0,
       feishuQueuedReset: 0,
     })

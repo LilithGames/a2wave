@@ -686,6 +686,11 @@ export const runs = pgTable(
        */
       liveChatId?: string
       /**
+       * Resumes already spent on this run. Bounded by MAX_RESUME_ATTEMPTS so a
+       * crash that reproduces on resume cannot loop forever.
+       */
+      resumeAttempts?: number
+      /**
        * Attachment refs for the queued path (persisted, so they are not lost to TTL expiry or a
        * restart the way an in-memory-only pending context would be).
        * token = staged replay (consumption is authorized); uri = external http(s) replay (the A2A

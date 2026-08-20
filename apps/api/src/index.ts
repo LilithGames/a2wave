@@ -51,6 +51,7 @@ import { initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
 import { processInstanceId } from './lib/process-instance.js'
 import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
+import { resolveResumeChatId } from './lib/resume-chat-id.js'
 import { cleanupLegacyRuntimeGroupConfigs } from './lib/runtime-group-config.js'
 import { scheduleTriggerManager } from './lib/schedule-trigger.js'
 import {
@@ -679,6 +680,10 @@ void ensureAdminExists()
       async () => await (await db.select({ id: agents.id }).from(agents)).map((r) => r.id),
       {
         recoverInFlight: !isPostgres,
+        // A run that recorded the session it was already in is requeued and
+        // continued instead of abandoned, so a deploy restart does not throw
+        // away work in progress.
+        canResume: async (runId) => (await resolveResumeChatId(runId)) !== null,
         onRunFailed: async (run, reason) => {
           if (run.triggerSource === 'a2a' && run.triggerSessionId) {
             await recoveryA2aStore

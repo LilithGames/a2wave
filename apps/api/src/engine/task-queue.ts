@@ -1,3 +1,4 @@
+import { logger } from '../lib/logger.js'
 import type { FailureReason } from '../lib/run-failure-reasons.js'
 import { FAILURE_REASONS } from '../lib/run-failure-reasons.js'
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
@@ -320,11 +321,20 @@ export interface RecoveryHooks {
   onRunFailed?: (run: RunRow, reason: FailureReason) => Promise<void> | void
   /** False on PostgreSQL, where in-flight rows may belong to a healthy peer. */
   recoverInFlight?: boolean
+  /**
+   * Whether an interrupted run may continue from the session it already opened.
+   *
+   * Absent, every in-flight run is failed as before. Supplied, a run that
+   * recorded a session id is requeued instead, so a deploy restart continues
+   * the user's work rather than abandoning it.
+   */
+  canResume?: (runId: string) => Promise<boolean>
 }
 
 export interface RecoveryStats {
   pendingOrphaned: number
   runningAborted: number
+  runningResumed: number
   queuedPromoted: number
   feishuQueuedReset: number
 }
@@ -339,6 +349,7 @@ export async function recoverOnStartup(
   const stats: RecoveryStats = {
     pendingOrphaned: 0,
     runningAborted: 0,
+    runningResumed: 0,
     queuedPromoted: 0,
     feishuQueuedReset: 0,
   }
@@ -361,6 +372,24 @@ export async function recoverOnStartup(
     if (hooks.recoverInFlight !== false) {
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
+        // Requeue rather than abandon when the run recorded the session it was
+        // already in: the next turn continues from there instead of replaying a
+        // prompt whose side effects may already have landed.
+        let resumable = false
+        if (hooks.canResume) {
+          try {
+            resumable = await hooks.canResume(run.id)
+          } catch (error) {
+            // A resume decision that fails must not strand the row as
+            // 'running'; falling through to the fail path is the safe default.
+            logger.warn({ error, runId: run.id }, 'resume check failed; failing the run instead')
+          }
+        }
+        if (resumable) {
+          await db.updateRunStatus(run.id, 'queued')
+          stats.runningResumed++
+          continue
+        }
         await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
         stats.runningAborted++
       }
