@@ -12,6 +12,7 @@ const {
   retryPendingWorkspaceRemovalReleases,
   pruneDeadInstanceHeartbeats,
   reconcileAbandonedWorkspaceRemovals,
+  reapOrphanedRuns,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
@@ -24,6 +25,7 @@ const {
   retryPendingWorkspaceRemovalReleases: vi.fn(),
   pruneDeadInstanceHeartbeats: vi.fn(),
   reconcileAbandonedWorkspaceRemovals: vi.fn(),
+  reapOrphanedRuns: vi.fn(),
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
@@ -39,6 +41,7 @@ vi.mock('../scm-lease-sweeper.js', () => ({
   sweepOrphanedScmWorkloadLeases,
   failScmWorkloadsOfDeadInstances,
 }))
+vi.mock('../orphaned-run-reaper.js', () => ({ reapOrphanedRuns }))
 vi.mock('../scm-workspace-removal.js', () => ({ retryPendingWorkspaceRemovalReleases }))
 vi.mock('../scm-workspace-removal-reconciler.js', () => ({ reconcileAbandonedWorkspaceRemovals }))
 vi.mock('../instance-heartbeat.js', () => ({ pruneDeadInstanceHeartbeats }))
@@ -59,6 +62,7 @@ describe('startStaleLeaseSweeper', () => {
     retryPendingWorkspaceRemovalReleases.mockResolvedValue([])
     pruneDeadInstanceHeartbeats.mockResolvedValue(undefined)
     reconcileAbandonedWorkspaceRemovals.mockResolvedValue([])
+    reapOrphanedRuns.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -186,6 +190,46 @@ describe('startStaleLeaseSweeper', () => {
 
     expect(scheduleNextEvaluation).toHaveBeenCalledTimes(1)
     expect(scheduleNextEvaluation.mock.calls[0]?.[1]).toBe('agt_b')
+    stop()
+  })
+
+  it('nudges the run queue after reaping a run abandoned by a dead instance', async () => {
+    // Settling the row is only half the fix: the freed concurrency slot must
+    // also restart promotion. `scheduleNext` runs at boot and on completion,
+    // so a slot freed at any other moment leaves the queue parked until an
+    // unrelated trigger arrives — which is how a queue stays stuck for hours.
+    reapOrphanedRuns.mockResolvedValue([{ runId: 'run_1', agentId: 'agt_a' }])
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(scheduleNext).toHaveBeenCalledTimes(1)
+    expect(scheduleNext.mock.calls[0]?.[1]).toBe('agt_a')
+    stop()
+  })
+
+  it('nudges each Agent once when several of its runs are reaped', async () => {
+    reapOrphanedRuns.mockResolvedValue([
+      { runId: 'run_1', agentId: 'agt_a' },
+      { runId: 'run_2', agentId: 'agt_a' },
+      { runId: 'run_3', agentId: 'agt_b' },
+    ])
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(scheduleNext).toHaveBeenCalledTimes(2)
+    expect(scheduleNext.mock.calls.map((call) => call[1]).sort()).toEqual(['agt_a', 'agt_b'])
+    stop()
+  })
+
+  it('still runs later passes when the orphaned-run reaper throws', async () => {
+    reapOrphanedRuns.mockRejectedValue(new Error('reap failed'))
+    const stop = startStaleLeaseSweeper(1000)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(pruneDeadInstanceHeartbeats).toHaveBeenCalledTimes(1)
     stop()
   })
 

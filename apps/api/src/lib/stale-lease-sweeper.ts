@@ -10,6 +10,7 @@ import { runEvaluationTask } from '../routes/evaluation.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { pruneDeadInstanceHeartbeats } from './instance-heartbeat.js'
 import { logger } from './logger.js'
+import { reapOrphanedRuns } from './orphaned-run-reaper.js'
 import {
   failScmWorkloadsOfDeadInstances,
   sweepOrphanedScmWorkloadLeases,
@@ -115,6 +116,26 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
       }
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: workspace removal reconciliation failed')
+    }
+    // Runs abandoned by a crashed instance that hold no durable lease — the
+    // temp-workspace case the SCM reap above cannot see. PostgreSQL startup
+    // recovery skips in-flight rows on purpose, so without this pass such a
+    // run stays 'running' forever and keeps occupying its Agent's slot.
+    try {
+      const reapedRuns = await reapOrphanedRuns()
+      if (reapedRuns.length > 0) {
+        logger.warn(
+          { reaped: reapedRuns },
+          'stale-lease-sweeper: failed runs abandoned by a stopped instance',
+        )
+        // Settling frees a concurrency slot; nudge each Agent so queued work
+        // advances now instead of waiting for an unrelated trigger.
+        for (const agentId of new Set(reapedRuns.map((run) => run.agentId))) {
+          void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+        }
+      }
+    } catch (error) {
+      logger.error({ error }, 'stale-lease-sweeper: orphaned run reap failed')
     }
     try {
       await pruneDeadInstanceHeartbeats()

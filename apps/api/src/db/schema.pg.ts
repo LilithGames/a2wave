@@ -764,6 +764,17 @@ export const runs = pgTable(
     triggerEventId: text('trigger_event_id'),
     /** Actual working directory (worktree path or localPath) */
     workDir: text('work_dir'),
+    /**
+     * Instance that claimed this run for execution.
+     *
+     * The liveness mark for non-SCM runs. A durable SCM lease already carries
+     * ownership, but a temp-workspace run takes no lease, so nothing could
+     * prove its owner had died and a crashed replica left it 'running'
+     * forever. Written on the queued -> running claim and never cleared:
+     * settlement is by status, and a terminal row is out of the reaper's
+     * scope. NULL on rows predating this column, which are never reaped.
+     */
+    ownerInstanceId: text('owner_instance_id'),
     /** Worktree configuration JSON (name + optional branch + cleanup policy) */
     worktreeConfig: jsonb('worktree_config').$type<{
       name: string

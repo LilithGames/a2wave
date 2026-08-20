@@ -385,7 +385,8 @@ async function claimEvaluationForReap(taskId: string): Promise<boolean> {
   })
 }
 
-async function syncReapedRunExternalState(runId: string): Promise<void> {
+/** Shared with the orphaned-run reaper: both settle runs with identical semantics. */
+export async function syncReapedRunExternalState(runId: string): Promise<void> {
   const run = (
     await db
       .select({ triggerSource: runs.triggerSource, triggerSessionId: runs.triggerSessionId })
