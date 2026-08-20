@@ -136,3 +136,22 @@ describe('reapOrphanedRuns', () => {
     expect(await reapOrphanedRuns(d)).toEqual([{ runId: 'run_2', agentId: 'agt_2' }])
   })
 })
+
+describe('reapOrphanedRuns — startedAt is a lower bound on activity', () => {
+  it('does not reap a live owner even when the run was claimed before its boot', async () => {
+    // `startedAt` comes from runs.updatedAt, which advances on every write
+    // during execution rather than pinning the claim instant. That only ever
+    // moves the timestamp FORWARD, so the reboot comparison
+    // (markWrittenAt < owner.startedAt) can fire less often, never more —
+    // a live owner can never be reaped because of it.
+    const d = deps({
+      listCandidates: vi.fn(async () => [candidate({ startedAt: NOW })]),
+      loadLiveness: vi.fn(
+        async () => new Map([['instance-b', { startedAt: LONG_AGO, heartbeatAt: RECENT }]]),
+      ),
+    })
+
+    expect(await reapOrphanedRuns(d)).toEqual([])
+    expect(d.claimRun).not.toHaveBeenCalled()
+  })
+})
