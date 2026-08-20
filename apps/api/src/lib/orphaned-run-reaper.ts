@@ -142,7 +142,13 @@ export async function claimRunForReap(runId: string): Promise<boolean> {
   })
 }
 
-const defaultDeps: OrphanedRunReaperDeps = {
+/**
+ * The real wiring, exported so a test can override one seam without silently
+ * dropping the rest. `deps` is an all-or-nothing default: a caller passing a
+ * partial object gets no resume hooks at all, which reads as "resume is
+ * broken" rather than "the test forgot to wire it".
+ */
+export const defaultReaperDepsForTest: OrphanedRunReaperDeps = {
   listCandidates: listOrphanedRunCandidates,
   loadLiveness: () => loadInstanceLiveness(db),
   canJudgePeers: () => canJudgePeerLiveness(),
@@ -159,6 +165,8 @@ const defaultDeps: OrphanedRunReaperDeps = {
   requeueRun: (runId) => taskQueueDb.requeueForResume(runId),
   now: () => new Date(),
 }
+
+const defaultDeps = defaultReaperDepsForTest
 
 /**
  * Continue an abandoned run from its session, or report that it cannot be.
