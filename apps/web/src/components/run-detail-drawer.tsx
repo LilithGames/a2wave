@@ -1,13 +1,3 @@
-import { AttachmentChip } from '@/components/attachment-chip'
-import { MarkdownContent } from '@/components/markdown-content'
-import { RunLogContent } from '@/components/run-log-content'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import type { ChatMessageWithAttachments } from '@/hooks/use-chat-history'
-import { useCancelRun, useRerunRun, useRun } from '@/hooks/use-runs'
-import { historyRefToSentAttachment } from '@/lib/attachments'
-import { formatTokens } from '@/lib/format-tokens'
-import { cn } from '@/lib/utils'
 import { Drawer } from 'antd'
 import {
   Bot,
@@ -22,6 +12,17 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AttachmentChip } from '@/components/attachment-chip'
+import { LinkifiedText } from '@/components/linkified-text'
+import { MarkdownContent } from '@/components/markdown-content'
+import { RunLogContent } from '@/components/run-log-content'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import type { ChatMessageWithAttachments } from '@/hooks/use-chat-history'
+import { useCancelRun, useRerunRun, useRun } from '@/hooks/use-runs'
+import { historyRefToSentAttachment } from '@/lib/attachments'
+import { formatTokens } from '@/lib/format-tokens'
+import { cn } from '@/lib/utils'
 
 const statusVariant = {
   pending: 'secondary' as const,
@@ -312,7 +313,7 @@ function ChatContent({
                         })}
                       </div>
                     )}
-                    <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+                    <LinkifiedText className="block text-sm" text={message.content} />
                   </>
                 ) : (
                   <MarkdownContent content={message.content} />

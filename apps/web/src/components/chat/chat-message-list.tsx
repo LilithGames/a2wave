@@ -3,16 +3,18 @@
  * app page so message rendering, streaming placeholders and empty states stay
  * identical across surfaces.
  */
+
+import { AlertCircle, Bot, User } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { AttachmentChip } from '@/components/attachment-chip'
+import { LinkifiedText } from '@/components/linkified-text'
 import { MarkdownContent } from '@/components/markdown-content'
 import { StreamingStatus } from '@/components/streaming-status'
 import type { ChatMessageItem } from '@/hooks/use-agent-chat'
 import type { StreamLogEntry } from '@/hooks/use-agents'
 import { cn } from '@/lib/utils'
-import { AlertCircle, Bot, User } from 'lucide-react'
-import type { ReactNode } from 'react'
-import { useEffect, useRef } from 'react'
-import { useTranslation } from 'react-i18next'
 
 interface ChatMessageListProps {
   messages: ChatMessageItem[]
@@ -149,7 +151,7 @@ export function ChatMessageList({
                         ))}
                       </div>
                     )}
-                    <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+                    <LinkifiedText className="block text-sm" text={message.content} />
                   </>
                 ) : message.failed ? (
                   <div className="flex items-start gap-2">
