@@ -67,7 +67,7 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string): Promise<boolean>
+  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -422,7 +422,7 @@ export async function recoverOnStartup(
           // the dead owner so the orphaned-run reaper cannot settle a row this
           // recovery just rescued, and settle the step the killed process left
           // behind so it does not sit 'running' forever.
-          await db.requeueForResume(run.id)
+          await db.requeueForResume(run.id, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code)
           // Same workload release the fail path performs via onRunFailed. A run
           // interrupted while holding an SCM lease would otherwise keep it and
           // contend with its own promotion, wedging in 'queued'.

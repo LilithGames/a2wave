@@ -125,12 +125,37 @@ export const taskQueueDb: TaskQueueDb = {
       .where(eq(runs.id, runId))
   },
 
-  async requeueForResume(runId: string): Promise<boolean> {
+  async requeueForResume(runId: string, interruptionCode?: string): Promise<boolean> {
     return await withTransaction(async (tx) => {
+      // Read inside the transaction so the mark merges onto whatever the dying
+      // process last wrote, rather than a snapshot taken before it.
+      const current = interruptionCode
+        ? (
+            await tx
+              .select({ executionMetadata: runs.executionMetadata })
+              .from(runs)
+              .where(eq(runs.id, runId))
+              .limit(1)
+          )[0]
+        : undefined
       const requeued = await tx
         .update(runs)
         .set({
           status: 'queued',
+          // Stamped here rather than by the caller, and that placement is the
+          // whole point. A separate markRunForResume left a window between the
+          // two writes, and the killed CLI's fire-and-forget session tap
+          // merged its own stale snapshot over the mark inside it — the run
+          // then re-executed from scratch because nothing said it had been
+          // interrupted. One UPDATE has no such window.
+          ...(interruptionCode
+            ? {
+                executionMetadata: {
+                  ...((current?.executionMetadata as Record<string, unknown> | null) ?? {}),
+                  resumePending: interruptionCode,
+                } as never,
+              }
+            : {}),
           // The interruption is being resumed, not reported: a leftover error
           // would be re-read as the run's verdict on its next execution.
           result: null,

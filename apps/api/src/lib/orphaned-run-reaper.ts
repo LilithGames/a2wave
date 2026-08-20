@@ -10,7 +10,7 @@ import {
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
-import { markRunForResume, resolveResumeChatId } from './resume-chat-id.js'
+import { resolveResumeChatId } from './resume-chat-id.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { syncReapedRunExternalState } from './scm-lease-sweeper.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -90,8 +90,6 @@ export interface OrphanedRunReaperDeps {
    * of its own yet — reading the code off the row would always yield ''.
    */
   canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
-  /** Record the interruption durably, before the requeue clears `result`. */
-  markForResume?: (runId: string, failureCode: string) => Promise<void>
   /**
    * Status CAS back to `queued`, clearing result and ownership.
    *
@@ -99,7 +97,7 @@ export interface OrphanedRunReaperDeps {
    * the row first. Reporting that as a resume would both lie about the outcome
    * and skip the fail path, leaving the row exactly as this pass found it.
    */
-  requeueRun?: (runId: string) => Promise<boolean>
+  requeueRun?: (runId: string, interruptionCode: string) => Promise<boolean>
   now: () => Date
 }
 
@@ -161,8 +159,7 @@ export const defaultReaperDepsForTest: OrphanedRunReaperDeps = {
   // about a peer. Without this the resume feature is unreachable there.
   canResume: async (runId, assumeFailureCode) =>
     (await resolveResumeChatId(runId, assumeFailureCode)) !== null,
-  markForResume: markRunForResume,
-  requeueRun: (runId) => taskQueueDb.requeueForResume(runId),
+  requeueRun: (runId, interruptionCode) => taskQueueDb.requeueForResume(runId, interruptionCode),
   now: () => new Date(),
 }
 
@@ -191,8 +188,11 @@ async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<bo
     // Mark first, requeue second: the requeue clears `result`, and the resumed
     // execution runs in another process, so the code known here has to be
     // written down before it is erased.
-    await deps.markForResume?.(runId, code)
-    const requeued = await deps.requeueRun(runId)
+    // The mark travels with the requeue rather than preceding it as its own
+    // write. A separate mark left a window in which the dying CLI's
+    // fire-and-forget session tap merged a stale snapshot over it, and the run
+    // then re-executed from scratch because nothing said it was interrupted.
+    const requeued = await deps.requeueRun(runId, code)
     logger.info({ runId, requeued }, 'orphaned-run-reaper: resume requeue attempted')
     return requeued
   } catch (error) {

@@ -158,3 +158,29 @@ describe('taskQueueDb.requeueForResume', () => {
     expect((await loadRun())?.status).toBe('completed')
   })
 })
+
+describe('taskQueueDb.requeueForResume — the resume mark is part of the transition', () => {
+  beforeEach(async () => {
+    await db.delete(runSteps)
+    await db.delete(runs)
+  })
+
+  it('stamps resumePending itself, leaving no window for a straggler to erase it', async () => {
+    // Production showed the mark missing by the time execution read the row:
+    // the reaper wrote it in a separate transaction, and the dying CLI's
+    // fire-and-forget session tap merged its own snapshot over the top in the
+    // gap. Writing it inside the same UPDATE removes the gap entirely.
+    await seedRun()
+    await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+    expect((await loadRun())?.executionMetadata).toMatchObject({
+      liveChatId: 'sess_live',
+      resumePending: 'INSTANCE_STOPPED_DURING_EXEC',
+    })
+  })
+
+  it('leaves metadata alone when no interruption code is supplied', async () => {
+    await seedRun()
+    await taskQueueDb.requeueForResume('run_1')
+    expect((await loadRun())?.executionMetadata).toEqual({ liveChatId: 'sess_live' })
+  })
+})

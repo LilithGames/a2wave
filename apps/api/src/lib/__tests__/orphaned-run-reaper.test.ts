@@ -34,7 +34,6 @@ function deps(overrides: Partial<Parameters<typeof reapOrphanedRuns>[0]> = {}) {
     isRunLocallyActive: () => false,
     claimRun: vi.fn(async () => true),
     afterRunSettled: vi.fn(async () => {}),
-    markForResume: vi.fn(async () => {}),
     requeueRun: vi.fn(async () => true),
     now: () => NOW,
     ...overrides,
@@ -173,32 +172,24 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.requeueRun).toHaveBeenCalledWith('run_1')
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
     expect(d.claimRun).not.toHaveBeenCalled()
     // Still reported: the caller nudges the Agent's queue either way, and a
     // requeued run needs that nudge to be picked up.
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: true }])
   })
 
-  it('marks the interruption before requeuing so the resumed process can read it', async () => {
-    // requeueForResume clears `result`, and execution runs in another process,
-    // so the code has to be durable in metadata before it is erased.
-    const calls: string[] = []
-    const d = deps({
-      canResume: vi.fn(async () => true),
-      markForResume: vi.fn(async () => {
-        calls.push('mark')
-      }),
-      requeueRun: vi.fn(async () => {
-        calls.push('requeue')
-        return true
-      }),
-    })
+  it('hands the interruption code to the requeue rather than marking separately', async () => {
+    // The mark used to be its own write, which left a window: the killed
+    // CLI's fire-and-forget session tap merged a stale snapshot over it, and
+    // the run then re-executed from scratch because nothing on the row said
+    // it had been interrupted. Passing the code into the requeue makes the
+    // mark part of the same statement, so no window exists.
+    const d = deps({ canResume: vi.fn(async () => true) })
 
     await reapOrphanedRuns(d)
 
-    expect(d.markForResume).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
-    expect(calls).toEqual(['mark', 'requeue'])
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
   })
 
   it('does not sync external state to failed when the run is resumed', async () => {

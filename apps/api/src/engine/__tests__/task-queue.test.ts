@@ -580,7 +580,8 @@ describe('recoverOnStartup', () => {
     expect(canResume).toHaveBeenCalledWith('run_r', 'SERVER_RESTART_DURING_EXEC')
     // requeueForResume, not updateRunStatus: it also clears the stale result
     // and the dead owner id.
-    expect(db.requeueForResume).toHaveBeenCalledWith('run_r')
+    // The code travels with the requeue so the mark lands in the same UPDATE.
+    expect(db.requeueForResume).toHaveBeenCalledWith('run_r', 'SERVER_RESTART_DURING_EXEC')
     expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
     // The dead process's SCM lease is released, exactly as the fail path does.
     expect(onRunRequeued).toHaveBeenCalledWith(expect.objectContaining({ id: 'run_r' }))
