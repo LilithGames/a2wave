@@ -1,12 +1,12 @@
-import { BrandMarkFallback } from '@/components/brand-mark'
-import { Button } from '@/components/ui/button'
-import { useAuthStatus, useSetup } from '@/hooks/use-auth'
-import { formatApiError } from '@/lib/api-error'
 import { Input } from 'antd'
 import { Check, Loader2, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Navigate, useNavigate } from 'react-router-dom'
+import { BrandMarkFallback } from '@/components/brand-mark'
+import { Button } from '@/components/ui/button'
+import { useAuthStatus, useSetup } from '@/hooks/use-auth'
+import { formatApiError } from '@/lib/api-error'
 
 function checkPolicy(password: string) {
   return {
@@ -53,11 +53,11 @@ export function SetupPage() {
   const PolicyItem = ({ ok, label }: { ok: boolean; label: string }) => (
     <div className="flex items-center gap-1.5 text-xs">
       {ok ? (
-        <Check className="h-3.5 w-3.5 text-emerald-500" />
+        <Check className="h-3.5 w-3.5 text-success" />
       ) : (
         <X className="h-3.5 w-3.5 text-muted-foreground/40" />
       )}
-      <span className={ok ? 'text-emerald-600' : 'text-muted-foreground'}>{label}</span>
+      <span className={ok ? 'text-success' : 'text-muted-foreground'}>{label}</span>
     </div>
   )
 
@@ -154,7 +154,9 @@ export function SetupPage() {
             )}
 
             {error && (
-              <div className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600">{error}</div>
+              <div className="rounded-lg bg-destructive-subtle px-3 py-2.5 text-sm text-destructive">
+                {error}
+              </div>
             )}
 
             <div className="pt-1">

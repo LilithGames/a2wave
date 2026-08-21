@@ -7,6 +7,12 @@
  * client_secret 只在用户输入时随 PATCH 提交（明文，服务端加密）；读接口不回明文，
  * 占位符按 clientSecretSet 提示「已设置（留空保持不变）」。
  */
+
+import { useQuery } from '@tanstack/react-query'
+import { Check, Copy, Globe, KeyRound, Loader2, ShieldHalf, X } from 'lucide-react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -30,18 +36,13 @@ import {
 } from '@/hooks/use-settings'
 import { api } from '@/lib/api'
 import {
-  type OidcFormValues,
-  type SamlFormValues,
   buildOidcConfig,
   buildSamlConfig,
+  type OidcFormValues,
   parseOidcConfig,
   parseSamlConfig,
+  type SamlFormValues,
 } from '@/lib/sso-config-form'
-import { useQuery } from '@tanstack/react-query'
-import { Check, Copy, Globe, KeyRound, Loader2, ShieldHalf, X } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useSearchParams } from 'react-router-dom'
 
 type MethodKey = 'oidc' | 'saml'
 
@@ -77,7 +78,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
           aria-label="copy"
         >
           {copied ? (
-            <Check className="h-3.5 w-3.5 text-emerald-500" />
+            <Check className="h-3.5 w-3.5 text-success" />
           ) : (
             <Copy className="h-3.5 w-3.5" />
           )}
@@ -155,7 +156,7 @@ function CallbackUrlField({
           aria-label="copy"
         >
           {copied ? (
-            <Check className="h-3.5 w-3.5 text-emerald-500" />
+            <Check className="h-3.5 w-3.5 text-success" />
           ) : (
             <Copy className="h-3.5 w-3.5" />
           )}

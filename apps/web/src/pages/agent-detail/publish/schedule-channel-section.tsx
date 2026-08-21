@@ -405,12 +405,12 @@ export function ScheduleChannelSection({
           />
         </div>
         {!identityBound && (
-          <p className="text-xs text-amber-600">
+          <p className="text-xs text-warning">
             {t('agentPublish.scheduleRunAsOwnerNeedBind')}{' '}
             {bindMethod && (
               <button
                 type="button"
-                className="underline hover:text-amber-700"
+                className="underline hover:text-warning"
                 onClick={() =>
                   startSsoMethod(
                     bindMethod,

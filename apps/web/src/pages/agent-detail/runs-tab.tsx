@@ -1,3 +1,9 @@
+import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
+import { Activity, CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react'
+import type React from 'react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { RunCallerPrefix } from '@/components/run-caller-prefix'
 import { RunDetailDrawer } from '@/components/run-detail-drawer'
 import { Badge } from '@/components/ui/badge'
@@ -6,12 +12,6 @@ import { Pagination } from '@/components/ui/pagination'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useRuns } from '@/hooks/use-runs'
 import { formatRelativeTime } from '@/lib/utils'
-import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
-import { Activity, CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type React from 'react'
-import { useTranslation } from 'react-i18next'
-import { useSearchParams } from 'react-router-dom'
 
 const STATUS_BADGE: Record<
   RunStatus,
@@ -28,11 +28,11 @@ const STATUS_BADGE: Record<
 function RunStatusIcon({ status }: { status: RunStatus }) {
   switch (status) {
     case 'running':
-      return <Loader2 className="h-4 w-4 text-amber-500 animate-spin shrink-0" aria-hidden="true" />
+      return <Loader2 className="h-4 w-4 text-warning animate-spin shrink-0" aria-hidden="true" />
     case 'completed':
-      return <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" aria-hidden="true" />
+      return <CheckCircle2 className="h-4 w-4 text-success shrink-0" aria-hidden="true" />
     case 'failed':
-      return <XCircle className="h-4 w-4 text-red-500 shrink-0" aria-hidden="true" />
+      return <XCircle className="h-4 w-4 text-destructive shrink-0" aria-hidden="true" />
     default:
       return <Circle className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
   }

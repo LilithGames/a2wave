@@ -10,6 +10,10 @@
  * Layout: agent profile on the left, conversation on the right; the profile
  * collapses into a header strip on narrow screens.
  */
+
+import { AlertCircle, ArrowLeft, MessageSquare, Plus, Sparkles, UserRound } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { Link, useParams } from 'react-router-dom'
 import { ChatComposer } from '@/components/chat/chat-composer'
 import { ChatMessageList } from '@/components/chat/chat-message-list'
 import { InlineArtifactList } from '@/components/chat/inline-artifact-list'
@@ -19,9 +23,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAgentChat } from '@/hooks/use-agent-chat'
 import { useChatAppProfile } from '@/hooks/use-chat-app'
 import { cn } from '@/lib/utils'
-import { AlertCircle, ArrowLeft, MessageSquare, Plus, Sparkles, UserRound } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { Link, useParams } from 'react-router-dom'
 
 export function ChatAppPage() {
   const { t } = useTranslation()
@@ -138,9 +139,9 @@ export function ChatAppPage() {
       {/* ── Conversation ──────────────────────────────────────────────── */}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {disabledReason && (
-          <div className="flex items-start gap-2 border-b border-border bg-amber-50 px-4 py-3">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
-            <p className="text-xs text-amber-700">{disabledReason}</p>
+          <div className="flex items-start gap-2 border-b border-border bg-warning-subtle px-4 py-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+            <p className="text-xs text-warning">{disabledReason}</p>
           </div>
         )}
 
@@ -209,13 +210,13 @@ function StatusBadge({ status, isStopped }: { status: string; isStopped: boolean
     <span
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
-        online ? 'bg-emerald-50 text-emerald-700' : 'bg-muted text-muted-foreground',
+        online ? 'bg-success-subtle text-success' : 'bg-muted text-muted-foreground',
       )}
     >
       <span
         className={cn(
           'size-1.5 rounded-full',
-          online ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground/50',
+          online ? 'bg-success animate-pulse' : 'bg-muted-foreground/50',
         )}
         aria-hidden="true"
       />

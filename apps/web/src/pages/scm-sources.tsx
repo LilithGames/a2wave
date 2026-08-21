@@ -1,3 +1,7 @@
+import type { ScmSource } from '@a2wave/shared'
+import { AlertCircle, Clock, FolderGit2, GitBranch, Loader2, Plus, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ScmSourceFormModal } from '@/components/scm/scm-source-form-modal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,10 +15,6 @@ import { useUrlRecord } from '@/hooks/use-url-state'
 import { message } from '@/lib/antd-static'
 import { formatApiError } from '@/lib/api-error'
 import { cn } from '@/lib/utils'
-import type { ScmSource } from '@a2wave/shared'
-import { AlertCircle, Clock, FolderGit2, GitBranch, Loader2, Plus, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
 
 /** 将时间格式化为相对时间（如 "3 分钟前"） */
 function formatRelativeTime(
@@ -160,7 +160,7 @@ export function ScmSourcesPage() {
                           className={cn(
                             'mt-0.5 inline-flex w-fit items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium',
                             source.type === 'git'
-                              ? 'border-orange-200/80 bg-orange-50 text-orange-700'
+                              ? 'border-warning/30 bg-warning-subtle text-warning'
                               : 'border-blue-200/80 bg-blue-50 text-blue-700',
                           )}
                         >
