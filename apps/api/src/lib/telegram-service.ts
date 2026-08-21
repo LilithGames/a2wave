@@ -12,6 +12,7 @@ import { logger } from './logger.js'
 import { prepareNativeArtifactUpload } from './native-chat-artifacts.js'
 import type { NativeChatAttachment } from './native-chat-attachments.js'
 import { TELEGRAM_DEFAULT_API_BASE } from './native-chat-attachments.js'
+import { interceptNativeChatCommand } from './native-chat-command.js'
 import { reserveNativeChatRun } from './native-chat-runner.js'
 import { appendNativeArtifactDownloadSection, prepareNativeChatText } from './native-chat-text.js'
 import { buildTelegramChannel } from './run-channel.js'
@@ -365,12 +366,26 @@ export class TelegramConnectionManager {
         ? { senderName: telegramSenderName(message.from) as string }
         : {}),
     })
+    // Answered from platform state, so no run is reserved and no slot consumed.
+    const command = await interceptNativeChatCommand({
+      agentId,
+      text: intent,
+      chatType: message.chat.type === 'private' ? 'p2p' : 'group',
+    })
+    if (command.handled) {
+      await this.replyPlainText(connection, message, command.reply).catch((error) =>
+        logger.warn({ error, agentId }, 'Failed to send Telegram command reply'),
+      )
+      return
+    }
+
     const result = await reserveNativeChatRun({
       agentId,
       source: 'telegram',
       eventId: `telegram:${connection.botId}:${message.chat.id}:${message.message_id}`,
       conversationId: buildTelegramConversationId(connection.botId, message),
-      intent,
+      intent: command.intent ?? intent,
+      ...(command.resetSession ? { resetSession: true } : {}),
       channel: ctx as RunChannelContextTelegram,
       displayName,
       nativeAttachments,

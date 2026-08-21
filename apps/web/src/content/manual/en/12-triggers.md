@@ -44,6 +44,39 @@ A channel that was never configured shows no connection status; nor do the remai
 
 **The Agents list and the Agent detail header** also show a summary indicator carrying the **worst** status across that Agent's enabled chat channels — so a dropped connection is visible while scanning the list, without opening each Agent's Channels tab.
 
+## Checking an Agent yourself with `/status`
+
+Send **`/status`** (or `/状态`) to the bot and it answers immediately with the Agent's current state. The reply is produced by the platform, not the Agent: it **never reaches the model**, creates no Run, and takes no place in the queue — so you can still ask when the Agent is busy, and you get an answer even when the Agent is unable to run at all.
+
+The reply covers three things:
+
+| Part | What it tells you |
+|------|-------------------|
+| **Metadata** | Name, enabled and publish state, the model in use, and which channels are bound |
+| **Queue** | `idle` / `busy` / `queue full`, plus how many runs are executing against the concurrency limit and how many are waiting |
+| **Health** | Whether the Agent can run right now — and if not, every blocking problem spelled out (provider not bound, CLI not installed, version below minimum, credentials missing) |
+
+Available on Feishu, Slack, Discord, Telegram, QQ Official Bot, and over A2A. Scheduled triggers and the GitLab / GitHub triggers have no conversation to reply into, so they do not support it.
+
+The same report is available outside chat:
+
+```bash
+# REST
+GET /api/agents/:id/status
+
+# CLI — exits 1 when the Agent is not runnable, so it works as a CI gate
+a2wave agents status <agent> --json
+```
+
+> [!TIP]
+> The reply language follows **Agent detail → Other settings → Command Reply Language**. Left on **Auto**, it answers in the language you asked in.
+
+### The other command: `/new`
+
+`/new` starts a fresh session immediately, discarding the previous conversation's context. It works on **every chat channel** — Feishu, Slack, Discord, Telegram, and QQ Official Bot — and is **direct-message only**: in a group, `/new` is passed to the Agent as ordinary text, because a group already has natural ways to start over (post a new top-level message, or open a new topic).
+
+Send it bare to reset, or `/new <text>` to handle `<text>` in the new session.
+
 ---
 
 ## 1. API (Gateway invocation)

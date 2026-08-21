@@ -12,6 +12,7 @@ import type {
   NativeChatAttachment,
   PersistedNativeChatAttachment,
 } from './native-chat-attachments.js'
+import { interceptNativeChatCommand } from './native-chat-command.js'
 import { reserveNativeChatRun } from './native-chat-runner.js'
 import { appendNativeArtifactDownloadSection, prepareNativeChatText } from './native-chat-text.js'
 import { buildSlackChannel } from './run-channel.js'
@@ -295,6 +296,21 @@ export class SlackConnectionManager {
       senderUserId: event.user ?? '',
       chatType: isDirectMessage ? 'p2p' : 'channel',
     })
+    // Before the dedup bookkeeping and the app_mention grace timer: a command
+    // that answers from platform state starts no run, so it needs neither.
+    const command = await interceptNativeChatCommand({
+      agentId,
+      text: intent,
+      chatType: isDirectMessage ? 'p2p' : 'group',
+    })
+    if (command.handled) {
+      await this.sendMessageByContext(agentId, ctx as RunChannelContextSlack, command.reply)
+      await envelope.ack()
+      return
+    }
+    const runIntent = command.intent ?? intent
+    const resetSession = command.resetSession === true
+
     const eventId = buildSlackDedupKey(
       envelope.body?.team_id ?? connection.teamId,
       event.channel,
@@ -325,7 +341,8 @@ export class SlackConnectionManager {
         void this.reserve(agentId, eventId, {
           connection,
           event,
-          intent,
+          intent: runIntent,
+          resetSession,
           ctx: ctx as RunChannelContextSlack,
           displayName,
           nativeAttachments,
@@ -348,7 +365,8 @@ export class SlackConnectionManager {
       await this.reserve(agentId, eventId, {
         connection,
         event,
-        intent,
+        intent: runIntent,
+        resetSession,
         ctx: ctx as RunChannelContextSlack,
         displayName,
         nativeAttachments,
@@ -368,18 +386,20 @@ export class SlackConnectionManager {
       connection: SlackConnection
       event: SlackMessageEvent
       intent: string
+      resetSession?: boolean
       ctx: RunChannelContextSlack
       displayName?: string | null
       nativeAttachments: PersistedNativeChatAttachment[]
     },
   ): Promise<void> {
-    const { connection, event, intent, ctx, displayName, nativeAttachments } = input
+    const { connection, event, intent, resetSession, ctx, displayName, nativeAttachments } = input
     const result = await reserveNativeChatRun({
       agentId,
       source: 'slack',
       eventId,
       conversationId: buildSlackConversationId(connection.teamId, event),
       intent,
+      ...(resetSession ? { resetSession: true } : {}),
       channel: ctx,
       displayName,
       nativeAttachments,

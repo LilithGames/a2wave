@@ -19,14 +19,13 @@ import {
   type NativeChatAttachment,
   resolveNativeChatAttachments,
 } from './native-chat-attachments.js'
+import { interceptNativeChatCommand } from './native-chat-command.js'
 import {
   isNativeChatRunReservedError,
   preflightNativeChatRun,
   reserveNativeChatRun,
 } from './native-chat-runner.js'
 import { appendNativeArtifactDownloadSection, prepareNativeChatText } from './native-chat-text.js'
-import { newCommandPlugin } from './pipeline/commands/defs/new.js'
-import { matchByLongestPrefix } from './pipeline/commands/prefix-matcher.js'
 import { buildQQOfficialChannel } from './run-channel.js'
 
 const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
@@ -277,28 +276,29 @@ export function shouldTriggerQQOfficialMessage(
   return true
 }
 
-function resolveQQOfficialIntent(message: QQOfficialMessageSnapshot): {
-  intent: string
-  resetSession: boolean
-} {
-  const fallback = message.content || 'Please review the attached files.'
+/**
+ * Build the run intent from the message and the shared command arbitration.
+ *
+ * Command matching is NOT done here: it ran against the raw content before the
+ * group metadata block was prepended, since that block would push a prefix off
+ * the start of the line. This only assembles the result.
+ */
+function resolveQQOfficialIntent(
+  message: QQOfficialMessageSnapshot,
+  command: { intent?: string; resetSession?: boolean },
+): { intent: string; resetSession: boolean } {
+  const body = command.intent || message.content || 'Please review the attached files.'
   if (message.scene === 'group') {
     const sender = JSON.stringify({
       member_openid: message.senderOpenId,
       username: message.senderName ?? null,
     })
     return {
-      intent: `[QQ group sender metadata]\n${sender}\n\n${fallback}`,
-      resetSession: false,
+      intent: `[QQ group sender metadata]\n${sender}\n\n${body}`,
+      resetSession: command.resetSession === true,
     }
   }
-
-  const match = matchByLongestPrefix(message.content, [newCommandPlugin])
-  if (!match) return { intent: fallback, resetSession: false }
-  return {
-    intent: match.rest || newCommandPlugin.emptyTextFallback || fallback,
-    resetSession: true,
-  }
+  return { intent: body, resetSession: command.resetSession === true }
 }
 
 export function buildQQOfficialConversationId(
@@ -769,7 +769,13 @@ export class QQOfficialConnectionManager {
     }))
     const attachmentRefs = await resolveNativeChatAttachments(agentId, attachments)
     if (!message.content && attachmentRefs.length === 0) return
-    const { intent, resetSession } = resolveQQOfficialIntent(message)
+    // Matched against the raw content, before the group branch prepends its
+    // sender-metadata block -- that block would push a prefix off the line start.
+    const command = await interceptNativeChatCommand({
+      agentId,
+      text: message.content,
+      chatType: message.scene === 'group' ? 'group' : 'p2p',
+    })
     const common = {
       appId: connection.config.appId,
       messageId: message.id,
@@ -784,6 +790,16 @@ export class QQOfficialConnectionManager {
             groupOpenId: message.groupOpenId as string,
           })
         : buildQQOfficialChannel({ ...common, scene: 'c2c' })
+    if (command.handled) {
+      await this.sendMessageByContext(
+        agentId,
+        built.ctx as RunChannelContextQQOfficial,
+        command.reply,
+      )
+      return
+    }
+    const { intent, resetSession } = resolveQQOfficialIntent(message, command)
+
     let result: Awaited<ReturnType<typeof reserveNativeChatRun>>
     try {
       result = await reserveNativeChatRun({
