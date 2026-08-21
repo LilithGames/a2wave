@@ -349,7 +349,9 @@ function CreateTokenDialog({
             </div>
 
             {error && (
-              <div className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600">{error}</div>
+              <div className="rounded-lg bg-destructive-subtle px-3 py-2.5 text-sm text-destructive">
+                {error}
+              </div>
             )}
           </div>
         )}

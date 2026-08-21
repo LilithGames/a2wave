@@ -1087,7 +1087,7 @@ export function SettingsPage() {
                       />
                     )}
                     {testWebhook.isSuccess && testWebhook.data.data.ok && (
-                      <Check className="h-3.5 w-3.5 text-green-500" aria-hidden="true" />
+                      <Check className="h-3.5 w-3.5 text-success" aria-hidden="true" />
                     )}
                     {(testWebhook.isError ||
                       (testWebhook.isSuccess && !testWebhook.data.data.ok)) && (
@@ -1096,7 +1096,7 @@ export function SettingsPage() {
                     <span
                       className={
                         testWebhook.isSuccess && testWebhook.data.data.ok
-                          ? 'text-green-500'
+                          ? 'text-success'
                           : testWebhook.isError ||
                               (testWebhook.isSuccess && !testWebhook.data.data.ok)
                             ? 'text-destructive'

@@ -48,11 +48,21 @@ vi.mock('recharts', () => {
         data-has-dot-renderer={String(typeof dot === 'function')}
       />
     ),
-    Area: ({ dataKey }: { dataKey?: string }) => <div data-testid="area" data-key={dataKey} />,
+    Area: ({ dataKey, stackId }: { dataKey?: string; stackId?: string }) => (
+      <div data-testid="area" data-key={dataKey} data-stack-id={stackId ?? ''} />
+    ),
     CartesianGrid: () => <div data-testid="grid" />,
     XAxis: () => <div data-testid="x-axis" />,
     YAxis: () => <div data-testid="y-axis" />,
-    Tooltip: () => <div data-testid="tooltip" />,
+    // Renders `content` in the active state so tests can assert what the tooltip
+    // actually paints, not just that a Tooltip element exists.
+    Tooltip: ({ content }: { content?: (p: unknown) => ReactNode }) => (
+      <div data-testid="tooltip">
+        {typeof content === 'function'
+          ? content({ active: true, label: '01-01', payload: [] })
+          : null}
+      </div>
+    ),
   }
 })
 
@@ -137,6 +147,32 @@ describe('<OverviewTrends />', () => {
     // the value but computes no bar geometry from it, so the chart silently
     // renders empty <g> wrappers.
     expect(keys).toEqual(['completed', 'failed', 'running', 'queued', 'pending', 'cancelled'])
+  })
+
+  it('plots token input and output unstacked, each measured from zero', () => {
+    mockResult({ data: POPULATED })
+    renderWithProviders(<OverviewTrends agentId="agt_1" />)
+    const areas = screen.getAllByTestId('area')
+    const tokens = areas.filter((el) =>
+      ['tokenInput', 'tokenOutput'].includes(el.getAttribute('data-key') ?? ''),
+    )
+    expect(tokens).toHaveLength(2)
+    // Stacked, output ran a few percent of input and became a 0.5-3px band riding
+    // on the input line: unreadable, and its upper edge read as a second series
+    // shadowing the first. Each line must start from zero.
+    for (const el of tokens) {
+      expect(el.getAttribute('data-stack-id')).toBe('')
+    }
+  })
+
+  it('gives the tooltip an opaque surface', () => {
+    mockResult({ data: POPULATED })
+    renderWithProviders(<OverviewTrends agentId="agt_1" />)
+    // `bg-popover` has no backing token, so it rendered no fill and chart marks
+    // showed through the text. The tooltip sits over the plot and must be opaque.
+    const tooltip = screen.getAllByTestId('tooltip')[0]
+    expect(tooltip.innerHTML).toContain('bg-card')
+    expect(tooltip.innerHTML).not.toContain('bg-popover')
   })
 
   it('flattens nested series onto the row handed to each chart', () => {

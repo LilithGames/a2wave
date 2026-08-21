@@ -1,13 +1,3 @@
-import { Card, CardContent } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import {
-  type AgentTimeseries,
-  type AgentTimeseriesPoint,
-  type TimeseriesRange,
-  useAgentTimeseries,
-} from '@/hooks/use-runs'
-import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
-import { formatDuration } from '@/lib/utils'
 import dayjs from 'dayjs'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,6 +14,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { Card, CardContent } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  type AgentTimeseries,
+  type AgentTimeseriesPoint,
+  type TimeseriesRange,
+  useAgentTimeseries,
+} from '@/hooks/use-runs'
+import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
+import { formatDuration } from '@/lib/utils'
 import {
   ACTIVE_DOT_PROPS,
   AXIS_PROPS,
@@ -64,7 +64,10 @@ function TrendTooltip({
 }) {
   if (!active) return null
   return (
-    <div className="rounded-md border border-border bg-popover px-3 py-2 shadow-md">
+    // `bg-card`, not `bg-popover`: no `--color-popover` token exists, so that class
+    // was inert and the tooltip had no fill at all — chart marks showed straight
+    // through the text. A tooltip sits over the plot and must be opaque.
+    <div className="rounded-md border border-border bg-card px-3 py-2 shadow-md">
       <div className="mb-1 text-xs font-medium text-foreground">{label}</div>
       <ul className="space-y-0.5">
         {rows.map(([name, value, color]) => (
@@ -145,11 +148,15 @@ function TrendCard({
   title,
   total,
   hint,
+  legend,
   children,
 }: {
   title: ReactNode
   total: string
   hint?: string
+  /** `[label, color]` per series. Required for multi-series charts, where the
+      tooltip alone leaves identity carried by color until the user hovers. */
+  legend?: ReadonlyArray<readonly [string, string]>
   children: ReactNode
 }) {
   return (
@@ -160,6 +167,20 @@ function TrendCard({
           {total}
         </div>
         {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+        {legend && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {legend.map(([label, color]) => (
+              <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span
+                  className="size-2 shrink-0 rounded-[2px]"
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                />
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
         {/* ResponsiveContainer measures its parent, so the height must be
             explicit — inside a grid child it would otherwise collapse to 0. */}
         <div className="mt-4 h-[200px] w-full">{children}</div>
@@ -312,6 +333,10 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
           <TrendCard
             title={t('agentOverview.chartTokensTitle')}
             total={formatTokens(totals.tokens)}
+            legend={[
+              [t('agentOverview.tokenInput'), SERIES_COLORS.tokenInput],
+              [t('agentOverview.tokenOutput'), SERIES_COLORS.tokenOutput],
+            ]}
           >
             {isLoading ? (
               <Skeleton className="h-full w-full" />
@@ -347,20 +372,24 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
                       />
                     )}
                   />
+                  {/* Deliberately NOT stacked. Output runs a few percent of input, so
+                      stacked it became a band 0.5-3px tall riding on the input line —
+                      unreadable on its own, and its upper edge looked like a second
+                      series shadowing the first. Unstacked, each line is measured from
+                      zero, which is also what the tooltip's two numbers imply. The card
+                      header still carries the combined total. */}
                   <Area
                     dataKey="tokenInput"
-                    stackId="tokens"
                     stroke={SERIES_COLORS.tokenInput}
                     fill={SERIES_COLORS.tokenInput}
-                    fillOpacity={0.18}
+                    fillOpacity={0.16}
                     strokeWidth={2}
                   />
                   <Area
                     dataKey="tokenOutput"
-                    stackId="tokens"
                     stroke={SERIES_COLORS.tokenOutput}
                     fill={SERIES_COLORS.tokenOutput}
-                    fillOpacity={0.18}
+                    fillOpacity={0.16}
                     strokeWidth={2}
                   />
                 </AreaChart>

@@ -116,11 +116,11 @@ export function InvitePage() {
   const PolicyItem = ({ ok, label }: { ok: boolean; label: string }) => (
     <div className="flex items-center gap-1.5 text-xs">
       {ok ? (
-        <Check className="h-3.5 w-3.5 text-emerald-500" />
+        <Check className="h-3.5 w-3.5 text-success" />
       ) : (
         <X className="h-3.5 w-3.5 text-muted-foreground/40" />
       )}
-      <span className={ok ? 'text-emerald-600' : 'text-muted-foreground'}>{label}</span>
+      <span className={ok ? 'text-success' : 'text-muted-foreground'}>{label}</span>
     </div>
   )
 
@@ -291,7 +291,7 @@ export function InvitePage() {
                 )}
 
                 {error && (
-                  <div className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 sm:col-span-2">
+                  <div className="rounded-lg bg-destructive-subtle px-3 py-2.5 text-sm text-destructive sm:col-span-2">
                     {error}
                   </div>
                 )}

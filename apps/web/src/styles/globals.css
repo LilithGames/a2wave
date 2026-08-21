@@ -67,6 +67,12 @@
   --color-red-700: #b91c1c;
 
   --color-primary: #6264ee; /* AA with white primary foreground */
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #4f46e5;
+  --color-chart-series-2: #eb6834;
   --color-primary-hover: #4f46e5; /* indigo-600 — hover/press for primary surfaces */
   --color-primary-active: #4338ca; /* indigo-700 — pressed */
   --color-primary-foreground: #ffffff;
@@ -284,6 +290,12 @@ html[data-theme="wave-dark"] {
   --color-input: #3a414d;
   --color-ring: #a5b4fc;
   --color-primary: #818cf8;
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #7c83e8;
+  --color-chart-series-2: #d9743f;
   --color-primary-hover: #a5b4fc;
   --color-primary-active: #6366f1;
   --color-primary-foreground: #101116;
@@ -348,6 +360,12 @@ html[data-theme="neo-yellow"] {
   --color-input: #171717;
   --color-ring: #171717;
   --color-primary: #ddf52f;
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #4f46e5;
+  --color-chart-series-2: #eb6834;
   --color-primary-hover: #cde71e;
   --color-primary-active: #bdd70f;
   --color-primary-foreground: #121212;
@@ -411,6 +429,12 @@ html[data-theme="midnight"] {
   --color-input: #334867;
   --color-ring: #67d9ff;
   --color-primary: #55d6ff;
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #7c83e8;
+  --color-chart-series-2: #d9743f;
   --color-primary-hover: #83e3ff;
   --color-primary-active: #2abce9;
   --color-primary-foreground: #06111a;
@@ -465,6 +489,12 @@ html[data-theme="forest"] {
   --color-input: #405043;
   --color-ring: #bef264;
   --color-primary: #a3e635;
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #7c83e8;
+  --color-chart-series-2: #d9743f;
   --color-primary-hover: #bef264;
   --color-primary-active: #84cc16;
   --color-primary-foreground: #102006;
@@ -519,6 +549,12 @@ html[data-theme="graphite"] {
   --color-input: #444444;
   --color-ring: #ffda7c;
   --color-primary: #f4c95d;
+  /* Chart series — a validated categorical pair, NOT `primary`/`interactive-foreground`.
+     Those two are a shade apart (normal-vision OKLab dE 12.3, under the 15 floor), and in
+     Neo Yellow `primary` is a lime that disappears against a light plot surface. Slots are
+     assigned in fixed order and never cycled. */
+  --color-chart-series-1: #7c83e8;
+  --color-chart-series-2: #d9743f;
   --color-primary-hover: #ffda7c;
   --color-primary-active: #dcae3d;
   --color-primary-foreground: #1b1304;

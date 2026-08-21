@@ -1,18 +1,18 @@
+import { AlertTriangle, Blocks } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import {
+  needsInstallAction,
   ProviderCliInstallControl,
   ProviderCliStatusChip,
-  needsInstallAction,
 } from '@/components/provider-cli-install-control'
-import { PROVIDER_ICON_TILE, getProviderIconSpec } from '@/components/provider-icon'
+import { getProviderIconSpec, PROVIDER_ICON_TILE } from '@/components/provider-icon'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useCurrentUser } from '@/hooks/use-auth'
 import { useProviderClis } from '@/hooks/use-provider-clis'
 import { useProviders, useUnsupportedProviders } from '@/hooks/use-providers'
-import { AlertTriangle, Blocks } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
 
 /**
  * Base chip shape — reused from the former "Preset" tag for visual consistency.
@@ -105,10 +105,10 @@ export function ProvidersPage() {
       {unsupportedProviders && unsupportedProviders.length > 0 ? (
         <div
           role="alert"
-          className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
+          className="rounded-xl border border-warning/30 bg-warning-subtle p-4 text-sm"
         >
           <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
             <div className="min-w-0">
               <p className="font-medium text-foreground">{t('providers.unsupportedTitle')}</p>
               <p className="mt-1 text-muted-foreground">{t('providers.unsupportedDescription')}</p>

@@ -114,7 +114,7 @@ export function TaskDetail({ agentId, taskId, canWrite, onBack }: TaskDetailProp
           <Stat
             label={t('agentEvaluation.task.passed')}
             value={summary?.passed ?? 0}
-            tone={summary?.passed ? 'text-emerald-600' : undefined}
+            tone={summary?.passed ? 'text-success' : undefined}
           />
           <Stat
             label={t('agentEvaluation.task.failed')}
@@ -296,8 +296,8 @@ function ExecutionProgress({
  */
 function passRateTone(rate: number | null): string {
   if (rate == null) return 'text-muted-foreground'
-  if (rate >= 0.9) return 'text-emerald-600'
-  if (rate >= 0.6) return 'text-amber-600'
+  if (rate >= 0.9) return 'text-success'
+  if (rate >= 0.6) return 'text-warning'
   return 'text-destructive'
 }
 
@@ -361,7 +361,7 @@ function SnapshotRow({ label, value }: { label: string; value: string }) {
 type VerdictValue = 'pass' | 'fail' | 'unreviewed'
 
 const VERDICT_DOT_CLASS: Record<VerdictValue, string> = {
-  pass: 'bg-emerald-600',
+  pass: 'bg-success',
   fail: 'bg-destructive',
   unreviewed: 'bg-border',
 }
@@ -481,7 +481,7 @@ function ResultCard({
           >
             <VerdictButton
               active={verdict === 'pass'}
-              activeClass="bg-emerald-50 text-emerald-700"
+              activeClass="bg-success-subtle text-success"
               disabled={review.isPending}
               onClick={() => review.mutate({ resultId: result.id, verdict: 'pass' })}
             >
@@ -491,7 +491,7 @@ function ResultCard({
             <div className="w-px bg-border/60" />
             <VerdictButton
               active={verdict === 'fail'}
-              activeClass="bg-red-50 text-red-700"
+              activeClass="bg-destructive-subtle text-destructive"
               disabled={review.isPending}
               onClick={() => review.mutate({ resultId: result.id, verdict: 'fail' })}
             >

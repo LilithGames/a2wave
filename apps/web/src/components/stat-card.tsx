@@ -1,14 +1,14 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 
 interface StatCardProps {
   /** Card title (already translated). */
   title: ReactNode
   /** Icon node, e.g. `<Activity className="h-4 w-4 text-interactive-foreground" />`. */
   icon: ReactNode
-  /** Tailwind classes for the icon tile background, e.g. `bg-emerald-50`. */
+  /** Tailwind classes for the icon tile background, e.g. `bg-success-subtle`. */
   iconTileClass: string
   /** Main metric value. */
   value: ReactNode

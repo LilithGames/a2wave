@@ -1,10 +1,10 @@
 import { useTranslation } from 'react-i18next'
 
 const syncStatusColors = {
-  synced: 'bg-emerald-500',
-  syncing: 'bg-amber-500 animate-pulse',
-  error: 'bg-red-500',
-  idle: 'bg-gray-400',
+  synced: 'bg-success',
+  syncing: 'bg-warning animate-pulse',
+  error: 'bg-destructive',
+  idle: 'bg-muted-foreground/50',
 } as const
 
 const syncStatusLabelKeys = {

@@ -1,3 +1,7 @@
+import { Drawer } from 'antd'
+import { AlertCircle, MessageSquare, Plus, ScrollText, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ChatComposer } from '@/components/chat/chat-composer'
 import { ChatMessageList } from '@/components/chat/chat-message-list'
 import { InlineArtifactList } from '@/components/chat/inline-artifact-list'
@@ -5,10 +9,6 @@ import { RunLogContent } from '@/components/run-log-content'
 import { Button } from '@/components/ui/button'
 import { useAgentChat } from '@/hooks/use-agent-chat'
 import { cn } from '@/lib/utils'
-import { Drawer } from 'antd'
-import { AlertCircle, MessageSquare, Plus, ScrollText, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 
 interface TestDrawerProps {
   open: boolean
@@ -157,13 +157,10 @@ export function TestDrawer({ open, onClose, agentId, agentStatus, agentIcon }: T
           )}
 
           {chatDisabledReason && (
-            <div className="px-4 py-3 border-b border-border bg-amber-50">
+            <div className="px-4 py-3 border-b border-border bg-warning-subtle">
               <div className="flex items-start gap-2">
-                <AlertCircle
-                  className="h-4 w-4 text-amber-600 shrink-0 mt-0.5"
-                  aria-hidden="true"
-                />
-                <p className="text-xs text-amber-700">{chatDisabledReason}</p>
+                <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" aria-hidden="true" />
+                <p className="text-xs text-warning">{chatDisabledReason}</p>
               </div>
             </div>
           )}

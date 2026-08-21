@@ -191,7 +191,7 @@ function TaskRow({
           </span>
           <TaskStatusBadge status={task.status} />
           {delta && (
-            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+            <span className="inline-flex items-center gap-1 text-xs text-warning">
               <AlertTriangle className="h-3.5 w-3.5" />
               {t(`agentEvaluation.task.changed.${delta}`)}
             </span>
