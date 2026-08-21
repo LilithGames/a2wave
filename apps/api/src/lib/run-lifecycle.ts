@@ -327,6 +327,12 @@ function buildNativeChatFallbackText(runId: string): string {
   return `⚠️ The Agent did not return usable content. Please try again or inspect the run in a2wave (run_id=${runId}).`
 }
 
+/**
+ * Adding a channel here is only half the wiring: its inbound handler must also
+ * call `interceptNativeChatCommand` and honour BOTH outcomes, or `/status` and
+ * `/new` reach the model as literal text and the Agent improvises an answer
+ * about its own state. See docs/agent/agent-status-command.md.
+ */
 function sendNativeChatReplyByContext(
   agentId: string,
   runId: string,

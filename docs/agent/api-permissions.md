@@ -143,5 +143,10 @@ deliberately does not share `agents.maxConcurrency`.
 - `workspacesPath` (SCM create/update) overrides the default worktree root
   `SCM_STORAGE_ROOT/workspaces/<sourceIdSuffix>`. Absolute, globally unique. The
   historical `~/.a2wave/workspaces` root remains allowed for upgraded sources.
+- **Adding a chat channel**: it must also handle the registered commands
+  (`/status`, `/new`) — see the checklist in
+  [agent-status-command.md](./agent-status-command.md#adding-a-new-chat-channel--handle-the-commands).
+  A channel that skips this still appears to work: the command reaches the model
+  as literal text and the Agent improvises an answer about its own state.
 - Auth methods: [oauth-channel.md](./oauth-channel.md). Unified call-context
   shape: [run-channel-context.md](./run-channel-context.md).

@@ -169,3 +169,37 @@ resolver takes a `hint` object precisely so that becomes an additive change.
 
 Keep the prefix anchored at the start of the message — `matchByLongestPrefix`
 already enforces a word boundary, so `/statuses` does not match `/status`.
+
+## Adding a new chat channel — handle the commands
+
+**A new chat channel must decide what it does with commands, and say so.** This
+is the step most easily missed, because a channel that ignores commands still
+looks like it works: messages reach the Agent and it answers. The failure is
+silent — `/status` is passed to the model as literal text, so instead of the
+platform's report the user gets the Agent *improvising* about its own health,
+and `/new` never resets anything while appearing to.
+
+That is exactly how Slack, Discord and Telegram shipped without `/new` for as
+long as they did.
+
+So, when adding a channel:
+
+1. **Call `interceptNativeChatCommand`** after the channel's own trigger gate and
+   before the run is reserved, passing the **raw user text** and the
+   `p2p` / `group` context.
+2. **Honour both outcomes** — replying on `handled: true`, and applying
+   `intent` / `resetSession` to the reservation otherwise. Handling only the
+   first silently drops `/new`.
+3. **Do not write a second matcher.** Reuse the shared one, or the channel will
+   drift from every other one exactly as QQ Official's copy did.
+4. **If the channel has no reply path** (schedule, `glab`, `gh`), state that it
+   is unsupported here and in the user manual rather than leaving it ambiguous —
+   there is nowhere to send even a "command not recognised".
+5. **Add the channel to the coverage table above** and to
+   `apps/web/src/content/manual/{en,zh}/12-triggers.md`.
+6. **Cover it with a test** asserting a command reserves no run, and that
+   ordinary text mentioning a command mid-sentence still reaches the Agent.
+
+Feishu is the exception to step 1: it runs the full lifecycle pipeline, since its
+hooks patch the run they are about to start. A new channel should follow the
+native-chat path unless it needs that.
