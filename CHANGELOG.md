@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.7.3-rc.2
+
+> 🚧 **Release candidate.** Continues the v0.7.3 line: everything in `v0.7.3-rc.1`
+> plus the entries below. Published as a GitHub pre-release, so the `Latest` badge
+> stays on the newest stable version and the Docker `latest` tag does not move to it.
+> Pull `ghcr.io/lilithgames/a2wave:0.7.3-rc.2` or install the exact npm version
+> explicitly. The stable cut will ship as `v0.7.3`.
+
+> ⚠️ **The rc.1 upgrade warning still applies in full — this release is not
+> rolling-upgrade safe. Stop every API replica before applying its migrations,
+> then start only the upgraded version.** See the v0.7.3-rc.1 notes below for the
+> two reasons. rc.2 adds five further migrations, all additive (new
+> `device_authorizations` and `cli_tokens` tables, a nullable `runs.owner_instance_id`
+> column, and per-channel config columns for QQ and Telegram).
+
+- **Telegram becomes a first-class channel**: publish an Agent to Telegram at parity with Discord — group and private triggers, attachments both ways, artifact upload, per-conversation sessions and restart recovery. Updates arrive over outbound long polling, so no public HTTPS ingress or callback URL is needed and a private deployment works unchanged; registering a bot clears any webhook previously set on it. Triggering on *every* group message additionally requires Group Privacy to be disabled via @BotFather.
+- **QQ official bot channel (MVP)**: publish an Agent to a QQ official bot over the platform's WebSocket, bringing the channel count to twelve.
+- **Sign in on a remote or headless machine**: `a2wave login` now supports the OAuth 2.0 device grant — the terminal prints a short code, you approve it from a browser wherever you already have a session, and the waiting CLI receives a token. Selected automatically over SSH; containers and CI pass `--device`. The approval page shows the requesting IP, client and time so you can tell your own session from a code someone phoned you.
+- **CLI tokens for automation**: named, long-lived, individually revocable credentials created from **Settings → CLI access**, for CI jobs and scripts. Unlike a session token, retiring one machine's credential no longer means retiring them all, and a password change no longer silently breaks every pipeline. The plaintext is shown once.
+- **Login sessions now last 7 days by default** (previously 1): a working week, so an ordinary user signs in about weekly. Override with `AUTH_SESSION_TTL_DAYS` (range 1–365); it applies only to new logins. Long-lived automation credentials are CLI tokens, not this.
+- **Reasoning effort and fast mode bind per provider chain entry**: both sit beside the model rather than once per Agent, because the legal effort levels follow the model — one Agent-wide value is necessarily invalid for at least one entry. Levels are discovered per model alongside model ids, not hard-coded, and `diagnose` warns when a control is bound to a CLI that has no such setting.
+- **An interrupted run no longer loses its provider session**: a run's session id is recorded while it is still executing, not only on completion — previously the one case that needed to resume was the one case that never stored it. This stores the resume target; acting on it automatically is separate work.
+- **A run abandoned by a dead instance is reaped and its queue restarts**: a temp-workspace run whose process died took no lease, so nothing could prove it was abandoned and it stayed `running` forever — pinning the Agent's concurrency and parking the queue indefinitely. Runs now carry an owner instance, and a periodic sweep settles those whose owner is provably gone, then restarts promotion. The verdict is ownership, never age, so a long-running review is never mistaken for a dead one.
+- **A queued repository-trigger run skips a merge request that already finished**: a run whose subject was merged while it waited in the queue now re-probes and terminates as `cancelled` instead of spending tokens to conclude "already merged". Fails open on every ambiguous verdict, so a broken probe never cancels legitimate work.
+- **Feishu: a quoted reply no longer resurrects a stale direct-message session**: quoting a days-old message reopened that whole conversation and the model kept answering from context you had moved on from. Direct messages are now capped at the two-hour window like any other; group reply chains and topics still never expire. `/new` also works in a quoted direct-message reply, where it previously reached the Agent as literal prompt text.
+- **Repository auto-review is held to a P0/P1 bar**: the MR review template now sends the Agent out of the diff into the surrounding code, works a checklist of what a diff-only pass reliably misses (call sites of a changed signature, old clients against a changed schema, irreversible migrations, swallowed errors, races), and keeps only findings that name the input or timing that reaches them. P2 and below stay out of the comment, and "no P0/P1 issues found" is stated as a valid result.
+- **P4 sync errors no longer leak the connection password**: `p4d`'s raw stderr, which can echo `P4PASSWD` back, was persisted to the source's last-sync error and shipped to the sync-error webhook without redaction. Also in this fix: a failed topic merge now rolls back instead of leaving the target holding a still-active source's facts, a failed Agent import no longer commits skill rows with empty files, and API-key regeneration plus SCM sync/check now write the audit entries they were missing.
+- **The workspace path shown for an Agent is the one it actually gets**: the preview stripped CJK, kana and hangul, so an Agent named in a non-Latin script displayed a directory that did not exist — sending anyone trying to mount or clean it up to the wrong place.
+- **Smaller fixes**: Claude's multi-result output is preserved complete; OAuth metadata availability is reported as effectively resolved rather than as configured; the log panel's copy button copies the run id; URLs in chat messages are clickable; `a2wave --help` layout is repaired; and the login page shows the server version.
+
 ## v0.7.3-rc.1
 
 > 🚧 **Release candidate.** Feature-complete and green on the full suite, but with no
