@@ -147,6 +147,12 @@ GitLab / GitHub 仓库触发，以及平台自建的聊天页触达。
 
 > 飞书渠道目前支持飞书（feishu.cn）应用；Lark 国际版（larksuite.com）暂不可配置。
 
+## 界面截图
+
+Agent 统计页：运行总数、成功率、平均耗时、Token 消耗，以及所选时间窗口内的趋势。
+
+![a2wave Agent 统计页](./docs/images/web-agent-overview-zh.png)
+
 ## 文档
 
 | 文档 | 内容 |
