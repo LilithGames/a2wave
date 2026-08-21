@@ -16,6 +16,7 @@ export type FormData = {
   force: boolean
   cleanResult: boolean
   maxConcurrency: number
+  commandReplyLanguage: 'auto' | 'en' | 'zh'
   timeoutMinutes: number
   maxRetries: number
   /** null = 不限（沿用历史行为） */

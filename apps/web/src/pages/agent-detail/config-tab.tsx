@@ -275,6 +275,7 @@ export function ConfigTab({
   const watchedForce = watch('force')
   const watchedCleanResult = watch('cleanResult')
   const watchedMaxConcurrency = watch('maxConcurrency')
+  const watchedCommandReplyLanguage = watch('commandReplyLanguage')
   const watchedTimeoutMinutes = watch('timeoutMinutes')
   const watchedMaxRetries = watch('maxRetries')
   const watchedTotalTimeoutMinutes = watch('totalTimeoutMinutes')
@@ -2056,6 +2057,27 @@ export function ConfigTab({
               value={watchedMaxConcurrency}
               onChange={(val) => setValue('maxConcurrency', val ?? 1, { shouldDirty: true })}
               className="w-20 shrink-0"
+            />
+            <div className="space-y-0.5 min-w-0">
+              <Label className="text-sm font-medium text-foreground">
+                {t('agentDetail.commandReplyLanguage')}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t('agentDetail.commandReplyLanguageHint')}
+              </p>
+            </div>
+            <Select
+              data-testid="agent-command-reply-language"
+              value={watchedCommandReplyLanguage}
+              onChange={(val) => setValue('commandReplyLanguage', val, { shouldDirty: true })}
+              options={[
+                { value: 'auto', label: t('agentDetail.commandReplyLanguageAuto') },
+                { value: 'en', label: t('agentDetail.commandReplyLanguageEn') },
+                { value: 'zh', label: t('agentDetail.commandReplyLanguageZh') },
+              ]}
+              className="w-32 shrink-0"
+              popupMatchSelectWidth={false}
+              getPopupContainer={() => document.body}
             />
             <div className="space-y-0.5 min-w-0">
               <Label className="text-sm font-medium text-foreground">
