@@ -271,6 +271,30 @@ describe('TraeAgentEngine stream close handling', () => {
     expect(result.chatId).toBe('ses_new')
   })
 
+  it('keeps assistant output that arrives before an empty terminal result', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new TraeAgentEngine(baseConfig)
+    const onUpdate = vi.fn<(content: string) => void>()
+    const p = getExecuteStream(engine)(
+      { taskId: 't', workDir: '/tmp', prompt: 'hi', onUpdate, agentConfig: {} },
+      'kimi-k2',
+    )
+    child.stdout.write(line({ type: 'result', is_error: false, result: 'Main conclusion.' }))
+    child.stdout.write(
+      line({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '\n\nAdditional evidence.' }] },
+      }),
+    )
+    child.stdout.write(line({ type: 'result', subtype: 'success', is_error: false }))
+    child.emit('close', 0)
+
+    const result = await p
+    expect(result.output).toBe('Main conclusion.\n\nAdditional evidence.')
+    expect(onUpdate).toHaveBeenLastCalledWith(result.output)
+  })
+
   it('result usage is normalized and passed through to ExecuteResult.usage', async () => {
     const child = new MockChildProcess()
     mockSpawn.mockReturnValue(child)

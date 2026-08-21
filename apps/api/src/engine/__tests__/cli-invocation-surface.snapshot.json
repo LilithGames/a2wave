@@ -29,7 +29,7 @@
     },
     "claude-code": {
       "sourceFile": "apps/api/src/engine/claude-code.ts",
-      "minVersion": "2.1.47",
+      "minVersion": "2.1.208",
       "surface": [
         "--allowedTools=mcp__*",
         "--append-system-prompt",

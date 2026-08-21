@@ -233,7 +233,244 @@ describe('ClaudeCodeEngine onLogEntry callbacks', () => {
     )
     child.emit('close', 0)
     const result = await promise
+    expect(result.output).toBe('final')
     expect((result as { usage?: unknown }).usage).toEqual({ inputTokens: 100, outputTokens: 20 })
+  })
+
+  it('returns all distinct successful results while excluding streamed progress and child output', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new ClaudeCodeEngine(engineConfig)
+    const onUpdate = vi.fn<(content: string) => void>()
+    const promise = getExecuteStream(engine)(
+      {
+        taskId: 'task_cc_multiple_results',
+        workDir: '/tmp',
+        prompt: 'hello',
+        onUpdate,
+        agentConfig: {},
+      },
+      'claude-sonnet-4-6',
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Checking the repository...' }] },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-main',
+        origin: { kind: 'human' },
+        result: 'Main conclusion.',
+        usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50 },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Background child report.' }] },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-task-notification',
+        origin: { kind: 'task-notification' },
+        result: 'Additional evidence.',
+        usage: { input_tokens: 40, output_tokens: 6, cache_creation_input_tokens: 10 },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-task-notification',
+        origin: { kind: 'task-notification' },
+        result: 'Additional evidence.',
+        usage: { input_tokens: 40, output_tokens: 6, cache_creation_input_tokens: 10 },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Late background child output.' }] },
+      })}\n`,
+    )
+    child.emit('close', 0)
+
+    const result = await promise
+    expect(result.output).toBe('Main conclusion.\n\nAdditional evidence.')
+    expect(result.output).not.toContain('Checking the repository')
+    expect(result.output).not.toContain('Background child report')
+    expect(result.output).not.toContain('Late background child output')
+    expect((result as { usage?: unknown }).usage).toEqual({
+      inputTokens: 140,
+      outputTokens: 26,
+      cacheReadTokens: 50,
+      cacheWriteTokens: 10,
+    })
+    expect(onUpdate.mock.calls.at(-1)?.[0]).toBe(result.output)
+  })
+
+  it('prefers cumulative modelUsage so subagent tokens are included exactly once', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new ClaudeCodeEngine(engineConfig)
+    const promise = getExecuteStream(engine)(
+      { taskId: 'task_cc_model_usage', workDir: '/tmp', prompt: 'hello', agentConfig: {} },
+      'claude-opus-5',
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-main',
+        origin: { kind: 'human' },
+        result: 'Main conclusion.',
+        usage: { input_tokens: 100, output_tokens: 20 },
+        modelUsage: {
+          'claude-opus-5': {
+            inputTokens: 130,
+            outputTokens: 24,
+            cacheReadInputTokens: 50,
+            cacheCreationInputTokens: 7,
+            costUSD: 1,
+          },
+          'claude-haiku-4-5': {
+            inputTokens: 20,
+            outputTokens: 5,
+            cacheReadInputTokens: 5,
+            cacheCreationInputTokens: 2,
+            costUSD: 0.1,
+          },
+        },
+      })}\n`,
+    )
+    const taskNotificationResult = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      uuid: 'result-task-notification',
+      origin: { kind: 'task-notification' },
+      result: 'Additional evidence.',
+      usage: { input_tokens: 40, output_tokens: 6 },
+      modelUsage: {
+        'claude-opus-5': {
+          inputTokens: 150,
+          outputTokens: 30,
+          cacheReadInputTokens: 60,
+          cacheCreationInputTokens: 8,
+          costUSD: 1.2,
+        },
+        'claude-haiku-4-5': {
+          inputTokens: 25,
+          outputTokens: 7,
+          cacheReadInputTokens: 5,
+          cacheCreationInputTokens: 2,
+          costUSD: 0.2,
+        },
+      },
+    }
+    child.stdout.write(`${JSON.stringify(taskNotificationResult)}\n`)
+    child.stdout.write(`${JSON.stringify(taskNotificationResult)}\n`)
+    child.emit('close', 0)
+
+    const result = await promise
+    expect((result as { usage?: unknown }).usage).toEqual({
+      inputTokens: 175,
+      outputTokens: 37,
+      cacheReadTokens: 65,
+      cacheWriteTokens: 10,
+    })
+  })
+
+  it('replaces an earlier result when a later result is its complete cumulative snapshot', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new ClaudeCodeEngine(engineConfig)
+    const promise = getExecuteStream(engine)(
+      { taskId: 'task_cc_result_snapshot', workDir: '/tmp', prompt: 'hello', agentConfig: {} },
+      'claude-sonnet-4-6',
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-main',
+        result: 'Main conclusion.',
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-task-notification',
+        origin: { kind: 'task-notification' },
+        result: 'Main conclusion.\n\nAdditional evidence.',
+      })}\n`,
+    )
+    child.emit('close', 0)
+
+    const result = await promise
+    expect(result.output).toBe('Main conclusion.\n\nAdditional evidence.')
+  })
+
+  it('keeps internal peer results out of the public output while counting their usage', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new ClaudeCodeEngine(engineConfig)
+    const promise = getExecuteStream(engine)(
+      { taskId: 'task_cc_result_origins', workDir: '/tmp', prompt: 'hello', agentConfig: {} },
+      'claude-sonnet-4-6',
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-main',
+        origin: { kind: 'human' },
+        result: 'Main conclusion.',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-peer',
+        origin: { kind: 'peer' },
+        result: 'Internal coordination reply.',
+        usage: { input_tokens: 4, output_tokens: 1 },
+      })}\n`,
+    )
+    child.stdout.write(
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'result-task-notification',
+        origin: { kind: 'task-notification' },
+        result: 'Additional evidence.',
+        usage: { input_tokens: 6, output_tokens: 3 },
+      })}\n`,
+    )
+    child.emit('close', 0)
+
+    const result = await promise
+    expect(result.output).toBe('Main conclusion.\n\nAdditional evidence.')
+    expect((result as { usage?: unknown }).usage).toEqual({ inputTokens: 20, outputTokens: 6 })
   })
 
   it('attaches usage from an error result to the rejected Error', async () => {

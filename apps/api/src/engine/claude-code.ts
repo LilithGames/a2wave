@@ -37,7 +37,7 @@ import type {
   StreamExecuteRequest,
   TokenUsage,
 } from './types.js'
-import { extractClaudeStyleUsage } from './usage.js'
+import { accumulateUsage, extractClaudeStyleUsage } from './usage.js'
 
 /** Heartbeat interval for in-flight tool calls (ms). */
 const TOOL_HEARTBEAT_INTERVAL_MS = 20_000
@@ -240,6 +240,87 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+const CLAUDE_USAGE_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'reasoningTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
+] as const
+
+/** Keep the most complete usage snapshot when one Result UUID is replayed. */
+function mergeClaudeResultUsage(previous: TokenUsage | undefined, next: TokenUsage): TokenUsage {
+  const merged: TokenUsage = { ...previous }
+  for (const field of CLAUDE_USAGE_FIELDS) {
+    const value = next[field]
+    if (typeof value !== 'number') continue
+    merged[field] = Math.max(previous?.[field] ?? 0, value)
+  }
+  return merged
+}
+
+/** Sum per-turn Result usage into the usage total for this one CLI execution. */
+function sumClaudeResultUsage(
+  usageByUuid: ReadonlyMap<string, TokenUsage>,
+  legacyUsage: TokenUsage | undefined,
+): TokenUsage | undefined {
+  let total = legacyUsage
+  for (const usage of usageByUuid.values()) total = accumulateUsage(total, usage)
+  return total
+}
+
+/** Aggregate the SDK's cumulative, whole-agent-tree model usage snapshot. */
+function extractClaudeModelUsage(data: Record<string, unknown>): TokenUsage | undefined {
+  const modelUsage =
+    data.modelUsage && typeof data.modelUsage === 'object' && !Array.isArray(data.modelUsage)
+      ? (data.modelUsage as Record<string, unknown>)
+      : undefined
+  if (!modelUsage) return undefined
+
+  let total: TokenUsage | undefined
+  for (const rawUsage of Object.values(modelUsage)) {
+    if (!rawUsage || typeof rawUsage !== 'object' || Array.isArray(rawUsage)) continue
+    const usage = rawUsage as Record<string, unknown>
+    const normalized: TokenUsage = {}
+    if (typeof usage.inputTokens === 'number') normalized.inputTokens = usage.inputTokens
+    if (typeof usage.outputTokens === 'number') normalized.outputTokens = usage.outputTokens
+    if (typeof usage.cacheReadInputTokens === 'number') {
+      normalized.cacheReadTokens = usage.cacheReadInputTokens
+    }
+    if (typeof usage.cacheCreationInputTokens === 'number') {
+      normalized.cacheWriteTokens = usage.cacheCreationInputTokens
+    }
+    total = accumulateUsage(total, normalized)
+  }
+  return total
+}
+
+/**
+ * Compose successful Result turns without losing background-task continuations.
+ * A later cumulative snapshot replaces the text it already contains; unrelated
+ * turns are appended, and exact replays are displayed only once.
+ */
+function composeClaudeResultText(resultTexts: Iterable<string>): string {
+  let output = ''
+  const seen = new Set<string>()
+  for (const rawText of resultTexts) {
+    const text = rawText.trim()
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    if (!output) {
+      output = text
+      continue
+    }
+    if (text.startsWith(`${output}\n`)) {
+      output = text
+      continue
+    }
+    if (output.startsWith(`${text}\n`)) continue
+    output = `${output}\n\n${text}`
+  }
+  return output
 }
 
 export interface ClaudeCodeEngineConfig extends CliEngineBaseConfig {
@@ -663,10 +744,16 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
 
     let sessionId = inputChatId
     let outputBuffer = ''
+    let resultOutput = ''
     let resultReceived = false
     let resultIsError = false
     let resultErrorText = ''
-    let lastUsage: TokenUsage | undefined
+    let totalUsage: TokenUsage | undefined
+    let cumulativeModelUsage: TokenUsage | undefined
+    let legacyUsage: TokenUsage | undefined
+    const resultUsageByUuid = new Map<string, TokenUsage>()
+    const primaryResultTexts = new Map<string, string>()
+    const taskNotificationResultTexts = new Map<string, string>()
     // Map callId -> toolName so terminal tool_call entries carry the name
     // the UI renders. CC's stream-json doesn't repeat the toolName on the
     // tool_result message, and the timeline component displays toolName
@@ -810,12 +897,60 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
         case 'result': {
           resultReceived = true
           resultIsError = data.is_error === true
-          // A later result without usage must not clear already captured usage.
+          const resultUuid = typeof data.uuid === 'string' && data.uuid ? data.uuid : undefined
+          const origin =
+            data.origin && typeof data.origin === 'object' && !Array.isArray(data.origin)
+              ? (data.origin as Record<string, unknown>)
+              : undefined
+          // The SDK defines an absent origin on a user-triggered turn as human.
+          // Startup failures can also omit it, but those take the error path.
+          const originKind = typeof origin?.kind === 'string' ? origin.kind : 'human'
           const usage = extractClaudeStyleUsage(data)
-          if (usage) lastUsage = usage
+          if (usage) {
+            if (resultUuid) {
+              resultUsageByUuid.set(
+                resultUuid,
+                mergeClaudeResultUsage(resultUsageByUuid.get(resultUuid), usage),
+              )
+            } else {
+              // Current locked Claude Code versions provide UUIDs. For legacy
+              // streams, preserve the latest/most-complete snapshot rather
+              // than guessing that repeated terminal frames are new turns.
+              legacyUsage = mergeClaudeResultUsage(legacyUsage, usage)
+            }
+          }
+          const modelUsage = extractClaudeModelUsage(data)
+          if (modelUsage) {
+            // modelUsage is cumulative for the whole CLI call and includes
+            // subagents. Keep the most complete snapshot instead of summing
+            // Result frames, which would count earlier turns more than once.
+            cumulativeModelUsage = mergeClaudeResultUsage(cumulativeModelUsage, modelUsage)
+          }
+          totalUsage = cumulativeModelUsage ?? sumClaudeResultUsage(resultUsageByUuid, legacyUsage)
           const resultText = typeof data.result === 'string' ? data.result : ''
           if (resultText) {
-            outputBuffer = resultText.trim()
+            if (data.is_error === true) {
+              outputBuffer = resultText.trim()
+            } else {
+              const normalizedResultText = resultText.trim()
+              const resultKey = resultUuid
+                ? `uuid:${resultUuid}`
+                : `anonymous:${originKind}:${normalizedResultText}`
+              if (originKind === 'human') {
+                primaryResultTexts.set(resultKey, normalizedResultText)
+              } else if (originKind === 'task-notification') {
+                taskNotificationResultTexts.set(resultKey, normalizedResultText)
+              } else {
+                // peer/coordinator/channel turns are internal orchestration
+                // traffic: retain their usage and log entry, not their text.
+              }
+              const primaryResultText = Array.from(primaryResultTexts.values()).at(-1)
+              resultOutput = composeClaudeResultText([
+                ...(primaryResultText ? [primaryResultText] : []),
+                ...taskNotificationResultTexts.values(),
+              ])
+              outputBuffer = resultOutput
+            }
             onUpdate?.(outputBuffer)
           }
           if (resultIsError) {
@@ -833,7 +968,7 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
             type: 'result',
             subtype: resultIsError ? 'error' : 'success',
             durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : undefined,
-            ...(lastUsage ? { usage: lastUsage } : {}),
+            ...(usage ? { usage } : {}),
             ...(fastModeState ? { fastModeState } : {}),
             ts: Date.now(),
           })
@@ -860,7 +995,7 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
       // CC's main stream is stdout, but some errors land on stderr — parse
       // those lines too (the base also collects them for the settle verdict).
       parseStderrLines: true,
-      getUsage: () => lastUsage,
+      getUsage: () => totalUsage,
       onSpawned: () => onLogEntry?.({ type: 'system', subtype: 'spawned', ts: Date.now() }),
       cleanup: () => heartbeat.stop(),
       settle: ({ exitCode, stderr }) => {
@@ -868,24 +1003,26 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
           return {
             ok: false,
             error: new Error(resultErrorText || stderr || 'Claude Code stream execution failed'),
-            usage: lastUsage,
+            usage: totalUsage,
           }
         }
         if (resultReceived || exitCode === 0) {
+          const finalOutput = resultOutput || outputBuffer
+          if (resultOutput && finalOutput !== outputBuffer) onUpdate?.(finalOutput)
           return {
             ok: true,
             result: {
               success: true,
-              output: outputBuffer,
+              output: finalOutput,
               chatId: sessionId,
-              ...(lastUsage ? { usage: lastUsage } : {}),
+              ...(totalUsage ? { usage: totalUsage } : {}),
             },
           }
         }
         return {
           ok: false,
           error: new Error(formatExitError(exitCode ?? 1, stderr)),
-          usage: lastUsage,
+          usage: totalUsage,
         }
       },
     })
