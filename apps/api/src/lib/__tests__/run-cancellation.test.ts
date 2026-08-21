@@ -6,13 +6,15 @@ const loggerWarnMock = vi.hoisted(() => vi.fn())
 const cancelExecutionLeaseMock = vi.hoisted(() => vi.fn())
 const claimRunResultMock = vi.hoisted(() => vi.fn().mockReturnValue([{ id: 'run_1' }]))
 const releaseReservedRunMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
+const claimSetMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../db/client.js', () => ({
   db: {
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({ returning: claimRunResultMock })),
-      })),
+      set: vi.fn((values: unknown) => {
+        claimSetMock(values)
+        return { where: vi.fn(() => ({ returning: claimRunResultMock })) }
+      }),
     })),
   },
   isPostgres: false,
@@ -69,6 +71,14 @@ describe('cancelRunningTasksInBackground', () => {
     vi.clearAllMocks()
     cancelExecutionLeaseMock.mockReturnValue(null)
     claimRunResultMock.mockReturnValue([{ id: 'run_1' }])
+  })
+
+  it('clears the queue-entry mark so a reused conversation row cannot inherit it', async () => {
+    // A cancelled queued turn never materializes a step, so nothing else
+    // would consume its queuedAt — left in place, the row's next turn would
+    // report the dead turn's wait as its own.
+    await claimRunCancellation('run_1', 'queued')
+    expect(claimSetMock).toHaveBeenCalledWith(expect.objectContaining({ queuedAt: null }))
   })
 
   it('claims cancellation only when the expected status still owns the run', async () => {

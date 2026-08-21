@@ -121,7 +121,16 @@ export const taskQueueDb: TaskQueueDb = {
     if (runStatus === null) return
     await db
       .update(runs)
-      .set({ status: runStatus, updatedAt: new Date() })
+      .set({
+        status: runStatus,
+        // Mirror admitRun's queue-entry marking on the fallback path. Only
+        // immediate acquisition writes 'running' here (promotions go through
+        // tryTransitionRunStatus), so clearing on it is safe and kills any
+        // stale mark a reused conversation row still carries.
+        ...(runStatus === 'queued' ? { queuedAt: new Date() } : {}),
+        ...(runStatus === 'running' ? { queuedAt: null } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(runs.id, runId))
   },
 
@@ -142,6 +151,10 @@ export const taskQueueDb: TaskQueueDb = {
         .update(runs)
         .set({
           status: 'queued',
+          // The requeue is this turn's queue entry: the interrupted attempt
+          // already consumed its own wait into its step, so the resumed
+          // step's wait_ms counts from here.
+          queuedAt: new Date(),
           // Stamped here rather than by the caller, and that placement is the
           // whole point. A separate markRunForResume left a window between the
           // two writes, and the killed CLI's fire-and-forget session tap
@@ -243,6 +256,11 @@ export const taskQueueDb: TaskQueueDb = {
               // reused across turns, and a leftover owner from an earlier turn
               // would make a legitimately queued run look abandoned.
               ownerInstanceId: slot === 'acquired' ? processInstanceId : null,
+              // Queue-entry mark, consumed into the step's wait_ms when the
+              // turn materializes. The acquired branch CLEARS it for the same
+              // reuse reason as the owner above: an immediate turn must not
+              // inherit a stale mark from an earlier cancelled queued turn.
+              queuedAt: slot === 'queued' ? new Date() : null,
               updatedAt: new Date(),
             })
             .where(eq(runs.id, runId))

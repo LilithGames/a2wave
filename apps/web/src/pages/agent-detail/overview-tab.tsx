@@ -1,14 +1,14 @@
+import { Activity, CalendarDays, Coins, Hourglass, Timer, TrendingUp, Users } from 'lucide-react'
+import { lazy, Suspense } from 'react'
+import { useTranslation } from 'react-i18next'
 import { SOURCE_LABEL } from '@/components/run-caller-prefix'
 import { StatCard } from '@/components/stat-card'
 import { TokenUsageCoverageHelp } from '@/components/token-usage-coverage-help'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAgentStats } from '@/hooks/use-runs'
+import { useAgentQueueStats, useAgentStats } from '@/hooks/use-runs'
 import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
 import { formatDuration } from '@/lib/utils'
-import { Activity, CalendarDays, Coins, Timer, TrendingUp, Users } from 'lucide-react'
-import { Suspense, lazy } from 'react'
-import { useTranslation } from 'react-i18next'
 
 /** recharts pulls in d3 sub-packages, so only overview visitors pay for it. */
 const OverviewTrends = lazy(() =>
@@ -26,6 +26,7 @@ const SOURCE_KEY: Record<string, string> = {
 export function OverviewTab({ agentId }: { agentId: string | undefined }) {
   const { t } = useTranslation()
   const { data: stats, isLoading, isError } = useAgentStats(agentId)
+  const { data: queue, isLoading: queueLoading } = useAgentQueueStats(agentId)
 
   if (isError) {
     return (
@@ -40,7 +41,7 @@ export function OverviewTab({ agentId }: { agentId: string | undefined }) {
   return (
     <div className="space-y-6">
       {/* KPI cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           title={t('dashboard.totalRuns')}
           icon={<Activity className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />}
@@ -84,6 +85,23 @@ export function OverviewTab({ agentId }: { agentId: string | undefined }) {
           value={formatTokens(sumTokenUsage(stats?.tokens ?? {}))}
           hint={`${t('runs.tokenIn')} ${formatTokens(stats?.tokens?.input)} / ${t('runs.tokenOut')} ${formatTokens(stats?.tokens?.output)}`}
           loading={isLoading}
+        />
+        <StatCard
+          title={t('agentOverview.queueTitle')}
+          icon={<Hourglass className="h-4 w-4 text-warning" aria-hidden="true" />}
+          iconTileClass="bg-warning-subtle"
+          value={queue?.queued ?? 0}
+          hint={`${t('agentOverview.queueSlots', {
+            occupied: queue?.occupied ?? 0,
+            max: queue?.maxConcurrency ?? 1,
+          })} · ${
+            queue?.oldestWaitMs != null
+              ? t('agentOverview.queueOldestWait', {
+                  duration: formatDuration(queue.oldestWaitMs),
+                })
+              : t('agentOverview.queueIdle')
+          }`}
+          loading={queueLoading}
         />
       </div>
 

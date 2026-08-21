@@ -69,6 +69,12 @@ export const SERIES_COLORS = {
   tokenInput: 'var(--color-chart-series-1)',
   tokenOutput: 'var(--color-chart-series-2)',
   duration: 'var(--color-warning)',
+  // The latency legs ARE state durations — time spent 'queued' and time spent
+  // 'running' — so they take those status tokens rather than categorical
+  // slots. The pair already sits adjacent in the stacked runs chart, so its
+  // separation is proven on every theme.
+  latencyWait: RUN_STATUS_COLORS.queued,
+  latencyExec: RUN_STATUS_COLORS.running,
 } as const
 
 export const AXIS_PROPS = {

@@ -141,6 +141,13 @@
       "when": 1787312107353,
       "tag": "0019_wet_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787317599792,
+      "tag": "0020_goofy_guardian",
+      "breakpoints": true
     }
   ]
 }

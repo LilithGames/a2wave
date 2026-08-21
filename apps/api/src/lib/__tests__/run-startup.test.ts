@@ -4,7 +4,15 @@ import { persistRunTurn, recoverRunStartup } from '../run-startup.js'
 describe('persistRunTurn', () => {
   it('persists the step and user message inside one transaction', async () => {
     const values = vi.fn().mockResolvedValue(undefined)
-    const tx = { insert: vi.fn(() => ({ values })) }
+    const tx = {
+      // Serves the queue-wait consumption; no row -> wait 0.
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })),
+        })),
+      })),
+      insert: vi.fn(() => ({ values })),
+    }
     const transaction = vi.fn(async (callback) => await callback(tx))
 
     await persistRunTurn(
@@ -67,9 +75,86 @@ describe('persistRunTurn', () => {
     expect(values).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'rst_next', order: 5 }))
   })
 
+  it('consumes the run queue mark into the step wait', async () => {
+    // A turn that waited in the queue must record that wait on its own step;
+    // the mark is cleared in the same transaction so the NEXT turn on this
+    // conversation row cannot inherit it.
+    const values = vi.fn().mockResolvedValue(undefined)
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue([{ queuedAt: new Date(Date.now() - 5_000) }]),
+          })),
+        })),
+      })),
+      update: vi.fn(() => ({ set })),
+      insert: vi.fn(() => ({ values })),
+    }
+    const transaction = vi.fn(async (callback) => await callback(tx))
+
+    await persistRunTurn(
+      {
+        step: {
+          id: 'rst_waited',
+          runId: 'run_test',
+          agentId: 'agt_test',
+          order: 1,
+          input: { message: 'hello' },
+          status: 'running',
+        },
+        message: { id: 'msg_waited', runId: 'run_test', role: 'user', content: 'hello' },
+      },
+      { transaction },
+    )
+
+    const stepValues = values.mock.calls[0]?.[0] as { waitMs?: number }
+    // ±: Date.now() granularity can land 1ms short of the seeded distance.
+    expect(stepValues.waitMs).toBeGreaterThanOrEqual(4_900)
+    expect(set).toHaveBeenCalledWith({ queuedAt: null })
+  })
+
+  it('records wait 0 for a turn dispatched without queueing', async () => {
+    const values = vi.fn().mockResolvedValue(undefined)
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ queuedAt: null }]) })),
+        })),
+      })),
+      update: vi.fn(),
+      insert: vi.fn(() => ({ values })),
+    }
+    const transaction = vi.fn(async (callback) => await callback(tx))
+
+    await persistRunTurn(
+      {
+        step: {
+          id: 'rst_immediate',
+          runId: 'run_test',
+          agentId: 'agt_test',
+          order: 1,
+          input: { message: 'hi' },
+          status: 'running',
+        },
+        message: { id: 'msg_immediate', runId: 'run_test', role: 'user', content: 'hi' },
+      },
+      { transaction },
+    )
+
+    expect(values).toHaveBeenNthCalledWith(1, expect.objectContaining({ waitMs: 0 }))
+    expect(tx.update).not.toHaveBeenCalled()
+  })
+
   it('propagates a write failure so the transaction can roll back both records', async () => {
     let writeCount = 0
     const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })),
+        })),
+      })),
       insert: vi.fn(() => ({
         values: vi.fn(async () => {
           writeCount++

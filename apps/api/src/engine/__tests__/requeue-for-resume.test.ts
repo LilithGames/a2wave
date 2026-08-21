@@ -35,6 +35,7 @@ vi.mock('../../db/client.js', async () => {
       reasoning_tokens integer,
       cache_read_tokens integer,
       cache_write_tokens integer,
+      queued_at integer,
       created_at integer NOT NULL,
       updated_at integer NOT NULL
     );
@@ -47,6 +48,7 @@ vi.mock('../../db/client.js', async () => {
       output text,
       status text NOT NULL DEFAULT 'pending',
       duration_ms integer,
+      wait_ms integer,
       created_at integer NOT NULL
     );
   `)
@@ -116,6 +118,15 @@ describe('taskQueueDb.requeueForResume', () => {
     await seedRun()
     await taskQueueDb.requeueForResume('run_1')
     expect((await loadRun())?.executionMetadata).toMatchObject({ liveChatId: 'sess_live' })
+  })
+
+  it('stamps queuedAt so the resumed turn wait counts from the requeue', async () => {
+    // The requeue IS this turn's queue entry: the interrupted attempt's own
+    // wait was already consumed into its step, so measuring from the requeue
+    // is what keeps the resumed step's wait_ms honest.
+    await seedRun()
+    await taskQueueDb.requeueForResume('run_1')
+    expect((await loadRun())?.queuedAt).toBeInstanceOf(Date)
   })
 
   it('settles the step the killed process left running', async () => {

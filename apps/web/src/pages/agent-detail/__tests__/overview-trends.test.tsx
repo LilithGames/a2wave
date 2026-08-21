@@ -83,12 +83,20 @@ function point(overrides: Partial<AgentTimeseriesPoint> = {}): AgentTimeseriesPo
     tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
     avgDurationMs: null,
     durationSamples: 0,
+    latency: { waitAvgMs: null, execAvgMs: null, e2eP50Ms: null, e2eP90Ms: null, samples: 0 },
     ...overrides,
   }
 }
 
-function series(points: AgentTimeseriesPoint[]): AgentTimeseries {
-  return { bucket: 'day', from: '2026-07-01', to: '2026-07-02', points }
+function series(
+  points: AgentTimeseriesPoint[],
+  latencySummary: AgentTimeseries['latencySummary'] = {
+    e2eP50Ms: null,
+    e2eP90Ms: null,
+    samples: 0,
+  },
+): AgentTimeseries {
+  return { bucket: 'day', from: '2026-07-01', to: '2026-07-02', points, latencySummary }
 }
 
 function mockResult(over: Partial<ReturnType<typeof mockUseAgentTimeseries>> = {}) {
@@ -135,8 +143,8 @@ describe('<OverviewTrends />', () => {
   it('shows the empty state for an all-zero range', () => {
     mockResult({ data: series([point(), point()]) })
     renderWithProviders(<OverviewTrends agentId="agt_1" />)
-    // One per chart card.
-    expect(screen.getAllByText('所选时间范围内暂无数据')).toHaveLength(4)
+    // One per chart card (runs, askers, tokens, duration, latency).
+    expect(screen.getAllByText('所选时间范围内暂无数据')).toHaveLength(5)
   })
 
   it('stacks every run status in a stable order', () => {
@@ -273,6 +281,55 @@ describe('<OverviewTrends />', () => {
     for (const line of screen.getAllByTestId('line')) {
       expect(line).toHaveAttribute('data-has-dot-renderer', 'true')
     }
+  })
+
+  it('stacks the latency legs so their sum reads as end-to-end time', () => {
+    const data = series(
+      [
+        point({
+          total: 2,
+          runs: { completed: 2, failed: 0, running: 0, pending: 0, queued: 0, cancelled: 0 },
+          latency: {
+            waitAvgMs: 2_000,
+            execAvgMs: 4_000,
+            e2eP50Ms: 6_000,
+            e2eP90Ms: 8_000,
+            samples: 2,
+          },
+        }),
+      ],
+      { e2eP50Ms: 6_000, e2eP90Ms: 8_000, samples: 2 },
+    )
+    mockResult({ data })
+    renderWithProviders(<OverviewTrends agentId="agt_1" />)
+
+    const latencyAreas = screen
+      .getAllByTestId('area')
+      .filter((el) => ['latencyWait', 'latencyExec'].includes(el.getAttribute('data-key') ?? ''))
+    expect(latencyAreas).toHaveLength(2)
+    // Unlike the token chart these DO stack: the two legs are one journey and
+    // their sum is the quantity the card is titled after.
+    for (const el of latencyAreas) {
+      expect(el.getAttribute('data-stack-id')).toBe('latency')
+    }
+    // Headline is the range median end-to-end time.
+    expect(screen.getByText('6.0s')).toBeInTheDocument()
+  })
+
+  it('explains a missing latency series when runs exist but predate wait tracking', () => {
+    const data = series([
+      point({
+        total: 3,
+        runs: { completed: 3, failed: 0, running: 0, pending: 0, queued: 0, cancelled: 0 },
+        avgDurationMs: 4200,
+        durationSamples: 3,
+      }),
+    ])
+    mockResult({ data })
+    renderWithProviders(<OverviewTrends agentId="agt_1" />)
+    // "No data" next to a populated Duration chart would read as a bug; the
+    // real reason is that old runs carry no wait measurements.
+    expect(screen.getByText(/该功能上线前的运行不含等待数据/)).toBeInTheDocument()
   })
 
   it('renders skeletons while loading', () => {

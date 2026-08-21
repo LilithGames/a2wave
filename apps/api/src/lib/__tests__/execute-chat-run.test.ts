@@ -754,6 +754,40 @@ describe('executeChatRun', () => {
     expect(txOrder).toBeLessThan(retryOrder)
   })
 
+  it('records the queued wait on the step and clears the mark in the same transaction', async () => {
+    // The dequeue path is the one place a turn's wait is real: queuedAt was
+    // stamped at admission, survived promotion, and must land on this step.
+    setupSelectSequence(
+      baseAgent,
+      { ...baseRun, queuedAt: new Date(Date.now() - 30_000) },
+      baseScmSource,
+      undefined, // lastStep
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    const stepValues = mockInsertValues.mock.calls
+      .map((c) => c[0] as { order?: number; waitMs?: number })
+      .find((v) => v.order !== undefined)
+    expect(stepValues?.waitMs).toBeGreaterThanOrEqual(29_000)
+    // The clear rides the guard update, so a competing settle (0 rows) also
+    // aborts the consumption — no half-consumed mark.
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ queuedAt: null }))
+  })
+
+  it('records wait 0 on the step when the run was never queued', async () => {
+    setupSelectSequence(baseAgent, baseRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    const stepValues = mockInsertValues.mock.calls
+      .map((c) => c[0] as { order?: number; waitMs?: number })
+      .find((v) => v.order !== undefined)
+    expect(stepValues?.waitMs).toBe(0)
+  })
+
   it('passes context in step input when context is provided', async () => {
     setupSelectSequence(
       baseAgent,
