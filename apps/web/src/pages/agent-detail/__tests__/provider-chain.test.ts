@@ -10,6 +10,7 @@ import type { FormData, ProviderChainEntry } from '../types'
 
 const baseFormData: FormData = {
   name: 'Agent',
+  commandReplyLanguage: 'auto',
   description: '',
   systemPrompt: '',
   icon: '🤖',

@@ -119,6 +119,14 @@ const fakeAgent = {
 
 const fakeTaskStore = {} as unknown as HandleA2AArgs[2]
 
+/** An ordinary prompt: the responder falls through and the wrapped fn runs. */
+const EXEC_PAYLOAD = {
+  taskId: 't1',
+  prompt: 'do the thing',
+  workDir: '/tmp/test',
+  agentConfig: {},
+}
+
 describe('handleA2ARequest', () => {
   const baseFn = vi.fn().mockResolvedValue({
     success: true,
@@ -219,7 +227,8 @@ describe('handleA2ARequest', () => {
 
     await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)
 
-    expect(capturedExecuteFn).toBe(baseFn)
+    await capturedExecuteFn?.('t1', EXEC_PAYLOAD)
+    expect(baseFn).toHaveBeenCalledOnce()
     expect(mockGetStreamingCard).not.toHaveBeenCalled()
   })
 
@@ -375,7 +384,8 @@ describe('handleA2ARequest', () => {
     await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)
 
     expect(mockGetStreamingCard).toHaveBeenCalledWith('card_123')
-    expect(capturedExecuteFn).toBe(baseFn)
+    await capturedExecuteFn?.('t1', EXEC_PAYLOAD)
+    expect(baseFn).toHaveBeenCalledOnce()
   })
 
   it('wraps executeFn to create child section and forward updates when card found', async () => {
@@ -450,7 +460,8 @@ describe('handleA2ARequest', () => {
       await handleA2ARequest(c, fakeAgent, fakeTaskStore, baseFn)
 
       // Should NOT wrap — uses original executeFn
-      expect(capturedExecuteFn).toBe(baseFn)
+      await capturedExecuteFn?.('t1', EXEC_PAYLOAD)
+      expect(baseFn).toHaveBeenCalledOnce()
     })
 
     it('does not create child section when showChildOutput is false', async () => {

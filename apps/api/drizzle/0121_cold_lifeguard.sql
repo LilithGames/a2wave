@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `command_reply_language` text DEFAULT 'auto' NOT NULL;

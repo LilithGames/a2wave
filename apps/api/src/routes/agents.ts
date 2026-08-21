@@ -87,6 +87,7 @@ import {
   deleteAgentWithBindingGuard,
   mutateAgentBinding,
 } from '../lib/agent-scm-binding-mutation.js'
+import { buildAgentSelfReport } from '../lib/agent-self-report.js'
 import { createShareToken } from '../lib/agent-share.js'
 import { askerCountExpr } from '../lib/asker-identity.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -108,6 +109,7 @@ import { logger } from '../lib/logger.js'
 import { canNonAdminUseMcp } from '../lib/mcp-stdio.js'
 import { clearAgentIndex } from '../lib/memory-index.js'
 import { removeAgentMemory, removeMemoryOverride } from '../lib/memory-storage.js'
+import { interceptNativeChatCommand } from '../lib/native-chat-command.js'
 import {
   isOauthAllowlistMissing,
   OAUTH_ALLOWED_EMAILS_REQUIRED,
@@ -431,6 +433,21 @@ app.get('/:id/diagnose', async (c) => {
 
   logAudit(c, { action: 'agent.diagnose', resource: 'agent', resourceId: id })
   return c.json({ data })
+})
+
+/**
+ * GET /agents/:id/status — meta + health + live queue depth in one read.
+ *
+ * Separate from /diagnose rather than an extension of it: diagnose is an
+ * owner-view deep check that fans out over peer Agents and probes the provider
+ * CLI, so it is too heavy to poll. This one is cheap enough to answer a chat
+ * command on every invocation, and shares the health checks so the two cannot
+ * disagree. Read-only, so no audit entry -- unlike diagnose, it probes nothing.
+ */
+app.get('/:id/status', async (c) => {
+  const { id } = c.req.param()
+  const { agent } = await requireAgentRead(c, id)
+  return c.json({ data: await buildAgentSelfReport(agent) })
 })
 
 /** GET /agents/:id - 获取单个 Agent */
@@ -2250,6 +2267,35 @@ app.post('/:id/chat', async (c) => {
       },
       403,
     )
+  }
+
+  // After the channel gates but before any run, chat id or worktree is
+  // allocated: a command answers from platform state, so it must not reserve a
+  // slot or leave a Run behind. The test drawer is where an operator is most
+  // likely to ask, since it is the surface they open when something looks wrong.
+  const command = await interceptNativeChatCommand({
+    agentId: id,
+    text: parsed.data.message,
+    chatType: 'p2p',
+  })
+  if (command.handled) {
+    if (parsed.data.stream) {
+      return streamSSE(c, async (sseStream) => {
+        await sseStream.writeSSE({
+          event: 'done',
+          data: JSON.stringify({ type: 'done', reply: command.reply }),
+        })
+      })
+    }
+    return c.json({ data: { reply: command.reply } })
+  }
+  if (command.intent !== undefined) {
+    // A session command (`/new`): the Agent receives the text without the
+    // prefix. This endpoint owns its session through `chatId`, so the reset is
+    // expressed by dropping the one the client sent rather than by a channel
+    // field -- resolving it would otherwise resume the very session being reset.
+    parsed.data.message = command.intent
+    if (command.resetSession) parsed.data.chatId = undefined
   }
 
   logger.info(

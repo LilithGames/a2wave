@@ -8,15 +8,20 @@
  * dispatcher 的 priority 必须小于 cmd plugin priority（factory 默认 20），
  * 确保仲裁先跑、命令 plugin 后跑。
  *
- * 没有 abort 路径：未注册或当前上下文不允许的命令 =
- * silent fall-through 当普通文本走 LLM。
+ * 未注册或当前上下文不允许的命令 = silent fall-through 当普通文本走 LLM。
+ * 唯一的 abort 路径是应答型命令（CommandSpec.respond）：它自己答完，
+ * 消息不进 LLM，也不产生 Run。
  */
 
+import { logger } from '../../logger.js'
 import type { AbortableDecision, AuthenticatedCtx, LifecyclePlugin, MatchedCtx } from '../types.js'
 import { matchByLongestPrefix } from './prefix-matcher.js'
 import type { CommandPlugin } from './types.js'
 
 const PRIORITY_DISPATCH = 10
+
+/** Generic; a responder's failure detail must not reach the chat window. */
+const COMMAND_FAILED_MESSAGE = 'Command failed, please try again later.'
 
 function deriveCurrentContext(ctx: AuthenticatedCtx): 'p2p' | 'group' | 'thread' {
   // A direct message is never 'thread', even when it is a quoted reply. P2P keys its
@@ -60,6 +65,37 @@ export function createCommandDispatchPlugin(cmdPlugins: readonly CommandPlugin[]
       mctx.matchedCommand = plugin.commandName
       mctx.strippedText =
         rest === '' && plugin.emptyTextFallback !== undefined ? plugin.emptyTextFallback : rest
+
+      if (plugin.respond) {
+        // 应答型命令：abort 即是投递路径——channel adapter 把 abortReason.message
+        // 原样回给用户。此处不挂 pendingCommandPlugin：命令已经答完，没有 Run 可patch。
+        let answer: string | null
+        try {
+          answer = await plugin.respond({
+            commandName: plugin.commandName,
+            agentEngineType: ctx.engineType,
+            rawText: ctx.rawText,
+            strippedText: mctx.strippedText,
+            agent: ctx.agent,
+          })
+        } catch (error) {
+          // 回给用户的是通用文案：responder 的失败细节（连接串、内网地址）
+          // 会原样出现在聊天窗口里。
+          logger.warn(
+            { error, agentId: ctx.agent.id, command: plugin.commandName },
+            'Command responder failed',
+          )
+          return { abort: { reason: COMMAND_FAILED_MESSAGE, code: 'command_failed' } }
+        }
+        if (answer !== null) {
+          return { abort: { reason: answer, code: `command_${plugin.commandName}` } }
+        }
+        // 放弃应答：回退成普通文本，命令语义完全撤销。
+        mctx.matchedCommand = undefined
+        mctx.strippedText = ctx.rawText
+        return null
+      }
+
       mctx.pendingCommandPlugin = plugin
       return null
     },

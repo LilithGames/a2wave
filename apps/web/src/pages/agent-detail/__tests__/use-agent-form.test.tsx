@@ -907,6 +907,7 @@ describe('useAgentForm — post-create redirect does not force a channel dialog 
 
   const formValues: Parameters<ReturnType<typeof useAgentForm>['onSubmit']>[0] = {
     name: 'New Agent',
+    commandReplyLanguage: 'auto',
     description: '',
     systemPrompt: '',
     icon: '🤖',

@@ -36,6 +36,7 @@ export interface ExportedAgent {
   config: Record<string, unknown> | null
   workspaceType: string
   maxConcurrency: number
+  commandReplyLanguage?: 'auto' | 'en' | 'zh'
   env: Record<string, { value: string; sensitive: boolean }> | null
   feishuConfig: Record<string, unknown> | null
   slackConfig?: Record<string, unknown> | null
@@ -263,6 +264,7 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
     config: sanitizeProviderChainConfig(agent.config as Record<string, unknown> | null),
     workspaceType: agent.workspaceType,
     maxConcurrency: agent.maxConcurrency,
+    commandReplyLanguage: agent.commandReplyLanguage,
     env: sanitizedEnv,
     feishuConfig: sanitizedFeishuConfig,
     slackConfig: sanitizedSlackConfig,

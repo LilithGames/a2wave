@@ -187,6 +187,7 @@ export interface AgentYaml {
   config?: Record<string, unknown>
   env?: Record<string, { value: string; sensitive?: boolean }>
   maxConcurrency?: number
+  commandReplyLanguage?: 'auto' | 'en' | 'zh'
   authMode?: 'apiKey' | 'oauth' | 'localSession'
   providerApiKey?: string
   providerOauthToken?: string
@@ -332,6 +333,8 @@ export function toCreatePayload(doc: AgentYamlDoc, refs: ResolvedRefs): Record<s
     payload.env = out
   }
   if (doc.maxConcurrency !== undefined) payload.maxConcurrency = doc.maxConcurrency
+  if (doc.commandReplyLanguage !== undefined)
+    payload.commandReplyLanguage = doc.commandReplyLanguage
   if (doc.authMode !== undefined) payload.authMode = doc.authMode
   if (doc.providerApiKey !== undefined) payload.providerApiKey = doc.providerApiKey
   if (doc.providerOauthToken !== undefined) payload.providerOauthToken = doc.providerOauthToken
@@ -548,6 +551,7 @@ workspace:
   # source: my-repo                       # Required when type=scm
 
 maxConcurrency: 1                         # Concurrency limit 1-5
+commandReplyLanguage: auto                # /status reply language: auto | en | zh
 
 # Whether child Agent intermediate output is shown in replies (for A2A orchestration)
 # showLocalChildOutput: false             # Local child Agents

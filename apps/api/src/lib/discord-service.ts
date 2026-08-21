@@ -19,6 +19,7 @@ import type { RegisteredArtifact } from './artifact-storage.js'
 import { logger } from './logger.js'
 import { prepareNativeArtifactUpload } from './native-chat-artifacts.js'
 import type { NativeChatAttachment } from './native-chat-attachments.js'
+import { interceptNativeChatCommand } from './native-chat-command.js'
 import { reserveNativeChatRun } from './native-chat-runner.js'
 import { appendNativeArtifactDownloadSection, prepareNativeChatText } from './native-chat-text.js'
 import { buildDiscordChannel } from './run-channel.js'
@@ -238,12 +239,31 @@ export class DiscordConnectionManager {
       senderName: message.author.globalName ?? message.author.username,
       chatType: isGuild ? 'guild' : 'dm',
     })
+    // Answered from platform state, so no run is reserved and no slot consumed.
+    const command = await interceptNativeChatCommand({
+      agentId,
+      text: intent,
+      chatType: isGuild ? 'group' : 'p2p',
+    })
+    if (command.handled) {
+      await message
+        .reply(command.reply)
+        .catch((error) =>
+          logger.warn(
+            { error, agentId, messageId: message.id },
+            'Failed to send Discord command reply',
+          ),
+        )
+      return
+    }
+
     const result = await reserveNativeChatRun({
       agentId,
       source: 'discord',
       eventId: `discord:${message.id}`,
       conversationId: buildDiscordConversationId(connection.config.applicationId, snapshot),
-      intent,
+      intent: command.intent ?? intent,
+      ...(command.resetSession ? { resetSession: true } : {}),
       channel: ctx as RunChannelContextDiscord,
       displayName,
       nativeAttachments,

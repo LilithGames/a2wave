@@ -63,6 +63,20 @@ export interface CommandSpec {
    * streaming_card 跳过。
    */
   readonly longRunningAck?: string | ((ctx: AckCtx) => string)
+  /**
+   * 程序化应答：返回文本则由 dispatcher abort，消息不进 LLM、不产生 Run。
+   * 返回 null = 放弃应答，按普通文本继续走 LLM。
+   *
+   * 用于平台自身可直接回答的运维查询（如 `/status`）——它们既没有推理成分，
+   * 也不该为一次状态查询占用并发槽。有副作用的命令仍走 applySession /
+   * runConfigPatch，让消息照常抵达 Agent。
+   */
+  readonly respond?: (ctx: CommandRespondCtx) => Awaitable<string | null>
+}
+
+/** Passed to `respond`; carries the matched Agent so the responder can read its own state. */
+export interface CommandRespondCtx extends SessionResolveCtx {
+  readonly agent: { id: string; userId: string | null; [k: string]: unknown }
 }
 
 /**

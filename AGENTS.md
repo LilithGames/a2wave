@@ -70,6 +70,7 @@ Read the topic doc before touching its area.
 | [agent-api-keys.md](docs/agent/agent-api-keys.md) | Per-Agent API/A2A keys: multi-key model, verification, migration |
 | [oauth-channel.md](docs/agent/oauth-channel.md) · [cli-oauth.md](docs/agent/cli-oauth.md) · [cli-device-login.md](docs/agent/cli-device-login.md) · [cli-tokens.md](docs/agent/cli-tokens.md) | Auth methods, CLI OAuth, headless device login, CLI tokens |
 | [run-channel-context.md](docs/agent/run-channel-context.md) · [a2a-task-lifecycle.md](docs/agent/a2a-task-lifecycle.md) | Call-context shape, A2A task lifecycle |
+| [agent-status-command.md](docs/agent/agent-status-command.md) | `/status` self-check: the report, responder commands, reply language |
 | [configuration.md](docs/agent/configuration.md) · [cli-install-publish.md](docs/agent/cli-install-publish.md) | Env configuration, CLI install/publish |
 | [apps/api/AGENTS.md](apps/api/AGENTS.md) | Database operation rules, API-app conventions |
 | [docs/PRODUCT.md](docs/PRODUCT.md) · [docs/core-concepts.md](docs/core-concepts.md) | Product vision; entity reference |

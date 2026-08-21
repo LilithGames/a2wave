@@ -25,6 +25,7 @@ import {
   oauthUploaderId,
 } from '../middleware/gateway-auth.js'
 import { buildAgentCard } from './agent-card.js'
+import { withA2ACommandResponder } from './command-execute.js'
 import { createScopedEventBusManager } from './event-bus-manager.js'
 import type { A2waveExecutorConfig, CancelFn, ExecuteFn } from './executor.js'
 import { A2waveAgentExecutor } from './executor.js'
@@ -247,8 +248,11 @@ export async function handleA2ARequest(
   }
 
   const eventBusManager = createScopedEventBusManager(callContext)
-  const executor = new A2waveAgentExecutor(executorConfig, wrappedExecuteFn, cancelFn, (taskId) =>
-    eventBusManager.wasReused(taskId),
+  const executor = new A2waveAgentExecutor(
+    executorConfig,
+    withA2ACommandResponder(agent, wrappedExecuteFn),
+    cancelFn,
+    (taskId) => eventBusManager.wasReused(taskId),
   )
   const requestHandler = new DefaultRequestHandler(agentCard, taskStore, executor, eventBusManager)
   const transportHandler = new JsonRpcTransportHandler(requestHandler)

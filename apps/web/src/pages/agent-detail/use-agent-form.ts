@@ -156,6 +156,7 @@ export function useAgentForm(
       force: true,
       cleanResult: false,
       maxConcurrency: 1,
+      commandReplyLanguage: 'auto',
       timeoutMinutes: 10,
       maxRetries: 2,
       totalTimeoutMinutes: null,
@@ -398,6 +399,7 @@ export function useAgentForm(
         force: true,
         cleanResult: false,
         maxConcurrency: 1,
+        commandReplyLanguage: 'auto',
         timeoutMinutes: 10,
         maxRetries: 2,
         totalTimeoutMinutes: null,
@@ -572,6 +574,9 @@ export function useAgentForm(
       force: config?.force !== undefined ? Boolean(config.force) : true,
       cleanResult: config?.cleanResult !== undefined ? Boolean(config.cleanResult) : false,
       maxConcurrency: ((agent as Record<string, unknown>).maxConcurrency as number) ?? 1,
+      commandReplyLanguage:
+        ((agent as Record<string, unknown>)
+          .commandReplyLanguage as FormData['commandReplyLanguage']) ?? 'auto',
       timeoutMinutes: typeof config?.timeoutMinutes === 'number' ? config.timeoutMinutes : 10,
       maxRetries: typeof config?.maxRetries === 'number' ? config.maxRetries : 2,
       totalTimeoutMinutes:
@@ -730,6 +735,7 @@ export function useAgentForm(
         scmSourceId: workspaceType === 'scm' ? (selectedScmSourceId ?? undefined) : undefined,
         env: Object.keys(envRecord).length > 0 ? envRecord : undefined,
         maxConcurrency: data.maxConcurrency,
+        commandReplyLanguage: data.commandReplyLanguage,
         providerApiKey: providerSubmission.providerApiKey || undefined,
         providerBaseUrl: providerSubmission.providerBaseUrl || undefined,
         providerOauthToken: providerSubmission.providerOauthToken || undefined,
@@ -831,6 +837,7 @@ export function useAgentForm(
       scmSourceId: workspaceType === 'scm' ? selectedScmSourceId : null,
       env: Object.keys(envRecord).length > 0 ? envRecord : null,
       maxConcurrency: data.maxConcurrency,
+      commandReplyLanguage: data.commandReplyLanguage,
       providerApiKey: providerSubmission.providerApiKey,
       providerBaseUrl: providerSubmission.providerBaseUrl,
       providerOauthToken: providerSubmission.providerOauthToken,

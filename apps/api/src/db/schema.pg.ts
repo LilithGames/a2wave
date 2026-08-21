@@ -620,6 +620,10 @@ export const agents = pgTable(
     scmSourceId: text('scm_source_id').references(() => scmSources.id),
     /** Maximum concurrency (1-5); the default of 1 means sequential execution */
     maxConcurrency: integer('max_concurrency').notNull().default(1),
+    /** Language for programmatic command replies (`/status`): auto | en | zh */
+    commandReplyLanguage: text('command_reply_language', { enum: ['auto', 'en', 'zh'] })
+      .notNull()
+      .default('auto'),
     /** Dedicated inbound A2A auth method (decoupled from the REST API channel); none = no auth, api_key = a dedicated key is required */
     a2aAuthType: text('a2a_auth_type', { enum: ['none', 'api_key'] })
       .notNull()

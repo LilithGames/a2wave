@@ -1,5 +1,5 @@
-import i18n from '@/i18n'
 import { z } from 'zod'
+import i18n from '@/i18n'
 
 // Resolved on every validation so the message follows the active language,
 // instead of being frozen at module-evaluation time.
@@ -23,6 +23,7 @@ export const agentFormSchema = z.object({
   force: z.boolean(),
   cleanResult: z.boolean(),
   maxConcurrency: z.number().int().min(1).max(5),
+  commandReplyLanguage: z.enum(['auto', 'en', 'zh']),
   timeoutMinutes: z.number().int().min(5).max(120),
   maxRetries: z.number().int().min(0).max(5),
   totalTimeoutMinutes: z.number().int().min(5).max(600).nullable(),

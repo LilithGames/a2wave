@@ -36,6 +36,14 @@ export type PublishAuthType = z.infer<typeof publishAuthTypeEnum>
 export const workspaceTypeEnum = z.enum(['scm', 'temp'])
 export type WorkspaceType = z.infer<typeof workspaceTypeEnum>
 
+/**
+ * Language for programmatic command replies (`/status`), which never reach the
+ * LLM and so cannot infer a language from the conversation the way a run does.
+ * `auto` resolves per-request from the channel's own locale hint.
+ */
+export const commandReplyLanguageEnum = z.enum(['auto', 'en', 'zh'])
+export type CommandReplyLanguage = z.infer<typeof commandReplyLanguageEnum>
+
 export const publishChannelEnum = z.enum([
   'api',
   'a2a',
@@ -379,6 +387,7 @@ export const AGENT_DEFAULTS = {
   icon: '🤖',
   workspaceType: 'temp' as const,
   maxConcurrency: 1,
+  commandReplyLanguage: 'auto' as const,
   publishStatus: 'draft' as const,
   publishAuthType: 'api_key' as const,
   publishChannels: ['api'] as const,
@@ -411,6 +420,8 @@ export const agentSchema = z.object({
   /** Linked SCM source ID (effective when workspaceType === 'scm') */
   scmSourceId: z.string().nullable().optional(),
   maxConcurrency: z.number().int().min(1).max(5).default(1),
+  /** Language used by programmatic command replies such as `/status` */
+  commandReplyLanguage: commandReplyLanguageEnum.default('auto'),
   publishStatus: publishStatusEnum.default('draft'),
   providerApiKey: z.string().nullable().optional(),
   providerBaseUrl: z.string().nullable().optional(),
@@ -489,6 +500,7 @@ export const createAgentInput = z.object({
   workspaceType: workspaceTypeEnum.default(AGENT_DEFAULTS.workspaceType),
   scmSourceId: z.string().nullable().optional(),
   maxConcurrency: z.number().int().min(1).max(5).default(AGENT_DEFAULTS.maxConcurrency),
+  commandReplyLanguage: commandReplyLanguageEnum.default(AGENT_DEFAULTS.commandReplyLanguage),
   // Publish lifecycle is server-controlled through publish / stop / resume.
   // Accepting this field here would let create/PATCH bypass activation preflight.
   providerApiKey: z.string().nullable().optional(),
