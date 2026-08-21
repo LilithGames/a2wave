@@ -6,7 +6,7 @@
  * SQL semantics — cascade deletes, ordering, agent scoping — so exercising real
  * SQL is both more faithful and less brittle than asserting call order.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -46,10 +46,14 @@ vi.mock('../../db/client.js', async () => {
   `)
   // Evaluation tables come straight from the generated migration so the tests
   // fail loudly if the schema and the migration ever drift apart.
-  const migration = readFileSync(
-    join(process.cwd(), 'drizzle', '0078_magenta_rhodey.sql'),
-    'utf-8',
-  ).replace(/-->\s*statement-breakpoint/g, '')
+  // Resolved inline rather than via the shared helper: this factory is hoisted
+  // above the imports, so it cannot reference an outer binding. cwd is
+  // `apps/api` under `pnpm test` there and the repo root under the root script.
+  const migrationsDir = existsSync('drizzle') ? 'drizzle' : 'apps/api/drizzle'
+  const migration = readFileSync(join(migrationsDir, '0078_magenta_rhodey.sql'), 'utf-8').replace(
+    /-->\s*statement-breakpoint/g,
+    '',
+  )
   sqlite.exec(migration)
 
   // `isPostgres` / `sqliteDatabase` are read by db/transaction.ts, which the

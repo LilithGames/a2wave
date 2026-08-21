@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveMigrationDir } from '../migration-directory.js'
 
 /**
  * Regression test for migration 0088 (`admin_only` boolean → three-state
@@ -16,7 +17,7 @@ const TARGET_TAG = '0088_aberrant_invaders'
 
 /** Apply every migration in journal order UP TO (not including) the target. */
 function applyMigrationsBefore(db: Database.Database, targetTag: string): void {
-  const drizzleDir = resolve(process.cwd(), 'drizzle')
+  const drizzleDir = resolveMigrationDir('drizzle')
   const journal = JSON.parse(readFileSync(resolve(drizzleDir, 'meta/_journal.json'), 'utf8')) as {
     entries: Array<{ tag: string }>
   }
@@ -35,7 +36,7 @@ function applyMigrationsBefore(db: Database.Database, targetTag: string): void {
 }
 
 function applyTargetMigration(db: Database.Database): void {
-  const sql = readFileSync(resolve(process.cwd(), 'drizzle', `${TARGET_TAG}.sql`), 'utf8')
+  const sql = readFileSync(resolve(resolveMigrationDir('drizzle'), `${TARGET_TAG}.sql`), 'utf8')
   for (const statement of sql.split('--> statement-breakpoint')) {
     if (statement.trim()) db.exec(statement)
   }

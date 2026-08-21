@@ -22,6 +22,8 @@ import { logger } from './logger.js'
 import { resolveNativeChatAttachments } from './native-chat-attachments.js'
 import { lookupPreviousOAuthSessionChatId } from './oauth-session.js'
 import { sweepPendingContexts, takePendingContext, takePendingJob } from './pending-job-registry.js'
+import { recordResumeAttempt, resumeChatIdFromRow } from './resume-chat-id.js'
+import { buildResumeContinuationPrompt } from './resume-continuation-prompt.js'
 import { retryUntilSuccess } from './retry-until-success.js'
 import { runWithLifecycle } from './run-launcher.js'
 import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
@@ -153,13 +155,18 @@ export async function executeChatRun(
 
   let agentConfig: Awaited<ReturnType<typeof buildAgentConfig>>
   let queuedChatId: string | undefined
+  // A resumed run must not be handed its original prompt again: every CLI
+  // treats resume as "this session, plus a new turn" and would redo the task.
+  let isResume = false
   let resolvedWorkDir: string
   let nextOrder: number
   try {
     agentConfig = await buildAgentConfig(agent, {
       runtimeAdminRequesterUserId: run.executionMetadata?.runtimeAdminRequesterUserId,
     })
-    queuedChatId = await resolveQueuedChatId(run)
+    const resolved = await resolveQueuedChatId(run)
+    queuedChatId = resolved.chatId
+    isResume = resolved.isResume
 
     if (agent.workspaceType === 'scm' && agent.scmSourceId) {
       const source = (
@@ -232,10 +239,16 @@ export async function executeChatRun(
   // 附件全丢却仍写 chip 会让历史显示 agent 从没收到的文件（预览 404，review [P2]）。
   const attachmentRefs = materialized
 
+  // A resumed run continues a session that already holds the instruction and
+  // everything done against it, so the turn only has to say why it is being
+  // asked again. Sending the original prompt would ask for the whole task a
+  // second time and repeat side effects the session already committed.
+  const promptToSend = isResume ? buildResumeContinuationPrompt(mergedPrompt) : mergedPrompt
+
   const stepId = createId('rst')
   const stepInput: Record<string, unknown> = effectiveContext
-    ? { message: mergedPrompt, context: effectiveContext }
-    : { message: mergedPrompt }
+    ? { message: promptToSend, context: effectiveContext }
+    : { message: promptToSend }
   if (attachmentRefs && attachmentRefs.length > 0) {
     stepInput.attachments = attachmentRefs
   }
@@ -265,13 +278,19 @@ export async function executeChatRun(
         status: 'running',
       })
 
-      await tx.insert(chatMessages).values({
-        id: createId('msg'),
-        runId,
-        role: 'user',
-        // 存用户原文（message = run.intent），不存注入了附件路径的 mergedPrompt。
-        content: message,
-      })
+      // Skipped on a resume: the interrupted attempt already recorded this
+      // user turn, and the continuation is the platform speaking to the CLI,
+      // not the user speaking again. Inserting it would show the user's
+      // message twice in the conversation.
+      if (!isResume) {
+        await tx.insert(chatMessages).values({
+          id: createId('msg'),
+          runId,
+          role: 'user',
+          // 存用户原文（message = run.intent），不存注入了附件路径的 mergedPrompt。
+          content: message,
+        })
+      }
 
       // consume-once handoff（review [P1]）：此刻附件已落盘、attachment_refs 已由 materializeForRun
       // 登记（pin 已从 executionMetadata 转到反查表）、step.input.attachments 已持久化——现在才安全地
@@ -317,7 +336,10 @@ export async function executeChatRun(
   const taskId = buildTaskId('chat/', runId, stepId)
   const payload: WorkerTaskPayload = {
     taskId,
-    prompt: mergedPrompt,
+    // The continuation turn on a resume; the original prompt otherwise. The
+    // CLI appends whatever it is given to the resumed session, so this is the
+    // single place that decides whether the task is continued or redone.
+    prompt: promptToSend,
     context: effectiveContext,
     model: (await agentConfig).model || undefined,
     workDir: resolvedWorkDir,
@@ -443,7 +465,7 @@ export async function failRunBeforeLifecycle(
       const current = (
         await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1)
       )[0]
-      if (!current || current.status !== 'running') return
+      if (current?.status !== 'running') return
       throw new Error('Run is still running after the preparation-failure transition')
     },
     {
@@ -485,23 +507,62 @@ function extractPendingAttachments(
     .map((r) => ({ kind: 'token' as const, token: r.token, name: r.name, mimeType: r.mimeType }))
 }
 
-async function resolveQueuedChatId(run: typeof runs.$inferSelect): Promise<string | undefined> {
-  if (!run.initiatorAgentId || !run.triggerSessionId) return undefined
+type QueuedChatId = { chatId: string | undefined; isResume: boolean }
+
+const NOT_A_RESUME: QueuedChatId = { chatId: undefined, isResume: false }
+
+async function resolveQueuedChatId(run: typeof runs.$inferSelect): Promise<QueuedChatId> {
+  // An interrupted run continues from the session it already opened, whatever
+  // its trigger source. Checked before the per-source lookups below because
+  // those key off triggerSessionId, which an interrupted API/debug run may not
+  // have — and because replaying the prompt would repeat side effects the CLI
+  // has already committed.
+  // Read from the row already in hand rather than re-querying: this runs for
+  // every queued execution, and only a genuine resume costs a write.
+  const resumeChatId = resumeChatIdFromRow(run)
+  if (resumeChatId) {
+    await recordResumeAttempt(run.id)
+    logger.info({ runId: run.id, chatId: resumeChatId }, 'Resuming an interrupted run')
+    return { chatId: resumeChatId, isResume: true }
+  }
+  // A run carrying a live session that still declines to resume is the case
+  // worth explaining: it means the work is about to be redone, and the reason
+  // lives in metadata that this very execution is about to overwrite.
+  {
+    const metadata = run.executionMetadata as Record<string, unknown> | null | undefined
+    if (typeof metadata?.liveChatId === 'string') {
+      logger.warn(
+        {
+          runId: run.id,
+          liveChatId: metadata.liveChatId,
+          resumePending: metadata.resumePending ?? null,
+          resumeAttempts: metadata.resumeAttempts ?? null,
+          hasResult: run.result != null,
+        },
+        'Run had a live session but is not resuming; the task will be redone',
+      )
+    }
+  }
+
+  if (!run.initiatorAgentId || !run.triggerSessionId) return NOT_A_RESUME
 
   if (run.triggerSource === 'oauth') {
     const metadata = run.executionMetadata as
       | { oauthPreviousChatId?: unknown; oauthResetSession?: unknown }
       | undefined
-    if (metadata?.oauthResetSession === true) return undefined
-    if (typeof metadata?.oauthPreviousChatId === 'string') return metadata.oauthPreviousChatId
-    return (
-      (await lookupPreviousOAuthSessionChatId(run.initiatorAgentId, run.triggerSessionId, {
-        beforeCreatedAt: run.createdAt,
-      })) ?? undefined
-    )
+    if (metadata?.oauthResetSession === true) return NOT_A_RESUME
+    if (typeof metadata?.oauthPreviousChatId === 'string')
+      return { chatId: metadata.oauthPreviousChatId, isResume: false }
+    return {
+      chatId:
+        (await lookupPreviousOAuthSessionChatId(run.initiatorAgentId, run.triggerSessionId, {
+          beforeCreatedAt: run.createdAt,
+        })) ?? undefined,
+      isResume: false,
+    }
   }
 
-  if (run.triggerSource !== 'slack' && run.triggerSource !== 'discord') return undefined
+  if (run.triggerSource !== 'slack' && run.triggerSource !== 'discord') return NOT_A_RESUME
   const previous = (
     await db
       .select({ result: runs.result })
@@ -519,5 +580,5 @@ async function resolveQueuedChatId(run: typeof runs.$inferSelect): Promise<strin
       .limit(1)
   )[0]
   const chatId = previous?.result?.chatId
-  return typeof chatId === 'string' ? chatId : undefined
+  return { chatId: typeof chatId === 'string' ? chatId : undefined, isResume: false }
 }

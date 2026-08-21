@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveMigrationDir } from '../migration-directory.js'
 
 /**
  * Regression cover for the copilot retirement migration (see RETIRE_MIGRATION).
@@ -18,7 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const RETIRE_MIGRATION = '0097_retire_copilot_provider'
 
 function drizzleDir(): string {
-  return resolve(process.cwd(), 'drizzle')
+  return resolveMigrationDir('drizzle')
 }
 
 function execStatements(db: Database.Database, sql: string): void {

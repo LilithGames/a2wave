@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveMigrationDir } from '../migration-directory.js'
 
 const MIGRATIONS = [
   '0081_add_provider_kind.sql',
@@ -26,7 +27,7 @@ const NEW_UPSTREAM_PROVIDERS = [
 type ProviderFixture = readonly [id: string, name: string, expectedKind: string]
 
 function applyMigrationsBeforeProviderKind(db: Database.Database): void {
-  const drizzleDir = resolve(process.cwd(), 'drizzle')
+  const drizzleDir = resolveMigrationDir('drizzle')
   const journal = JSON.parse(readFileSync(resolve(drizzleDir, 'meta/_journal.json'), 'utf8')) as {
     entries: Array<{ tag: string }>
   }
@@ -60,7 +61,7 @@ function insertProviderFixtures(db: Database.Database, fixtures: readonly Provid
 
 function applyProviderKindMigrations(db: Database.Database): void {
   for (const filename of MIGRATIONS) {
-    const sql = readFileSync(resolve(process.cwd(), 'drizzle', filename), 'utf8').replaceAll(
+    const sql = readFileSync(resolve(resolveMigrationDir('drizzle'), filename), 'utf8').replaceAll(
       '--> statement-breakpoint',
       '',
     )

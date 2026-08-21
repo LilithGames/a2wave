@@ -1,3 +1,4 @@
+import { logger } from '../lib/logger.js'
 import type { FailureReason } from '../lib/run-failure-reasons.js'
 import { FAILURE_REASONS } from '../lib/run-failure-reasons.js'
 import { withAgentScmWorkloadLock } from '../lib/scm-workload-lock.js'
@@ -58,6 +59,15 @@ export interface TaskQueueDb {
   getRunStatus(runId: string): Promise<string | undefined>
   getAgentMaxConcurrency(agentId: string): Promise<number | undefined>
   updateRunStatus(runId: string, status: string): Promise<void>
+  /**
+   * Return an interrupted run to the queue so it can be resumed.
+   *
+   * Distinct from `updateRunStatus(runId, 'queued')`: it also clears the stale
+   * `result` and the now-dead `ownerInstanceId`. Leaving either behind would
+   * let the next execution be judged by the old error, and would leave the row
+   * matching the orphaned-run reaper's dead-owner predicate.
+   */
+  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -320,11 +330,33 @@ export interface RecoveryHooks {
   onRunFailed?: (run: RunRow, reason: FailureReason) => Promise<void> | void
   /** False on PostgreSQL, where in-flight rows may belong to a healthy peer. */
   recoverInFlight?: boolean
+  /**
+   * Whether an interrupted run may continue from the session it already opened.
+   *
+   * Absent, every in-flight run is failed as before. Supplied, a run that
+   * recorded a session id is requeued instead, so a deploy restart continues
+   * the user's work rather than abandoning it.
+   */
+  canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
+  /**
+   * Invoked for every run recovery requeues for resume, mirroring
+   * `onRunFailed`. Both settle an interrupted run, so both must release the
+   * external state (SCM workload lease) the dead process still holds.
+   */
+  onRunRequeued?: (run: RunRow) => Promise<void> | void
+  /**
+   * Record the interruption durably before the requeue erases `result`.
+   *
+   * The resumed execution is a different process and cannot see the code this
+   * recovery holds in memory.
+   */
+  onBeforeRequeue?: (runId: string, failureCode: string) => Promise<void> | void
 }
 
 export interface RecoveryStats {
   pendingOrphaned: number
   runningAborted: number
+  runningResumed: number
   queuedPromoted: number
   feishuQueuedReset: number
 }
@@ -339,6 +371,7 @@ export async function recoverOnStartup(
   const stats: RecoveryStats = {
     pendingOrphaned: 0,
     runningAborted: 0,
+    runningResumed: 0,
     queuedPromoted: 0,
     feishuQueuedReset: 0,
   }
@@ -361,6 +394,48 @@ export async function recoverOnStartup(
     if (hooks.recoverInFlight !== false) {
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
+        // Requeue rather than abandon when the run recorded the session it was
+        // already in: the next turn continues from there instead of replaying a
+        // prompt whose side effects may already have landed.
+        let resumable = false
+        if (hooks.canResume) {
+          try {
+            // The row is still 'running' and carries no failure code yet, so
+            // the check is told which interruption is about to be applied.
+            resumable = await hooks.canResume(
+              run.id,
+              FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code,
+            )
+          } catch (error) {
+            // A resume decision that fails must not strand the row as
+            // 'running'; falling through to the fail path is the safe default.
+            logger.warn({ error, runId: run.id }, 'resume check failed; failing the run instead')
+          }
+        }
+        if (resumable) {
+          // Mark first, requeue second. The requeue clears `result`, and the
+          // resumed execution runs in another process, so the code known here
+          // has to be written down before it is erased.
+          await hooks.onBeforeRequeue?.(run.id, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code)
+          // Requeue as if the run had never been admitted: clear the stale
+          // result so the next execution is not judged by the old error, drop
+          // the dead owner so the orphaned-run reaper cannot settle a row this
+          // recovery just rescued, and settle the step the killed process left
+          // behind so it does not sit 'running' forever.
+          await db.requeueForResume(run.id, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code)
+          // Same workload release the fail path performs via onRunFailed. A run
+          // interrupted while holding an SCM lease would otherwise keep it and
+          // contend with its own promotion, wedging in 'queued'.
+          if (hooks.onRunRequeued) {
+            try {
+              await hooks.onRunRequeued(run)
+            } catch (error) {
+              logger.warn({ error, runId: run.id }, 'requeue hook failed')
+            }
+          }
+          stats.runningResumed++
+          continue
+        }
         await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
         stats.runningAborted++
       }

@@ -2,11 +2,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveMigrationDir } from '../migration-directory.js'
 
 const MIGRATION = '0103_normalize_pi_auth_mode'
 
 function drizzleDir(): string {
-  return resolve(process.cwd(), 'drizzle')
+  return resolveMigrationDir('drizzle')
 }
 
 function execStatements(db: Database.Database, sql: string): void {

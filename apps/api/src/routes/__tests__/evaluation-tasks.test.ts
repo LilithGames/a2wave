@@ -4,7 +4,7 @@
  * The runner is mocked so tasks resolve synchronously and deterministically —
  * these tests cover the HTTP/persistence contract, not engine behaviour.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -72,9 +72,12 @@ vi.mock('../../db/client.js', async () => {
   // The evaluation tables arrive in 0078 and are altered by later migrations.
   // Replaying every migration from that point forward — rather than pinning one
   // filename — keeps this fixture from drifting the next time a column is added.
+  // Resolved inline: this factory is hoisted above the imports, so it cannot
+  // reference an outer binding. cwd differs between the root and apps/api runs.
+  const migrationsDir = existsSync('drizzle') ? 'drizzle' : 'apps/api/drizzle'
   const evaluationMigrations = ['0078_magenta_rhodey.sql', '0079_harsh_amphibian.sql']
   for (const file of evaluationMigrations) {
-    const migration = readFileSync(join(process.cwd(), 'drizzle', file), 'utf-8').replace(
+    const migration = readFileSync(join(migrationsDir, file), 'utf-8').replace(
       /-->\s*statement-breakpoint/g,
       '',
     )

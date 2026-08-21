@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { runSteps, runs } from '../db/schema.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
 import {
   canJudgePeerLiveness,
   type InstanceLivenessMap,
@@ -9,6 +10,7 @@ import {
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
+import { resolveResumeChatId } from './resume-chat-id.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { syncReapedRunExternalState } from './scm-lease-sweeper.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -60,6 +62,14 @@ export interface OrphanedRunCandidate {
 export interface ReapedOrphanedRun {
   runId: string
   agentId: string
+  /**
+   * True when the run was requeued to continue its session rather than failed.
+   *
+   * The caller nudges the Agent's queue for both outcomes — a resumed run needs
+   * that nudge to be picked up at all — but only a failed one has actually
+   * ended, so the distinction has to survive back to the log line.
+   */
+  resumed: boolean
 }
 
 export interface OrphanedRunReaperDeps {
@@ -71,6 +81,23 @@ export interface OrphanedRunReaperDeps {
   /** Status CAS; false means another replica settled the run first. */
   claimRun: (runId: string) => Promise<boolean>
   afterRunSettled: (runId: string) => Promise<void>
+  /**
+   * Whether this run may continue from the session it already opened.
+   *
+   * Optional so a caller that has not opted in keeps the pass's original
+   * fail-everything behaviour. Asked with the interruption code this pass is
+   * about to write, because the row is still `running` and carries no verdict
+   * of its own yet — reading the code off the row would always yield ''.
+   */
+  canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
+  /**
+   * Status CAS back to `queued`, clearing result and ownership.
+   *
+   * Returns false when the transition did not happen — another replica settled
+   * the row first. Reporting that as a resume would both lie about the outcome
+   * and skip the fail path, leaving the row exactly as this pass found it.
+   */
+  requeueRun?: (runId: string, interruptionCode: string) => Promise<boolean>
   now: () => Date
 }
 
@@ -113,21 +140,73 @@ export async function claimRunForReap(runId: string): Promise<boolean> {
   })
 }
 
-const defaultDeps: OrphanedRunReaperDeps = {
+/**
+ * The real wiring, exported so a test can override one seam without silently
+ * dropping the rest. `deps` is an all-or-nothing default: a caller passing a
+ * partial object gets no resume hooks at all, which reads as "resume is
+ * broken" rather than "the test forgot to wire it".
+ */
+export const defaultReaperDepsForTest: OrphanedRunReaperDeps = {
   listCandidates: listOrphanedRunCandidates,
   loadLiveness: () => loadInstanceLiveness(db),
   canJudgePeers: () => canJudgePeerLiveness(),
   isRunLocallyActive: (runId) => listActiveExecutionLeases().some((lease) => lease.runId === runId),
   claimRun: claimRunForReap,
   afterRunSettled: syncReapedRunExternalState,
+  // Same three pieces startup recovery wires together, pointed at this pass:
+  // it is the only recovery that runs on PostgreSQL, where in-flight rows are
+  // deliberately skipped at boot because a booting replica proves nothing
+  // about a peer. Without this the resume feature is unreachable there.
+  canResume: async (runId, assumeFailureCode) =>
+    (await resolveResumeChatId(runId, assumeFailureCode)) !== null,
+  requeueRun: (runId, interruptionCode) => taskQueueDb.requeueForResume(runId, interruptionCode),
   now: () => new Date(),
+}
+
+const defaultDeps = defaultReaperDepsForTest
+
+/**
+ * Continue an abandoned run from its session, or report that it cannot be.
+ *
+ * Kept separate from the scan loop so every way this can go wrong lands on the
+ * same answer: false, meaning "fail it normally". Nothing here may throw — a
+ * resume that fails must degrade to the pre-existing behaviour, never leave the
+ * row 'running' for the next pass to find in the same state.
+ */
+async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<boolean> {
+  if (!deps.canResume || !deps.requeueRun) return false
+  const code = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC.code
+  try {
+    if (!(await deps.canResume(runId, code))) {
+      // Logged, not silent: "resumed or re-ran?" is the only question worth
+      // asking of this pass in production, and without this line the two
+      // outcomes are indistinguishable after the fact — the re-run overwrites
+      // the very metadata that would have explained the decision.
+      logger.info({ runId }, 'orphaned-run-reaper: run is not resumable; failing it')
+      return false
+    }
+    // Mark first, requeue second: the requeue clears `result`, and the resumed
+    // execution runs in another process, so the code known here has to be
+    // written down before it is erased.
+    // The mark travels with the requeue rather than preceding it as its own
+    // write. A separate mark left a window in which the dying CLI's
+    // fire-and-forget session tap merged a stale snapshot over it, and the run
+    // then re-executed from scratch because nothing said it was interrupted.
+    const requeued = await deps.requeueRun(runId, code)
+    logger.info({ runId, requeued }, 'orphaned-run-reaper: resume requeue attempted')
+    return requeued
+  } catch (error) {
+    logger.warn({ error, runId }, 'orphaned-run-reaper: resume failed; failing the run instead')
+    return false
+  }
 }
 
 /**
  * Settle every non-terminal run whose owning instance is provably gone.
  *
- * Returns the runs this pass settled, so the caller can nudge each affected
- * Agent's queue — the freed slot may unblock work that is already queued.
+ * Returns the runs this pass touched, so the caller can nudge each affected
+ * Agent's queue — a failed run frees a slot that may unblock queued work, and a
+ * resumed one is itself queued work waiting to be picked up.
  */
 export async function reapOrphanedRuns(
   deps: OrphanedRunReaperDeps = defaultDeps,
@@ -159,9 +238,18 @@ export async function reapOrphanedRuns(
       if (!isInstanceOwnerDead(fresh, candidate.ownerInstanceId, candidate.startedAt, deps.now())) {
         continue
       }
+      // Resume before fail: a run that recorded the session it was already in
+      // continues from there instead of replaying a prompt whose side effects
+      // may already have landed. Every failure here — the check, the mark, the
+      // requeue — falls through to the fail path rather than stranding the row
+      // as 'running', which is the one outcome this pass exists to prevent.
+      if (await tryResume(deps, candidate.id)) {
+        reaped.push({ runId: candidate.id, agentId: candidate.agentId, resumed: true })
+        continue
+      }
       if (!(await deps.claimRun(candidate.id))) continue
       await deps.afterRunSettled(candidate.id)
-      reaped.push({ runId: candidate.id, agentId: candidate.agentId })
+      reaped.push({ runId: candidate.id, agentId: candidate.agentId, resumed: false })
     } catch (error) {
       // One unsettleable run must not starve the rest; the next tick retries.
       logger.error({ error, runId: candidate.id }, 'orphaned-run-reaper: failed to settle run')

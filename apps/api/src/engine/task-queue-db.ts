@@ -1,9 +1,9 @@
 import { and, asc, count, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
-import type { TransactionHandle } from '../db/transaction.js'
+import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { processInstanceId } from '../lib/process-instance.js'
-import type { FailureReason } from '../lib/run-failure-reasons.js'
+import { FAILURE_REASONS, type FailureReason } from '../lib/run-failure-reasons.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import {
   activateScmWorkload,
@@ -123,6 +123,66 @@ export const taskQueueDb: TaskQueueDb = {
       .update(runs)
       .set({ status: runStatus, updatedAt: new Date() })
       .where(eq(runs.id, runId))
+  },
+
+  async requeueForResume(runId: string, interruptionCode?: string): Promise<boolean> {
+    return await withTransaction(async (tx) => {
+      // Read inside the transaction so the mark merges onto whatever the dying
+      // process last wrote, rather than a snapshot taken before it.
+      const current = interruptionCode
+        ? (
+            await tx
+              .select({ executionMetadata: runs.executionMetadata })
+              .from(runs)
+              .where(eq(runs.id, runId))
+              .limit(1)
+          )[0]
+        : undefined
+      const requeued = await tx
+        .update(runs)
+        .set({
+          status: 'queued',
+          // Stamped here rather than by the caller, and that placement is the
+          // whole point. A separate markRunForResume left a window between the
+          // two writes, and the killed CLI's fire-and-forget session tap
+          // merged its own stale snapshot over the mark inside it — the run
+          // then re-executed from scratch because nothing said it had been
+          // interrupted. One UPDATE has no such window.
+          ...(interruptionCode
+            ? {
+                executionMetadata: {
+                  ...((current?.executionMetadata as Record<string, unknown> | null) ?? {}),
+                  resumePending: interruptionCode,
+                } as never,
+              }
+            : {}),
+          // The interruption is being resumed, not reported: a leftover error
+          // would be re-read as the run's verdict on its next execution.
+          result: null,
+          // Ownership describes a running run, and this process is not the one
+          // that claimed it. Left set, the row matches the orphaned-run
+          // reaper's dead-owner predicate and gets settled out from under the
+          // resume.
+          ownerInstanceId: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .returning({ id: runs.id })
+      // Only when this call made the transition; otherwise another replica
+      // already settled the run and its steps are not ours to touch. The
+      // caller needs the verdict too: the reaper falls back to failing a run
+      // whose requeue lost, rather than reporting a resume that never landed.
+      if (requeued.length === 0) return false
+
+      // The killed process left its step 'running'. The resumed execution
+      // appends a new step, so leaving this one would strand it forever and
+      // make the run read as permanently in-flight in the UI.
+      await tx
+        .update(runSteps)
+        .set({ status: 'failed', output: { error: FAILURE_REASONS.SERVER_RESTART_DURING_EXEC } })
+        .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
+      return true
+    })
   },
 
   async admitRun(agentId: string, runId: string, maxConcurrency: number) {

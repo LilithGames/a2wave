@@ -174,7 +174,7 @@ export function resolveAgentRuntimeTmpDir(agentId = 'default'): string {
   return resolve(resolveAgentRuntimeHomeDir(agentId), 'tmp')
 }
 
-function extractRunId(taskId: string): string {
+export function extractRunId(taskId: string): string {
   return taskId.match(/(?:^|\/)(run_[^/]+)/)?.[1] ?? taskId
 }
 

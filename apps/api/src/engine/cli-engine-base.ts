@@ -21,6 +21,7 @@ import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
 import { BaseAgentEngine } from './base-engine.js'
 import { cliProcessRunner } from './cli-process-runner.js'
+import { tapLiveSessionId } from './live-session-tap.js'
 import { probeCliVersion, runStatusProbe } from './login-status-helper.js'
 import {
   buildSafeAgentProcessEnv,
@@ -132,6 +133,10 @@ export abstract class BaseCliAgentEngine extends BaseAgentEngine {
         ...options,
         command: this.cliConfig.path,
         label: this.cliName,
+        // Record the provider session id as the CLI announces it. Engines only
+        // report it in their success result, so a run killed mid-flight — the
+        // one case that needs to resume — was the one case that lost it.
+        onStdoutLine: tapLiveSessionId(options.taskId, options.onStdoutLine),
       })
       .then((processResult) => {
         if (processResult.reason === 'timeout') {
