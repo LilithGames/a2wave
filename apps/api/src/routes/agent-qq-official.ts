@@ -81,10 +81,10 @@ const registrationBodySchema = z.discriminatedUnion('action', [
 /** Start or poll Tencent's official QR registration flow for a writable Agent. */
 export async function handleQQOfficialRegistration(
   c: Context,
-  requireWrite: (c: Context, id: string) => unknown,
+  requireWrite: (c: Context, id: string) => Promise<unknown>,
 ): Promise<Response> {
   const { id } = c.req.param()
-  requireWrite(c, id)
+  await requireWrite(c, id)
   const parsed = registrationBodySchema.safeParse(await c.req.json().catch(() => ({})))
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
 

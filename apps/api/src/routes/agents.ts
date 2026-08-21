@@ -44,6 +44,7 @@ import { db } from '../db/client.js'
 import {
   agentMembers,
   agents,
+  artifacts,
   chatMessages,
   kbDocuments,
   mcpServers,
@@ -1165,8 +1166,21 @@ app.post('/', async (c) => {
   const workspaceType = parsed.data.workspaceType ?? 'temp'
   const scmSourceId = parsed.data.scmSourceId ?? null
   if (workspaceType === 'scm' && scmSourceId) {
+    // An SCM source is mounted as a working checkout cloned with that source's
+    // stored credentials, so binding one must respect the same visibility every
+    // other mountable resource enforces — otherwise a caller could bind a source
+    // they cannot see and read a private repository through their own Agent.
+    const scmOwnerFilter = getOwnerFilter(c, scmSources.userId)
     const source = (
-      await db.select().from(scmSources).where(eq(scmSources.id, scmSourceId)).limit(1)
+      await db
+        .select()
+        .from(scmSources)
+        .where(
+          scmOwnerFilter
+            ? and(eq(scmSources.id, scmSourceId), scmOwnerFilter)
+            : eq(scmSources.id, scmSourceId),
+        )
+        .limit(1)
     )[0]
     if (!source) {
       return c.json({ error: 'SCM source not found' }, 400)
@@ -1231,11 +1245,20 @@ app.post('/', async (c) => {
   const bindingResult =
     workspaceType === 'scm' && scmSourceId
       ? await withScmPathMutation(async (tx) => {
+          const txOwnerFilter = getOwnerFilter(c, scmSources.userId)
           const source = (
             await tx
               .select()
               .from(scmSources)
-              .where(and(eq(scmSources.id, scmSourceId), isNull(scmSources.deletionRequestedAt)))
+              .where(
+                and(
+                  eq(scmSources.id, scmSourceId),
+                  isNull(scmSources.deletionRequestedAt),
+                  // The authoritative re-read re-applies the visibility filter so
+                  // the race window it closes cannot also be an ownership bypass.
+                  ...(txOwnerFilter ? [txOwnerFilter] : []),
+                ),
+              )
               .limit(1)
           )[0]
           if (!source || source.initialSyncCompletedAt == null) {
@@ -1295,8 +1318,21 @@ app.patch('/:id', async (c) => {
 
   const scmSourceId = parsed.data.scmSourceId
   if (scmSourceId !== undefined && scmSourceId !== null && scmSourceId !== existing.scmSourceId) {
+    // An SCM source is mounted as a working checkout cloned with that source's
+    // stored credentials, so binding one must respect the same visibility every
+    // other mountable resource enforces — otherwise a caller could bind a source
+    // they cannot see and read a private repository through their own Agent.
+    const scmOwnerFilter = getOwnerFilter(c, scmSources.userId)
     const source = (
-      await db.select().from(scmSources).where(eq(scmSources.id, scmSourceId)).limit(1)
+      await db
+        .select()
+        .from(scmSources)
+        .where(
+          scmOwnerFilter
+            ? and(eq(scmSources.id, scmSourceId), scmOwnerFilter)
+            : eq(scmSources.id, scmSourceId),
+        )
+        .limit(1)
     )[0]
     if (!source) {
       return c.json({ error: 'SCM source not found' }, 400)
@@ -1942,7 +1978,6 @@ app.post('/:id/publish', async (c) => {
       )
   } else if (!channels.includes('discord')) {
     void discordConnectionManager.stop(id)
-    void telegramConnectionManager.stop(id)
   }
   if (!isStopped && channels.includes('telegram') && effectiveTelegramConfig) {
     telegramConnectionManager
@@ -2908,6 +2943,12 @@ app.delete('/:id', async (c) => {
       .update(runs)
       .set({ initiatorAgentId: null, updatedAt: new Date() })
       .where(eq(runs.initiatorAgentId, id))
+    // artifacts.agent_id is a non-cascading FK and SQLite runs with
+    // `PRAGMA foreign_keys = ON`, so it has to be detached alongside the run
+    // rows — otherwise the DELETE below aborts and any Agent that ever produced
+    // an artifact could never be deleted. Artifacts outlive the Agent until
+    // their own TTL sweep, exactly as the run history does.
+    await executor.update(artifacts).set({ agentId: null }).where(eq(artifacts.agentId, id))
     return (await executor.delete(agents).where(eq(agents.id, id)).returning())[0]
   }
   const deletion = await deleteAgentWithBindingGuard(id, deleteRows)

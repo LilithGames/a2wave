@@ -1,122 +1,69 @@
-/**
- * Channel-sync and provider-guard helpers shared by the publish, per-channel and
- * generic-update routes.
- *
- * Tested here rather than through `PATCH /agents/:id`, which pulls in far more
- * of the app than this behaviour needs. These two helpers are the whole contract
- * those routes rely on.
- */
+import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const start = vi.fn()
-const stop = vi.fn()
-vi.mock('../../lib/git-trigger-manager.js', () => ({
-  gitTriggerManager: {
-    start: (...a: unknown[]) => start(...a),
-    stop: (...a: unknown[]) => stop(...a),
-  },
+const mocks = vi.hoisted(() => ({
+  probe: vi.fn(),
+  audit: vi.fn(),
 }))
-vi.mock('../../lib/git-trigger-cli.js', () => ({ probeGitTriggerCli: vi.fn() }))
-vi.mock('../../lib/audit.js', () => ({ logAudit: vi.fn() }))
-vi.mock('../../lib/slack-service.js', () => ({ slackConnectionManager: {} }))
+
+vi.mock('../../lib/git-trigger-cli.js', () => ({ probeGitTriggerCli: mocks.probe }))
+vi.mock('../../lib/audit.js', () => ({ logAudit: mocks.audit }))
 vi.mock('../../lib/discord-service.js', () => ({ discordConnectionManager: {} }))
+vi.mock('../../lib/git-trigger-manager.js', () => ({ gitTriggerManager: {} }))
+vi.mock('../../lib/qq-official-service.js', () => ({ qqOfficialConnectionManager: {} }))
+vi.mock('../../lib/slack-service.js', () => ({ slackConnectionManager: {} }))
 
-import { gitTriggerProviderMismatchError, syncGitTriggerChannels } from '../agent-git-trigger.js'
+import { AppError, ForbiddenError } from '../../lib/errors.js'
+import { handleGitTriggerStatus } from '../agent-git-trigger.js'
 
-const CONFIG = {
-  provider: 'glab',
-  repos: [{ project: 'group/repo' }],
-  events: ['opened'],
-  intervalSeconds: 60,
-  intent: 'x',
-}
+/** Mirrors the global onError in index.ts, which maps AppError to its status. */
+const withErrorMapping = (app: Hono) =>
+  app.onError((err, c) =>
+    err instanceof AppError
+      ? c.json({ error: err.message, code: err.code }, err.statusCode as 403)
+      : c.json({ error: 'Internal Server Error' }, 500),
+  )
 
-beforeEach(() => vi.clearAllMocks())
-
-describe('gitTriggerProviderMismatchError', () => {
-  it('accepts a config whose provider matches its column', () => {
-    expect(gitTriggerProviderMismatchError([['glab', CONFIG]])).toBeNull()
-  })
-
-  it('rejects a glab-shaped config saved into the gh column', () => {
-    // Both channels share one schema, so this validates — and then the poll
-    // silently refuses to arm, leaving a channel that reads as configured.
-    expect(gitTriggerProviderMismatchError([['gh', CONFIG]])).toMatchObject({
-      code: 'CHANNEL_PROVIDER_MISMATCH',
+describe('GET /agents/:id/git-trigger/status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.probe.mockResolvedValue({
+      installed: true,
+      authenticated: true,
+      account: 'deploy-account',
     })
   })
 
-  it('ignores absent configs', () => {
-    expect(
-      gitTriggerProviderMismatchError([
-        ['glab', null],
-        ['gh', undefined],
-      ]),
-    ).toBeNull()
-  })
-})
+  it('reports the probe result to a caller that holds write permission', async () => {
+    const allow = vi.fn().mockResolvedValue({ permission: 'owner' })
+    const app = new Hono().get('/agents/:id/git-trigger/status', (c) =>
+      handleGitTriggerStatus(c, allow),
+    )
 
-describe('syncGitTriggerChannels', () => {
-  it('starts an enabled channel that has a config', () => {
-    syncGitTriggerChannels({
-      agentId: 'agt_1',
-      channels: ['api', 'glab'],
-      agent: { glabConfig: CONFIG },
+    const response = await app.request('/agents/agt_1/git-trigger/status?provider=glab')
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      data: { installed: true, authenticated: true, account: 'deploy-account' },
     })
-
-    expect(start).toHaveBeenCalledWith('agt_1', 'glab', CONFIG)
-    expect(stop).toHaveBeenCalledWith('agt_1', 'gh')
+    expect(allow).toHaveBeenCalledWith(expect.anything(), 'agt_1')
   })
 
-  it('stops a channel whose config was cleared while it stayed enabled', () => {
-    // Regression: the earlier `else if (!channels.includes(provider))` left this
-    // case unhandled, so the previous timer kept polling the removed repos.
-    syncGitTriggerChannels({
-      agentId: 'agt_1',
-      channels: ['api', 'glab'],
-      agent: { glabConfig: null },
-    })
+  // The guard is async and denies by throwing. An unawaited call detaches that
+  // rejection and the handler answers anyway — leaking the deployment's CLI
+  // auth state (including the logged-in forge account) to a viewer, spawning a
+  // subprocess on their behalf, and auditing it against an Agent they cannot
+  // write. A synchronous stub cannot catch that; this one rejects.
+  it('does not probe or audit when the write guard denies the caller', async () => {
+    const denied = vi.fn().mockRejectedValue(new ForbiddenError('Write access required'))
+    const app = withErrorMapping(
+      new Hono().get('/agents/:id/git-trigger/status', (c) => handleGitTriggerStatus(c, denied)),
+    )
 
-    expect(start).not.toHaveBeenCalled()
-    expect(stop).toHaveBeenCalledWith('agt_1', 'glab')
-  })
+    const response = await app.request('/agents/agt_1/git-trigger/status?provider=glab')
 
-  it('prefers a pending payload value over the stored column', () => {
-    const pending = { ...CONFIG, repos: [{ project: 'group/new' }] }
-
-    syncGitTriggerChannels({
-      agentId: 'agt_1',
-      channels: ['glab'],
-      updatePayload: { glabConfig: pending },
-      agent: { glabConfig: CONFIG },
-    })
-
-    expect(start).toHaveBeenCalledWith('agt_1', 'glab', pending)
-  })
-
-  it('treats an explicit null payload as a clear, not a fallback', () => {
-    // `??` would fall through to the stored value and restart the poll against
-    // the very config the request just removed.
-    syncGitTriggerChannels({
-      agentId: 'agt_1',
-      channels: ['glab'],
-      updatePayload: { glabConfig: null },
-      agent: { glabConfig: CONFIG },
-    })
-
-    expect(start).not.toHaveBeenCalled()
-    expect(stop).toHaveBeenCalledWith('agt_1', 'glab')
-  })
-
-  it('stops both channels when the agent is stopped', () => {
-    syncGitTriggerChannels({
-      agentId: 'agt_1',
-      channels: ['glab', 'gh'],
-      isStopped: true,
-      agent: { glabConfig: CONFIG, ghConfig: { ...CONFIG, provider: 'gh' } },
-    })
-
-    expect(start).not.toHaveBeenCalled()
-    expect(stop).toHaveBeenCalledTimes(2)
+    expect(response.status).toBe(403)
+    expect(mocks.probe).not.toHaveBeenCalled()
+    expect(mocks.audit).not.toHaveBeenCalled()
   })
 })

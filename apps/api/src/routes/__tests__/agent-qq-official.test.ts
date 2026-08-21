@@ -13,10 +13,19 @@ vi.mock('../../lib/qq-official-registration.js', () => ({
 }))
 vi.mock('../../lib/audit.js', () => ({ logAudit: mocks.audit }))
 
+import { AppError, ForbiddenError } from '../../lib/errors.js'
 import {
   handleQQOfficialRegistration,
   prepareQQOfficialPublishConfig,
 } from '../agent-qq-official.js'
+
+/** Mirrors the global onError in index.ts, which maps AppError to its status. */
+const withErrorMapping = (app: Hono) =>
+  app.onError((err, c) =>
+    err instanceof AppError
+      ? c.json({ error: err.message, code: err.code }, err.statusCode as 403)
+      : c.json({ error: 'Internal Server Error' }, 500),
+  )
 
 describe('QQ Official publish config', () => {
   const stored = { appId: '102000000', appSecret: 'stored-secret' }
@@ -91,6 +100,29 @@ describe('QQ Official registration route', () => {
       expect.anything(),
       expect.objectContaining({ action: 'agent.qq_official_registration_start' }),
     )
+  })
+
+  // The guard is async and signals denial by throwing. If the handler forgets to
+  // await it, the rejection detaches and the handler runs on regardless — a
+  // viewer would start a real QR registration against Tencent on an Agent they
+  // cannot write. A synchronous stub cannot catch that; this one rejects.
+  it('does not touch Tencent or the audit trail when the write guard denies the caller', async () => {
+    const denied = vi.fn().mockRejectedValue(new ForbiddenError('Write access required'))
+    const guarded = withErrorMapping(
+      new Hono().post('/agents/:id/qq-official/registration', (c) =>
+        handleQQOfficialRegistration(c, denied),
+      ),
+    )
+
+    const response = await guarded.request('/agents/agent-1/qq-official/registration', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    })
+
+    expect(response.status).toBe(403)
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.audit).not.toHaveBeenCalled()
   })
 
   it('audits completed registration without exposing credentials to the audit log', async () => {

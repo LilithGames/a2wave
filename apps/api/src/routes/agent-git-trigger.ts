@@ -28,10 +28,10 @@ type AgentRow = typeof agents.$inferSelect
  */
 export async function handleGitTriggerStatus(
   c: Context,
-  requireWrite: (c: Context, id: string) => unknown,
+  requireWrite: (c: Context, id: string) => Promise<unknown>,
 ): Promise<Response> {
   const { id } = c.req.param()
-  requireWrite(c, id)
+  await requireWrite(c, id)
 
   const provider = c.req.query('provider')
   if (provider !== 'glab' && provider !== 'gh') {
