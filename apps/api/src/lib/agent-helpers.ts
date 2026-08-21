@@ -11,7 +11,7 @@ import type {
   ProviderMcpDelivery,
   WorktreeCallParams,
 } from '@a2wave/shared'
-import { PROVIDER_CHAIN_MAX, providerKindSchema } from '@a2wave/shared'
+import { PROVIDER_CHAIN_MAX, providerKindSchema, slugify } from '@a2wave/shared'
 import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import {
@@ -64,7 +64,6 @@ import {
 } from './seed-builtin-mcp.js'
 import { getCategorySettings } from './settings.js'
 import { canAgentOwnerUseSkill } from './skill-access.js'
-import { slugify } from './slug.js'
 
 type AgentRow = typeof agents.$inferSelect
 type McpRow = typeof mcpServers.$inferSelect
