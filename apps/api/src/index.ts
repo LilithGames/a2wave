@@ -49,6 +49,7 @@ import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
 import { initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
 import { processInstanceId } from './lib/process-instance.js'
+import { qqOfficialConnectionManager } from './lib/qq-official-service.js'
 import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
 import { markRunForResume, resolveResumeChatId } from './lib/resume-chat-id.js'
@@ -493,6 +494,7 @@ function gracefulShutdown(signal: string) {
       stopFeishu: () => feishuConnectionManager.stopAll(),
       stopSlack: () => slackConnectionManager.stopAll(),
       stopDiscord: () => discordConnectionManager.stopAll(),
+      stopQQOfficial: () => qqOfficialConnectionManager.stopAll(),
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
@@ -528,6 +530,7 @@ function gracefulShutdown(signal: string) {
       stopFeishu: () => feishuConnectionManager.stopAll(),
       stopSlack: () => slackConnectionManager.stopAll(),
       stopDiscord: () => discordConnectionManager.stopAll(),
+      stopQQOfficial: () => qqOfficialConnectionManager.stopAll(),
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
         gitTriggerManager.stopAll()
@@ -773,6 +776,9 @@ void ensureAdminExists()
     discordConnectionManager
       .restoreConnections()
       .catch((err) => logger.error(err, 'discordConnectionManager.restoreConnections failed'))
+    qqOfficialConnectionManager
+      .restoreConnections()
+      .catch((err) => logger.error(err, 'qqOfficialConnectionManager.restoreConnections failed'))
     scheduleTriggerManager
       .restoreAll()
       .catch((err) => logger.error(err, 'scheduleTriggerManager.restoreAll failed'))

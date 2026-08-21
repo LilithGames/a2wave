@@ -14,6 +14,7 @@ export const SOURCE_LABEL: Record<RunTriggerSource, string> = {
   feishu: 'runs.sourceFeishu',
   slack: 'runs.sourceSlack',
   discord: 'runs.sourceDiscord',
+  qq_official: 'runs.sourceQQOfficial',
   a2a: 'runs.sourceA2a',
   schedule: 'runs.sourceSchedule',
   oauth: 'runs.sourceOauth',

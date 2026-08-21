@@ -32,6 +32,8 @@ export namespace OpenAPIV3 {
   export interface SecuritySchemeObject {
     type: string
     scheme?: string
+    in?: string
+    name?: string
     description?: string
     bearerFormat?: string
   }

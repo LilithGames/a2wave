@@ -8,7 +8,7 @@ import { agents } from '../db/schema.js'
 import { stageAttachment } from './attachment-storage.js'
 import { logger } from './logger.js'
 import { getAttachmentSettings } from './settings.js'
-import { safeFetch } from './url-safety-core.js'
+import { assertSafeStrictUrl, safeFetch } from './url-safety-core.js'
 
 export type NativeChatAttachment =
   | {
@@ -27,6 +27,15 @@ export type NativeChatAttachment =
       mimeType?: string
       size?: number
     }
+  | {
+      source: 'qq_official'
+      remoteUrl: string
+      name: string
+      mimeType?: string
+      size?: number
+    }
+
+export type PersistedNativeChatAttachment = Exclude<NativeChatAttachment, { source: 'qq_official' }>
 
 const FETCH_TIMEOUT_MS = 15_000
 const SLACK_FILE_HOSTS = new Set(['files.slack.com'])
@@ -187,8 +196,40 @@ async function resolveDiscordAttachment(
   }
 }
 
+async function resolveQQOfficialAttachment(
+  descriptor: Extract<NativeChatAttachment, { source: 'qq_official' }>,
+  maxBytes: number,
+): Promise<{ bytes: Buffer; name: string; mimeType: string }> {
+  assertSafeQQOfficialAttachmentUrl(descriptor.remoteUrl)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const response = await safeFetch(descriptor.remoteUrl, {
+      signal: controller.signal,
+      maxRedirects: 0,
+      validateHop: assertSafeQQOfficialAttachmentUrl,
+    })
+    if (!response.ok) throw new Error(`QQ attachment download returned HTTP ${response.status}`)
+    return {
+      bytes: await readBodyWithLimit(response, maxBytes),
+      name: descriptor.name,
+      mimeType:
+        descriptor.mimeType ??
+        response.headers.get('content-type')?.split(';')[0]?.trim() ??
+        'application/octet-stream',
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function assertSafeQQOfficialAttachmentUrl(url: string): void {
+  const parsed = assertSafeStrictUrl(url)
+  if (parsed.protocol !== 'https:') throw new Error('QQ attachment URL must use HTTPS')
+}
+
 /**
- * Resolve persisted Slack/Discord attachment identifiers after event reservation.
+ * Resolve persisted native-chat attachment identifiers after event reservation.
  * Tokens and signed CDN URLs are deliberately not persisted. Each successful
  * download is staged under the stable Agent consumer identity so queued runs,
  * restart recovery, and rerun use the existing attachment materializer.
@@ -227,11 +268,13 @@ export async function resolveNativeChatAttachments(
               agent.slackConfig as SlackConfig,
               (await settings).maxFileSizeBytes,
             )
-          : await resolveDiscordAttachment(
-              descriptor,
-              agent.discordConfig as DiscordConfig,
-              (await settings).maxFileSizeBytes,
-            )
+          : descriptor.source === 'discord'
+            ? await resolveDiscordAttachment(
+                descriptor,
+                agent.discordConfig as DiscordConfig,
+                (await settings).maxFileSizeBytes,
+              )
+            : await resolveQQOfficialAttachment(descriptor, (await settings).maxFileSizeBytes)
       if (!isAllowedExtension(resolved.name, (await settings).allowedExtensions)) {
         throw new Error('Resolved attachment extension is not allowed')
       }
@@ -252,7 +295,7 @@ export async function resolveNativeChatAttachments(
         {
           agentId,
           source: descriptor.source,
-          remoteId: descriptor.remoteId,
+          attachmentId: descriptor.source === 'qq_official' ? undefined : descriptor.remoteId,
           errorType: error instanceof Error ? error.name : 'unknown',
         },
         'Failed to resolve native chat attachment, skipping',

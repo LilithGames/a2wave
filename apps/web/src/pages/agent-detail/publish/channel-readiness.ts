@@ -27,6 +27,8 @@ export interface ChannelReadinessInput {
   slackBotToken: string
   discordApplicationId: string
   discordBotToken: string
+  qqOfficialAppId: string
+  qqOfficialAppSecret: string
   oauthAccessMode: 'all_idaas_users' | 'specified_users'
   oauthAllowedEmails: string[]
   scheduleConfigs: { cron: string; intent: string }[]
@@ -81,6 +83,11 @@ export function getChannelBlockReason(
       return input.discordApplicationId && input.discordBotToken
         ? null
         : 'agentPublish.discordConfigRequired'
+
+    case 'qq_official':
+      return input.qqOfficialAppId && input.qqOfficialAppSecret
+        ? null
+        : 'agentPublish.qqOfficialConfigRequired'
 
     case 'oauth':
       // all_idaas_users has nothing to configure. specified_users needs at least one address:

@@ -20,6 +20,7 @@ export interface GracefulShutdownDeps {
   stopFeishu: () => void
   stopSlack: () => void
   stopDiscord: () => void
+  stopQQOfficial: () => void
   stopSchedules: () => void
   /** Persist durable SCM lease releases emitted while children exit. */
   drainExecutionLeases: () => Promise<void>
@@ -64,6 +65,7 @@ export async function runGracefulShutdownSequence(deps: GracefulShutdownDeps): P
   safely(deps.stopFeishu, 'stopFeishu')
   safely(deps.stopSlack, 'stopSlack')
   safely(deps.stopDiscord, 'stopDiscord')
+  safely(deps.stopQQOfficial, 'stopQQOfficial')
   safely(deps.stopSchedules, 'stopSchedules')
   try {
     await deps.shutdownEngines()

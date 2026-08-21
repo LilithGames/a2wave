@@ -17,7 +17,7 @@ Concurrency is controlled by the Agent's `maxConcurrency`: it runs immediately i
 
 ## Trigger source and call provenance
 
-Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page) / `glab` (GitLab repository trigger) / `gh` (GitHub repository trigger). The run list places all known provenance layers before the input intent in this order:
+Every Run is tagged with its source: `debug` (Web debugging) / `api` / `feishu` / `slack` / `discord` / `qq_official` / `a2a` / `schedule` / `oauth` / `chat_app` (chat page) / `glab` (GitLab repository trigger) / `gh` (GitHub repository trigger). The run list places all known provenance layers before the input intent in this order:
 
 | Available information | Display example |
 |-----------------------|-----------------|

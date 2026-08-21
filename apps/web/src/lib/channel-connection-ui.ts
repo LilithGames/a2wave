@@ -11,7 +11,7 @@
 import type { ChannelKey } from '@/pages/agent-detail/publish/channel-registry'
 
 /** Channels this module knows how to report a connection for. */
-export type ConnectedChannelKey = 'feishu' | 'slack' | 'discord'
+export type ConnectedChannelKey = 'feishu' | 'slack' | 'discord' | 'qq_official'
 
 export type ChannelConnectionUiKind =
   | 'loading'
@@ -54,6 +54,11 @@ export const CHANNEL_TRANSPORTS: Record<ConnectedChannelKey, ChannelTransport> =
     labelKey: 'agentPublish.transportDiscordGateway',
     hintKey: 'agentPublish.transportDiscordGatewayHint',
   },
+  qq_official: {
+    kind: 'socket',
+    labelKey: 'agentPublish.transportQQOfficialGateway',
+    hintKey: 'agentPublish.transportQQOfficialGatewayHint',
+  },
 }
 
 /**
@@ -62,7 +67,12 @@ export const CHANNEL_TRANSPORTS: Record<ConnectedChannelKey, ChannelTransport> =
  * narrowing this guard exists to perform.
  */
 export function isConnectedChannel(channel: string): channel is ConnectedChannelKey {
-  return channel === 'feishu' || channel === 'slack' || channel === 'discord'
+  return (
+    channel === 'feishu' ||
+    channel === 'slack' ||
+    channel === 'discord' ||
+    channel === 'qq_official'
+  )
 }
 
 /** Per-channel `agentId -> socketOpen` registries of the current API instance. */

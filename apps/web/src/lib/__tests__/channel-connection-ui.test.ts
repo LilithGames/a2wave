@@ -10,9 +10,13 @@ const emptyMaps: ChatConnectionMaps = {
   feishu: new Map(),
   slack: new Map(),
   discord: new Map(),
+  qq_official: new Map(),
 }
 
-function maps(channel: 'feishu' | 'slack' | 'discord', entries: [string, boolean][]) {
+function maps(
+  channel: 'feishu' | 'slack' | 'discord' | 'qq_official',
+  entries: [string, boolean][],
+) {
   return { ...emptyMaps, [channel]: new Map(entries) }
 }
 
@@ -37,6 +41,7 @@ describe('CHANNEL_TRANSPORTS', () => {
     expect(CHANNEL_TRANSPORTS.feishu.kind).toBe('socket')
     expect(CHANNEL_TRANSPORTS.slack.kind).toBe('socket')
     expect(CHANNEL_TRANSPORTS.discord.kind).toBe('socket')
+    expect(CHANNEL_TRANSPORTS.qq_official.kind).toBe('socket')
   })
 
   it('gives each channel its own protocol label so the cards read differently', () => {
@@ -119,6 +124,7 @@ describe('resolveChannelConnectionUi', () => {
       feishu: new Map([['a1', true]]),
       slack: new Map(),
       discord: new Map(),
+      qq_official: new Map(),
     }
     expect(resolve({ channel: 'slack', connections })).toBe('absent')
   })

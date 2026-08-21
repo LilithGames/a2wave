@@ -17,7 +17,7 @@
 import { CliError } from '../errors.js'
 import generated from '../generated/schemas.json' with { type: 'json' }
 import type { CommandRisk } from './agent-meta.js'
-import { type ArgSpec, type TreeNode, findCommand, leafPaths } from './command-tree.js'
+import { type ArgSpec, findCommand, leafPaths, type TreeNode } from './command-tree.js'
 
 /**
  * Above this many args, an unbrief schema costs more context than the command
@@ -70,6 +70,7 @@ const ENUM_FLAGS: Record<string, { values: string[]; descriptions?: Record<strin
       feishu: 'Feishu bot; needs feishuConfig',
       slack: 'Slack bot; needs slackConfig',
       discord: 'Discord bot; needs discordConfig',
+      qq_official: 'QQ Official bot; credentials must already be configured',
       schedule: 'Cron trigger; fires unconditionally, needs scheduleConfig',
       oauth: 'IDaaS-authenticated gateway invocation',
       chat_app: 'First-party chat page at /agents/:id/chat_app',

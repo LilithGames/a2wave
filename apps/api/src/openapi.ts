@@ -135,6 +135,12 @@ export const openApiSpec: OpenAPIV3.Document = {
   servers: [{ url: '/api', description: 'a2wave API base path' }],
   components: {
     securitySchemes: {
+      sessionCookie: {
+        type: 'apiKey',
+        in: 'cookie',
+        name: '__Host-a2wave_session',
+        description: 'Authenticated a2wave browser session (legacy HTTP uses a2wave_session).',
+      },
       bearerAuth: {
         type: 'http',
         scheme: 'bearer',
@@ -543,6 +549,24 @@ export const openApiSpec: OpenAPIV3.Document = {
           },
         },
       },
+      QQOfficialRegistrationRequest: {
+        oneOf: [
+          {
+            type: 'object',
+            required: ['action'],
+            properties: { action: { type: 'string', enum: ['start'] } },
+          },
+          {
+            type: 'object',
+            required: ['action', 'taskId', 'bindKey'],
+            properties: {
+              action: { type: 'string', enum: ['poll'] },
+              taskId: { type: 'string' },
+              bindKey: { type: 'string', format: 'password' },
+            },
+          },
+        ],
+      },
     },
   },
   security: [{ bearerAuth: [] }],
@@ -803,6 +827,31 @@ export const openApiSpec: OpenAPIV3.Document = {
           '400': { description: 'Invalid workspace name, unsupported source, or unsafe root.' },
           '404': { description: 'SCM source not found or not visible.' },
           '409': { description: 'Workspace is occupied or another removal owns the target.' },
+        },
+      },
+    },
+    '/agents/{agentId}/qq-official/registration': {
+      post: {
+        operationId: 'registerQQOfficialBot',
+        summary: 'Start or poll QQ Official Bot QR registration',
+        description:
+          "Starts Tencent QQ's official QR binding flow or polls an existing task. Requires write access to the Agent. The completed response contains App credentials for immediate form fill and must not be logged.",
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/agentId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/QQOfficialRegistrationRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Binding task created or polled.' },
+          '400': { description: 'Malformed action or task credentials.' },
+          '403': { description: 'Caller cannot edit the Agent.' },
+          '502': { description: 'Tencent registration service failed.' },
         },
       },
     },

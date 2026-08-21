@@ -8,7 +8,10 @@ import { buildArtifactLinkLinesSync } from './artifact-links.js'
 import type { RegisteredArtifact } from './artifact-storage.js'
 import { logger } from './logger.js'
 import { prepareNativeArtifactUpload } from './native-chat-artifacts.js'
-import type { NativeChatAttachment } from './native-chat-attachments.js'
+import type {
+  NativeChatAttachment,
+  PersistedNativeChatAttachment,
+} from './native-chat-attachments.js'
 import { reserveNativeChatRun } from './native-chat-runner.js'
 import { appendNativeArtifactDownloadSection, prepareNativeChatText } from './native-chat-text.js'
 import { buildSlackChannel } from './run-channel.js'
@@ -93,7 +96,7 @@ export function buildSlackDedupKey(teamId: string, channel: string, ts?: string)
 
 export function extractSlackNativeAttachments(
   event: Pick<SlackMessageEvent, 'files'>,
-): NativeChatAttachment[] {
+): Extract<NativeChatAttachment, { source: 'slack' }>[] {
   return (event.files ?? []).flatMap((file) => {
     if (!file.id) return []
     return [
@@ -145,7 +148,7 @@ function buildSlackPlainTextFallback(markdown: string): string {
   return markdown
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^(```)[^\n]*$/gm, '')
-    .replace(/^[ \t]*\|?[ \t:|\-]+\|?[ \t]*$/gm, '')
+    .replace(/^[ \t]*\|?[ \t:|-]+\|?[ \t]*$/gm, '')
     .replace(/!\[([^\]\n]*)\]\(([^)\n]+)\)/g, '$1 ($2)')
     .replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, '$1: $2')
     .replaceAll('**', '')
@@ -367,7 +370,7 @@ export class SlackConnectionManager {
       intent: string
       ctx: RunChannelContextSlack
       displayName?: string | null
-      nativeAttachments: NativeChatAttachment[]
+      nativeAttachments: PersistedNativeChatAttachment[]
     },
   ): Promise<void> {
     const { connection, event, intent, ctx, displayName, nativeAttachments } = input
@@ -383,6 +386,8 @@ export class SlackConnectionManager {
     })
     if (result.status === 'queue_full') {
       await this.sendMessageByContext(agentId, ctx, 'Agent queue is full.')
+    } else if (result.status === 'scheduling_failed') {
+      await this.sendMessageByContext(agentId, ctx, 'Agent could not schedule this message.')
     }
   }
 

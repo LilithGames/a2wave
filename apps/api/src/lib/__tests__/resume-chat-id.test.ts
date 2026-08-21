@@ -133,6 +133,15 @@ describe('resolveResumeChatId', () => {
     })
     expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBeNull()
   })
+
+  it('honours a native chat session reset over an automatic resume', async () => {
+    await seedRun({
+      status: 'running',
+      triggerSource: 'qq_official',
+      executionMetadata: { liveChatId: 'sess_live', nativeChatResetSession: true },
+    })
+    expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBeNull()
+  })
 })
 
 describe('the interrupted-run scenario end to end', () => {

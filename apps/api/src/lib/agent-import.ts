@@ -890,13 +890,22 @@ export async function importAgentFromZip(
       warnings.push(`${channel} channel was disabled because it has no usable trigger config`)
     }
     const importedPublishChannels = exportedPublishChannels.filter(
-      (channel) => channel !== 'slack' && channel !== 'discord' && !droppedGitChannels.has(channel),
+      (channel) =>
+        channel !== 'slack' &&
+        channel !== 'discord' &&
+        channel !== 'qq_official' &&
+        !droppedGitChannels.has(channel),
     )
     if (exportedPublishChannels.includes('slack') || exportedAgent.slackConfig) {
       warnings.push('Slack credentials are not imported; reconfigure Slack before publishing')
     }
     if (exportedPublishChannels.includes('discord') || exportedAgent.discordConfig) {
       warnings.push('Discord credentials are not imported; reconfigure Discord before publishing')
+    }
+    if (exportedPublishChannels.includes('qq_official') || exportedAgent.qqOfficialConfig) {
+      warnings.push(
+        'QQ Official credentials are not imported; reconfigure QQ Official before publishing',
+      )
     }
 
     let omittedA2ARouteCredentials = false
@@ -975,7 +984,15 @@ export async function importAgentFromZip(
       publishIpWhitelist: [],
       publishDescription: null,
       publishChannels: importedPublishChannels as Array<
-        'api' | 'a2a' | 'feishu' | 'slack' | 'discord' | 'schedule' | 'oauth' | 'chat_app'
+        | 'api'
+        | 'a2a'
+        | 'feishu'
+        | 'slack'
+        | 'discord'
+        | 'qq_official'
+        | 'schedule'
+        | 'oauth'
+        | 'chat_app'
       >,
       // Same fail-closed landing as migration 0100, so an old bundle cannot import an Agent
       // more open than the one it was exported from.
@@ -1003,6 +1020,7 @@ export async function importAgentFromZip(
       feishuConfig: exportedAgent.feishuConfig as (typeof agents.$inferInsert)['feishuConfig'],
       slackConfig: null,
       discordConfig: null,
+      qqOfficialConfig: null,
       // Carries presentation copy only, so unlike Slack/Discord there is no
       // credential to strip and it round-trips intact.
       chatAppConfig: importedChatAppConfig,

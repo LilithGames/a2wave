@@ -16,6 +16,7 @@ describe('runGracefulShutdownSequence', () => {
         stopFeishu: vi.fn(() => calls.push('stopFeishu')),
         stopSlack: vi.fn(() => calls.push('stopSlack')),
         stopDiscord: vi.fn(() => calls.push('stopDiscord')),
+        stopQQOfficial: vi.fn(() => calls.push('stopQQOfficial')),
         stopSchedules: vi.fn(() => calls.push('stopSchedules')),
         drainExecutionLeases: vi.fn(async () => {
           calls.push('drainExecutionLeases')
@@ -58,6 +59,7 @@ describe('runGracefulShutdownSequence', () => {
       'stopFeishu',
       'stopSlack',
       'stopDiscord',
+      'stopQQOfficial',
       'stopSchedules',
       'shutdownEngines:start',
       'shutdownEngines:end',

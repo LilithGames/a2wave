@@ -13,6 +13,7 @@ import {
   oauthAllowedEmailsSchema,
   publishAuthTypeEnum,
   publishChannelEnum,
+  qqOfficialConfigSchema,
   scheduleConfigSchema,
   slackConfigSchema,
   updateAgentInput,
@@ -113,6 +114,7 @@ import {
 } from '../lib/oauth-publish.js'
 import { getCurrentUserId, getOwnerFilter } from '../lib/owner-filter.js'
 import { registerPendingContext } from '../lib/pending-job-registry.js'
+import { qqOfficialConnectionManager } from '../lib/qq-official-service.js'
 import {
   buildChatAppChannel,
   buildDebugChannel,
@@ -151,11 +153,16 @@ import {
   syncGitTriggerChannels,
 } from './agent-git-trigger.js'
 import {
-  maskA2ARouteTargetSecrets,
-  maskSensitiveEnv,
+  handleQQOfficialRegistration,
+  prepareQQOfficialPublishConfig,
+  resumeQQOfficialConnection,
+  syncQQOfficialConnectionAfterPublish,
+} from './agent-qq-official.js'
+import {
   preserveA2ARouteTargetSecrets,
   preserveSensitiveEnvSecrets,
 } from './agent-route-secrets.js'
+import { maskAgentSecrets } from './agent-secret-masking.js'
 import { feishuConfigBodySchema } from './publish-feishu-config.js'
 
 const app = new Hono()
@@ -193,8 +200,6 @@ const maskedEnvWithoutStoredValue = (key: string) =>
     error: `Environment variable '${key}' was sent masked but no stored value exists to restore. Re-enter its value.`,
     code: 'MASKED_SECRET_WITHOUT_STORED_VALUE',
   }) as const
-
-type AgentRow = typeof agents.$inferSelect
 
 /** Session user id, as set by the auth middleware. */
 function getSessionUserId(c: Context): string {
@@ -247,79 +252,7 @@ async function findMemorySkill(): Promise<typeof skills.$inferSelect | undefined
   )[0]
 }
 
-/** Mask every Agent secret except fields explicitly revealed to the detail editor. */
-export function maskAgentSecrets<T extends AgentRow | undefined>(
-  agent: T,
-  opts?: {
-    revealFeishuSecret?: boolean
-    revealNativeChatSecrets?: boolean
-    revealOauthToken?: boolean
-  },
-): T {
-  if (!agent) return agent
-  let masked = maskSensitiveEnv(agent)
-  if (masked.endpointApiKey) {
-    masked = { ...masked, endpointApiKey: '********' }
-  }
-  if (masked.a2aEndpointApiKey) {
-    masked = { ...masked, a2aEndpointApiKey: '********' }
-  }
-  masked = {
-    ...masked,
-    config: maskProviderChainConfig(masked.config, '********', {
-      revealOauth: opts?.revealOauthToken,
-    }),
-    a2aRouteTargets: maskA2ARouteTargetSecrets(masked.a2aRouteTargets) ?? null,
-  }
-  // OAuth tokens are long-lived, so only the detail editor may reveal them.
-  if (!opts?.revealOauthToken && masked.providerOauthToken) {
-    masked = { ...masked, providerOauthToken: '********' }
-  }
-  if (masked.memoryProviderApiKey) {
-    masked = { ...masked, memoryProviderApiKey: '********' }
-  }
-  if (masked.embeddingApiKey) {
-    masked = { ...masked, embeddingApiKey: '********' }
-  }
-  // Legacy top-level provider credentials (pre-providerChain). Still populated
-  // and read as an execution fallback, so they carry live secrets — mask them
-  // unconditionally on every read path (list + detail, all roles). The frontend
-  // sources credentials only from config.providerChain, so this is display-safe.
-  // baseUrl is masked too: it can leak an internal proxy address.
-  if (masked.providerApiKey) {
-    masked = { ...masked, providerApiKey: '********' }
-  }
-  if (masked.providerBaseUrl) {
-    masked = { ...masked, providerBaseUrl: '********' }
-  }
-  // Only the detail editor may reveal the Feishu App Secret.
-  const fc = masked.feishuConfig as { appSecret?: string } | null | undefined
-  if (!opts?.revealFeishuSecret && fc?.appSecret) {
-    masked = {
-      ...masked,
-      feishuConfig: { ...fc, appSecret: '********' } as typeof masked.feishuConfig,
-    }
-  }
-  const slack = masked.slackConfig
-  if (!opts?.revealNativeChatSecrets && slack) {
-    masked = {
-      ...masked,
-      slackConfig: {
-        ...slack,
-        appToken: slack.appToken ? '********' : slack.appToken,
-        botToken: slack.botToken ? '********' : slack.botToken,
-      },
-    }
-  }
-  const discord = masked.discordConfig
-  if (!opts?.revealNativeChatSecrets && discord?.botToken) {
-    masked = {
-      ...masked,
-      discordConfig: { ...discord, botToken: '********' },
-    }
-  }
-  return masked as T
-}
+export { maskAgentSecrets }
 
 // --- Routes ---
 
@@ -441,12 +374,15 @@ app.get('/chat-connections', (c) => {
     data: {
       slack: slackConnectionManager.getConnectionStatuses(),
       discord: discordConnectionManager.getConnectionStatuses(),
+      qqOfficial: qqOfficialConnectionManager.getConnectionStatuses(),
     },
     meta: { scope: 'current_api_process' },
   })
 })
 
 app.get('/:id/git-trigger/status', (c) => handleGitTriggerStatus(c, requireAgentWrite))
+
+app.post('/:id/qq-official/registration', (c) => handleQQOfficialRegistration(c, requireAgentWrite))
 
 /** GET /agents/:id/diagnose — Agent 综合诊断（执行引擎/Provider + 飞书与长连接等；WS 状态仅当前实例） */
 app.get('/:id/diagnose', async (c) => {
@@ -1375,6 +1311,16 @@ app.patch('/:id', async (c) => {
       ),
     }
   }
+  let qqOfficialConfigToSave = parsed.data.qqOfficialConfig
+  if (qqOfficialConfigToSave) {
+    qqOfficialConfigToSave = {
+      ...qqOfficialConfigToSave,
+      appSecret: resolveMaskedChannelSecret(
+        qqOfficialConfigToSave.appSecret,
+        existing.qqOfficialConfig?.appSecret,
+      ),
+    }
+  }
 
   const a2aRouteTargetsToSave = preserveA2ARouteTargetSecrets(
     parsed.data.a2aRouteTargets,
@@ -1447,6 +1393,7 @@ app.patch('/:id', async (c) => {
     feishuConfig: feishuConfigToSave,
     slackConfig: slackConfigToSave,
     discordConfig: discordConfigToSave,
+    qqOfficialConfig: qqOfficialConfigToSave,
     a2aRouteTargets: a2aRouteTargetsToSave.value,
     ...providerCredentialFields,
     memoryProviderApiKey: memoryProviderApiKeyToSave,
@@ -1567,6 +1514,7 @@ const publishBodySchema = z.object({
   feishuConfig: feishuConfigBodySchema.nullable().optional(),
   slackConfig: slackConfigSchema.nullable().optional(),
   discordConfig: discordConfigSchema.nullable().optional(),
+  qqOfficialConfig: qqOfficialConfigSchema.nullable().optional(),
   chatAppConfig: chatAppConfigSchema.nullable().optional(),
   scheduleConfig: scheduleConfigSchema.nullable().optional(),
   glabConfig: glabTriggerConfigSchema.nullable().optional(),
@@ -1606,6 +1554,7 @@ app.post('/:id/publish', async (c) => {
     feishuConfig,
     slackConfig,
     discordConfig,
+    qqOfficialConfig,
     chatAppConfig,
     scheduleConfig,
     glabConfig,
@@ -1745,6 +1694,14 @@ app.post('/:id/publish', async (c) => {
     }
     updatePayload.discordConfig = resolvedDiscordConfig
   }
+  const preparedQQOfficialConfig = prepareQQOfficialPublishConfig(
+    channels,
+    qqOfficialConfig,
+    agent.qqOfficialConfig,
+    qqOfficialConfig !== undefined,
+  )
+  if (qqOfficialConfig !== undefined)
+    updatePayload.qqOfficialConfig = preparedQQOfficialConfig.update
 
   // Chat app config is presentation copy only — no credentials, so no '********'
   // preservation dance and nothing to mask on the read path.
@@ -1780,6 +1737,15 @@ app.post('/:id/publish', async (c) => {
       {
         error: 'Discord channel requires applicationId and botToken.',
         code: 'DISCORD_CONFIG_REQUIRED',
+      },
+      400,
+    )
+  }
+  if (preparedQQOfficialConfig.missingRequired) {
+    return c.json(
+      {
+        error: 'QQ Official channel requires appId and appSecret.',
+        code: 'QQ_OFFICIAL_CONFIG_REQUIRED',
       },
       400,
     )
@@ -1850,6 +1816,7 @@ app.post('/:id/publish', async (c) => {
   } else if (!channels.includes('discord')) {
     void discordConnectionManager.stop(id)
   }
+  syncQQOfficialConnectionAfterPublish(id, isStopped, channels, preparedQQOfficialConfig.effective)
 
   // Start/stop schedule trigger based on channels
   if (!isStopped && channels.includes('schedule')) {
@@ -1879,6 +1846,7 @@ const channelConfigSchemas = {
   feishu: feishuConfigBodySchema,
   slack: slackConfigSchema,
   discord: discordConfigSchema,
+  qq_official: qqOfficialConfigSchema,
   chat_app: chatAppConfigSchema,
   schedule: scheduleConfigSchema,
   // Provider-bound, so a mismatched config is a 400 from schema validation
@@ -1894,6 +1862,7 @@ const CHANNEL_CONFIG_COLUMN: Record<ConfigurableChannel, string> = {
   feishu: 'feishuConfig',
   slack: 'slackConfig',
   discord: 'discordConfig',
+  qq_official: 'qqOfficialConfig',
   chat_app: 'chatAppConfig',
   schedule: 'scheduleConfig',
   glab: 'glabConfig',
@@ -1977,6 +1946,11 @@ app.patch('/:id/channels/:channel', async (c) => {
     const botToken = restoreSecret(next.botToken, agent.discordConfig?.botToken)
     if (!botToken.ok) return maskedWithoutStored('botToken')
     config = { ...next, botToken: botToken.value }
+  } else if (channel === 'qq_official') {
+    const next = config as { appSecret?: string }
+    const appSecret = restoreSecret(next.appSecret, agent.qqOfficialConfig?.appSecret)
+    if (!appSecret.ok) return maskedWithoutStored('appSecret')
+    config = { ...next, appSecret: appSecret.value }
   }
 
   // 只有「已发布 + 该渠道已启用」才让改动即时生效；draft 或未启用时仅落库。
@@ -2010,7 +1984,12 @@ app.patch('/:id/channels/:channel', async (c) => {
                 applicationId: (config as { applicationId?: string }).applicationId,
                 botToken: (config as { botToken?: string }).botToken,
               }
-            : {}
+            : channel === 'qq_official'
+              ? {
+                  appId: (config as { appId?: string }).appId,
+                  appSecret: (config as { appSecret?: string }).appSecret,
+                }
+              : {}
     const blank = Object.entries(required).find(([, value]) => !value?.trim())
     if (blank) {
       return c.json(
@@ -2049,6 +2028,15 @@ app.patch('/:id/channels/:channel', async (c) => {
         .catch((err) =>
           logger.error({ err, agentId: id }, 'Failed to restart Discord connection on config save'),
         )
+    } else if (channel === 'qq_official') {
+      qqOfficialConnectionManager
+        .start(id, config as Parameters<typeof qqOfficialConnectionManager.start>[1])
+        .catch((err) =>
+          logger.error(
+            { err, agentId: id },
+            'Failed to restart QQ Official connection on config save',
+          ),
+        )
     } else if (channel === 'schedule') {
       scheduleTriggerManager.start(id, config as ScheduleConfigInput)
     } else if (channel === 'glab' || channel === 'gh') {
@@ -2083,6 +2071,7 @@ app.post('/:id/stop', async (c) => {
   feishuConnectionManager.stop(id)
   void slackConnectionManager.stop(id)
   void discordConnectionManager.stop(id)
+  void qqOfficialConnectionManager.stop(id)
   scheduleTriggerManager.stop(id)
   gitTriggerManager.stopAgent(id)
   logAudit(c, { action: 'agent.stop', resource: 'agent', resourceId: id })
@@ -2138,6 +2127,7 @@ app.post('/:id/resume', async (c) => {
       logger.error({ err, agentId: id }, 'Failed to start Discord connection on resume')
     }
   }
+  await resumeQQOfficialConnection(id, resumedChannels, updated?.qqOfficialConfig)
 
   // Restart schedule trigger on resume
   if (resumedChannels.includes('schedule') && updated?.scheduleConfig) {
@@ -2231,6 +2221,7 @@ app.post('/:id/clone', async (c) => {
           feishuConfig: null,
           slackConfig: null,
           discordConfig: null,
+          qqOfficialConfig: null,
           scheduleConfig: null,
           glabConfig: null,
           ghConfig: null,
@@ -2972,6 +2963,7 @@ app.delete('/:id', async (c) => {
   feishuConnectionManager.stop(id)
   void slackConnectionManager.stop(id)
   void discordConnectionManager.stop(id)
+  void qqOfficialConnectionManager.stop(id)
   scheduleTriggerManager.stop(id)
   gitTriggerManager.stopAgent(id)
   revokeAgentTokensForAgent(id)

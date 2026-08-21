@@ -12,8 +12,8 @@ import {
   Bot,
   Clock,
   Gamepad2,
-  GitMerge,
   Github,
+  GitMerge,
   Globe,
   KeyRound,
   MessagesSquare,
@@ -29,6 +29,7 @@ export type ChannelKey =
   | 'feishu'
   | 'slack'
   | 'discord'
+  | 'qq_official'
   | 'schedule'
   | 'chat_app'
   | 'glab'
@@ -117,6 +118,14 @@ export const CHANNEL_REGISTRY: readonly ChannelMeta[] = [
     switchLabelKey: 'agentPublish.discordChannelEnabled',
   },
   {
+    key: 'qq_official',
+    category: 'chatbot',
+    icon: Bot,
+    titleKey: 'agentPublish.channelQQOfficial',
+    descKey: 'agentPublish.cardDescQQOfficial',
+    switchLabelKey: 'agentPublish.qqOfficialChannelEnabled',
+  },
+  {
     key: 'schedule',
     category: 'scheduled',
     icon: Clock,
@@ -169,6 +178,7 @@ const CONFIGURABLE_CHANNELS = [
   'feishu',
   'slack',
   'discord',
+  'qq_official',
   'chat_app',
   'schedule',
   'glab',

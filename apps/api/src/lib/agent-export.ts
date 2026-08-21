@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 /**
  * Agent 导出逻辑
@@ -40,6 +40,7 @@ export interface ExportedAgent {
   feishuConfig: Record<string, unknown> | null
   slackConfig?: Record<string, unknown> | null
   discordConfig?: Record<string, unknown> | null
+  qqOfficialConfig?: Record<string, unknown> | null
   chatAppConfig?: Record<string, unknown> | null
   scheduleConfig: Record<string, unknown> | Array<Record<string, unknown>> | null
   /** Git repository trigger configs; no credentials, so no masking pass. */
@@ -235,6 +236,9 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
   const sanitizedDiscordConfig = agent.discordConfig
     ? { ...agent.discordConfig, botToken: '********' }
     : null
+  const sanitizedQQOfficialConfig = agent.qqOfficialConfig
+    ? { ...agent.qqOfficialConfig, appSecret: '********' }
+    : null
 
   // Mask a2aRouteTargets apiKey
   let sanitizedRouteTargets: unknown[] | null = null
@@ -259,6 +263,7 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
     feishuConfig: sanitizedFeishuConfig,
     slackConfig: sanitizedSlackConfig,
     discordConfig: sanitizedDiscordConfig,
+    qqOfficialConfig: sanitizedQQOfficialConfig,
     // No masking pass: chat app config is presentation copy with no credentials.
     chatAppConfig: (agent.chatAppConfig as Record<string, unknown> | null) ?? null,
     scheduleConfig: agent.scheduleConfig as

@@ -28,9 +28,14 @@ vi.mock('../settings.js', () => ({
     allowedExtensions: new Set(['png', 'pdf']),
   }),
 }))
-vi.mock('../url-safety-core.js', () => ({
-  safeFetch: (...args: unknown[]) => mockSafeFetch(...args),
-}))
+vi.mock('../url-safety-core.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../url-safety-core.js')>('../url-safety-core.js')
+  return {
+    ...actual,
+    safeFetch: (...args: unknown[]) => mockSafeFetch(...args),
+  }
+})
 vi.mock('../attachment-storage.js', () => ({
   stageAttachment: (...args: unknown[]) => mockStageAttachment(...args),
 }))
@@ -38,9 +43,8 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
-import { resolveNativeChatAttachments } from '../native-chat-attachments.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { resolveNativeChatAttachments } from '../native-chat-attachments.js'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -185,6 +189,49 @@ describe('resolveNativeChatAttachments', () => {
         },
       ]),
     ).resolves.toEqual([])
+    expect(mockSafeFetch).not.toHaveBeenCalled()
+    expect(mockStageAttachment).not.toHaveBeenCalled()
+  })
+
+  it('downloads a QQ Official attachment from a public HTTPS URL', async () => {
+    mockSafeFetch.mockResolvedValue(
+      new Response(Buffer.from('png'), {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': '3' },
+      }),
+    )
+
+    const refs = await resolveNativeChatAttachments('agt_1', [
+      {
+        source: 'qq_official',
+        remoteUrl: 'https://multimedia.nt.qq.com.cn/download/example.png',
+        name: 'example.png',
+        mimeType: 'image/png',
+        size: 3,
+      },
+    ])
+
+    expect(mockSafeFetch).toHaveBeenCalledOnce()
+    expect(mockStageAttachment).toHaveBeenCalledOnce()
+    expect(refs).toHaveLength(1)
+  })
+
+  it.each([
+    'https://127.0.0.1/private.png',
+    'https://169.254.169.254/latest/meta-data/credentials.png',
+  ])('rejects a QQ Official attachment URL targeting a reserved address: %s', async (remoteUrl) => {
+    await expect(
+      resolveNativeChatAttachments('agt_1', [
+        {
+          source: 'qq_official',
+          remoteUrl,
+          name: 'private.png',
+          mimeType: 'image/png',
+          size: 3,
+        },
+      ]),
+    ).resolves.toEqual([])
+
     expect(mockSafeFetch).not.toHaveBeenCalled()
     expect(mockStageAttachment).not.toHaveBeenCalled()
   })
