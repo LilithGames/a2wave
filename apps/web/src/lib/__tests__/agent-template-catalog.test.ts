@@ -1,6 +1,6 @@
+import { describe, expect, it } from 'vitest'
 import en from '@/locales/en.json'
 import zh from '@/locales/zh.json'
-import { describe, expect, it } from 'vitest'
 import { AGENT_TEMPLATE_CATALOG, localizeAgentTemplate } from '../agent-template-catalog'
 
 const localeAgents = {
@@ -170,6 +170,72 @@ describe('agent template catalog', () => {
         /glab mr note list|gh pr view/,
       )
     }
+  })
+
+  it('holds the repo-trigger reviewer to a P0/P1 bar with concrete evidence', () => {
+    /**
+     * Production runs of this template produced long comments padded with style
+     * and naming nits, which buried the one finding that mattered and trained
+     * maintainers to skim past the whole thread. Severity alone is not enough:
+     * without a demanded trigger condition an Agent will happily report
+     * "this looks risky", which is unactionable and unfalsifiable. So the
+     * prompt has to name the two levels *and* require a reproducible trigger.
+     */
+    const definition = AGENT_TEMPLATE_CATALOG.find(
+      (template) => template.key === 'repo-trigger-review',
+    )
+    if (!definition) throw new Error('repo-trigger-review template is missing')
+
+    for (const [language, prompt] of Object.entries(definition.prompts)) {
+      expect(prompt, `${language}: no P0 bar`).toContain('P0')
+      expect(prompt, `${language}: no P1 bar`).toContain('P1')
+      // Saying "only P0/P1" without saying to drop the rest leaves the Agent
+      // free to keep reporting nits under a different heading.
+      expect(prompt, `${language}: never tells the Agent to drop lower severities`).toMatch(
+        language === 'zh' ? /P2/ : /P2/,
+      )
+    }
+  })
+
+  it('makes the repo-trigger reviewer chase callers rather than skim the diff', () => {
+    /**
+     * A diff says what changed, never what that break. The failure this guards
+     * is the shallow pass: the Agent reads the added lines, finds them locally
+     * consistent, and reports clean — while a renamed signature left a caller
+     * unconverted two directories away. The prompt therefore has to send it
+     * out of the diff and into the call sites, and to say so in both languages.
+     */
+    const definition = AGENT_TEMPLATE_CATALOG.find(
+      (template) => template.key === 'repo-trigger-review',
+    )
+    if (!definition) throw new Error('repo-trigger-review template is missing')
+
+    expect(definition.prompts.zh).toMatch(/调用方|调用点/)
+    expect(definition.prompts.en).toMatch(/caller|call site/i)
+
+    // Concurrency and rollback are the two classes that a diff-only read misses
+    // most reliably, and both are P0/P1 by nature.
+    expect(definition.prompts.zh).toMatch(/并发|竞态/)
+    expect(definition.prompts.en).toMatch(/concurren|race/i)
+    expect(definition.prompts.zh).toMatch(/回滚|兼容/)
+    expect(definition.prompts.en).toMatch(/rollback|compatib/i)
+  })
+
+  it('keeps the repo-trigger reviewer honest about unrun validation', () => {
+    /**
+     * The template already says not to claim a passing test it never ran. The
+     * other half of the same honesty problem is verbosity: runs were pasting
+     * full command lines, stack traces and environment workarounds into the MR,
+     * so the actual findings sank below the fold. Keep the comment about the
+     * code; the debugging narrative belongs in the run record.
+     */
+    const definition = AGENT_TEMPLATE_CATALOG.find(
+      (template) => template.key === 'repo-trigger-review',
+    )
+    if (!definition) throw new Error('repo-trigger-review template is missing')
+
+    expect(definition.prompts.zh).toMatch(/没跑就写没跑|未执行/)
+    expect(definition.prompts.en).toMatch(/did not run|say so/i)
   })
 
   it('seeds the system prompt in English regardless of UI language', () => {
