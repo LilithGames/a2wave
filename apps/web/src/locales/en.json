@@ -923,7 +923,8 @@
     "tokenCoverageNote": "Total = input + output + reasoning + cache read + cache write. Claude Code, Codex, OpenCode, and Pi report official token fields. Cursor, Qoder, Trae, and Kimi Code may not report tokens. A displayed 0 can mean no usage was reported, not zero consumption.",
     "tokenCoverageDetails": "View coverage details",
     "sourceGlab": "GitLab trigger",
-    "sourceGh": "GitHub trigger"
+    "sourceGh": "GitHub trigger",
+    "sourceTelegram": "Telegram"
   },
   "settings": {
     "title": "Settings",
@@ -1863,7 +1864,25 @@
     "gitTriggerEventRequired": "Select at least one trigger event",
     "gitTriggerIntentRequired": "Enter a trigger prompt",
     "gitTriggerIntervalInvalid": "Poll interval must be between 30 and 600 seconds",
-    "oauthEnvIncompleteSettings": "The current OIDC channel configuration is incomplete (empty audience allowlist). Complete it in Settings → Enterprise Login; editing environment variables will have no effect."
+    "oauthEnvIncompleteSettings": "The current OIDC channel configuration is incomplete (empty audience allowlist). Complete it in Settings → Enterprise Login; editing environment variables will have no effect.",
+    "telegramChannelEnabled": "Enable Telegram channel",
+    "telegramChannelDesc": "Receive and reply to messages through the Telegram Bot API.",
+    "telegramSetupTitle": "Telegram bot setup",
+    "telegramSetupHelp": "Create a bot with @BotFather and paste its token. To trigger on every group message, send /setprivacy to @BotFather and disable Group Privacy; otherwise the bot only sees messages that @mention or reply to it.",
+    "telegramBotToken": "Bot Token",
+    "telegramBotTokenPlaceholder": "Enter Telegram Bot Token (123456:ABC-DEF...)",
+    "telegramGroupSection": "Group messages",
+    "telegramPrivateSection": "Private chats",
+    "telegramTriggerOnMention": "Trigger on @mention or reply to the bot",
+    "telegramTriggerOnNewMessage": "Trigger on every new group message",
+    "telegramTriggerOnNewMessageHint": "Requires Group Privacy to be disabled via @BotFather, otherwise Telegram never delivers these messages. Only human messages are processed; bot messages are ignored to prevent loops.",
+    "telegramReply": "Reply to the original message",
+    "telegramConfigRequired": "Bot Token is required when Telegram is enabled.",
+    "telegramSendArtifactsAsFileHelp": "Upload artifacts directly to Telegram as documents. When off, only a2wave download links are sent.",
+    "channelTelegram": "Telegram",
+    "cardDescTelegram": "Chat with the Agent in Telegram groups and private chats.",
+    "transportTelegramPolling": "Long Polling",
+    "transportTelegramPollingHint": "This instance polls the Telegram Bot API itself; no public callback URL is needed."
   },
   "agentRoute": {
     "tabTitle": "Route",

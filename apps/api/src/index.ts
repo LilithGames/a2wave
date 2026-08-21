@@ -70,6 +70,7 @@ import { getSetting, refreshSettingsCache } from './lib/settings.js'
 import { ensureAdminExists } from './lib/setup.js'
 import { slackConnectionManager } from './lib/slack-service.js'
 import { startStaleLeaseSweeper } from './lib/stale-lease-sweeper.js'
+import { telegramConnectionManager } from './lib/telegram-service.js'
 import { apiBodyLimit } from './middleware/api-body-limit.js'
 import { authMiddleware, memoryAuthMiddleware, requireAdmin } from './middleware/auth-middleware.js'
 import { csrfOriginMiddleware } from './middleware/csrf-origin.js'
@@ -494,6 +495,7 @@ function gracefulShutdown(signal: string) {
       stopFeishu: () => feishuConnectionManager.stopAll(),
       stopSlack: () => slackConnectionManager.stopAll(),
       stopDiscord: () => discordConnectionManager.stopAll(),
+      stopTelegram: () => telegramConnectionManager.stopAll(),
       stopQQOfficial: () => qqOfficialConnectionManager.stopAll(),
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
@@ -530,6 +532,7 @@ function gracefulShutdown(signal: string) {
       stopFeishu: () => feishuConnectionManager.stopAll(),
       stopSlack: () => slackConnectionManager.stopAll(),
       stopDiscord: () => discordConnectionManager.stopAll(),
+      stopTelegram: () => telegramConnectionManager.stopAll(),
       stopQQOfficial: () => qqOfficialConnectionManager.stopAll(),
       stopSchedules: () => {
         scheduleTriggerManager.stopAll()
@@ -776,6 +779,9 @@ void ensureAdminExists()
     discordConnectionManager
       .restoreConnections()
       .catch((err) => logger.error(err, 'discordConnectionManager.restoreConnections failed'))
+    telegramConnectionManager
+      .restoreConnections()
+      .catch((err) => logger.error(err, 'telegramConnectionManager.restoreConnections failed'))
     qqOfficialConnectionManager
       .restoreConnections()
       .catch((err) => logger.error(err, 'qqOfficialConnectionManager.restoreConnections failed'))

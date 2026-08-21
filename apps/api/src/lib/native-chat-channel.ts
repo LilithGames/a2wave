@@ -1,4 +1,4 @@
-export const NATIVE_CHAT_CHANNELS = ['slack', 'discord', 'qq_official'] as const
+export const NATIVE_CHAT_CHANNELS = ['slack', 'discord', 'telegram', 'qq_official'] as const
 
 export type NativeChatSource = (typeof NATIVE_CHAT_CHANNELS)[number]
 

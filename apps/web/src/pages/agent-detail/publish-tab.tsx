@@ -30,6 +30,7 @@ import type {
   SaveChannelConfigVars,
   SchedulePublishConfig,
   SlackPublishConfig,
+  TelegramPublishConfig,
 } from '@/hooks/use-agents'
 import {
   fetchGitTriggerCliStatus,
@@ -76,6 +77,7 @@ import {
 import { OauthAllowedEmails } from './publish/oauth-allowed-emails'
 import { QQOfficialChannelSection } from './publish/qq-official-channel-section'
 import { ScheduleChannelSection } from './publish/schedule-channel-section'
+import { TelegramChannelSection } from './publish/telegram-channel-section'
 
 /** Local draft shape for one git-trigger channel's form state. */
 interface GitTriggerDraft {
@@ -390,6 +392,7 @@ export function PublishTab({
   const [feishuEnabled, setFeishuEnabled] = useState(() => channelInitiallyOn('feishu'))
   const [slackEnabled, setSlackEnabled] = useState(() => channelInitiallyOn('slack'))
   const [discordEnabled, setDiscordEnabled] = useState(() => channelInitiallyOn('discord'))
+  const [telegramEnabled, setTelegramEnabled] = useState(() => channelInitiallyOn('telegram'))
   const [qqOfficialEnabled, setQQOfficialEnabled] = useState(() =>
     channelInitiallyOn('qq_official'),
   )
@@ -483,6 +486,20 @@ export function PublishTab({
   )
   const [discordDmReplyMode, setDiscordDmReplyMode] = useState<'reply' | 'none'>('reply')
   const [discordSendArtifactsAsFile, setDiscordSendArtifactsAsFile] = useState(true)
+
+  // Telegram config state
+  const [telegramBotToken, setTelegramBotToken] = useState(
+    () => agent?.telegramConfig?.botToken ?? '',
+  )
+  const [telegramGroupTriggerOnMention, setTelegramGroupTriggerOnMention] = useState(true)
+  const [telegramGroupTriggerOnNewMessage, setTelegramGroupTriggerOnNewMessage] = useState(false)
+  const [telegramGroupReplyMode, setTelegramGroupReplyMode] = useState<'reply' | 'new' | 'none'>(
+    'reply',
+  )
+  const [telegramPrivateReplyMode, setTelegramPrivateReplyMode] = useState<
+    'reply' | 'new' | 'none'
+  >('reply')
+  const [telegramSendArtifactsAsFile, setTelegramSendArtifactsAsFile] = useState(true)
 
   // QQ Official WebSocket Gateway config state.
   const [qqOfficialAppId, setQQOfficialAppId] = useState(() => agent?.qqOfficialConfig?.appId ?? '')
@@ -661,6 +678,7 @@ export function PublishTab({
     feishu: !!agent?.feishuConfig,
     slack: !!agent?.slackConfig,
     discord: !!agent?.discordConfig,
+    telegram: !!agent?.telegramConfig,
     qq_official: !!agent?.qqOfficialConfig,
   }
 
@@ -671,6 +689,7 @@ export function PublishTab({
     persistedChannelConfigured.feishu ||
     persistedChannelConfigured.slack ||
     persistedChannelConfigured.discord ||
+    persistedChannelConfigured.telegram ||
     persistedChannelConfigured.qq_official ||
     !!agent?.publishChannels?.some(isConnectedChannel)
   const {
@@ -778,6 +797,7 @@ export function PublishTab({
       setFeishuEnabled(channels.includes('feishu'))
       setSlackEnabled(channels.includes('slack'))
       setDiscordEnabled(channels.includes('discord'))
+      setTelegramEnabled(channels.includes('telegram'))
       setQQOfficialEnabled(channels.includes('qq_official'))
       setScheduleEnabled(channels.includes('schedule'))
       setScheduleRunAsOwner(Boolean(agent.scheduleRunAsOwner))
@@ -869,6 +889,16 @@ export function PublishTab({
         setDiscordSendArtifactsAsFile(savedDiscord.sendArtifactsAsFile ?? true)
       }
 
+      const savedTelegram = agent.telegramConfig
+      if (savedTelegram) {
+        setTelegramBotToken(savedTelegram.botToken)
+        setTelegramGroupTriggerOnMention(savedTelegram.groupTriggerOnMention)
+        setTelegramGroupTriggerOnNewMessage(savedTelegram.groupTriggerOnNewMessage)
+        setTelegramGroupReplyMode(savedTelegram.groupReplyMode)
+        setTelegramPrivateReplyMode(savedTelegram.privateReplyMode)
+        setTelegramSendArtifactsAsFile(savedTelegram.sendArtifactsAsFile ?? true)
+      }
+
       const savedQQOfficial = agent.qqOfficialConfig
       setQQOfficialAppId(savedQQOfficial?.appId ?? '')
       setQQOfficialAppSecret(savedQQOfficial?.appSecret ?? '')
@@ -920,6 +950,7 @@ export function PublishTab({
     feishuEnabled: (v) => setFeishuEnabled(v as boolean),
     slackEnabled: (v) => setSlackEnabled(v as boolean),
     discordEnabled: (v) => setDiscordEnabled(v as boolean),
+    telegramEnabled: (v) => setTelegramEnabled(v as boolean),
     qqOfficialEnabled: (v) => setQQOfficialEnabled(v as boolean),
     chatAppEnabled: (v) => setChatAppEnabled(v as boolean),
     chatAppDisplayName: (v) => setChatAppDisplayName(v as string),
@@ -969,6 +1000,11 @@ export function PublishTab({
     discordGuildTriggerOnNewMessage: (v) => setDiscordGuildTriggerOnNewMessage(v as boolean),
     discordGuildReplyMode: (v) => setDiscordGuildReplyMode(v as 'reply' | 'new' | 'none'),
     discordDmReplyMode: (v) => setDiscordDmReplyMode(v as 'reply' | 'none'),
+    telegramGroupTriggerOnMention: (v) => setTelegramGroupTriggerOnMention(v as boolean),
+    telegramGroupTriggerOnNewMessage: (v) => setTelegramGroupTriggerOnNewMessage(v as boolean),
+    telegramGroupReplyMode: (v) => setTelegramGroupReplyMode(v as 'reply' | 'new' | 'none'),
+    telegramPrivateReplyMode: (v) => setTelegramPrivateReplyMode(v as 'reply' | 'new' | 'none'),
+    telegramSendArtifactsAsFile: (v) => setTelegramSendArtifactsAsFile(v as boolean),
     qqOfficialAppId: (v) => setQQOfficialAppId(v as string),
     qqGroupTriggerOnAt: (v) => setQQGroupTriggerOnAt(v as boolean),
     qqGroupReplyMode: (v) => setQQGroupReplyMode(v as 'reply' | 'new' | 'none'),
@@ -1008,6 +1044,7 @@ export function PublishTab({
     feishuEnabled,
     slackEnabled,
     discordEnabled,
+    telegramEnabled,
     qqOfficialEnabled,
     chatAppEnabled,
     chatAppDisplayName,
@@ -1055,6 +1092,11 @@ export function PublishTab({
     discordGuildTriggerOnNewMessage,
     discordGuildReplyMode,
     discordDmReplyMode,
+    telegramGroupTriggerOnMention,
+    telegramGroupTriggerOnNewMessage,
+    telegramGroupReplyMode,
+    telegramPrivateReplyMode,
+    telegramSendArtifactsAsFile,
     qqOfficialAppId,
     qqGroupTriggerOnAt,
     qqGroupReplyMode,
@@ -1123,6 +1165,7 @@ export function PublishTab({
     if (feishuEnabled) channels.push('feishu')
     if (slackEnabled) channels.push('slack')
     if (discordEnabled) channels.push('discord')
+    if (telegramEnabled) channels.push('telegram')
     if (qqOfficialEnabled) channels.push('qq_official')
     if (scheduleEnabled) channels.push('schedule')
     if (oauthEnabled) channels.push('oauth')
@@ -1202,6 +1245,15 @@ export function PublishTab({
     sendArtifactsAsFile: slackSendArtifactsAsFile,
   })
 
+  const buildTelegramConfig = (): TelegramPublishConfig => ({
+    botToken: telegramBotToken,
+    groupTriggerOnMention: telegramGroupTriggerOnMention,
+    groupTriggerOnNewMessage: telegramGroupTriggerOnNewMessage,
+    groupReplyMode: telegramGroupReplyMode,
+    privateReplyMode: telegramPrivateReplyMode,
+    sendArtifactsAsFile: telegramSendArtifactsAsFile,
+  })
+
   const buildDiscordConfig = (): DiscordPublishConfig => ({
     applicationId: discordApplicationId,
     botToken: discordBotToken,
@@ -1239,6 +1291,8 @@ export function PublishTab({
         return buildSlackConfig()
       case 'discord':
         return buildDiscordConfig()
+      case 'telegram':
+        return buildTelegramConfig()
       case 'qq_official':
         return buildQQOfficialConfig()
       case 'chat_app':
@@ -1270,6 +1324,7 @@ export function PublishTab({
     feishu: feishuEnabled,
     slack: slackEnabled,
     discord: discordEnabled,
+    telegram: telegramEnabled,
     qq_official: qqOfficialEnabled,
     schedule: scheduleEnabled,
     chat_app: chatAppEnabled,
@@ -1286,6 +1341,7 @@ export function PublishTab({
     slackBotToken,
     discordApplicationId,
     discordBotToken,
+    telegramBotToken,
     qqOfficialAppId,
     qqOfficialAppSecret,
     oauthAccessMode,
@@ -1313,6 +1369,8 @@ export function PublishTab({
         return setSlackEnabled(value)
       case 'discord':
         return setDiscordEnabled(value)
+      case 'telegram':
+        return setTelegramEnabled(value)
       case 'qq_official':
         return setQQOfficialEnabled(value)
       case 'schedule':
@@ -1405,6 +1463,9 @@ export function PublishTab({
     const discordConfig: DiscordPublishConfig | undefined = discordEnabled
       ? buildDiscordConfig()
       : undefined
+    const telegramConfig: TelegramPublishConfig | undefined = telegramEnabled
+      ? buildTelegramConfig()
+      : undefined
     const qqOfficialConfig: QQOfficialPublishConfig | undefined = qqOfficialEnabled
       ? buildQQOfficialConfig()
       : undefined
@@ -1442,6 +1503,7 @@ export function PublishTab({
       feishuConfig,
       slackConfig,
       discordConfig,
+      telegramConfig,
       qqOfficialConfig,
       chatAppConfig,
       scheduleConfig,
@@ -1897,6 +1959,26 @@ export function PublishTab({
           onDmReplyModeChange={setDiscordDmReplyMode}
           sendArtifactsAsFile={discordSendArtifactsAsFile}
           onSendArtifactsAsFileChange={setDiscordSendArtifactsAsFile}
+        />
+      ),
+    },
+    {
+      key: 'telegram',
+      label: 'Telegram',
+      children: (
+        <TelegramChannelSection
+          botToken={telegramBotToken}
+          onBotTokenChange={setTelegramBotToken}
+          groupTriggerOnMention={telegramGroupTriggerOnMention}
+          onGroupTriggerOnMentionChange={setTelegramGroupTriggerOnMention}
+          groupTriggerOnNewMessage={telegramGroupTriggerOnNewMessage}
+          onGroupTriggerOnNewMessageChange={setTelegramGroupTriggerOnNewMessage}
+          groupReplyMode={telegramGroupReplyMode}
+          onGroupReplyModeChange={setTelegramGroupReplyMode}
+          privateReplyMode={telegramPrivateReplyMode}
+          onPrivateReplyModeChange={setTelegramPrivateReplyMode}
+          sendArtifactsAsFile={telegramSendArtifactsAsFile}
+          onSendArtifactsAsFileChange={setTelegramSendArtifactsAsFile}
         />
       ),
     },

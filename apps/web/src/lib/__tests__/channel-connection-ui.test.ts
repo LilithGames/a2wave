@@ -10,11 +10,12 @@ const emptyMaps: ChatConnectionMaps = {
   feishu: new Map(),
   slack: new Map(),
   discord: new Map(),
+  telegram: new Map(),
   qq_official: new Map(),
 }
 
 function maps(
-  channel: 'feishu' | 'slack' | 'discord' | 'qq_official',
+  channel: 'feishu' | 'slack' | 'discord' | 'telegram' | 'qq_official',
   entries: [string, boolean][],
 ) {
   return { ...emptyMaps, [channel]: new Map(entries) }
@@ -124,6 +125,7 @@ describe('resolveChannelConnectionUi', () => {
       feishu: new Map([['a1', true]]),
       slack: new Map(),
       discord: new Map(),
+      telegram: new Map(),
       qq_official: new Map(),
     }
     expect(resolve({ channel: 'slack', connections })).toBe('absent')

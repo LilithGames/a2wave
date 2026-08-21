@@ -20,7 +20,7 @@ ACL.
     are only offered resources the *owner* can execute.
 - **Run** — `runs.userId` records *who triggered it*, and channels without a
   logged-in user disagree: Feishu / gateway API key / OAuth leave it NULL;
-  A2A / schedule / Slack / Discord stamp the agent owner. Read access therefore
+  A2A / schedule / Slack / Discord / Telegram stamp the agent owner. Read access therefore
   comes from `getRunReadFilter`: admin sees all; everyone else sees runs of agents
   they can read **plus** runs they triggered. **Mutations are stricter than
   reads** — `cancel` / `execute` / `rerun` need write on the run

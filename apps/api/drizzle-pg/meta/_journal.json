@@ -120,6 +120,13 @@
       "when": 1787209260592,
       "tag": "0016_burly_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787298932153,
+      "tag": "0017_telegram_channel",
+      "breakpoints": true
     }
   ]
 }

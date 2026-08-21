@@ -70,6 +70,13 @@ export function maskAgentSecrets<T extends AgentRow | undefined>(
       discordConfig: { ...discord, botToken: MASKED_SECRET },
     }
   }
+  const telegram = masked.telegramConfig
+  if (!opts?.revealNativeChatSecrets && telegram?.botToken) {
+    masked = {
+      ...masked,
+      telegramConfig: { ...telegram, botToken: MASKED_SECRET },
+    }
+  }
   const qqOfficial = masked.qqOfficialConfig
   if (!opts?.revealNativeChatSecrets && qqOfficial?.appSecret) {
     masked = {

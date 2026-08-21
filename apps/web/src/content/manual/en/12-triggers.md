@@ -1,6 +1,6 @@
 # Trigger Methods
 
-a2wave currently provides **eleven publish channels**: REST API, OAuth, A2A protocol, Feishu, Slack, Discord, QQ Official Bot, scheduled trigger, chat page, GitLab trigger, and GitHub trigger. A single Agent can enable multiple at once.
+a2wave currently provides **twelve publish channels**: REST API, OAuth, A2A protocol, Feishu, Slack, Discord, Telegram, QQ Official Bot, scheduled trigger, chat page, GitLab trigger, and GitHub trigger. A single Agent can enable multiple at once.
 
 ## Managing channels on the Channels tab
 
@@ -22,7 +22,7 @@ Once configured, click **Publish / Update Channels** at the bottom of the page t
 
 ### Connection status for chat channels
 
-Feishu, Slack, Discord, and QQ Official Bot each hold their own **long connection** to the platform, so their cards show a live status labelled with the protocol each one speaks: **WebSocket**, **Socket Mode**, **Gateway**, and **Official WebSocket**, respectively.
+Feishu, Slack, Discord, and QQ Official Bot each hold their own **long connection** to the platform, so their cards show a live status labelled with the protocol each one speaks: **WebSocket**, **Socket Mode**, **Gateway**, and **Official WebSocket**, respectively. Telegram instead keeps an outbound **Long Polling** loop, and its card reports that loop's live state the same way.
 
 | Status | Meaning |
 |--------|---------|
@@ -244,7 +244,25 @@ Discord Attachments are downloaded under the platform-wide attachment policy and
 
 ---
 
-## 5. QQ Official Bot
+## 5. Telegram
+
+Open the Telegram card's **Configure** dialog on the Channels tab and provide the **Bot Token** issued by [@BotFather](https://t.me/BotFather). There is no separate application id — the bot identity is the numeric prefix of the token itself.
+
+a2wave consumes Telegram updates through **long polling** (`getUpdates`), so the deployment needs no public HTTPS ingress and no callback URL. Saving the config registers the bot and clears any webhook previously set on it, because Telegram allows either a webhook or long polling, never both.
+
+Group messages trigger on **@mention or a reply to the bot** by default, with an option to trigger on every new group message. Replies can reference the original message, send a new message, or be disabled. Private chats always trigger. Agent sessions are maintained per user within a group, and supergroup forum topics are isolated by their topic id.
+
+> [!IMPORTANT]
+> “Trigger on every new group message” requires **Group Privacy to be disabled**: send `/setprivacy` to @BotFather and choose *Disable*. While Group Privacy is on, Telegram only delivers messages that @mention or reply to the bot, so the option has no effect. Messages sent by bots do not trigger the Agent, preventing reply loops.
+
+> [!WARNING]
+> Within one API process, a Telegram bot can be held by only one Agent's polling loop. Use separate bots for multiple Agents.
+
+Telegram documents, photos, videos, audio, and voice messages are downloaded under the platform-wide attachment policy and provided to the Agent; an attachment-only message can also trigger a run. For a photo, only the highest-resolution version is used. Agent artifacts are uploaded directly to the original conversation as documents by default. Successful uploads do not repeat the download section; an a2wave download link is sent only as a fallback when an upload fails. Execution-sandbox links in Agent output are not exposed to external chat channels. Direct file delivery can be disabled in the Telegram channel settings. Replies longer than the Telegram message limit are split across several messages. Inline keyboards and buttons are not sent.
+
+---
+
+## 6. QQ Official Bot
 
 This channel uses Tencent QQ's **official WebSocket Gateway only**. It does not use NapCat or OneBot and requires no public callback URL.
 
@@ -266,7 +284,7 @@ Replies may reference the original message, send a new message, or be disabled. 
 
 ---
 
-## 6. Chat page
+## 7. Chat page
 
 Publish an Agent as a shareable chat page: its profile, status and creator on the left, a full conversation window on the right. Good for handing an Agent straight to a colleague without teaching them the console first.
 
@@ -300,7 +318,7 @@ Every conversation is written to run history with the source marked `Chat Page`,
 
 ---
 
-## 7. A2A Protocol
+## 8. A2A Protocol
 
 A2A (Agent-to-Agent) lets external Agent systems discover and invoke this platform's Agents, and lets this platform's Agents route to standards-compliant remote A2A services. The platform supports **A2A 1.0 JSON-RPC** and remains compatible with **A2A 0.3 JSON-RPC**.
 
@@ -370,7 +388,7 @@ When the parent Run is canceled or reaches its timeout, the router sends `Cancel
 
 ---
 
-## 8. Scheduled trigger
+## 9. Scheduled trigger
 
 Have an Agent automatically create and execute Runs at specified times on a Cron schedule (e.g. daily code review, weekly reports, inspections). Open the Schedule Trigger card's **Configure** dialog on the Channels tab:
 
@@ -394,7 +412,7 @@ Notes: minute-level precision; each Agent can be configured with multiple schedu
 
 ## Attachments (images and files)
 
-When messaging an Agent you can include images and documents. Feishu, Slack, Discord, and QQ Official Bot automatically recognize images/files in a message; API, OAuth, and the Agent test UI use a **two-step upload**, while A2A uses protocol-native parts.
+When messaging an Agent you can include images and documents. Feishu, Slack, Discord, Telegram, and QQ Official Bot automatically recognize images/files in a message; API, OAuth, and the Agent test UI use a **two-step upload**, while A2A uses protocol-native parts.
 
 **Two-step upload (API / OAuth / test UI)**
 
@@ -447,6 +465,7 @@ curl -X POST ".../api/gateway/<agentId>/invoke" -H "Authorization: Bearer <key>"
 | Feishu not receiving messages | App long connection is occupied | Give each Agent its own separate Feishu app; check diagnostics |
 | Slack not receiving messages | Socket Mode, event subscriptions, or scopes are missing | Check the `xapp`/`xoxb` tokens, events, and scopes; use one app per Agent |
 | Discord not receiving messages | Message Content Intent or bot permissions are missing | Check the intent, invite permissions, and Application ID; use one app per Agent |
+| Telegram not receiving group messages | Group Privacy is enabled, so Telegram withholds them | Send `/setprivacy` to @BotFather and disable it, or trigger by @mention / reply instead |
 | Schedule not triggering | schedule channel not included / cron wrong | Confirm the publish channel and cron expression |
 
 ## Related

@@ -1,6 +1,6 @@
 import { extname } from 'node:path'
-import type { AttachmentRef, DiscordConfig, SlackConfig } from '@a2wave/shared'
-import { discordConfigSchema, slackConfigSchema } from '@a2wave/shared'
+import type { AttachmentRef, DiscordConfig, SlackConfig, TelegramConfig } from '@a2wave/shared'
+import { discordConfigSchema, slackConfigSchema, telegramConfigSchema } from '@a2wave/shared'
 import { WebClient } from '@slack/web-api'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
@@ -28,6 +28,18 @@ export type NativeChatAttachment =
       size?: number
     }
   | {
+      /**
+       * Telegram exposes a `file_id` that stays valid for the bot, and resolving
+       * it to bytes needs a `getFile` hop — so only the id is persisted, never the
+       * token-bearing download URL.
+       */
+      source: 'telegram'
+      remoteId: string
+      name: string
+      mimeType?: string
+      size?: number
+    }
+  | {
       source: 'qq_official'
       remoteUrl: string
       name: string
@@ -40,6 +52,7 @@ export type PersistedNativeChatAttachment = Exclude<NativeChatAttachment, { sour
 const FETCH_TIMEOUT_MS = 15_000
 const SLACK_FILE_HOSTS = new Set(['files.slack.com'])
 const DISCORD_FILE_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net'])
+export const TELEGRAM_DEFAULT_API_BASE = 'https://api.telegram.org'
 
 function isAllowedExtension(name: string, allowed: Set<string>): boolean {
   const extension = extname(name).replace(/^\./, '').toLowerCase()
@@ -196,6 +209,83 @@ async function resolveDiscordAttachment(
   }
 }
 
+async function resolveTelegramAttachment(
+  descriptor: Extract<NativeChatAttachment, { source: 'telegram' }>,
+  config: TelegramConfig,
+  maxBytes: number,
+): Promise<{ bytes: Buffer; name: string; mimeType: string }> {
+  const normalized = telegramConfigSchema.parse(config)
+  const apiBase = (normalized.apiBaseUrl ?? TELEGRAM_DEFAULT_API_BASE).replace(/\/+$/, '')
+  const validateHop = (hop: string): void => {
+    const parsed = assertSafeStrictUrl(hop)
+    if (parsed.protocol !== 'https:' && !apiBase.startsWith('http://')) {
+      throw new Error('Telegram file URL must use HTTPS')
+    }
+    if (parsed.origin !== new URL(apiBase).origin) {
+      throw new Error('Telegram file URL is not on the configured Bot API host')
+    }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  let filePath: string
+  let remoteSize: number | undefined
+  try {
+    const getFileUrl = `${apiBase}/bot${normalized.botToken}/getFile?file_id=${encodeURIComponent(
+      descriptor.remoteId,
+    )}`
+    const response = await safeFetch(getFileUrl, {
+      signal: controller.signal,
+      maxRedirects: 0,
+      validateHop,
+    })
+    if (!response.ok) throw new Error(`Telegram getFile returned HTTP ${response.status}`)
+    const payload = (await response.json()) as {
+      ok?: boolean
+      result?: { file_path?: string; file_size?: number }
+    }
+    if (!payload.ok || !payload.result?.file_path) {
+      throw new Error('Telegram getFile did not return a file path')
+    }
+    filePath = payload.result.file_path
+    remoteSize = payload.result.file_size
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const size = remoteSize ?? descriptor.size
+  if (size != null && size > maxBytes) {
+    throw new Error('Telegram attachment exceeds configured size limit')
+  }
+
+  const downloadController = new AbortController()
+  const downloadTimer = setTimeout(() => downloadController.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const downloadUrl = `${apiBase}/file/bot${normalized.botToken}/${filePath
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`
+    const response = await safeFetch(downloadUrl, {
+      signal: downloadController.signal,
+      maxRedirects: 0,
+      validateHop,
+    })
+    if (!response.ok) {
+      throw new Error(`Telegram attachment download returned HTTP ${response.status}`)
+    }
+    return {
+      bytes: await readBodyWithLimit(response, maxBytes),
+      name: descriptor.name,
+      mimeType:
+        descriptor.mimeType ??
+        response.headers.get('content-type')?.split(';')[0]?.trim() ??
+        'application/octet-stream',
+    }
+  } finally {
+    clearTimeout(downloadTimer)
+  }
+}
+
 async function resolveQQOfficialAttachment(
   descriptor: Extract<NativeChatAttachment, { source: 'qq_official' }>,
   maxBytes: number,
@@ -243,7 +333,11 @@ export async function resolveNativeChatAttachments(
   const capped = descriptors.slice(0, (await settings).maxFilesPerRequest)
   const agent = (
     await db
-      .select({ slackConfig: agents.slackConfig, discordConfig: agents.discordConfig })
+      .select({
+        slackConfig: agents.slackConfig,
+        discordConfig: agents.discordConfig,
+        telegramConfig: agents.telegramConfig,
+      })
       .from(agents)
       .where(eq(agents.id, agentId))
       .limit(1)
@@ -274,7 +368,13 @@ export async function resolveNativeChatAttachments(
                 agent.discordConfig as DiscordConfig,
                 (await settings).maxFileSizeBytes,
               )
-            : await resolveQQOfficialAttachment(descriptor, (await settings).maxFileSizeBytes)
+            : descriptor.source === 'telegram'
+              ? await resolveTelegramAttachment(
+                  descriptor,
+                  agent.telegramConfig as TelegramConfig,
+                  (await settings).maxFileSizeBytes,
+                )
+              : await resolveQQOfficialAttachment(descriptor, (await settings).maxFileSizeBytes)
       if (!isAllowedExtension(resolved.name, (await settings).allowedExtensions)) {
         throw new Error('Resolved attachment extension is not allowed')
       }

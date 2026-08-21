@@ -116,7 +116,7 @@ Treat them as existing implementation debt, not as precedent for a new channel o
 authorization to expand anonymous access. Retiring them requires a separate,
 migration-compatible product and code change.
 
-Current: API / OAuth / A2A / Feishu / Slack / Discord / schedule / chat page / GitLab
+Current: API / OAuth / A2A / Feishu / Slack / Discord / Telegram / schedule / chat page / GitLab
 trigger (`glab`) / GitHub trigger (`gh`).
 
 Recorded boundary decisions are retained because they explain why the current
@@ -124,7 +124,7 @@ channels fit the product rather than merely listing that they exist:
 
 | Channel | Decision |
 | :--- | :--- |
-| Slack / Discord | Approved by the maintainers as native authenticated chat channels. |
+| Slack / Discord / Telegram | Approved by the maintainers as native authenticated chat channels. |
 | Chat page (`chat_app`) | Approved as a first-party, session-authenticated surface; every turn creates a Run with `trigger_source = 'chat_app'`. |
 | GitLab / GitHub triggers | Approved as inbound polling triggers. They expose no new internet endpoint, keep forge credentials in the vendor CLI, attribute fired Runs to the Agent owner, and audit them through `agent.git_trigger`. |
 
@@ -142,7 +142,7 @@ features or reviewing requirements.
 
 | Principle | Description |
 | :--- | :--- |
-| **One process, one App, one connection** | Within a single API process, a given Feishu / Slack / Discord App ID may hold only **one** active connection. |
+| **One process, one App, one connection** | Within a single API process, a given Feishu / Slack / Discord App ID (or Telegram bot id) may hold only **one** active connection. |
 | **No connection sharing** | Each connected Agent uses its own provider client. Never promise "one physical connection multiplexed across Agents" as a product capability — the semantics are **slot mutual exclusion**. |
 | **First come, first served** | With several published Agents on the same App ID, the first to connect holds the slot; the rest must not connect, and **must not preempt the incumbent**. The slot frees only when the incumbent unpublishes or stops. |
 | **One bot per Agent (recommended)** | Agents that must connect independently to the same platform each need their own provider app and credentials. |
@@ -153,7 +153,7 @@ only**. Requirements that contradict these principles — Agents sharing one pro
 app while both receive messages, or a later starter preempting the incumbent — are not
 included in the product plan.
 
-Feishu files, Slack Files, and Discord Attachments may be downloaded into the Run's
+Feishu files, Slack Files, Discord Attachments, and Telegram files may be downloaded into the Run's
 local attachment context. Provider URLs are restricted to the platform allowlists;
 the shared attachment policy enforces size and extension limits, and temporary files
 are cleaned up after processing.

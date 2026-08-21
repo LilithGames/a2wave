@@ -4,6 +4,7 @@ import {
   type RunChannelContextDiscord,
   type RunChannelContextQQOfficial,
   type RunChannelContextSlack,
+  type RunChannelContextTelegram,
 } from '@a2wave/shared'
 /**
  * Run lifecycle helpers — centralize the repeated pattern of:
@@ -336,11 +337,13 @@ function sendNativeChatReplyByContext(
   const channel = context?.channel as
     | RunChannelContextSlack
     | RunChannelContextDiscord
+    | RunChannelContextTelegram
     | RunChannelContextQQOfficial
     | undefined
   if (
     channel?.channel_type !== 'slack' &&
     channel?.channel_type !== 'discord' &&
+    channel?.channel_type !== 'telegram' &&
     channel?.channel_type !== 'qq_official'
   )
     return
@@ -354,14 +357,23 @@ function sendNativeChatReplyByContext(
         ? import('./discord-service.js').then(({ discordConnectionManager }) =>
             discordConnectionManager.sendRunResultByContext(agentId, channel, replyText, artifacts),
           )
-        : import('./qq-official-service.js').then(({ qqOfficialConnectionManager }) =>
-            qqOfficialConnectionManager.sendRunResultByContext(
-              agentId,
-              channel,
-              replyText,
-              artifacts,
-            ),
-          )
+        : channel.channel_type === 'telegram'
+          ? import('./telegram-service.js').then(({ telegramConnectionManager }) =>
+              telegramConnectionManager.sendRunResultByContext(
+                agentId,
+                channel,
+                replyText,
+                artifacts,
+              ),
+            )
+          : import('./qq-official-service.js').then(({ qqOfficialConnectionManager }) =>
+              qqOfficialConnectionManager.sendRunResultByContext(
+                agentId,
+                channel,
+                replyText,
+                artifacts,
+              ),
+            )
   void send.catch((err) =>
     logger.warn(
       { err, runId, agentId, channel: channel.channel_type },

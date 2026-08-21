@@ -3,6 +3,7 @@ import type {
   RunChannelContextDiscord,
   RunChannelContextQQOfficial,
   RunChannelContextSlack,
+  RunChannelContextTelegram,
 } from '@a2wave/shared'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
@@ -26,7 +27,11 @@ export interface ReserveNativeChatRunInput {
   eventId: string
   conversationId: string
   intent: string
-  channel: RunChannelContextSlack | RunChannelContextDiscord | RunChannelContextQQOfficial
+  channel:
+    | RunChannelContextSlack
+    | RunChannelContextDiscord
+    | RunChannelContextTelegram
+    | RunChannelContextQQOfficial
   displayName?: string | null
   /** Force this durable turn to start a new provider conversation. */
   resetSession?: boolean

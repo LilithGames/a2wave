@@ -923,7 +923,8 @@
     "tokenCoverageNote": "总量 = 输入 + 输出 + 推理 + 缓存读取 + 缓存写入。Claude Code、Codex、OpenCode、Pi 提供官方 Token 字段。Cursor、Qoder、Trae、Kimi Code 可能不返回 Token。显示 0 可能表示未上报，并不代表实际消耗为零。",
     "tokenCoverageDetails": "查看范围说明",
     "sourceGlab": "GitLab 触发",
-    "sourceGh": "GitHub 触发"
+    "sourceGh": "GitHub 触发",
+    "sourceTelegram": "Telegram"
   },
   "settings": {
     "title": "设置",
@@ -1863,7 +1864,25 @@
     "gitTriggerEventRequired": "请至少选择一个触发事件",
     "gitTriggerIntentRequired": "请填写触发提示词",
     "gitTriggerIntervalInvalid": "轮询周期需在 30–600 秒之间",
-    "oauthEnvIncompleteSettings": "当前 OIDC 渠道配置不完整（受众白名单为空）。请到「设置 → 企业登录」补全，改环境变量不会生效。"
+    "oauthEnvIncompleteSettings": "当前 OIDC 渠道配置不完整（受众白名单为空）。请到「设置 → 企业登录」补全，改环境变量不会生效。",
+    "telegramChannelEnabled": "启用 Telegram 渠道",
+    "telegramChannelDesc": "通过 Telegram Bot API 接收消息并回复。",
+    "telegramSetupTitle": "Telegram 机器人设置",
+    "telegramSetupHelp": "在 @BotFather 创建 Bot 并填入 Token。若需群内所有消息都触发，需向 @BotFather 发送 /setprivacy 关闭 Group Privacy；否则 Bot 只能收到 @ 它或回复它的消息。",
+    "telegramBotToken": "Bot Token",
+    "telegramBotTokenPlaceholder": "输入 Telegram Bot Token（123456:ABC-DEF...）",
+    "telegramGroupSection": "群组消息",
+    "telegramPrivateSection": "私聊",
+    "telegramTriggerOnMention": "被 @ 或被回复时触发",
+    "telegramTriggerOnNewMessage": "群内所有新消息均触发",
+    "telegramTriggerOnNewMessageHint": "需通过 @BotFather 关闭 Group Privacy，否则 Telegram 根本不会下发这些消息；仅处理人工消息，Bot 消息会被忽略以避免循环。",
+    "telegramReply": "回复原消息",
+    "telegramConfigRequired": "启用 Telegram 时必须填写 Bot Token。",
+    "telegramSendArtifactsAsFileHelp": "开启后以文件形式直接上传产物到 Telegram。关闭时仅发送 a2wave 下载链接。",
+    "channelTelegram": "Telegram",
+    "cardDescTelegram": "在 Telegram 群组或私聊中与 Agent 对话。",
+    "transportTelegramPolling": "长轮询",
+    "transportTelegramPollingHint": "Telegram Bot API 长轮询由本实例主动发起，无需公网回调地址。"
   },
   "agentRoute": {
     "tabTitle": "路由",

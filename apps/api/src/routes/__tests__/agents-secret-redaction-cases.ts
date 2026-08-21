@@ -59,7 +59,7 @@ export function registerAgentSecretRedactionTests({
   })
 
   describe('maskAgentSecrets — native chat token redaction', () => {
-    it('masks Slack and Discord tokens outside the editable detail response', async () => {
+    it('masks Slack, Discord and Telegram tokens outside the editable detail response', async () => {
       const { maskAgentSecrets } = await import('../agents.js')
       const agent = {
         ...SAMPLE_AGENT,
@@ -69,6 +69,7 @@ export function registerAgentSecretRedactionTests({
           botToken: 'xoxb-secret',
         },
         discordConfig: { applicationId: 'D123', botToken: 'discord-secret' },
+        telegramConfig: { botToken: 'telegram-secret' },
       }
 
       const typedAgent = agent as unknown as Exclude<
@@ -79,10 +80,12 @@ export function registerAgentSecretRedactionTests({
       expect(masked.slackConfig?.appToken).toBe('********')
       expect(masked.slackConfig?.botToken).toBe('********')
       expect(masked.discordConfig?.botToken).toBe('********')
+      expect(masked.telegramConfig?.botToken).toBe('********')
 
       const revealed = maskAgentSecrets(typedAgent, { revealNativeChatSecrets: true })
       expect(revealed.slackConfig?.appToken).toBe('xapp-secret')
       expect(revealed.discordConfig?.botToken).toBe('discord-secret')
+      expect(revealed.telegramConfig?.botToken).toBe('telegram-secret')
     })
   })
 

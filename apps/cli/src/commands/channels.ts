@@ -14,6 +14,7 @@ const CONFIGURABLE_CHANNELS = [
   'feishu',
   'slack',
   'discord',
+  'telegram',
   'chat_app',
   'schedule',
   'glab',

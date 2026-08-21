@@ -1,6 +1,6 @@
 # 触发方式
 
-a2wave 当前提供 **十一种发布渠道**：REST API、OAuth 授权、A2A 协议、飞书、Slack、Discord、QQ 官方机器人、定时触发、对话网页、GitLab 触发、GitHub 触发。一个 Agent 可同时启用多种。
+a2wave 当前提供 **十二种发布渠道**：REST API、OAuth 授权、A2A 协议、飞书、Slack、Discord、Telegram、QQ 官方机器人、定时触发、对话网页、GitLab 触发、GitHub 触发。一个 Agent 可同时启用多种。
 
 ## 在「渠道」页管理渠道
 
@@ -22,7 +22,7 @@ a2wave 当前提供 **十一种发布渠道**：REST API、OAuth 授权、A2A �
 
 ### 即时通讯渠道的连接状态
 
-飞书、Slack、Discord、QQ 官方机器人各自与平台维持一条**长连接**，因此它们的卡片上会显示实时连接状态，标出各自的协议：飞书是 **WebSocket**、Slack 是 **Socket Mode**、Discord 是 **Gateway**、QQ 是 **官方 WebSocket**。
+飞书、Slack、Discord、QQ 官方机器人各自与平台维持一条**长连接**，因此它们的卡片上会显示实时连接状态，标出各自的协议：飞书是 **WebSocket**、Slack 是 **Socket Mode**、Discord 是 **Gateway**、QQ 是 **官方 WebSocket**。Telegram 则维持一条出站的**长轮询**循环，其卡片同样以这种方式展示该循环的实时状态。
 
 | 状态 | 含义 |
 |------|------|
@@ -238,7 +238,25 @@ Discord Attachments 会按平台统一附件策略下载并交给 Agent；仅发
 
 ---
 
-## 5. QQ 官方机器人
+## 5. Telegram
+
+在「渠道」页打开 Telegram 卡片的**配置**弹窗，填入 [@BotFather](https://t.me/BotFather) 签发的 **Bot Token**。Telegram 没有独立的 Application ID——Bot 身份就是 Token 冒号前的那串数字。
+
+a2wave 通过**长轮询**（`getUpdates`）拉取 Telegram 更新，因此部署侧**无需公网 HTTPS 入口，也不需要回调地址**。保存配置时会注册该 Bot 并清除它此前设置过的 webhook——Telegram 规定 webhook 与长轮询只能二选一。
+
+群组消息默认在**被 @ 或被回复**时触发，也可选择群内所有新消息都触发。回复方式可选择回复原消息、发送新消息或不回复。私聊始终触发。群内按用户维护各自的 Agent 会话；超级群的话题（Forum Topic）按话题 ID 相互隔离。
+
+> [!IMPORTANT]
+> 「群内所有新消息均触发」要求**关闭 Group Privacy**：向 @BotFather 发送 `/setprivacy` 并选择 *Disable*。Group Privacy 开启时，Telegram 只会下发 @ 机器人或回复机器人的消息，该选项不会生效。Bot 发出的消息不会触发 Agent，以避免回复循环。
+
+> [!WARNING]
+> 在同一个 API 进程内，一个 Telegram Bot 只能被一个 Agent 的轮询循环持有。多个 Agent 请各自使用独立的 Bot。
+
+Telegram 的文档、图片、视频、音频与语音消息会按平台附件策略下载并提供给 Agent；仅含附件、没有文字的消息同样可以触发运行。图片只取分辨率最高的那一档。Agent 产物默认以文件形式直接上传回原会话；上传成功时不再附下载区块，仅在上传失败时回退发送 a2wave 下载链接。Agent 输出中的执行沙箱链接不会外发到聊天渠道。可在 Telegram 渠道设置中关闭直接发送文件。超过 Telegram 单条消息长度上限的回复会自动拆分成多条发送。不发送 Inline Keyboard 与按钮。
+
+---
+
+## 6. QQ 官方机器人
 
 本渠道只接入腾讯 QQ 的**官方 WebSocket Gateway**，不使用 NapCat、OneBot，也不要求公网回调地址。
 
@@ -260,7 +278,7 @@ QQ 单聊按“机器人 + 用户”维护会话。距离上一条用户消息�
 
 ---
 
-## 6. 对话网页
+## 7. 对话网页
 
 把 Agent 发布成一个可分享的对话页面：左侧展示 Agent 的介绍、状态与创建者，右侧是完整的对话窗口。适合把一个 Agent 直接交给同事使用，不用教他们怎么用控制台。
 
@@ -294,7 +312,7 @@ https://<你的域名>/agents/<agentId>/chat_app
 
 ---
 
-## 7. A2A 协议
+## 8. A2A 协议
 
 A2A（Agent-to-Agent）让外部 Agent 系统能发现并调用本平台 Agent，也让本平台 Agent 路由到符合标准的远程 A2A 服务。当前支持 **A2A 1.0 JSON-RPC**，并兼容 **A2A 0.3 JSON-RPC**。
 
@@ -364,7 +382,7 @@ A2A 路由不再附加固定 5 分钟执行截止。有效执行时长继承**�
 
 ---
 
-## 8. 定时触发
+## 9. 定时触发
 
 让 Agent 按 Cron 在指定时间自动创建并执行 Run（如每日代码审查、周报、巡检）。在「渠道」页的「定时触发」卡片点「配置」：
 
@@ -386,7 +404,7 @@ A2A 路由不再附加固定 5 分钟执行截止。有效执行时长继承**�
 
 ---
 
-## 9. Git 仓库触发（GitLab / GitHub）
+## 10. Git 仓库触发（GitLab / GitHub）
 
 让 Agent 在**仓库真正发生变化时**才运行——比如有人提了新 MR、往 MR 里推了新提交、或在 MR 下留了评论。
 
@@ -491,7 +509,7 @@ environment:
 
 ## 附件（图片与文件）
 
-给 Agent 发消息时可以带图片和文档。飞书、Slack、Discord 与 QQ 官方机器人渠道会自动识别消息里的图片/文件；API、OAuth 与 Agent 测试界面走**两步上传**，A2A 使用协议原生分片。
+给 Agent 发消息时可以带图片和文档。飞书、Slack、Discord、Telegram 与 QQ 官方机器人渠道会自动识别消息里的图片/文件；API、OAuth 与 Agent 测试界面走**两步上传**，A2A 使用协议原生分片。
 
 **两步上传（API / OAuth / 测试界面）**
 
@@ -544,6 +562,7 @@ curl -X POST ".../api/gateway/<agentId>/invoke" -H "Authorization: Bearer <key>"
 | 飞书收不到消息 | App 长连接被占用 | 多 Agent 各用独立飞书应用；看诊断 |
 | Slack 收不到消息 | Socket Mode、事件订阅或权限未开启 | 检查 `xapp`/`xoxb` token、事件与 scopes；每个 Agent 使用独立 App |
 | Discord 收不到消息 | Message Content Intent 或 Bot 权限未开启 | 检查 Intent、邀请权限与 Application ID；每个 Agent 使用独立 App |
+| Telegram 收不到群消息 | Group Privacy 开启，Telegram 不下发 | 向 @BotFather 发送 `/setprivacy` 关闭；或改用 @ 机器人 / 回复机器人触发 |
 | 定时不触发 | 未包含 schedule 渠道 / cron 错 | 确认发布渠道与 cron 表达式 |
 
 ## 相关
