@@ -15,6 +15,7 @@ import { engineRegistry } from '../engine/index.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
+import { verifyAgentApiKey } from '../lib/agent-api-key-verify.js'
 import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../lib/agent-helpers.js'
 import {
   cleanupMaterializedRoot,
@@ -40,6 +41,7 @@ import {
 import { runWithLifecycle } from '../lib/run-launcher.js'
 import { persistRunTurn, recoverRunStartup, releaseEphemeralWorktree } from '../lib/run-startup.js'
 import {
+  type AuthenticatingApiKey,
   type GatewayCaller,
   normalizeAuthType,
   validateGatewayAuth,
@@ -80,6 +82,8 @@ function gatewayIdempotentResponse(c: Context, existing: IdempotentRun) {
 type GatewayVariables = {
   gatewayAgent: typeof agents.$inferSelect
   oauthCaller?: GatewayCaller
+  /** Set when an `agent_api_keys` row authenticated the request; names the trigger in run history. */
+  gatewayApiKey?: AuthenticatingApiKey
 }
 
 /** Extract client IP, look up agent, check publish status, and validate auth */
@@ -104,7 +108,9 @@ function requirePublishedAgent() {
       {
         publishIpWhitelist: (agent.publishIpWhitelist as string[]) || null,
         publishAuthType: agent.publishAuthType,
+        // Retained only for the dual-read window; cleared once every legacy key is migrated.
         endpointApiKey: agent.endpointApiKey,
+        verifyApiKey: (plaintext) => verifyAgentApiKey(agent.id, 'api', plaintext, { clientIp }),
       },
       { clientIp, authorizationHeader: c.req.header('Authorization') },
     )
@@ -117,6 +123,9 @@ function requirePublishedAgent() {
     }
     if (authResult.caller) {
       c.set('oauthCaller', authResult.caller)
+    }
+    if (authResult.apiKey) {
+      c.set('gatewayApiKey', authResult.apiKey)
     }
 
     c.set('gatewayAgent', agent)
@@ -230,10 +239,12 @@ app.post('/:agentId/invoke', async (c) => {
   // full rationale (audit-trail spoofing + Feishu DM-injection vector). Centralized
   // so every ingress endpoint shares one contract.
   const stepContext: Record<string, unknown> = stripReservedContextKeys(parsed.data.context)
+  const apiKey = c.get('gatewayApiKey')
   const channelResult = buildGatewayChannel(c, {
     channel: 'api',
     authType: normalizeAuthType(agent.publishAuthType),
     oauthCaller,
+    ...(apiKey ? { apiKey } : {}),
   })
   stepContext.channel = channelResult.ctx
 

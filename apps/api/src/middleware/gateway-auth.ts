@@ -2,8 +2,9 @@ import { timingSafeEqual } from 'node:crypto'
 import { normalizeOauthAllowedEmail } from '@a2wave/shared'
 import { GatewayAuthErrors } from '../lib/gateway-auth-errors.js'
 
-export { GatewayAuthErrors } from '../lib/gateway-auth-errors.js'
 export type { GatewayAuthErrorMessage } from '../lib/gateway-auth-errors.js'
+export { GatewayAuthErrors } from '../lib/gateway-auth-errors.js'
+
 import type { JwtUserInfo } from '../lib/jwt-auth.js'
 import { logger } from '../lib/logger.js'
 import {
@@ -17,7 +18,19 @@ import { isSsoAccountDisabled } from '../lib/user-status.js'
 export interface GatewayAuthAgent {
   publishIpWhitelist: string[] | null
   publishAuthType: string | null
+  /**
+   * Legacy single plaintext key. Consulted only when `verifyApiKey` is absent or
+   * misses, and only for the dual-read window while `agent_api_keys` is backfilled.
+   * Once the legacy columns are cleared this is always null.
+   */
   endpointApiKey: string | null
+  /**
+   * Multi-key verification against `agent_api_keys`, injected by the route so this
+   * module stays free of database access and directly unit-testable. The caller
+   * supplies the channel-specific implementation, which is what keeps a REST key
+   * from authenticating an A2A request.
+   */
+  verifyApiKey?: (plaintext: string) => Promise<ApiKeyVerification>
   oauthAccessMode?: 'all_idaas_users' | 'specified_users' | null
   /**
    * Email allowlist consulted only when `publishAuthType === 'oauth'` and
@@ -51,14 +64,28 @@ export function oauthUploaderId(caller: GatewayCaller): string {
   return `oauth:${caller.userInfo.issuer}:${caller.userInfo.sub}`
 }
 
+/** What an injected verifier answers. Mirrors lib/agent-api-key-verify.ts. */
+export type ApiKeyVerification =
+  | { ok: true; keyId: string; keyName: string }
+  | { ok: false; reason: 'invalid' | 'expired' }
+
+/** The key that authenticated the request, surfaced so the run can name its trigger. */
+export interface AuthenticatingApiKey {
+  id: string
+  name: string
+}
+
 export interface GatewayAuthOk {
   error?: undefined
   caller?: GatewayCaller
+  /** Absent for `none` auth, OAuth, and the legacy single-key fallback. */
+  apiKey?: AuthenticatingApiKey
 }
 
 export interface GatewayAuthFail {
   error: GatewayAuthError
   caller?: undefined
+  apiKey?: undefined
 }
 
 export type GatewayAuthResult = GatewayAuthOk | GatewayAuthFail
@@ -260,18 +287,36 @@ export async function validateGatewayAuth(
     return { caller: { kind: 'idaas_user', userInfo } }
   }
 
-  // api_key (default legacy behavior)
+  // api_key
   const authHeader = request.authorizationHeader
   if (!authHeader) {
     return { error: { error: GatewayAuthErrors.MISSING_AUTH_HEADER, status: 401 } }
   }
   const token = extractBearer(authHeader)
-  const tokenBuf = Buffer.from(token)
-  const keyBuf = Buffer.from(agent.endpointApiKey ?? '')
-  const invalid = tokenBuf.length !== keyBuf.length || !timingSafeEqual(tokenBuf, keyBuf)
-  if (invalid) {
-    return { error: { error: 'Invalid token', status: 403 } }
+
+  if (agent.verifyApiKey) {
+    const verification = await agent.verifyApiKey(token)
+    if (verification.ok) {
+      return { apiKey: { id: verification.keyId, name: verification.keyName } }
+    }
+    // An expired key is reported as such and stops here. Falling through to the
+    // legacy column would resurrect a credential its owner deliberately time-boxed,
+    // in the one case where we know exactly which key was presented.
+    if (verification.reason === 'expired') {
+      return { error: { error: GatewayAuthErrors.API_KEY_EXPIRED, status: 403 } }
+    }
   }
 
-  return {}
+  // Dual-read fallback: rows whose plaintext key has not been migrated into
+  // `agent_api_keys` yet must keep authenticating. Removed once the legacy columns
+  // are cleared, at which point `endpointApiKey` is always null and this is a no-op.
+  const legacy = agent.endpointApiKey ?? ''
+  if (legacy) {
+    const tokenBuf = Buffer.from(token)
+    const keyBuf = Buffer.from(legacy)
+    const matches = tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)
+    if (matches) return {}
+  }
+
+  return { error: { error: GatewayAuthErrors.INVALID_TOKEN, status: 403 } }
 }

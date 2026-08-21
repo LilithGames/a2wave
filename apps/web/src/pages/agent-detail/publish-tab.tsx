@@ -12,7 +12,7 @@ import {
 } from '@a2wave/shared'
 import { useQuery } from '@tanstack/react-query'
 import { Modal, Radio } from 'antd'
-import { Globe, Info, Loader2, Play, RefreshCw, StopCircle, X } from 'lucide-react'
+import { Globe, Info, Loader2, Play, StopCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
@@ -35,8 +35,6 @@ import type {
 import {
   fetchGitTriggerCliStatus,
   useNativeChatConnections,
-  useRegenerateA2aApiKey,
-  useRegenerateApiKey,
   useSaveChannelConfig,
 } from '@/hooks/use-agents'
 import { useCurrentUser, useOauthConfig } from '@/hooks/use-auth'
@@ -47,16 +45,15 @@ import {
   isConnectedChannel,
   resolveChannelConnectionUi,
 } from '@/lib/channel-connection-ui'
-import { confirm } from '@/lib/confirm'
 import type { SchedulePreset } from '@/lib/cron-utils'
 import { cronToPreset, presetToCron } from '@/lib/cron-utils'
 import { formatGitRepoUrl } from '@/lib/git-repo-url'
 import { safeSetItem } from '@/lib/safe-storage'
-import { cn } from '@/lib/utils'
 import { resolveSsoMethods } from '@/pages/login'
 import { ChatAppChannelSection } from './chat-app-channel-section'
 import { CopyButton } from './copy-button'
 import { A2aChannelSection } from './publish/a2a-channel-section'
+import { ApiKeyList } from './publish/api-key-list'
 import { ChannelConfigModal } from './publish/channel-config-modal'
 import { ChannelConnectionStatus } from './publish/channel-connection-status'
 import { ChannelGrid } from './publish/channel-grid'
@@ -350,8 +347,6 @@ export function PublishTab({
   isResumePending,
 }: PublishTabProps) {
   const { t, i18n } = useTranslation()
-  const regenerateKey = useRegenerateApiKey()
-  const regenerateA2aKey = useRegenerateA2aApiKey()
   const saveChannelConfig = useSaveChannelConfig()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -397,16 +392,13 @@ export function PublishTab({
     channelInitiallyOn('qq_official'),
   )
   // 明文 API Key 仅在「生成/重置」成功响应里一次性返回，存这里用于弹 modal 展示，关闭即清空。
-  const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [authType, setAuthType] = useState<'none' | 'api_key'>('api_key')
   // A2A 入站独立鉴权（与 REST 渠道解耦）
   const [a2aAuthType, setA2aAuthType] = useState<'none' | 'api_key'>('api_key')
   const [trustForwardedIdentity, setTrustForwardedIdentity] = useState(false)
-  const [generatedA2aKey, setGeneratedA2aKey] = useState<string | null>(null)
   // 生成/重置成功后本地标记 key 已存在——regenerate 不再 invalidate agent（避免覆盖未保存表单），
   // 因此首次生成后需靠本地标记把按钮从「生成密钥」切到「重置密钥」。agent 重载时在 useEffect 复位。
   const [keyGenerated, setKeyGenerated] = useState(false)
-  const [a2aKeyGenerated, setA2aKeyGenerated] = useState(false)
 
   // Feishu config state.
   // Seeded like the toggles above: these four feed `channelBlockReasons`, so
@@ -770,7 +762,6 @@ export function PublishTab({
   // Key 在 agent 创建时即生成；detail 返回统一脱敏为 '********'，明文永不回显。
   // 因此这里只判断"是否已存在 key"，明文仅由 regenerate 接口一次性返回并弹 modal 展示。
   const hasExistingKey = !!agent?.endpointApiKey || keyGenerated
-  const a2aHasExistingKey = !!agent?.a2aEndpointApiKey || a2aKeyGenerated
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
   const invokeUrl = agentId ? `${baseUrl}/api/gateway/${agentId}/invoke` : ''
@@ -786,7 +777,6 @@ export function PublishTab({
       setDescription(agent.publishDescription ?? '')
       // agent 真正重载（如发布后 invalidate）时复位本地 key 标记，回到服务端真值。
       setKeyGenerated(false)
-      setA2aKeyGenerated(false)
       const at = agent.publishAuthType as string | null | undefined
       setAuthType(at === 'none' ? 'none' : 'api_key')
       setA2aAuthType(agent.a2aAuthType === 'none' ? 'none' : 'api_key')
@@ -1522,66 +1512,6 @@ export function PublishTab({
     clearPublishDraft()
   }
 
-  const runGenerateKey = async () => {
-    if (!agentId) return
-    try {
-      const res = await regenerateKey.mutateAsync(agentId)
-      // 明文 key 仅此一次返回，弹 modal 让用户复制，关闭后即不再展示。
-      if (res?.data?.endpointApiKey) {
-        setGeneratedKey(res.data.endpointApiKey)
-        setKeyGenerated(true)
-      }
-    } catch (err) {
-      console.error('Failed to regenerate API key:', err)
-    }
-  }
-
-  const handleGenerateKey = () => {
-    if (!agentId) return
-    // 已有 key 时再次生成会使旧 key 失效，先二次确认；否则直接生成。
-    if (hasExistingKey) {
-      confirm({
-        title: t('agentPublish.resetKeyConfirmTitle'),
-        content: t('agentPublish.resetKeyConfirmContent'),
-        okText: t('agentPublish.resetKey'),
-        danger: true,
-        cancelText: t('agentDetail.deleteCancel'),
-        onOk: runGenerateKey,
-      })
-    } else {
-      void runGenerateKey()
-    }
-  }
-
-  const runGenerateA2aKey = async () => {
-    if (!agentId) return
-    try {
-      const res = await regenerateA2aKey.mutateAsync(agentId)
-      if (res?.data?.a2aEndpointApiKey) {
-        setGeneratedA2aKey(res.data.a2aEndpointApiKey)
-        setA2aKeyGenerated(true)
-      }
-    } catch (err) {
-      console.error('Failed to regenerate A2A API key:', err)
-    }
-  }
-
-  const handleGenerateA2aKey = () => {
-    if (!agentId) return
-    if (a2aHasExistingKey) {
-      confirm({
-        title: t('agentPublish.resetKeyConfirmTitle'),
-        content: t('agentPublish.resetKeyConfirmContent'),
-        okText: t('agentPublish.resetKey'),
-        danger: true,
-        cancelText: t('agentDetail.deleteCancel'),
-        onOk: runGenerateA2aKey,
-      })
-    } else {
-      void runGenerateA2aKey()
-    }
-  }
-
   // 飞书开关：未配置过 appId 时，先弹「已有 / 创建」二选一；已配置或关闭则直接生效。
   const handleFeishuToggle = (checked: boolean) => {
     if (!checked) {
@@ -1634,9 +1564,7 @@ export function PublishTab({
                   <span className="text-xs">cURL</span>
                   <CopyButton
                     text={`curl -X POST ${invokeUrl} -H "Content-Type: application/json" ${
-                      authType === 'api_key'
-                        ? `-H "Authorization: Bearer ${generatedKey ?? '<API_KEY>'}" `
-                        : ''
+                      authType === 'api_key' ? `-H "Authorization: Bearer <API_KEY>" ` : ''
                     }-d '{"message": "Hello", "context": {"key": "value"}, "stream": false}'`}
                     label={t('agentPublish.copyCurl')}
                   />
@@ -1660,40 +1588,9 @@ export function PublishTab({
             </Radio.Group>
           </div>
 
-          {/* API Key（仅 api_key 鉴权方式下显示） */}
-          {authType === 'api_key' && (
-            <div className="flex flex-col gap-2">
-              <Label className="text-sm font-medium text-foreground">
-                {t('agentPublish.apiKey')}
-              </Label>
-              <div className="flex items-center gap-2">
-                <p className="flex-1 rounded-md border border-dashed border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                  {hasExistingKey
-                    ? t('agentPublish.keyHiddenPlaceholder')
-                    : t('agentPublish.keyPlaceholder')}
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleGenerateKey}
-                  disabled={regenerateKey.isPending || !agentId}
-                  aria-label={
-                    hasExistingKey ? t('agentPublish.resetKey') : t('agentPublish.generateKey')
-                  }
-                >
-                  {regenerateKey.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  <span className="ml-1.5">
-                    {hasExistingKey ? t('agentPublish.resetKey') : t('agentPublish.generateKey')}
-                  </span>
-                </Button>
-              </div>
-            </div>
-          )}
+          {/* API Keys (api_key auth only) — multiple named keys, each independently
+              revocable, so rotating one integration never breaks the others. */}
+          {authType === 'api_key' && <ApiKeyList agentId={agentId} channel="api" />}
 
           {/* IP Whitelist */}
           <div className="flex flex-col gap-2">
@@ -1708,24 +1605,6 @@ export function PublishTab({
               className="resize-none font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground">{t('agentPublish.ipWhitelistHelp')}</p>
-          </div>
-
-          {/* Description */}
-          <div className="flex flex-col gap-2">
-            <Label className="text-sm font-medium text-foreground">
-              {t('agentPublish.description')}
-            </Label>
-            <Textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
-              placeholder={t('agentPublish.descriptionPlaceholder')}
-              rows={3}
-              maxLength={DESCRIPTION_MAX}
-              className="resize-none"
-            />
-            <p className="text-xs text-muted-foreground">
-              {description.length}/{DESCRIPTION_MAX}
-            </p>
           </div>
         </div>
       ),
@@ -1824,9 +1703,7 @@ export function PublishTab({
           rpcUrl={a2aRpcUrl}
           authType={a2aAuthType}
           onAuthTypeChange={setA2aAuthType}
-          hasExistingKey={a2aHasExistingKey}
-          onGenerateKey={handleGenerateA2aKey}
-          isGeneratingKey={regenerateA2aKey.isPending}
+          agentId={agentId}
           hasAgent={!!agentId}
           trustForwardedIdentity={trustForwardedIdentity}
           onTrustForwardedIdentityChange={setTrustForwardedIdentity}
@@ -2162,40 +2039,6 @@ export function PublishTab({
 
   return (
     <div className="space-y-5">
-      {/* 一次性展示新生成的 API Key：关闭即清空，之后不再显示 */}
-      <Modal
-        open={!!generatedKey}
-        title={t('agentPublish.apiKeyModalTitle')}
-        onCancel={() => setGeneratedKey(null)}
-        onOk={() => setGeneratedKey(null)}
-        okText={t('agentPublish.apiKeyModalDone')}
-        cancelButtonProps={{ style: { display: 'none' } }}
-        mask={{ closable: false }}
-      >
-        <p className="mb-2 text-sm text-muted-foreground">{t('agentPublish.apiKeyWarning')}</p>
-        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
-          <code className="flex-1 break-all">{generatedKey}</code>
-          <CopyButton text={generatedKey ?? ''} label={t('agentPublish.copyApiKey')} />
-        </div>
-      </Modal>
-
-      {/* 一次性展示新生成的 A2A 专属 API Key */}
-      <Modal
-        open={!!generatedA2aKey}
-        title={t('agentPublish.apiKeyModalTitle')}
-        onCancel={() => setGeneratedA2aKey(null)}
-        onOk={() => setGeneratedA2aKey(null)}
-        okText={t('agentPublish.apiKeyModalDone')}
-        cancelButtonProps={{ style: { display: 'none' } }}
-        mask={{ closable: false }}
-      >
-        <p className="mb-2 text-sm text-muted-foreground">{t('agentPublish.apiKeyWarning')}</p>
-        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm">
-          <code className="flex-1 break-all">{generatedA2aKey}</code>
-          <CopyButton text={generatedA2aKey ?? ''} label={t('agentPublish.copyApiKey')} />
-        </div>
-      </Modal>
-
       <Card>
         <CardContent className="p-5 space-y-5">
           {/* The tab strip already names this section, so the heading only

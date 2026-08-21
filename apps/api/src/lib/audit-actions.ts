@@ -36,6 +36,13 @@ export const AUDIT_ACTIONS = {
   CLI_TOKEN_CREATED: 'cli_token.created',
   CLI_TOKEN_REVOKED: 'cli_token.revoked',
 
+  // Per-Agent inbound API keys (REST gateway + A2A). Same lifecycle rationale as CLI
+  // tokens: create/update/revoke are audited, use is not — that is what lastUsedAt
+  // records instead, without an entry per invocation.
+  AGENT_API_KEY_CREATED: 'agent_api_key.created',
+  AGENT_API_KEY_UPDATED: 'agent_api_key.updated',
+  AGENT_API_KEY_REVOKED: 'agent_api_key.revoked',
+
   // Auth — 「SSO 验证即可看」分享访客（不建 a2wave 账号）
   AUTH_SHARE_ACCESS_GRANTED: 'auth.share.access_granted',
   AUTH_SHARE_ACCESS_DENIED: 'auth.share.access_denied',

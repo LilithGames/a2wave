@@ -133,6 +133,13 @@ export interface BuildGatewayChannelOpts {
   trustForwardedIdentity?: boolean
   /** Optional explicit request id; falls back to common headers when omitted. */
   requestId?: string
+  /**
+   * The API key that authenticated this call, when `authType === 'api_key'` and the
+   * key came from `agent_api_keys`. Its operator-supplied name becomes the run's
+   * trigger display name, which is the only way to tell two integrations apart in
+   * run history. Absent for legacy single-key callers and for `none` / OAuth auth.
+   */
+  apiKey?: { id: string; name: string }
 }
 
 export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): ChannelBuildResult {
@@ -196,6 +203,12 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
     // gate is authType !== 'oauth' and has bypassed the visibility check).
     const callerAgent = opts.callerAgent
     const channelInfo: GatewayChannelInfo = { auth: opts.authType }
+    // Which of *our* keys the upstream presented. The forwarded user identity is
+    // the run's identity on this path, so this is provenance for "which
+    // integration relayed it", not a display name.
+    if (opts.apiKey) {
+      channelInfo.api_key = { id: opts.apiKey.id, name: opts.apiKey.name }
+    }
     // caller_agent is audit-only here; only record it when we actually have an
     // immediate-caller identity (omit the empty object otherwise).
     if (callerAgent?.agentId || callerAgent?.agentName) {
@@ -242,6 +255,10 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
     opts.requestId ?? c.req.header('X-Request-Id') ?? c.req.header('X-Request-ID') ?? undefined
   if (requestId) channelInfo.request_id = requestId
 
+  if (opts.apiKey) {
+    channelInfo.api_key = { id: opts.apiKey.id, name: opts.apiKey.name }
+  }
+
   // OAuth: pull oauth metadata + email-derived user_info.
   let userInfo: UserInfo | null = null
   // `displayName` is set even when `userInfo` stays null (api_key-only or oauth
@@ -274,6 +291,12 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
     displayName = u.username || null
   } else if (opts.channel === 'a2a' && opts.assertedDisplayName) {
     displayName = opts.assertedDisplayName
+  } else if (opts.apiKey) {
+    // An api_key call has no user identity by design (API keys identify
+    // integrations, not people), so run history would otherwise show nothing at
+    // all. The key's required description is the best available label — and the
+    // reason the field is mandatory.
+    displayName = opts.apiKey.name
   }
   // caller_agent is audit provenance on A2A hops, never an authorization input.
   if (opts.channel === 'a2a') {

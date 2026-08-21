@@ -127,6 +127,13 @@
       "when": 1787298932153,
       "tag": "0017_telegram_channel",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787305398162,
+      "tag": "0018_rare_reptil",
+      "breakpoints": true
     }
   ]
 }

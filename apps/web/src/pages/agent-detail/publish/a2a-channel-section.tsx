@@ -5,12 +5,12 @@
  * fully controlled, with all state owned by the parent so `handlePublish` can
  * still assemble one atomic publish payload.
  */
-import { Button } from '@/components/ui/button'
+
+import { Radio, Switch } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { Label } from '@/components/ui/label'
 import { CopyButton } from '@/pages/agent-detail/copy-button'
-import { Radio, Switch } from 'antd'
-import { Loader2, RefreshCw } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
+import { ApiKeyList } from './api-key-list'
 
 export type A2aAuthType = 'none' | 'api_key'
 
@@ -21,10 +21,8 @@ export interface A2aChannelSectionProps {
   rpcUrl: string
   authType: A2aAuthType
   onAuthTypeChange: (value: A2aAuthType) => void
-  /** Whether an A2A-specific key already exists (plaintext is never echoed back). */
-  hasExistingKey: boolean
-  onGenerateKey: () => void
-  isGeneratingKey: boolean
+  /** Undefined before the agent is persisted — no id to address the endpoints or mint a key. */
+  agentId: string | undefined
   /** False before the agent is persisted — no id to address the endpoints or mint a key. */
   hasAgent: boolean
   trustForwardedIdentity: boolean
@@ -36,9 +34,7 @@ export function A2aChannelSection({
   rpcUrl: a2aRpcUrl,
   authType: a2aAuthType,
   onAuthTypeChange: setA2aAuthType,
-  hasExistingKey: a2aHasExistingKey,
-  onGenerateKey: handleGenerateA2aKey,
-  isGeneratingKey,
+  agentId,
   hasAgent,
   trustForwardedIdentity,
   onTrustForwardedIdentityChange: setTrustForwardedIdentity,
@@ -93,42 +89,9 @@ export function A2aChannelSection({
               </Radio.Group>
             </div>
 
-            {/* A2A 专属 API Key（仅 api_key 鉴权方式下显示） */}
-            {a2aAuthType === 'api_key' && (
-              <div className="flex flex-col gap-2">
-                <Label className="text-sm font-medium text-foreground">
-                  {t('agentPublish.apiKey')}
-                </Label>
-                <div className="flex items-center gap-2">
-                  <p className="flex-1 rounded-md border border-dashed border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                    {a2aHasExistingKey
-                      ? t('agentPublish.keyHiddenPlaceholder')
-                      : t('agentPublish.keyPlaceholder')}
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleGenerateA2aKey}
-                    disabled={isGeneratingKey || !hasAgent}
-                    aria-label={
-                      a2aHasExistingKey ? t('agentPublish.resetKey') : t('agentPublish.generateKey')
-                    }
-                  >
-                    {isGeneratingKey ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                    )}
-                    <span className="ml-1.5">
-                      {a2aHasExistingKey
-                        ? t('agentPublish.resetKey')
-                        : t('agentPublish.generateKey')}
-                    </span>
-                  </Button>
-                </div>
-              </div>
-            )}
+            {/* A2A keys: multiple named keys on the dedicated a2a channel, each
+                independently revocable. A REST (`ak_`) key never authenticates here. */}
+            {a2aAuthType === 'api_key' && <ApiKeyList agentId={agentId} channel="a2a" />}
 
             {/* 信任上游转发身份（仅 api_key 鉴权下有意义） */}
             {a2aAuthType === 'api_key' && (

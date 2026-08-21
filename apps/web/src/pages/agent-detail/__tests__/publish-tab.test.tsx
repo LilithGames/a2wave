@@ -74,10 +74,11 @@ describe('PublishTab — API 渠道鉴权', () => {
       expect(screen.getByText('鉴权方式')).toBeInTheDocument()
     })
 
-    // 断言限定在弹窗内：卡片描述里也含「API Key」等字样，全局查询会命中多个节点。
+    // 断言限定在弹窗内，且只匹配 Radio 选项本身：弹窗里还有 API Key 管理列表的标题，
+    // 用宽松的文本匹配会命中多个节点。
     const dialog = within(screen.getByRole('dialog'))
     expect(dialog.getByText(/无鉴权/)).toBeInTheDocument()
-    expect(dialog.getByText(/API Key/)).toBeInTheDocument()
+    expect(dialog.getByRole('radio', { name: /API Key/ })).toBeInTheDocument()
     // OAuth 是独立渠道，不在 API 的 Radio.Group 中
     expect(dialog.queryByRole('radio', { name: /OAuth 授权/ })).not.toBeInTheDocument()
   })

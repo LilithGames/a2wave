@@ -166,8 +166,12 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
     }
   }
 
+  // Optional-called: the A2A route sets this variable, but this factory also runs
+  // under contexts that carry no variable store at all.
+  const apiKey = c.get?.('gatewayApiKey' as never) as { id: string; name: string } | undefined
   const baseChannelOpts = {
     channel: 'a2a',
+    ...(apiKey ? { apiKey } : {}),
     // A2A 入站走独立鉴权方式（与 REST 渠道解耦）；a2aAuthType 列 notNull，迁移已 backfill。
     authType: normalizeAuthType(agent.a2aAuthType),
     trustForwardedIdentity: Boolean(agent.trustForwardedIdentity),

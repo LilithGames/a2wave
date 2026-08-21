@@ -40,6 +40,13 @@ export const GatewayAuthErrors = {
   IP_NOT_ALLOWED: 'IP not allowed',
   MISSING_AUTH_HEADER: 'Missing Authorization header',
   INVALID_TOKEN: 'Invalid token',
+  /**
+   * Distinct from INVALID_TOKEN on purpose: an expired key is an operational
+   * problem the integrator can fix by rotating, whereas a generic failure sends
+   * them hunting for a credential bug that is not there. Revoked keys stay
+   * INVALID_TOKEN — revoked must be indistinguishable from never-existed.
+   */
+  API_KEY_EXPIRED: 'API key expired',
   /** Verification could not reach the IdP; the caller's credentials are not implicated. */
   IDP_UNAVAILABLE: 'Identity provider unavailable',
   /** No address at all — revocation cannot match the caller against a disabled local row. */

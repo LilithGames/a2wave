@@ -86,6 +86,53 @@ Common patterns (consistent with the root-level UI conventions):
 - Code blocks: `rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-sm`
 - Placeholders: `rounded-md border border-dashed border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground`
 
+## Status colors and notices
+
+Every status role ships **three** tokens, and picking the wrong one of the three is the
+most common way a notice ends up invisible:
+
+| Token | Role | Use for |
+|---|---|---|
+| `--color-<status>` | Readable **foreground** | Text and icons, on `background`, `card`, or the matching `-subtle` fill |
+| `--color-<status>-subtle` | Tinted **surface** | The notice fill itself |
+| `--color-<status>-foreground` | Text sitting **on a solid status fill** | Only on a filled badge/button whose background is `--color-<status>` |
+
+`warning-foreground` and `destructive-foreground` are `#ffffff` in the light themes. Putting
+either on a pale surface renders **white text on a white background** — the notice is present in
+the DOM, occupies space, and cannot be read. This has now happened more than once; the token name
+reads like "the foreground color for warnings," and it is not.
+
+> Rule of thumb: **text is `text-warning` / `text-destructive`. `-foreground` only ever pairs with
+> a solid `bg-warning` / `bg-destructive` fill.**
+
+### Never use raw palette colors for status
+
+**Do not write `bg-red-50`, `text-red-600`, `bg-amber-50`, `text-amber-600`, or any other Tailwind
+palette literal for a status surface.** They are fixed hex values that do not participate in
+theming, so a notice styled that way keeps its light-mode colors in every dark theme — red-600
+text on a red-50 fill becomes unreadable rather than merely off-brand. The semantic tokens are
+redefined per theme (each `-subtle` fill is contrast-checked against its foreground), which is the
+entire reason they exist.
+
+### Choosing the right notice treatment
+
+Match the treatment to what the message actually *is*. Escalating everything to a colored panel
+desensitizes the reader, so the one notice that reports a real problem no longer stands out.
+
+| The message is… | Treatment |
+|---|---|
+| Describing what a dialog or field *is* (e.g. "this value is shown only once") | Plain `text-sm text-muted-foreground`, in `DialogDescription`. **No panel, no icon, no color** |
+| Neutral supporting information | `rounded-lg bg-muted/60 px-3 py-2.5` with a leading `Info` icon, or `.info-panel` |
+| A real warning the user must act on (a fail-closed state, a destructive consequence) | `flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2.5 text-sm text-warning` + a leading `AlertCircle` / `ShieldAlert` icon |
+| An error that already happened | Same shape, swapping `warning` for `destructive` |
+
+`.info-panel` is an **indigo informational** surface (`primary-subtle`). Do not put warning or
+error text on it — red on indigo reads as a mistake. Use the status fill that matches the status
+text.
+
+Reference implementations: `device.tsx` (warning panel), `cli-tokens-card.tsx` (one-time secret
+stated as a plain description), `agent-detail/publish/api-key-list.tsx` (both, side by side).
+
 ## Hover and selected states
 
 Interactive surfaces — list rows, tabs, ghost/outline buttons — use two dedicated tokens:
@@ -148,6 +195,9 @@ For choosing one option from a small mutually-exclusive set (SCM Git/P4, MCP tra
 
 - **Placeholder-first**: every text `Input`/`Textarea` gets a `placeholder`. Prefer a placeholder over a separate muted `<p>` helper line when the helper only restates the field's format/example. Keep helper text only for a real constraint/warning/security note (PAT scope, "leave blank to keep current secret", permission tips).
 - **Label style**: `<Label className="text-sm">` inside a `<div className="space-y-1.5">` wrapper. Avoid the heavier `text-sm font-medium text-foreground` + `mt-1.5`-on-input pattern.
+- **Required fields**: pass `required` to `<Label>`, which appends a red `*`. Optional fields get **no marker at all** — do not write "（可选）" / "(optional)", and do not restate "必填" / "Required." in the helper text, since the `*` already says it.
+- **Copy-to-clipboard**: use `<CopyButton>` (or `copyText()` from `lib/clipboard.ts`) — never call `navigator.clipboard` directly. That API is **absent on a plain-HTTP origin**, which internal deployments routinely are, and a scratch node parented on `<body>` never receives the selection inside a focus-trapping dialog. Both cases fail silently, on exactly the values a user can never see again. `CopyButton` also owns the copied-state ✓ feedback.
+- **Row actions**: edit is a `Pencil` icon, delete/revoke is `Trash2` with `text-destructive`, both as `<Button variant="ghost" size="icon" className="size-7">` with an `h-3.5 w-3.5` icon and an `aria-label`. Reserve `MoreHorizontal` (`…`) for an actual overflow *menu* — using it for a single action makes the user open a menu that isn't there. Reference: `evaluation/sets-tab.tsx`.
 - **Save button**: icon + text, with a spinner while pending — `{pending ? <Loader2 className="h-4 w-4 animate-spin" /> + savingText : <Save className="h-4 w-4" /> + saveText}`. Do not ship a text-only save button.
 
 ## Provider Brand Icons
