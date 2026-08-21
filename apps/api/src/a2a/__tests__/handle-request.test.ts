@@ -249,6 +249,38 @@ describe('handleA2ARequest', () => {
     })
   })
 
+  // Since per-Agent named A2A keys landed, one Agent can hold many keys — one per
+  // integration. The task store scopes every task by {tenant, owner}, so folding
+  // every key into the constant `a2a:<agentId>:api_key` lets integration B read,
+  // list and subscribe to integration A's tasks on the same Agent.
+  it('separates the task owner scope per authenticating API key', async () => {
+    const publicContext = (keyId: string) =>
+      ({
+        req: {
+          url: 'http://localhost:3502/api/a2a/agt_1',
+          path: '/api/a2a/agt_1',
+          header: (name: string) => ({ 'A2A-Version': '1.0' })[name],
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({ jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'k' }),
+            ),
+          raw: { headers: new Headers({ 'A2A-Version': '1.0' }) },
+        },
+        get: (name: string) =>
+          name === 'gatewayApiKey' ? { id: keyId, name: `key-${keyId}` } : undefined,
+        json: <T>(data: T) => data,
+      }) as unknown as Parameters<typeof handleA2ARequest>[0]
+
+    const ownerScopeFor = async (keyId: string) => {
+      mockV1Handle.mockClear()
+      await handleA2ARequest(publicContext(keyId), fakeAgent, fakeTaskStore, baseFn)
+      const lastCall = mockV1Handle.mock.calls[mockV1Handle.mock.calls.length - 1]
+      return (lastCall[1] as { user: { userName: string } }).user.userName
+    }
+
+    expect(await ownerScopeFor('aak_a')).not.toBe(await ownerScopeFor('aak_b'))
+  })
+
   it('parses the standard v1 extension activation header into the call context', async () => {
     const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
     const c = createMockContext(

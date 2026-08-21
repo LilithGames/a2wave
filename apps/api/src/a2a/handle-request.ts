@@ -124,11 +124,21 @@ function buildServerCallContext(
   const isInternalRoute = c.req.path.includes('/internal/a2a/')
   const internalCallerId = isInternalRoute ? c.req.header('X-A2WAVE-Caller-Agent-Id') : undefined
   const authType = normalizeAuthType(agent.a2aAuthType)
+  // An Agent can hold several named A2A keys, one per integration. The task store
+  // scopes every task by {tenant, owner}, so the owner has to name the key that
+  // actually authenticated — otherwise every integration shares one scope and can
+  // read, list and subscribe to the others' tasks. A caller on the legacy
+  // single-column key has no key id and keeps the original scope string.
+  const gatewayApiKey = (c.get as (key: string) => unknown)('gatewayApiKey') as
+    | { id: string }
+    | undefined
   const ownerScope = oauthCaller
     ? oauthUploaderId(oauthCaller)
     : isInternalRoute
       ? `internal:${internalCallerId || 'platform'}`
-      : `a2a:${agent.id}:${authType}`
+      : gatewayApiKey
+        ? `a2a:${agent.id}:${authType}:${gatewayApiKey.id}`
+        : `a2a:${agent.id}:${authType}`
   const user: User = {
     isAuthenticated: authType !== 'none' || isInternalRoute,
     userName: ownerScope,
