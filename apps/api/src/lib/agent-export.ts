@@ -40,6 +40,7 @@ export interface ExportedAgent {
   feishuConfig: Record<string, unknown> | null
   slackConfig?: Record<string, unknown> | null
   discordConfig?: Record<string, unknown> | null
+  telegramConfig?: Record<string, unknown> | null
   qqOfficialConfig?: Record<string, unknown> | null
   chatAppConfig?: Record<string, unknown> | null
   scheduleConfig: Record<string, unknown> | Array<Record<string, unknown>> | null
@@ -233,6 +234,9 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
   const sanitizedSlackConfig = agent.slackConfig
     ? { ...agent.slackConfig, appToken: '********', botToken: '********' }
     : null
+  const sanitizedTelegramConfig = agent.telegramConfig
+    ? { ...agent.telegramConfig, botToken: '********' }
+    : agent.telegramConfig
   const sanitizedDiscordConfig = agent.discordConfig
     ? { ...agent.discordConfig, botToken: '********' }
     : null
@@ -263,6 +267,7 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
     feishuConfig: sanitizedFeishuConfig,
     slackConfig: sanitizedSlackConfig,
     discordConfig: sanitizedDiscordConfig,
+    telegramConfig: sanitizedTelegramConfig,
     qqOfficialConfig: sanitizedQQOfficialConfig,
     // No masking pass: chat app config is presentation copy with no credentials.
     chatAppConfig: (agent.chatAppConfig as Record<string, unknown> | null) ?? null,

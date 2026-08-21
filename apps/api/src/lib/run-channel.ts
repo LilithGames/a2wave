@@ -167,6 +167,7 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
       upstream.channel_type === 'feishu' ||
       upstream.channel_type === 'slack' ||
       upstream.channel_type === 'discord' ||
+      upstream.channel_type === 'telegram' ||
       upstream.channel_type === 'qq_official' ||
       upstream.channel_type === 'debug' ||
       upstream.channel_type === 'chat_app' ||
@@ -500,6 +501,38 @@ export function buildDiscordChannel(opts: BuildDiscordChannelOpts): ChannelBuild
         chat_type: opts.chatType,
         message_id: opts.messageId,
         ...(opts.threadId ? { thread_id: opts.threadId } : {}),
+        sender_user_id: opts.senderUserId,
+      },
+      user_info: null,
+      ...(displayName ? { display_name: displayName } : {}),
+    },
+    displayName,
+  }
+}
+
+// ── Telegram ─────────────────────────────────────────────────────────────────
+
+export interface BuildTelegramChannelOpts {
+  botId: string
+  chatId: string
+  chatType: 'private' | 'group' | 'supergroup' | 'channel'
+  messageId: string
+  messageThreadId?: string
+  senderUserId: string
+  senderName?: string
+}
+
+export function buildTelegramChannel(opts: BuildTelegramChannelOpts): ChannelBuildResult {
+  const displayName = opts.senderName?.trim() || null
+  return {
+    ctx: {
+      channel_type: 'telegram',
+      channel_info: {
+        bot_id: opts.botId,
+        chat_id: opts.chatId,
+        chat_type: opts.chatType,
+        message_id: opts.messageId,
+        ...(opts.messageThreadId ? { message_thread_id: opts.messageThreadId } : {}),
         sender_user_id: opts.senderUserId,
       },
       user_info: null,

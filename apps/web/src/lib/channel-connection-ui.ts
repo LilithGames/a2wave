@@ -11,7 +11,7 @@
 import type { ChannelKey } from '@/pages/agent-detail/publish/channel-registry'
 
 /** Channels this module knows how to report a connection for. */
-export type ConnectedChannelKey = 'feishu' | 'slack' | 'discord' | 'qq_official'
+export type ConnectedChannelKey = 'feishu' | 'slack' | 'discord' | 'telegram' | 'qq_official'
 
 export type ChannelConnectionUiKind =
   | 'loading'
@@ -31,7 +31,13 @@ export type ChannelConnectionUiKind =
  * arrives over inbound HTTP it gets `kind: 'webhook'` and no socket status.
  */
 export interface ChannelTransport {
-  kind: 'socket'
+  /**
+   * `socket` holds a long-lived connection the vendor pushes down; `polling`
+   * keeps a repeating long-poll request outbound. Both surface the same
+   * "is it live right now" pill, but conflating them would make the Telegram
+   * card claim a socket it never opens.
+   */
+  kind: 'socket' | 'polling'
   /** i18n key naming the protocol, e.g. "WebSocket" / "Socket Mode". */
   labelKey: string
   /** i18n key for the one-line explanation shown in the status tooltip. */
@@ -54,6 +60,11 @@ export const CHANNEL_TRANSPORTS: Record<ConnectedChannelKey, ChannelTransport> =
     labelKey: 'agentPublish.transportDiscordGateway',
     hintKey: 'agentPublish.transportDiscordGatewayHint',
   },
+  telegram: {
+    kind: 'polling',
+    labelKey: 'agentPublish.transportTelegramPolling',
+    hintKey: 'agentPublish.transportTelegramPollingHint',
+  },
   qq_official: {
     kind: 'socket',
     labelKey: 'agentPublish.transportQQOfficialGateway',
@@ -71,6 +82,7 @@ export function isConnectedChannel(channel: string): channel is ConnectedChannel
     channel === 'feishu' ||
     channel === 'slack' ||
     channel === 'discord' ||
+    channel === 'telegram' ||
     channel === 'qq_official'
   )
 }

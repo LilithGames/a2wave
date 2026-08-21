@@ -7,7 +7,7 @@
 **Turn the agent CLIs you already use into shared services your whole team can call.**
 
 Describe an Agent in plain language, bind a model provider, publish it to Feishu,
-Slack, Discord, an HTTP API, or a schedule. No flowcharts, no glue code.
+Slack, Discord, Telegram, an HTTP API, or a schedule. No flowcharts, no glue code.
 
 [![CI](https://github.com/LilithGames/a2wave/actions/workflows/ci.yml/badge.svg)](https://github.com/LilithGames/a2wave/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
@@ -24,7 +24,7 @@ Slack, Discord, an HTTP API, or a schedule. No flowcharts, no glue code.
 
 a2wave turns the agent CLIs you already use — **Claude Code, Cursor Agent, OpenAI
 Codex, and more** — into shared, governed services, reachable from Feishu, Slack,
-Discord, an HTTP API, or a schedule.
+Discord, Telegram, an HTTP API, or a schedule.
 
 Describe an Agent in natural language, bind a model provider, extend it with Skills
 and MCP servers, publish. a2wave handles credential injection, run queueing, audit
@@ -54,7 +54,7 @@ rebuild its reasoning as a graph.
   OpenCode, Qoder, Trae, Kimi and Pi are interchangeable execution engines,
   installed on demand from a pinned, checksum-verified lockfile.
 - 🌊 **Publish to multiple channels** — one Agent, reachable via HTTP API, Feishu,
-  Slack, Discord, A2A, schedules, GitLab / GitHub repository triggers, and a
+  Slack, Discord, Telegram, A2A, schedules, GitLab / GitHub repository triggers, and a
   first-party chat page.
 - 🖥️ **Web dashboard** — build and publish Agents, manage providers, Skills, MCP
   servers and SCM sources, watch runs, and browse the audit trail from one console.
@@ -159,7 +159,7 @@ port is not published to the host.
 
 ## Channels
 
-A published Agent is reachable through HTTP API, Feishu, Slack, Discord, the A2A
+A published Agent is reachable through HTTP API, Feishu, Slack, Discord, Telegram, the A2A
 protocol, scheduled triggers, GitLab / GitHub repository triggers, and the
 first-party chat page.
 

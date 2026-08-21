@@ -27,6 +27,7 @@ export interface ChannelReadinessInput {
   slackBotToken: string
   discordApplicationId: string
   discordBotToken: string
+  telegramBotToken: string
   qqOfficialAppId: string
   qqOfficialAppSecret: string
   oauthAccessMode: 'all_idaas_users' | 'specified_users'
@@ -83,6 +84,9 @@ export function getChannelBlockReason(
       return input.discordApplicationId && input.discordBotToken
         ? null
         : 'agentPublish.discordConfigRequired'
+
+    case 'telegram':
+      return input.telegramBotToken ? null : 'agentPublish.telegramConfigRequired'
 
     case 'qq_official':
       return input.qqOfficialAppId && input.qqOfficialAppSecret

@@ -42,6 +42,7 @@ export const publishChannelEnum = z.enum([
   'feishu',
   'slack',
   'discord',
+  'telegram',
   'qq_official',
   'schedule',
   'oauth',
@@ -244,6 +245,28 @@ export const discordConfigSchema = z.object({
 })
 export type DiscordConfig = z.input<typeof discordConfigSchema>
 
+/**
+ * Telegram Bot configuration.
+ *
+ * a2wave consumes updates through long polling (`getUpdates`) rather than
+ * webhooks, so a private deployment needs no public HTTPS ingress — matching how
+ * the Slack / Discord / QQ gateways already reach out rather than being called.
+ */
+export const telegramConfigSchema = z.object({
+  /** `<bot_id>:<secret>` issued by @BotFather. The bot id prefix identifies the bot. */
+  botToken: z.string().min(1),
+  /** Trigger in groups only when the bot is @-mentioned or replied to. */
+  groupTriggerOnMention: z.boolean().default(true),
+  /** Trigger on every group message. Requires BotFather group privacy to be disabled. */
+  groupTriggerOnNewMessage: z.boolean().default(false),
+  groupReplyMode: z.enum(['reply', 'new', 'none']).default('reply'),
+  privateReplyMode: z.enum(['reply', 'new', 'none']).default('reply'),
+  sendArtifactsAsFile: z.boolean().default(true),
+  /** Optional custom Bot API base, for self-hosted Bot API servers or a proxy. */
+  apiBaseUrl: z.string().url().optional(),
+})
+export type TelegramConfig = z.input<typeof telegramConfigSchema>
+
 /** QQ Official Bot configuration using Tencent's public WebSocket Gateway. */
 export const qqOfficialConfigSchema = z.object({
   appId: z.string().trim().min(1),
@@ -412,6 +435,7 @@ export const agentSchema = z.object({
   feishuConfig: feishuConfigSchema.nullable().optional(),
   slackConfig: slackConfigSchema.nullable().optional(),
   discordConfig: discordConfigSchema.nullable().optional(),
+  telegramConfig: telegramConfigSchema.nullable().optional(),
   qqOfficialConfig: qqOfficialConfigSchema.nullable().optional(),
   chatAppConfig: chatAppConfigSchema.nullable().optional(),
   scheduleConfig: scheduleConfigSchema.nullable().optional(),
@@ -483,6 +507,7 @@ export const createAgentInput = z.object({
   feishuConfig: feishuConfigSchema.nullable().optional(),
   slackConfig: slackConfigSchema.nullable().optional(),
   discordConfig: discordConfigSchema.nullable().optional(),
+  telegramConfig: telegramConfigSchema.nullable().optional(),
   qqOfficialConfig: qqOfficialConfigSchema.nullable().optional(),
   chatAppConfig: chatAppConfigSchema.nullable().optional(),
   scheduleConfig: scheduleConfigSchema.nullable().optional(),

@@ -17,9 +17,9 @@ function lookup(bundle: Record<string, unknown>, dotted: string): unknown {
 }
 
 describe('channel registry', () => {
-  it('covers all eleven publish channels exactly once', () => {
-    expect(CHANNEL_REGISTRY).toHaveLength(11)
-    expect(new Set(CHANNEL_REGISTRY.map((c) => c.key)).size).toBe(11)
+  it('covers all twelve publish channels exactly once', () => {
+    expect(CHANNEL_REGISTRY).toHaveLength(12)
+    expect(new Set(CHANNEL_REGISTRY.map((c) => c.key)).size).toBe(12)
     expect([...VALID_PUBLISH_TABS].sort()).toEqual(
       [
         'a2a',
@@ -33,6 +33,7 @@ describe('channel registry', () => {
         'qq_official',
         'schedule',
         'slack',
+        'telegram',
       ].sort(),
     )
   })

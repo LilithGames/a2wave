@@ -893,6 +893,7 @@ export async function importAgentFromZip(
       (channel) =>
         channel !== 'slack' &&
         channel !== 'discord' &&
+        channel !== 'telegram' &&
         channel !== 'qq_official' &&
         !droppedGitChannels.has(channel),
     )
@@ -901,6 +902,9 @@ export async function importAgentFromZip(
     }
     if (exportedPublishChannels.includes('discord') || exportedAgent.discordConfig) {
       warnings.push('Discord credentials are not imported; reconfigure Discord before publishing')
+    }
+    if (exportedPublishChannels.includes('telegram') || exportedAgent.telegramConfig) {
+      warnings.push('Telegram credentials are not imported; reconfigure Telegram before publishing')
     }
     if (exportedPublishChannels.includes('qq_official') || exportedAgent.qqOfficialConfig) {
       warnings.push(
@@ -989,6 +993,7 @@ export async function importAgentFromZip(
         | 'feishu'
         | 'slack'
         | 'discord'
+        | 'telegram'
         | 'qq_official'
         | 'schedule'
         | 'oauth'
@@ -1020,6 +1025,7 @@ export async function importAgentFromZip(
       feishuConfig: exportedAgent.feishuConfig as (typeof agents.$inferInsert)['feishuConfig'],
       slackConfig: null,
       discordConfig: null,
+      telegramConfig: null,
       qqOfficialConfig: null,
       // Carries presentation copy only, so unlike Slack/Discord there is no
       // credential to strip and it round-trips intact.

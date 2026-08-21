@@ -6,7 +6,7 @@
 
 **把你已经在用的 Agent CLI，变成整个团队都能调用的共享服务。**
 
-用自然语言描述一个 Agent，绑定模型 Provider，发布到飞书、Slack、Discord、HTTP API
+用自然语言描述一个 Agent，绑定模型 Provider，发布到飞书、Slack、Discord、Telegram、HTTP API
 或定时任务。不画流程图，不写胶水代码。
 
 [![CI](https://github.com/LilithGames/a2wave/actions/workflows/ci.yml/badge.svg)](https://github.com/LilithGames/a2wave/actions/workflows/ci.yml)
@@ -23,7 +23,7 @@
 ## a2wave 是什么
 
 a2wave 把你已经在用的 Agent CLI——**Claude Code、Cursor Agent、OpenAI Codex 等**——变成
-受治理的共享服务，可从飞书、Slack、Discord、HTTP API 或定时任务直接触达。
+受治理的共享服务，可从飞书、Slack、Discord、Telegram、HTTP API 或定时任务直接触达。
 
 用自然语言描述一个 Agent，绑定模型 Provider，用 Skills 和 MCP Server 扩展能力，然后发布。
 凭证注入、运行排队、审计留痕、权限控制和消息投递，都交给 a2wave——全部在内置的 Web
@@ -49,7 +49,7 @@ a2wave 把你已经在用的 Agent CLI——**Claude Code、Cursor Agent、OpenA
 
 - 🤖 **自带 Agent CLI** —— Claude Code、Cursor Agent、OpenAI Codex、OpenCode、Qoder、
   Trae、Kimi、Pi 均可作为可互换的执行引擎，按需从锁定并校验哈希的 lockfile 安装。
-- 🌊 **一次发布，多渠道触达** —— 同一个 Agent 可通过 HTTP API、飞书、Slack、Discord、
+- 🌊 **一次发布，多渠道触达** —— 同一个 Agent 可通过 HTTP API、飞书、Slack、Discord、Telegram、
   A2A 协议、定时任务、GitLab / GitHub 仓库触发和平台自建聊天页触达。
 - 🖥️ **Web 控制台** —— 构建与发布 Agent、管理 Provider / Skill / MCP Server / 代码源、
   查看运行记录与审计留痕，都在同一个 Web 界面完成。
@@ -142,7 +142,7 @@ sidecar 容器，或用 `--database-url postgres://…` 指向外部数据库。
 
 ## 发布渠道
 
-已发布的 Agent 可通过 HTTP API、飞书、Slack、Discord、A2A 协议、定时任务、
+已发布的 Agent 可通过 HTTP API、飞书、Slack、Discord、Telegram、A2A 协议、定时任务、
 GitLab / GitHub 仓库触发，以及平台自建的聊天页触达。
 
 > 飞书渠道目前支持飞书（feishu.cn）应用；Lark 国际版（larksuite.com）暂不可配置。

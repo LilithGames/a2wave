@@ -157,6 +157,7 @@ export const PUBLISH_CHANNELS = [
   'feishu',
   'slack',
   'discord',
+  'telegram',
   'qq_official',
   'schedule',
   'oauth',

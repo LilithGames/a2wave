@@ -35,6 +35,7 @@ const CONNECTION_QUERY_KEYS = [FEISHU_CONNECTIONS_QUERY_KEY, CHAT_CONNECTIONS_QU
 export type ChatConnectionsResponse = {
   slack: FeishuConnectionRow[]
   discord: FeishuConnectionRow[]
+  telegram: FeishuConnectionRow[]
   qqOfficial: FeishuConnectionRow[]
 }
 
@@ -63,6 +64,7 @@ export function useChatConnections(options?: { enabled?: boolean }) {
     select: (res) => ({
       slack: toSocketMap(res.data?.slack),
       discord: toSocketMap(res.data?.discord),
+      telegram: toSocketMap(res.data?.telegram),
       qq_official: toSocketMap(res.data?.qqOfficial),
       meta: res.meta,
     }),
@@ -95,6 +97,7 @@ export function useNativeChatConnections(options?: { enabled?: boolean }): {
     feishu: feishu.isError,
     slack: chat.isError,
     discord: chat.isError,
+    telegram: chat.isError,
     qq_official: chat.isError,
   }
   // A query still in flight has no data yet; a failed one never will. Both are
@@ -104,6 +107,7 @@ export function useNativeChatConnections(options?: { enabled?: boolean }): {
     feishu: feishu.data?.byId ?? new Map(),
     slack: chat.data?.slack ?? new Map(),
     discord: chat.data?.discord ?? new Map(),
+    telegram: chat.data?.telegram ?? new Map(),
     qq_official: chat.data?.qq_official ?? new Map(),
   }
   return {
@@ -283,6 +287,15 @@ export type DiscordPublishConfig = {
   sendArtifactsAsFile: boolean
 }
 
+export type TelegramPublishConfig = {
+  botToken: string
+  groupTriggerOnMention: boolean
+  groupTriggerOnNewMessage: boolean
+  groupReplyMode: 'reply' | 'new' | 'none'
+  privateReplyMode: 'reply' | 'new' | 'none'
+  sendArtifactsAsFile: boolean
+}
+
 export type QQOfficialPublishConfig = {
   appId: string
   appSecret: string
@@ -323,6 +336,7 @@ export type PublishConfig = {
   feishuConfig?: FeishuPublishConfig | null
   slackConfig?: SlackPublishConfig | null
   discordConfig?: DiscordPublishConfig | null
+  telegramConfig?: TelegramPublishConfig | null
   qqOfficialConfig?: QQOfficialPublishConfig | null
   chatAppConfig?: ChatAppPublishConfig | null
   scheduleConfig?: SchedulePublishConfig | SchedulePublishConfig[] | null
@@ -356,6 +370,7 @@ export function usePublishAgent() {
         ...(config.feishuConfig !== undefined && { feishuConfig: config.feishuConfig }),
         ...(config.slackConfig !== undefined && { slackConfig: config.slackConfig }),
         ...(config.discordConfig !== undefined && { discordConfig: config.discordConfig }),
+        ...(config.telegramConfig !== undefined && { telegramConfig: config.telegramConfig }),
         ...(config.qqOfficialConfig !== undefined && {
           qqOfficialConfig: config.qqOfficialConfig,
         }),
@@ -385,6 +400,7 @@ export type ConfigurableChannel =
   | 'feishu'
   | 'slack'
   | 'discord'
+  | 'telegram'
   | 'qq_official'
   | 'chat_app'
   | 'schedule'
@@ -400,6 +416,7 @@ export type SaveChannelConfigVars =
   | { id: string; channel: 'feishu'; config: FeishuPublishConfig }
   | { id: string; channel: 'slack'; config: SlackPublishConfig }
   | { id: string; channel: 'discord'; config: DiscordPublishConfig }
+  | { id: string; channel: 'telegram'; config: TelegramPublishConfig }
   | { id: string; channel: 'qq_official'; config: QQOfficialPublishConfig }
   | { id: string; channel: 'chat_app'; config: ChatAppPublishConfig }
   | { id: string; channel: 'schedule'; config: SchedulePublishConfig | SchedulePublishConfig[] }

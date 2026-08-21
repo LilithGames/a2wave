@@ -18,6 +18,7 @@ import {
   KeyRound,
   MessagesSquare,
   Network,
+  Send,
   Slack,
 } from 'lucide-react'
 
@@ -29,6 +30,7 @@ export type ChannelKey =
   | 'feishu'
   | 'slack'
   | 'discord'
+  | 'telegram'
   | 'qq_official'
   | 'schedule'
   | 'chat_app'
@@ -118,6 +120,14 @@ export const CHANNEL_REGISTRY: readonly ChannelMeta[] = [
     switchLabelKey: 'agentPublish.discordChannelEnabled',
   },
   {
+    key: 'telegram',
+    category: 'chatbot',
+    icon: Send,
+    titleKey: 'agentPublish.channelTelegram',
+    descKey: 'agentPublish.cardDescTelegram',
+    switchLabelKey: 'agentPublish.telegramChannelEnabled',
+  },
+  {
     key: 'qq_official',
     category: 'chatbot',
     icon: Bot,
@@ -178,6 +188,7 @@ const CONFIGURABLE_CHANNELS = [
   'feishu',
   'slack',
   'discord',
+  'telegram',
   'qq_official',
   'chat_app',
   'schedule',

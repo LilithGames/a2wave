@@ -23,7 +23,6 @@ import { X_A2WAVE_CHANNEL_B64_HEADER } from '../../a2a/caller.js'
 import type { GatewayCaller } from '../../middleware/gateway-auth.js'
 import { logger } from '../logger.js'
 import {
-  RESERVED_CONTEXT_KEYS,
   buildChatAppChannel as _buildChatAppChannelRaw,
   buildDebugChannel as _buildDebugChannelRaw,
   buildDiscordChannel as _buildDiscordChannelRaw,
@@ -31,8 +30,10 @@ import {
   buildGatewayChannel as _buildGatewayChannelRaw,
   buildScheduleChannel as _buildScheduleChannelRaw,
   buildSlackChannel as _buildSlackChannelRaw,
+  buildTelegramChannel as _buildTelegramChannelRaw,
   decodeUpstreamChannelHeader,
   encodeChannelContextHeader,
+  RESERVED_CONTEXT_KEYS,
   stripReservedContextKeys,
 } from '../run-channel.js'
 
@@ -61,6 +62,10 @@ const buildSlackChannel: (
 const buildDiscordChannel: (
   ...a: Parameters<typeof _buildDiscordChannelRaw>
 ) => ReturnType<typeof _buildDiscordChannelRaw>['ctx'] = (...a) => _buildDiscordChannelRaw(...a).ctx
+const buildTelegramChannel: (
+  ...a: Parameters<typeof _buildTelegramChannelRaw>
+) => ReturnType<typeof _buildTelegramChannelRaw>['ctx'] = (...a) =>
+  _buildTelegramChannelRaw(...a).ctx
 
 function makeCtx(headers: Record<string, string> = {}, remoteAddress?: string): Context {
   return {
@@ -134,6 +139,46 @@ describe('native chat channel builders', () => {
       channel_info: { application_id: '123', channel_id: '456' },
     })
     if (ctx.channel_type === 'discord') expect(ctx.channel_info.guild_id).toBeUndefined()
+  })
+
+  it('builds a Telegram private channel with optional thread fields omitted', () => {
+    const ctx = buildTelegramChannel({
+      botId: '4242',
+      chatId: '555',
+      chatType: 'private',
+      messageId: '11',
+      senderUserId: '9',
+      senderName: 'Ada',
+    })
+
+    expect(runChannelContextSchema.parse(ctx)).toEqual(ctx)
+    expect(ctx).toMatchObject({
+      channel_type: 'telegram',
+      user_info: null,
+      display_name: 'Ada',
+      channel_info: { bot_id: '4242', chat_id: '555', chat_type: 'private', message_id: '11' },
+    })
+    if (ctx.channel_type === 'telegram') {
+      expect(ctx.channel_info.message_thread_id).toBeUndefined()
+    }
+  })
+
+  it('keeps the forum topic id for a Telegram supergroup message', () => {
+    const ctx = buildTelegramChannel({
+      botId: '4242',
+      chatId: '-1001',
+      chatType: 'supergroup',
+      messageId: '13',
+      messageThreadId: '77',
+      senderUserId: '9',
+    })
+
+    expect(runChannelContextSchema.parse(ctx)).toEqual(ctx)
+    // No sender name means no display_name key at all, rather than an empty string.
+    expect(ctx.display_name).toBeUndefined()
+    if (ctx.channel_type === 'telegram') {
+      expect(ctx.channel_info.message_thread_id).toBe('77')
+    }
   })
 })
 

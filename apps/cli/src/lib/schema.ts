@@ -70,6 +70,7 @@ const ENUM_FLAGS: Record<string, { values: string[]; descriptions?: Record<strin
       feishu: 'Feishu bot; needs feishuConfig',
       slack: 'Slack bot; needs slackConfig',
       discord: 'Discord bot; needs discordConfig',
+      telegram: 'Telegram bot; needs telegramConfig',
       qq_official: 'QQ Official bot; credentials must already be configured',
       schedule: 'Cron trigger; fires unconditionally, needs scheduleConfig',
       oauth: 'IDaaS-authenticated gateway invocation',

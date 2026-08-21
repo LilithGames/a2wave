@@ -54,6 +54,7 @@ export interface TestAgent {
   feishuConfig: unknown | null
   slackConfig: unknown | null
   discordConfig: unknown | null
+  telegramConfig: unknown | null
   chatAppConfig: {
     displayName?: string
     welcomeMessage?: string
@@ -106,6 +107,7 @@ export function createTestAgent(overrides: Partial<TestAgent> = {}): TestAgent {
     feishuConfig: null,
     slackConfig: null,
     discordConfig: null,
+    telegramConfig: null,
     chatAppConfig: null,
     scheduleConfig: null,
     publishedAt: null,

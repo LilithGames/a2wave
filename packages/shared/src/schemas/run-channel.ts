@@ -116,6 +116,25 @@ export const discordChannelInfoSchema = z.object({
 })
 export type DiscordChannelInfo = z.infer<typeof discordChannelInfoSchema>
 
+// ── Channel info: Telegram ───────────────────────────────────────────────────
+//
+// `chat_id` is the reply address for every scene (private / group / supergroup /
+// channel), and `message_id` is scoped to that chat rather than being globally
+// unique — so both are required to address a reply. `message_thread_id` carries a
+// supergroup forum topic, which behaves like a Discord thread.
+export const telegramChannelInfoSchema = z.object({
+  /** Numeric bot id parsed from the token prefix — the Telegram analogue of application_id. */
+  bot_id: z.string().min(1),
+  /** Signed int64 rendered as a string: negative for groups/supergroups/channels. */
+  chat_id: z.string().min(1),
+  chat_type: z.enum(['private', 'group', 'supergroup', 'channel']),
+  message_id: z.string().min(1),
+  /** Forum topic id inside a supergroup, when the message came from one. */
+  message_thread_id: z.string().min(1).optional(),
+  sender_user_id: z.string().min(1),
+})
+export type TelegramChannelInfo = z.infer<typeof telegramChannelInfoSchema>
+
 // ── Channel info: QQ Official ────────────────────────────────────────────────
 const qqOfficialChannelInfoBase = {
   app_id: z.string().min(1),
@@ -230,6 +249,12 @@ export const runChannelContextSchema = z.discriminatedUnion('channel_type', [
     display_name: z.string().min(1).optional(),
   }),
   z.object({
+    channel_type: z.literal('telegram'),
+    channel_info: telegramChannelInfoSchema,
+    user_info: userInfoSchema.nullable(),
+    display_name: z.string().min(1).optional(),
+  }),
+  z.object({
     channel_type: z.literal('qq_official'),
     channel_info: qqOfficialChannelInfoSchema,
     user_info: userInfoSchema.nullable(),
@@ -280,6 +305,7 @@ export type RunChannelContextA2A = Extract<RunChannelContext, { channel_type: 'a
 export type RunChannelContextFeishu = Extract<RunChannelContext, { channel_type: 'feishu' }>
 export type RunChannelContextSlack = Extract<RunChannelContext, { channel_type: 'slack' }>
 export type RunChannelContextDiscord = Extract<RunChannelContext, { channel_type: 'discord' }>
+export type RunChannelContextTelegram = Extract<RunChannelContext, { channel_type: 'telegram' }>
 export type RunChannelContextQQOfficial = Extract<
   RunChannelContext,
   { channel_type: 'qq_official' }

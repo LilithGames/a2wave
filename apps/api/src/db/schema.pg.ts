@@ -20,6 +20,7 @@ import {
   SKILL_DEFAULTS,
   type scheduleConfigSchema,
   type slackConfigSchema,
+  type telegramConfigSchema,
 } from '@a2wave/shared'
 import { sql } from 'drizzle-orm'
 import {
@@ -580,6 +581,8 @@ export const agents = pgTable(
     slackConfig: jsonb('slack_config').$type<z.input<typeof slackConfigSchema>>(),
     /** Discord Gateway bot configuration JSON. */
     discordConfig: jsonb('discord_config').$type<z.input<typeof discordConfigSchema>>(),
+    /** Telegram Bot API long-polling configuration JSON. */
+    telegramConfig: jsonb('telegram_config').$type<z.input<typeof telegramConfigSchema>>(),
     /** QQ Official Bot WebSocket Gateway configuration JSON. */
     qqOfficialConfig: jsonb('qq_official_config').$type<z.input<typeof qqOfficialConfigSchema>>(),
     /** Chat app page presentation config JSON (copy only — never credentials). */
@@ -779,6 +782,13 @@ export const runs = pgTable(
             mimeType?: string
             size?: number
           }
+        | {
+            source: 'telegram'
+            remoteId: string
+            name: string
+            mimeType?: string
+            size?: number
+          }
       )[]
     }>(),
     /** Run trigger transport. */
@@ -789,6 +799,7 @@ export const runs = pgTable(
         'feishu',
         'slack',
         'discord',
+        'telegram',
         'qq_official',
         'a2a',
         'schedule',
@@ -870,7 +881,7 @@ export const runs = pgTable(
     nativeChatEventUnique: uniqueIndex('runs_native_chat_event_unique')
       .on(table.initiatorAgentId, table.triggerSource, table.triggerEventId)
       .where(
-        sql`trigger_source IN ('slack', 'discord', 'qq_official') AND trigger_event_id IS NOT NULL`,
+        sql`trigger_source IN ('slack', 'discord', 'telegram', 'qq_official') AND trigger_event_id IS NOT NULL`,
       ),
     userIdIdx: index('runs_user_id_idx').on(table.userId),
     // Per-agent time series (GET /agents/:id/stats/timeseries): every query is
