@@ -1,13 +1,3 @@
-import { Card, CardContent } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import {
-  type AgentTimeseries,
-  type AgentTimeseriesPoint,
-  type TimeseriesRange,
-  useAgentTimeseries,
-} from '@/hooks/use-runs'
-import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
-import { formatDuration } from '@/lib/utils'
 import dayjs from 'dayjs'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,6 +14,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { Card, CardContent } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  type AgentTimeseries,
+  type AgentTimeseriesPoint,
+  type TimeseriesRange,
+  useAgentTimeseries,
+} from '@/hooks/use-runs'
+import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
+import { formatDuration } from '@/lib/utils'
 import {
   ACTIVE_DOT_PROPS,
   AXIS_PROPS,
@@ -145,11 +145,15 @@ function TrendCard({
   title,
   total,
   hint,
+  legend,
   children,
 }: {
   title: ReactNode
   total: string
   hint?: string
+  /** `[label, color]` per series. Required for multi-series charts, where the
+      tooltip alone leaves identity carried by color until the user hovers. */
+  legend?: ReadonlyArray<readonly [string, string]>
   children: ReactNode
 }) {
   return (
@@ -160,6 +164,20 @@ function TrendCard({
           {total}
         </div>
         {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+        {legend && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {legend.map(([label, color]) => (
+              <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span
+                  className="size-2 shrink-0 rounded-[2px]"
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                />
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
         {/* ResponsiveContainer measures its parent, so the height must be
             explicit — inside a grid child it would otherwise collapse to 0. */}
         <div className="mt-4 h-[200px] w-full">{children}</div>
@@ -312,6 +330,10 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
           <TrendCard
             title={t('agentOverview.chartTokensTitle')}
             total={formatTokens(totals.tokens)}
+            legend={[
+              [t('agentOverview.tokenInput'), SERIES_COLORS.tokenInput],
+              [t('agentOverview.tokenOutput'), SERIES_COLORS.tokenOutput],
+            ]}
           >
             {isLoading ? (
               <Skeleton className="h-full w-full" />
@@ -347,6 +369,11 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
                       />
                     )}
                   />
+                  {/* Stacked: input + output are parts of the total in the card
+                      header, so the upper edge is the whole. The two fills need
+                      distinguishable hues *and* a surface-colored seam — output is
+                      routinely ~1% of input, so without the seam the thin band
+                      collapses into the boundary and the chart reads as one series. */}
                   <Area
                     dataKey="tokenInput"
                     stackId="tokens"
@@ -360,7 +387,7 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
                     stackId="tokens"
                     stroke={SERIES_COLORS.tokenOutput}
                     fill={SERIES_COLORS.tokenOutput}
-                    fillOpacity={0.18}
+                    fillOpacity={0.28}
                     strokeWidth={2}
                   />
                 </AreaChart>

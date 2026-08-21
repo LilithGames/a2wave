@@ -132,6 +132,35 @@ text.
 
 Reference implementations: `device.tsx` (warning panel), `cli-tokens-card.tsx` (one-time secret
 stated as a plain description), `agent-detail/publish/api-key-list.tsx` (both, side by side).
+## Chart series colors
+
+Charts draw their series from `--color-chart-series-N`, assigned **in fixed order and
+never cycled**. Do not reach for `primary`, `interactive-foreground`, or a status token:
+
+- `primary` is a brand **fill**, not a plottable hue. In Neo Yellow it is a bright lime
+  (OKLCH L 0.92) that disappears against a light plot surface.
+- `primary` and `interactive-foreground` are one shade apart — normal-vision OKLab
+  ΔE 12.3, below the 15 floor. Two series painted with them read as **one** series, which
+  is exactly how a stacked chart hid a 16× difference between its two measures.
+- Status tokens are reserved for good/warning/serious/critical and must not become
+  "series 3". (A *lone* series may use one where the hue carries meaning — the duration
+  chart's amber — since there is no adjacent hue to separate from.)
+
+**Validate a categorical pair; do not eyeball it.** The `dataviz` skill ships
+`scripts/validate_palette.js`, which checks the lightness band (light `0.43–0.77`, dark
+`0.48–0.67`), a chroma floor, colorblind separation, the normal-vision ΔE ≥ 15 floor, and
+contrast against the surface:
+
+```
+node scripts/validate_palette.js "#4f46e5,#eb6834" --mode light
+```
+
+Every theme must define the full slot set. A theme missing one inherits a value and ships
+a chart that is broken **only under that theme** — covered by a test in
+`agent-detail/__tests__/chart-theme.test.ts`.
+
+For **≥ 2 series a legend is always present**, so identity is never carried by color alone
+until the user hovers.
 
 ## Hover and selected states
 

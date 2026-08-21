@@ -53,11 +53,21 @@ export const RUN_STATUS_LABEL_KEYS: Record<RunStatusKey, string> = {
   cancelled: 'dashboard.statusCancelled',
 }
 
-/** Single-series lines. The card title names the metric, so no legend needed. */
+/**
+ * Chart series colors.
+ *
+ * Input/Output use the dedicated categorical pair rather than
+ * `primary` / `interactive-foreground`: those two are one shade apart (normal-vision
+ * OKLab dE 12.3, below the 15 floor), which is why the stacked token areas read as a
+ * single band. Slots are assigned in fixed order and never cycled.
+ *
+ * `duration` keeps `warning` because it is a lone series — no adjacent hue to separate
+ * from — and the amber reads as "time/attention" rather than as a status here.
+ */
 export const SERIES_COLORS = {
-  askers: 'var(--color-primary)',
-  tokenInput: 'var(--color-primary)',
-  tokenOutput: 'var(--color-interactive-foreground)',
+  askers: 'var(--color-chart-series-1)',
+  tokenInput: 'var(--color-chart-series-1)',
+  tokenOutput: 'var(--color-chart-series-2)',
   duration: 'var(--color-warning)',
 } as const
 
