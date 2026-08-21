@@ -855,6 +855,13 @@
       "when": 1787312090314,
       "tag": "0121_cold_lifeguard",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "6",
+      "when": 1787317599075,
+      "tag": "0122_stale_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

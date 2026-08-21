@@ -268,7 +268,10 @@ export async function executeChatRun(
     const prepared = await withTransaction(async (tx) => {
       const guard = await tx
         .update(runs)
-        .set({ updatedAt: new Date() })
+        // queuedAt is consumed here (into waitMs below) and cleared by the
+        // guard itself, so losing the guard also aborts the consumption and a
+        // later turn cannot inherit this turn's queue-entry mark.
+        .set({ updatedAt: new Date(), queuedAt: null })
         .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
         .returning({ id: runs.id })
       if (!didChangeOneRow(guard)) return false
@@ -280,6 +283,10 @@ export async function executeChatRun(
         order: nextOrder,
         input: stepInput,
         status: 'running',
+        // Queue wait of THIS turn: admission stamped queuedAt only on the
+        // queued branch (and cleared it on immediate acquisition), so a
+        // missing mark means the turn was dispatched without waiting.
+        waitMs: run.queuedAt ? Math.max(0, Date.now() - run.queuedAt.getTime()) : 0,
       })
 
       // Skipped on a resume: the interrupted attempt already recorded this

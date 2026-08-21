@@ -123,6 +123,11 @@ import {
   buildDebugChannel,
   stripReservedContextKeys,
 } from '../lib/run-channel.js'
+import {
+  aggregateLatencyByBucket,
+  EMPTY_BUCKET_LATENCY,
+  summarizeLatency,
+} from '../lib/run-latency-series.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
 import { persistRunTurn, recoverRunStartup, releaseEphemeralWorktree } from '../lib/run-startup.js'
 import type { ScheduleConfigInput } from '../lib/schedule-trigger.js'
@@ -833,6 +838,23 @@ app.get('/:id/stats/timeseries', async (c) => {
     .where(and(stepWindow, eq(runSteps.status, 'completed')))
     .groupBy(stepBucket)
 
+  // Queue-wait / end-to-end latency: raw completed-turn samples, aggregated in
+  // JS (see run-latency-series.ts for why not SQL). Both legs must be non-null
+  // so the averages describe one population and stack honestly; rows predating
+  // wait_ms simply drop out here while still feeding avgDurationMs above.
+  const latencyRows = await db
+    .select({ bucket: stepBucket, waitMs: runSteps.waitMs, durationMs: runSteps.durationMs })
+    .from(runSteps)
+    .innerJoin(runs, eq(runSteps.runId, runs.id))
+    .where(
+      and(
+        stepWindow,
+        eq(runSteps.status, 'completed'),
+        isNotNull(runSteps.waitMs),
+        isNotNull(runSteps.durationMs),
+      ),
+    )
+
   const statusByBucket = new Map<number, Record<string, number>>()
   for (const row of runRows) {
     const entry = statusByBucket.get(row.bucket) ?? { ...EMPTY_STATUS_COUNTS }
@@ -842,6 +864,13 @@ app.get('/:id/stats/timeseries', async (c) => {
   const askersByBucket = new Map(askerRows.map((r) => [r.bucket, r.cnt]))
   const tokensByBucket = new Map(tokenRows.map((r) => [r.bucket, toTokenTotals(r)]))
   const durationByBucket = new Map(durationRows.map((r) => [r.bucket, r]))
+  const latencySamples = latencyRows.map((r) => ({
+    bucket: r.bucket,
+    // Both filtered non-null in SQL; the fallback only narrows the type.
+    waitMs: r.waitMs ?? 0,
+    durationMs: r.durationMs ?? 0,
+  }))
+  const latencyByBucket = aggregateLatencyByBucket(latencySamples)
 
   // Gap-fill on the server: doing it client-side would mean duplicating the
   // offset arithmetic, which is the bug class this design exists to avoid.
@@ -857,10 +886,52 @@ app.get('/:id/stats/timeseries', async (c) => {
       // null, never 0 — "no requests" and "0ms responses" are different claims.
       avgDurationMs: duration?.avgMs != null ? Math.round(duration.avgMs) : null,
       durationSamples: duration?.samples ?? 0,
+      latency: latencyByBucket.get(ts) ?? EMPTY_BUCKET_LATENCY,
     }
   })
 
-  return c.json({ bucket, from, to, points })
+  // Range-level headline: percentiles cannot be recombined from per-bucket
+  // percentiles, so the client gets them precomputed.
+  return c.json({ bucket, from, to, points, latencySummary: summarizeLatency(latencySamples) })
+})
+
+/**
+ * GET /:id/stats/queue - Live queue snapshot: depth, slot occupancy, limit,
+ * and how long the queue head has been waiting.
+ *
+ * A point-in-time read, deliberately NOT persisted or bucketed: historical
+ * queue depth is not reconstructable from the schema (no transition log), so
+ * the dashboard polls this instead of pretending to have a series.
+ */
+app.get('/:id/stats/queue', async (c) => {
+  const { id } = c.req.param()
+  const { agent } = await requireAgentRead(c, id)
+
+  const queuedWhere = and(eq(runs.initiatorAgentId, id), eq(runs.status, 'queued'))
+  const [queuedRow] = await db.select({ value: count() }).from(runs).where(queuedWhere).limit(1)
+  // FIFO head — the same ordering promotion uses (getOldestQueuedRun), so the
+  // reported wait describes the run that will actually dequeue next.
+  const [head] = await db
+    .select({ queuedAt: runs.queuedAt, updatedAt: runs.updatedAt })
+    .from(runs)
+    .where(queuedWhere)
+    .orderBy(asc(runs.createdAt))
+    .limit(1)
+
+  // Rows written before the queued_at column exist with a NULL mark; their
+  // updatedAt was last touched by the queued transition, so it is the best
+  // available approximation rather than reporting "unknown".
+  const waitBase = head?.queuedAt ?? head?.updatedAt ?? null
+  return c.json({
+    queued: queuedRow?.value ?? 0,
+    // Optional on the port interface; the concrete DB adapter always has it,
+    // and a hypothetical adapter without it degrades to the running count.
+    occupied:
+      (await taskQueueDb.countOccupiedSlots?.(id)) ??
+      (await taskQueueDb.countRunsByStatus(id, 'running')),
+    maxConcurrency: agent.maxConcurrency ?? 1,
+    oldestWaitMs: waitBase ? Math.max(0, Date.now() - waitBase.getTime()) : null,
+  })
 })
 
 const SCM_INITIAL_SYNC_REQUIRED_MSG = 'SCM_INITIAL_SYNC_REQUIRED'
@@ -2432,6 +2503,10 @@ app.post('/:id/chat', async (c) => {
         .update(runs)
         .set({
           intent: parsed.data.message,
+          // Belt-and-suspenders against a stale queue-entry mark from a prior
+          // turn that died queued (e.g. failed preflight): this turn's wait
+          // must start from ITS OWN admission, not the dead turn's.
+          queuedAt: null,
           updatedAt: new Date(),
           // 复用已完成的 run 追加新一轮：清掉上一轮残留的附件 metadata，避免无附件的新一轮
           // 重放旧附件（consume-once 的补充——即时路径本轮不带附件时也不应带出旧的）。

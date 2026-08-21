@@ -1147,7 +1147,17 @@
     "rangeTooLongHint": "Pick a range of {{count}} days or fewer",
     "trendsLoadFailed": "Failed to load trends",
     "askersHint": "Distinct callers per bucket. Scheduled and plain API-key runs carry no caller and are excluded",
-    "durationHint": "Measured per turn — differs from the per-run average above"
+    "durationHint": "Measured per turn — differs from the per-run average above",
+    "chartLatencyTitle": "End-to-end time (median)",
+    "latencyHint": "Queue wait + execution per turn · P90 {{p90}} · {{count}} turns",
+    "latencyWait": "Queue wait",
+    "latencyExec": "Execution",
+    "latencyE2eP50": "End-to-end P50",
+    "noLatencyData": "No measured turns in the selected range (runs before this feature carry no wait data)",
+    "queueTitle": "Queued tasks",
+    "queueSlots": "Slots {{occupied}}/{{max}}",
+    "queueOldestWait": "head waiting {{duration}}",
+    "queueIdle": "none waiting"
   },
   "agentDetail": {
     "statTokens": "Token Usage",

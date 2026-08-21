@@ -36,6 +36,7 @@ vi.mock('../../db/client.js', async () => {
       reasoning_tokens integer,
       cache_read_tokens integer,
       cache_write_tokens integer,
+      queued_at integer,
       created_at integer NOT NULL,
       updated_at integer NOT NULL
     );
@@ -48,6 +49,7 @@ vi.mock('../../db/client.js', async () => {
       output text,
       status text NOT NULL DEFAULT 'pending',
       duration_ms integer,
+      wait_ms integer,
       created_at integer NOT NULL
     );
   `)

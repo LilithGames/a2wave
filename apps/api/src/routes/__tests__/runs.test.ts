@@ -1027,6 +1027,42 @@ describe('POST /runs/:id/execute', () => {
     expect(mockRunWithLifecycle).toHaveBeenCalledOnce()
   })
 
+  it('records the queued wait on the appended step and clears the mark', async () => {
+    // Manual execution of a queued run consumes the queue-entry mark exactly
+    // like the scheduler's dequeue path, so wait charts see one consistent
+    // measure regardless of who started the run.
+    const runAndAgent = {
+      id: 'run_1',
+      intent: 'task',
+      // The fixture serves as run AND agent; 'active' passes the run's
+      // non-terminal re-entry check and the agent's is-active check alike.
+      status: 'active',
+      initiatorAgentId: 'agt_1',
+      type: 'cursor',
+      name: 'A',
+      config: {},
+      queuedAt: new Date(Date.now() - 12_000),
+    }
+    mockDb.select.mockReturnValue(makeSelectChain(runAndAgent))
+    const insertChain = makeInsertChain()
+    mockDb.insert.mockReturnValue(insertChain)
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockRunWithLifecycle.mockResolvedValue({ success: true, output: 'done', durationMs: 100 })
+
+    const res = await app.request('/runs/run_1/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agt_1' }),
+    })
+
+    expect(res.status).toBe(200)
+    const stepValues = insertChain.values.mock.calls
+      .map((call) => call[0] as { order?: number; waitMs?: number })
+      .find((v) => v.order !== undefined)
+    expect(stepValues?.waitMs).toBeGreaterThanOrEqual(11_000)
+    expect(setCalls.some((s) => (s as { queuedAt?: unknown }).queuedAt === null)).toBe(true)
+  })
+
   it('sync 执行成功返回 result 和 durationMs', async () => {
     const runAndAgent = {
       id: 'run_1',

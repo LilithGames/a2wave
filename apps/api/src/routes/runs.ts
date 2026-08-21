@@ -700,7 +700,9 @@ app.post('/:id/execute', async (c) => {
       async (tx, scmAdmission) => {
         const updateRunResult = await tx
           .update(runs)
-          .set({ status: 'running', updatedAt: new Date() })
+          // queuedAt is consumed into the step's waitMs below; clearing it in
+          // the status CAS keeps the consumption atomic with the claim.
+          .set({ status: 'running', updatedAt: new Date(), queuedAt: null })
           .where(executeConditions)
           .returning({ id: runs.id })
         if (updateRunResult.length === 0) throw new RunAdmissionLostError()
@@ -711,6 +713,7 @@ app.post('/:id/execute', async (c) => {
           order: 1,
           input: { intent: run.intent, context: parsed.data.context },
           status: 'running',
+          waitMs: run.queuedAt ? Math.max(0, Date.now() - run.queuedAt.getTime()) : 0,
         })
         return { hasScmLease: scmAdmission.leaseId !== null }
       },

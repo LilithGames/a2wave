@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { asyncQuery } from '../../test/async-query.js'
 
 type Json = Record<string, unknown>
@@ -173,12 +173,13 @@ describe('GET /agents/:id/stats/timeseries — validation', () => {
 })
 
 describe('GET /agents/:id/stats/timeseries — shape and gap filling', () => {
-  /** Wires the agent lookup plus the four aggregate queries, in call order. */
+  /** Wires the agent lookup plus the five aggregate queries, in call order. */
   function mockAggregates(opts: {
     runRows?: unknown[]
     askerRows?: unknown[]
     tokenRows?: unknown[]
     durationRows?: unknown[]
+    latencyRows?: unknown[]
   }) {
     let call = 0
     mockDb.select.mockImplementation(() => {
@@ -187,7 +188,8 @@ describe('GET /agents/:id/stats/timeseries — shape and gap filling', () => {
       if (call === 2) return makeChain(undefined, opts.runRows ?? [])
       if (call === 3) return makeChain(undefined, opts.askerRows ?? [])
       if (call === 4) return makeChain(undefined, opts.tokenRows ?? [])
-      return makeChain(undefined, opts.durationRows ?? [])
+      if (call === 5) return makeChain(undefined, opts.durationRows ?? [])
+      return makeChain(undefined, opts.latencyRows ?? [])
     })
   }
 
@@ -231,6 +233,62 @@ describe('GET /agents/:id/stats/timeseries — shape and gap filling', () => {
     expect(json.points[0].avgDurationMs).toBeNull()
     expect(json.points[0].durationSamples).toBe(0)
     expect(json.points[1].avgDurationMs).toBe(4210)
+  })
+
+  it('aggregates queue wait and execution latency per bucket', async () => {
+    const b1 = day('2026-07-01')
+    mockAggregates({
+      latencyRows: [
+        { bucket: b1, waitMs: 1_000, durationMs: 3_000 },
+        { bucket: b1, waitMs: 3_000, durationMs: 5_000 },
+      ],
+    })
+    const res = await app.request(`${PATH}?from=2026-07-01&to=2026-07-02&${UTC}`)
+    const json = (await res.json()) as Json & {
+      points: {
+        latency: {
+          waitAvgMs: number | null
+          execAvgMs: number | null
+          e2eP50Ms: number | null
+          samples: number
+        }
+      }[]
+    }
+    expect(json.points[0].latency.waitAvgMs).toBe(2_000)
+    expect(json.points[0].latency.execAvgMs).toBe(4_000)
+    // Nearest-rank P50 of [4000, 8000] is the first value.
+    expect(json.points[0].latency.e2eP50Ms).toBe(4_000)
+    expect(json.points[0].latency.samples).toBe(2)
+    // The gap day carries nulls, never 0 — "no turns" is not "instant turns".
+    expect(json.points[1].latency.waitAvgMs).toBeNull()
+    expect(json.points[1].latency.samples).toBe(0)
+  })
+
+  it('summarizes end-to-end percentiles across the whole range', async () => {
+    // Percentiles cannot be recombined from per-bucket percentiles, so the
+    // range headline ships precomputed.
+    const rows = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => ({
+      bucket: day('2026-07-01'),
+      waitMs: 0,
+      durationMs: i * 1_000,
+    }))
+    mockAggregates({ latencyRows: rows })
+    const res = await app.request(`${PATH}?from=2026-07-01&to=2026-07-01&${UTC}`)
+    const json = (await res.json()) as Json & {
+      latencySummary: { e2eP50Ms: number | null; e2eP90Ms: number | null; samples: number }
+    }
+    expect(json.latencySummary.e2eP50Ms).toBe(5_000)
+    expect(json.latencySummary.e2eP90Ms).toBe(9_000)
+    expect(json.latencySummary.samples).toBe(10)
+  })
+
+  it('reports a null latency summary when no measured turns exist', async () => {
+    mockAggregates({})
+    const res = await app.request(`${PATH}?from=2026-07-01&to=2026-07-01&${UTC}`)
+    const json = (await res.json()) as Json & {
+      latencySummary: { e2eP50Ms: number | null; e2eP90Ms: number | null; samples: number }
+    }
+    expect(json.latencySummary).toEqual({ e2eP50Ms: null, e2eP90Ms: null, samples: 0 })
   })
 
   it('carries token totals through from the step-level aggregate', async () => {

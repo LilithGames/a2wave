@@ -129,6 +129,37 @@ describe('taskQueueDb runtime status validation', () => {
     expect(runSpy).not.toHaveBeenCalled()
   })
 
+  it('updateRunStatus stamps queuedAt on the queued transition', async () => {
+    // The fallback (non-admitRun) queue path must mark queue entry the same
+    // way admission does, or its turns would all report wait_ms = 0.
+    mockDbSet.mockReturnValue({ where: () => Promise.resolve(undefined) })
+
+    await taskQueueDb.updateRunStatus('run_1', 'queued')
+
+    expect(mockDbSet).toHaveBeenCalledWith(expect.objectContaining({ queuedAt: expect.any(Date) }))
+  })
+
+  it('updateRunStatus clears queuedAt on the running transition', async () => {
+    // The fallback path only writes 'running' on immediate acquisition (a
+    // queued promotion goes through tryTransitionRunStatus), so a leftover
+    // mark here is stale by definition.
+    mockDbSet.mockReturnValue({ where: () => Promise.resolve(undefined) })
+
+    await taskQueueDb.updateRunStatus('run_1', 'running')
+
+    expect(mockDbSet).toHaveBeenCalledWith(expect.objectContaining({ queuedAt: null }))
+  })
+
+  it('updateRunStatus leaves queuedAt alone on terminal transitions', async () => {
+    mockDbSet.mockReturnValue({ where: () => Promise.resolve(undefined) })
+
+    await taskQueueDb.updateRunStatus('run_1', 'failed')
+
+    expect(mockDbSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ queuedAt: expect.anything() }),
+    )
+  })
+
   it('getRunsByStatus 传入非法 status 时返回空数组', async () => {
     const allSpy = vi.fn().mockReturnValue([{ id: 'run_1' }])
     chainSelect({ get: () => null, all: allSpy })
@@ -256,6 +287,36 @@ describe('taskQueueDb queue admission', () => {
     await taskQueueDb.admitRun?.('agt_1', 'run_2', 1)
 
     expect(statusWrites.at(-1)).toMatchObject({ status: 'queued', ownerInstanceId: null })
+  })
+
+  it('stamps queuedAt when admission queues the run', async () => {
+    // queuedAt is the queue-entry mark the step insert later turns into
+    // wait_ms; without it every queued turn would report an unknown wait.
+    const tx = admissionTx([[], [], [{ value: 0 }]], [{ id: 'run_2' }])
+    mockListActiveExecutionLeases.mockReturnValue([{ runId: 'run_prev', agentId: 'agt_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: null }) => unknown) =>
+        callback(tx, { leaseId: null }),
+    )
+
+    await taskQueueDb.admitRun?.('agt_1', 'run_2', 1)
+
+    expect(statusWrites.at(-1)?.queuedAt).toBeInstanceOf(Date)
+  })
+
+  it('clears queuedAt when admission acquires a slot immediately', async () => {
+    // A reused conversation row can carry a stale mark from an earlier turn
+    // that queued and was then cancelled. An immediate acquisition means THIS
+    // turn never waited, so the stale mark must not survive into its wait_ms.
+    const tx = admissionTx([[], []], [{ id: 'run_1' }])
+    mockWithAdmission.mockImplementation(
+      (_input, callback: (executor: typeof tx, admission: { leaseId: null }) => unknown) =>
+        callback(tx, { leaseId: null }),
+    )
+
+    await taskQueueDb.admitRun?.('agt_1', 'run_1', 1)
+
+    expect(statusWrites.at(-1)).toMatchObject({ status: 'running', queuedAt: null })
   })
 
   it('rolls immediate SCM admission back when its durable lease cannot be activated', async () => {

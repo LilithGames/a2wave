@@ -857,6 +857,15 @@ export const runs = sqliteTable(
     cacheReadTokens: integer('cache_read_tokens'),
     /** Cumulative cache-write tokens. */
     cacheWriteTokens: integer('cache_write_tokens'),
+    /**
+     * When the CURRENT turn entered the queue. Transient, per-turn: stamped by
+     * every status write that sets 'queued', consumed (read + cleared) in the
+     * same transaction that inserts the turn's run_step, where it becomes the
+     * step's wait_ms. NULL = the pending turn was dispatched immediately.
+     * Cleared on cancellation and on conversation-row reuse so a stale mark
+     * can never inflate a later turn's wait.
+     */
+    queuedAt: integer('queued_at', { mode: 'timestamp' }),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -947,6 +956,13 @@ export const runSteps = sqliteTable(
       .default('pending'),
     /** Duration in milliseconds */
     durationMs: integer('duration_ms'),
+    /**
+     * Milliseconds this turn waited between entering the queue and execution
+     * start (runs.queuedAt -> step insert). 0 = dispatched immediately without
+     * queueing; NULL = row predates the column, wait unknown — charts must
+     * treat NULL as "no data", never as 0.
+     */
+    waitMs: integer('wait_ms'),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),

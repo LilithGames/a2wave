@@ -30,7 +30,9 @@ export async function claimRunCancellation(
   return withScmPathMutation(async (tx) => {
     const cancelled = await tx
       .update(runs)
-      .set({ status: 'cancelled', updatedAt: new Date() })
+      // queuedAt: a cancelled queued turn never materializes a step, so no
+      // consumer would clear the mark — drop it with the claim.
+      .set({ status: 'cancelled', queuedAt: null, updatedAt: new Date() })
       .where(and(eq(runs.id, runId), eq(runs.status, expectedStatus)))
       .returning({ id: runs.id })
     if (cancelled.length === 1 && expectedStatus === 'queued') {

@@ -108,6 +108,29 @@ export function useAgentStats(agentId: string | undefined) {
   })
 }
 
+export type AgentQueueStats = {
+  queued: number
+  occupied: number
+  maxConcurrency: number
+  /** Wait of the FIFO head — the run that dequeues next; null when nothing is queued. */
+  oldestWaitMs: number | null
+}
+
+export function useAgentQueueStats(agentId: string | undefined) {
+  return useQuery({
+    queryKey: ['agent-queue-stats', agentId],
+    queryFn: async () => {
+      const res = await fetch(`/api/agents/${agentId}/stats/queue`, { credentials: 'include' })
+      if (!res.ok) throw new Error('Failed to fetch agent queue stats')
+      return res.json() as Promise<AgentQueueStats>
+    },
+    enabled: !!agentId,
+    // Faster than the 30s KPI poll: the queue is the page's most volatile
+    // number, and a stale "queued 5" next to live status badges reads as a bug.
+    refetchInterval: 15_000,
+  })
+}
+
 /** The viewer's UTC offset, in inverted minutes, on a given calendar date. */
 function dayjsOffsetMinutes(isoDate: string): number {
   const at = new Date(`${isoDate}T12:00:00`)
@@ -137,6 +160,15 @@ export type TimeseriesRange = {
   bucket: TimeseriesBucket
 }
 
+/** Queue-wait / execution latency of one bucket; null values mean "no measured turns". */
+export type BucketLatency = {
+  waitAvgMs: number | null
+  execAvgMs: number | null
+  e2eP50Ms: number | null
+  e2eP90Ms: number | null
+  samples: number
+}
+
 export type AgentTimeseriesPoint = {
   /** Bucket start as an absolute instant, already aligned to the viewer's day. */
   ts: string
@@ -147,6 +179,7 @@ export type AgentTimeseriesPoint = {
   /** null (not 0) when no completed turns landed in this bucket. */
   avgDurationMs: number | null
   durationSamples: number
+  latency: BucketLatency
 }
 
 export type AgentTimeseries = {
@@ -154,6 +187,8 @@ export type AgentTimeseries = {
   from: string
   to: string
   points: AgentTimeseriesPoint[]
+  /** Range-wide percentiles — not recombinable from per-bucket values, so precomputed. */
+  latencySummary: { e2eP50Ms: number | null; e2eP90Ms: number | null; samples: number }
 }
 
 export function useAgentTimeseries(

@@ -100,6 +100,7 @@ const WIDE_INTEGER_COLUMNS = new Set([
   'cache_write_tokens',
   // Durations in milliseconds pass 32 bits after ~24.8 days.
   'duration_ms',
+  'wait_ms',
 ])
 
 /**

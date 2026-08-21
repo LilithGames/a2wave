@@ -42,6 +42,8 @@ type ChartRow = AgentTimeseriesPoint &
     label: string
     tokenInput: number
     tokenOutput: number
+    latencyWait: number | null
+    latencyExec: number | null
   }
 
 /** Tooltip rows are `[label, formattedValue, swatchColor?]`. */
@@ -149,6 +151,7 @@ function TrendCard({
   total,
   hint,
   legend,
+  className,
   children,
 }: {
   title: ReactNode
@@ -157,10 +160,12 @@ function TrendCard({
   /** `[label, color]` per series. Required for multi-series charts, where the
       tooltip alone leaves identity carried by color until the user hovers. */
   legend?: ReadonlyArray<readonly [string, string]>
+  /** Grid placement, e.g. `lg:col-span-2` for the odd fifth card. */
+  className?: string
   children: ReactNode
 }) {
   return (
-    <Card>
+    <Card className={className}>
       <CardContent className="p-5">
         <h3 className="text-sm font-medium text-foreground">{title}</h3>
         <div className="mt-1 text-[28px] font-semibold leading-none tabular-nums text-foreground">
@@ -212,10 +217,15 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
       cancelled: p.runs.cancelled,
       tokenInput: p.tokens.input,
       tokenOutput: p.tokens.output,
+      // Averages, not percentiles: only averages stack honestly, and the two
+      // stacked bands must sum to the mean end-to-end time.
+      latencyWait: p.latency?.waitAvgMs ?? null,
+      latencyExec: p.latency?.execAvgMs ?? null,
     }))
   }, [data, range.bucket])
 
   const totals = useMemo(() => summarize(data), [data])
+  const latencySummary = data?.latencySummary
 
   function handlePresetChange(next: RangePreset) {
     setPreset(next)
@@ -444,6 +454,86 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
                     activeDot={ACTIVE_DOT_PROPS}
                   />
                 </LineChart>
+              </ResponsiveContainer>
+            )}
+          </TrendCard>
+
+          <TrendCard
+            title={t('agentOverview.chartLatencyTitle')}
+            // Fifth card in a two-column grid: spanning the row beats leaving
+            // a blank half, and a wide canvas suits a time series anyway.
+            className="lg:col-span-2"
+            total={formatDuration(latencySummary?.e2eP50Ms ?? undefined)}
+            hint={
+              latencySummary && latencySummary.samples > 0
+                ? t('agentOverview.latencyHint', {
+                    p90: formatDuration(latencySummary.e2eP90Ms ?? undefined),
+                    count: latencySummary.samples,
+                  })
+                : undefined
+            }
+            legend={[
+              [t('agentOverview.latencyWait'), SERIES_COLORS.latencyWait],
+              [t('agentOverview.latencyExec'), SERIES_COLORS.latencyExec],
+            ]}
+          >
+            {isLoading ? (
+              <Skeleton className="h-full w-full" />
+            ) : !latencySummary || latencySummary.samples === 0 ? (
+              // Runs exist but none carry wait data ⇒ they predate the wait_ms
+              // column. Saying "no data" next to a populated Duration chart
+              // would read as a bug, so name the actual reason.
+              <EmptyChart message={totals.runs > 0 ? 'agentOverview.noLatencyData' : undefined} />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="label" {...AXIS_PROPS} />
+                  <YAxis tickFormatter={(v) => formatDuration(Number(v))} {...AXIS_PROPS} />
+                  <Tooltip
+                    content={({ active, label, payload }) => (
+                      <TrendTooltip
+                        active={active}
+                        label={label as string}
+                        rows={[
+                          [
+                            t('agentOverview.latencyWait'),
+                            formatDuration(seriesValue(payload, 'latencyWait') ?? undefined),
+                            SERIES_COLORS.latencyWait,
+                          ],
+                          [
+                            t('agentOverview.latencyExec'),
+                            formatDuration(seriesValue(payload, 'latencyExec') ?? undefined),
+                            SERIES_COLORS.latencyExec,
+                          ],
+                        ]}
+                      />
+                    )}
+                  />
+                  {/* STACKED, unlike the token chart: the two legs are one
+                      journey — their sum IS the mean end-to-end time, which is
+                      the quantity the card is titled after. Wait sits on the
+                      baseline so a mostly-zero band means "rarely queues" at a
+                      glance, and any amber lift is queueing pressure. */}
+                  <Area
+                    dataKey="latencyWait"
+                    stackId="latency"
+                    stroke={SERIES_COLORS.latencyWait}
+                    fill={SERIES_COLORS.latencyWait}
+                    fillOpacity={0.16}
+                    strokeWidth={2}
+                    connectNulls={false}
+                  />
+                  <Area
+                    dataKey="latencyExec"
+                    stackId="latency"
+                    stroke={SERIES_COLORS.latencyExec}
+                    fill={SERIES_COLORS.latencyExec}
+                    fillOpacity={0.16}
+                    strokeWidth={2}
+                    connectNulls={false}
+                  />
+                </AreaChart>
               </ResponsiveContainer>
             )}
           </TrendCard>

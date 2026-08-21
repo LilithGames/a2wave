@@ -1147,7 +1147,17 @@
     "rangeTooLongHint": "请选择不超过 {{count}} 天的时间范围",
     "trendsLoadFailed": "趋势数据加载失败",
     "askersHint": "每个时间桶内的去重调用者。定时任务与纯 API Key 调用不携带调用者身份，不计入",
-    "durationHint": "按单轮统计，与上方整次运行的平均时长口径不同"
+    "durationHint": "按单轮统计，与上方整次运行的平均时长口径不同",
+    "chartLatencyTitle": "端到端耗时（中位数）",
+    "latencyHint": "每轮排队等待 + 执行 · P90 {{p90}} · 共 {{count}} 轮",
+    "latencyWait": "排队等待",
+    "latencyExec": "执行",
+    "latencyE2eP50": "端到端 P50",
+    "noLatencyData": "所选范围内暂无可测轮次（该功能上线前的运行不含等待数据）",
+    "queueTitle": "排队任务",
+    "queueSlots": "并发 {{occupied}}/{{max}}",
+    "queueOldestWait": "队首已等待 {{duration}}",
+    "queueIdle": "当前无排队"
   },
   "agentDetail": {
     "statTokens": "Token 消耗",

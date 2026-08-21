@@ -114,11 +114,13 @@ The **Chat debugging** on the detail page lets you verify the prompt and capabil
 
 ## Overview and Trends
 
-The **Overview** tab answers "how is this Agent actually being used". The top row holds cumulative metrics (total runs, success rate, average duration, today's runs, token usage); below it, **Trends** spreads the same data across a time axis so you can read direction rather than just totals.
+The **Overview** tab answers "how is this Agent actually being used". The top row holds cumulative metrics (total runs, success rate, average duration, today's runs, token usage, queued tasks); below it, **Trends** spreads the same data across a time axis so you can read direction rather than just totals.
+
+The **Queued tasks** card is a live snapshot: how many tasks are waiting, slot occupancy (`1/1` means the single concurrency slot is busy), and how long the head of the queue has been waiting. Agents run serially by default (concurrency 1), so excess requests queue; a persistent backlog here is the signal to raise the Agent's max concurrency in its settings.
 
 **Time range**: choose Today / Last 7 days / Last 30 days / Last 90 days / Custom. "Today" buckets by **hour**, the rest by **day**; a custom range of two days or less also switches to hourly. Days with no activity still appear on the axis as zero, so a break in a line means "genuinely no calls", not missing data.
 
-The four charts are:
+The five charts are:
 
 | Chart | What it shows |
 |-------|---------------|
@@ -126,6 +128,10 @@ The four charts are:
 | **Askers** | Distinct people who asked something in each bucket |
 | **Token usage** | Input and output token consumption, for watching cost trends |
 | **Avg response time (per turn)** | Mean latency of a single conversation turn |
+| **End-to-end time (median)** | Full time from request to result, stacked into **queue wait** and **execution**; the headline is the range median (P50), with P90 in the hint. A thicker amber band at the bottom means heavier queueing |
+
+> [!NOTE]
+> **End-to-end time** only covers runs made after this feature shipped; earlier turns carry no wait data and are absent from this chart.
 
 > [!NOTE]
 > **Askers** counts distinct callers per bucket: signed-in users are identified by account, external channels (Feishu and the like) by caller name, and one person arriving through several channels still counts once. Runs with no caller identity — scheduled triggers, plain API keys — are excluded.

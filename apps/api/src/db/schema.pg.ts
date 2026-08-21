@@ -860,6 +860,15 @@ export const runs = pgTable(
     cacheReadTokens: bigint('cache_read_tokens', { mode: 'number' }),
     /** Cumulative cache-write tokens. */
     cacheWriteTokens: bigint('cache_write_tokens', { mode: 'number' }),
+    /**
+     * When the CURRENT turn entered the queue. Transient, per-turn: stamped by
+     * every status write that sets 'queued', consumed (read + cleared) in the
+     * same transaction that inserts the turn's run_step, where it becomes the
+     * step's wait_ms. NULL = the pending turn was dispatched immediately.
+     * Cleared on cancellation and on conversation-row reuse so a stale mark
+     * can never inflate a later turn's wait.
+     */
+    queuedAt: timestamp('queued_at', { withTimezone: true, mode: 'date' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -950,6 +959,13 @@ export const runSteps = pgTable(
       .default('pending'),
     /** Duration in milliseconds */
     durationMs: bigint('duration_ms', { mode: 'number' }),
+    /**
+     * Milliseconds this turn waited between entering the queue and execution
+     * start (runs.queuedAt -> step insert). 0 = dispatched immediately without
+     * queueing; NULL = row predates the column, wait unknown — charts must
+     * treat NULL as "no data", never as 0.
+     */
+    waitMs: bigint('wait_ms', { mode: 'number' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
       .notNull()
       .$defaultFn(() => new Date()),

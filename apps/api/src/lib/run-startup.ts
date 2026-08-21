@@ -5,6 +5,7 @@ import { completeExecutionLease } from '../engine/execution-lease-registry.js'
 import { scheduleNext } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import { logger } from './logger.js'
+import { consumeRunQueueWait } from './run-queue-wait.js'
 import { cleanupWorkspaceOrHandOff } from './workspace-cleanup-retry.js'
 
 type TransactionRunner = <T>(callback: (tx: TransactionHandle) => Promise<T>) => Promise<T>
@@ -28,6 +29,9 @@ export async function persistRunTurn(
   deps: PersistRunTurnDeps = defaultPersistDeps,
 ): Promise<void> {
   await deps.transaction(async (tx) => {
+    // Consumed here so the wait lands on the step it belongs to and the mark
+    // cannot leak into the conversation row's next turn.
+    const waitMs = input.step.waitMs ?? (await consumeRunQueueWait(tx, input.step.runId))
     let order = input.step.order
     if (order === undefined) {
       const [lastStep] = await tx
@@ -38,7 +42,7 @@ export async function persistRunTurn(
       order = (lastStep?.maxOrder ?? 0) + 1
     }
 
-    await tx.insert(runSteps).values({ ...input.step, order })
+    await tx.insert(runSteps).values({ ...input.step, order, waitMs })
     await tx.insert(chatMessages).values(input.message)
   })
 }
