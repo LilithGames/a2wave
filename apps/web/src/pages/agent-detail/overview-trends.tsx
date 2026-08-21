@@ -64,7 +64,10 @@ function TrendTooltip({
 }) {
   if (!active) return null
   return (
-    <div className="rounded-md border border-border bg-popover px-3 py-2 shadow-md">
+    // `bg-card`, not `bg-popover`: no `--color-popover` token exists, so that class
+    // was inert and the tooltip had no fill at all — chart marks showed straight
+    // through the text. A tooltip sits over the plot and must be opaque.
+    <div className="rounded-md border border-border bg-card px-3 py-2 shadow-md">
       <div className="mb-1 text-xs font-medium text-foreground">{label}</div>
       <ul className="space-y-0.5">
         {rows.map(([name, value, color]) => (
@@ -369,25 +372,24 @@ export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
                       />
                     )}
                   />
-                  {/* Stacked: input + output are parts of the total in the card
-                      header, so the upper edge is the whole. The two fills need
-                      distinguishable hues *and* a surface-colored seam — output is
-                      routinely ~1% of input, so without the seam the thin band
-                      collapses into the boundary and the chart reads as one series. */}
+                  {/* Deliberately NOT stacked. Output runs a few percent of input, so
+                      stacked it became a band 0.5-3px tall riding on the input line —
+                      unreadable on its own, and its upper edge looked like a second
+                      series shadowing the first. Unstacked, each line is measured from
+                      zero, which is also what the tooltip's two numbers imply. The card
+                      header still carries the combined total. */}
                   <Area
                     dataKey="tokenInput"
-                    stackId="tokens"
                     stroke={SERIES_COLORS.tokenInput}
                     fill={SERIES_COLORS.tokenInput}
-                    fillOpacity={0.18}
+                    fillOpacity={0.16}
                     strokeWidth={2}
                   />
                   <Area
                     dataKey="tokenOutput"
-                    stackId="tokens"
                     stroke={SERIES_COLORS.tokenOutput}
                     fill={SERIES_COLORS.tokenOutput}
-                    fillOpacity={0.28}
+                    fillOpacity={0.16}
                     strokeWidth={2}
                   />
                 </AreaChart>

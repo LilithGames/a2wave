@@ -162,6 +162,14 @@ a chart that is broken **only under that theme** — covered by a test in
 For **≥ 2 series a legend is always present**, so identity is never carried by color alone
 until the user hovers.
 
+**Stack only for part-to-whole, and only when the parts are comparable in size.** Area
+charts are for a *single* series; two series that must be told apart are lines/areas
+measured from zero. The token chart stacked Input and Output until output — a few percent
+of input — became a 0.5–3px band riding on the input line: unreadable on its own, and its
+upper edge read as a second series shadowing the first. A combined total belongs in the
+card header, not in the geometry. Run status counts stay stacked because they genuinely
+partition one whole into comparable parts.
+
 ## Hover and selected states
 
 Interactive surfaces — list rows, tabs, ghost/outline buttons — use two dedicated tokens:
