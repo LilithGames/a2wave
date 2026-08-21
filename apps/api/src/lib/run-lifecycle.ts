@@ -21,7 +21,11 @@ import { taskQueueDb } from '../engine/task-queue-db.js'
 import type { StreamLogEntry, TokenUsage } from '../engine/types.js'
 import type { ExecuteWorkerResult } from '../worker/types.js'
 import { buildArtifactLinkLines } from './artifact-links.js'
-import { type RegisteredArtifact, scanAndRegisterArtifacts } from './artifact-storage.js'
+import {
+  discardRunArtifactsDir,
+  type RegisteredArtifact,
+  scanAndRegisterArtifacts,
+} from './artifact-storage.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { buildFeishuFallbackText } from './feishu-fallback.js'
 import { isPerAgentWorkspaceName } from './git-workspace.js'
@@ -240,16 +244,31 @@ async function cancelLateStep(stepId: string): Promise<void> {
 }
 
 async function cleanupFinishedExecution(
-  runId: string,
-  agentId: string,
+  params: Pick<FinishRunParams, 'runId' | 'agentId' | 'workDir' | 'taskId'>,
   shouldScheduleNext: boolean,
+  options: { keepArtifactsDir?: boolean } = {},
 ): Promise<void> {
+  const { runId, agentId, workDir, taskId } = params
   await cleanupWorkspaceOrHandOff(() => cleanupWorktreeIfEphemeral(runId, agentId), {
     context: { type: 'run', runId, agentId },
   })
   completeExecutionLease(runId)
   if (shouldScheduleNext) {
     void scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+  }
+  // On every terminal path: whatever the run dropped has been copied into
+  // isolated storage by now, so leaving the workspace copy behind only grows a
+  // persistent workspace by one directory per run. Failed and aborted runs
+  // never reach the scan, which is exactly why this lives here rather than
+  // beside it. Last, after the lease is released and the next run admitted: a
+  // directory artifact can be large, and its removal must not sit on the
+  // Agent's queue. An ephemeral worktree has already been removed whole by
+  // then, and the force-remove of a path inside it is a no-op.
+  //
+  // The one exception is a registration that threw: until the copy into
+  // isolated storage succeeded, the workspace copy is the only copy.
+  if (!options.keepArtifactsDir) {
+    await discardRunArtifactsDir(workDir, taskId)
   }
 }
 
@@ -531,7 +550,7 @@ export async function finishRunSuccess(
       { taskId, runId, stepId },
       'Run terminal transition recovered as failed; skipping success side effects',
     )
-    await cleanupFinishedExecution(runId, agentId, true)
+    await cleanupFinishedExecution(params, true)
     return []
   }
 
@@ -549,16 +568,18 @@ export async function finishRunSuccess(
       try {
         await cancelLateStep(stepId)
       } finally {
-        await cleanupFinishedExecution(runId, agentId, false)
+        await cleanupFinishedExecution(params, false)
       }
     } else if ((await currentStatus) === undefined) {
-      // No terminal owner remains to finish cleanup for a deleted Run.
+      // No terminal owner remains to finish cleanup for a deleted Run — but its
+      // scratch directory still has to go, or nothing ever removes it.
+      await discardRunArtifactsDir(params.workDir, params.taskId)
       completeExecutionLease(runId)
     } else if ((await currentStatus) === 'running') {
       // Recovery could not persist a terminal state. Release the in-memory
       // lease so cancellation is not left waiting forever; the running DB row
       // still prevents over-admission until recovery or cancellation repairs it.
-      await cleanupFinishedExecution(runId, agentId, true)
+      await cleanupFinishedExecution(params, true)
     }
     return []
   }
@@ -577,6 +598,10 @@ export async function finishRunSuccess(
   let successContext: Record<string, unknown> | undefined
 
   let registered: RegisteredArtifact[] = []
+  // Until registration has copied the run's files into isolated storage the
+  // workspace copy is the only copy. A run with nothing to collect is secure
+  // from the start.
+  let artifactsSecured = !(result.success && workDir)
   try {
     if (result.success) {
       // Load the step context once and reuse it for both the persist decision and
@@ -625,12 +650,22 @@ export async function finishRunSuccess(
       )[0]
       const rawPolicy = agentRow?.artifactPolicy
       const artifactPolicy = rawPolicy ? artifactPolicySchema.parse(rawPolicy) : null
-      registered = await scanAndRegisterArtifacts(runId, agentId, userId ?? null, workDir, {
-        registeredAfterMs: startTime,
-      }).catch((err) => {
-        logger.warn({ err }, 'Artifact registration failed')
-        return [] as RegisteredArtifact[]
-      })
+      try {
+        registered = await scanAndRegisterArtifacts(
+          runId,
+          agentId,
+          userId ?? null,
+          workDir,
+          params.taskId,
+        )
+        artifactsSecured = true
+      } catch (err) {
+        logger.warn(
+          { err, runId, workDir },
+          'Artifact registration failed; the run artifacts directory is left in place',
+        )
+        registered = []
+      }
       if (registered.length > 0) {
         const links = await buildArtifactLinkLines(registered, userId ?? null, artifactPolicy)
         const channelType = (successContext?.channel as { channel_type?: string } | undefined)
@@ -651,7 +686,7 @@ export async function finishRunSuccess(
   } catch (err) {
     logger.error({ err, runId, stepId }, 'Post-success side effect failed')
   } finally {
-    await cleanupFinishedExecution(runId, agentId, true)
+    await cleanupFinishedExecution(params, true, { keepArtifactsDir: !artifactsSecured })
   }
 
   // Async worklog + insight generation — fire-and-forget, does not affect caller
@@ -720,13 +755,15 @@ async function finishRunFailure(
       try {
         await cancelLateStep(stepId)
       } finally {
-        await cleanupFinishedExecution(runId, agentId, false)
+        await cleanupFinishedExecution(params, false)
       }
     } else if ((await currentStatus) === undefined) {
-      // No terminal owner remains to finish cleanup for a deleted Run.
+      // No terminal owner remains to finish cleanup for a deleted Run — but its
+      // scratch directory still has to go, or nothing ever removes it.
+      await discardRunArtifactsDir(params.workDir, params.taskId)
       completeExecutionLease(runId)
     } else if (currentStatus === 'running') {
-      await cleanupFinishedExecution(runId, agentId, true)
+      await cleanupFinishedExecution(params, true)
     }
     return
   }
@@ -781,7 +818,7 @@ async function finishRunFailure(
   } catch (err) {
     logger.error({ err, runId, stepId }, 'Post-failure side effect failed')
   } finally {
-    await cleanupFinishedExecution(runId, agentId, true)
+    await cleanupFinishedExecution(params, true)
   }
 }
 

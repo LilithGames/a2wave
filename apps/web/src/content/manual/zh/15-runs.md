@@ -110,7 +110,7 @@ Run 是 Agent 的一次执行记录。无论通过哪种方式触发，每次执
 
 Run 中产生的文件作为 **产物** 保存，可在产物列表查看与下载，运行结束后仍可追溯（`GET /api/artifacts`、`/:id/download`）。
 
-> 产物是否随磁盘保留，取决于该次调用的 worktree 清理策略（`ephemeral` 立即删 / `ttl` 保留 N 秒 / `persistent` 长期保留），见 [触发方式](/wiki/triggers) 的 `worktree` 参数。
+> 运行结束时，产物会复制到平台的产物存储中，工作区里该次运行的产物暂存目录随即删除，与 worktree 清理策略无关（`ephemeral` / `ttl` / `persistent` 管的是工作区其余部分，见 [触发方式](/wiki/triggers) 的 `worktree` 参数）。平台存储副本的保留时长由 [设置 → 产物](/wiki/artifacts) 的保留期决定。
 
 除下载外，产物还能一键生成**在线分享链接**，让对方直接预览网页或报告——见 [产物与在线分享](/wiki/artifacts)。
 

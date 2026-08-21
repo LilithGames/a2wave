@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -42,7 +42,7 @@ describe('runtime-context', () => {
       type: 'temp',
       cleanup: 'ttl',
     })
-    expect(ctx.artifacts.dir).toBe(join(resolve('/workspace'), 'artifacts'))
+    expect(ctx.artifacts.dir).toBe(join(resolve('/workspace'), 'artifacts', 'run_123'))
     expect(ctx.env).toMatchObject({
       HOME: ctx.home.dir,
       A2WAVE_AGENT_HOME: ctx.home.dir,
@@ -109,9 +109,53 @@ describe('runtime-context', () => {
     )
 
     expect(ctx.workspace.dir).toBe(resolve('/engine/default-workdir'))
-    expect(ctx.artifacts.dir).toBe(join(resolve('/engine/default-workdir'), 'artifacts'))
+    expect(ctx.artifacts.dir).toBe(join(resolve('/engine/default-workdir'), 'artifacts', 'run_123'))
     expect(ctx.env.A2WAVE_WORKSPACE_DIR).toBe(resolve('/engine/default-workdir'))
-    expect(ctx.env.A2WAVE_ARTIFACTS_DIR).toBe(join(resolve('/engine/default-workdir'), 'artifacts'))
+    expect(ctx.env.A2WAVE_ARTIFACTS_DIR).toBe(
+      join(resolve('/engine/default-workdir'), 'artifacts', 'run_123'),
+    )
+  })
+
+  it('creates the per-run artifacts directory so the Agent can write into it at once', async () => {
+    // The directory is removed when the run settles, so unlike the old flat
+    // artifacts/ on a warm workspace it never pre-exists: `cp x "$A2WAVE_ARTIFACTS_DIR/"`
+    // would fail on every run unless the platform creates it.
+    const workDir = mkdtempSync(join(tmpdir(), 'a2wave-workspace-'))
+    try {
+      const ctx = prepareRuntimeContext({ ...makeReq('agt_mkdir'), workDir })
+
+      expect(ctx.artifacts.dir).toBe(join(workDir, 'artifacts', 'run_123'))
+      expect(existsSync(ctx.artifacts.dir)).toBe(true)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  it('still prepares the context when the artifacts directory cannot be created', async () => {
+    // A read-only or otherwise unwritable workspace must not fail the run here;
+    // the engine and the collector cope with a missing directory on their own.
+    // A path through a plain file fails with ENOTDIR as any user on any OS.
+    const parent = mkdtempSync(join(tmpdir(), 'a2wave-workspace-'))
+    const blocker = join(parent, 'not-a-dir')
+    writeFileSync(blocker, '')
+    try {
+      const workDir = join(blocker, 'workspace')
+      const ctx = prepareRuntimeContext({ ...makeReq('agt_ro'), workDir })
+
+      expect(ctx.artifacts.dir).toBe(join(workDir, 'artifacts', 'run_123'))
+      expect(existsSync(ctx.artifacts.dir)).toBe(false)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the artifacts directory one flat segment when the taskId carries no run id', async () => {
+    // extractRunId falls back to the whole taskId, which contains separators.
+    // Interpolated raw it would nest the run's artifacts under invented
+    // directories — and `..` would escape the workspace entirely.
+    const ctx = prepareRuntimeContext(makeReq('agt_odd_task', '../evil/task'))
+
+    expect(ctx.artifacts.dir).toBe(join(resolve('/workspace'), 'artifacts', '___evil_task'))
   })
 
   it('fails fast when neither request workDir nor defaultWorkDir is available', async () => {

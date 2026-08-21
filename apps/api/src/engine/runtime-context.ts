@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { logger } from '../lib/logger.js'
 import type {
   AgentRuntimeContext,
   ExecuteRequest,
@@ -178,6 +179,33 @@ export function extractRunId(taskId: string): string {
   return taskId.match(/(?:^|\/)(run_[^/]+)/)?.[1] ?? taskId
 }
 
+/**
+ * Where a single execution drops the files it wants collected.
+ *
+ * Deliberately a per-execution directory *under* the workspace's `artifacts/`,
+ * not `artifacts/` itself: a workspace is shared. Runs of one Agent share their
+ * per-Agent worktree by design (resolvePerAgentWorkspace does not serialise
+ * them), and on a shared SCM checkout every Agent bound to the source shares
+ * it too. One flat drop-box therefore holds files from several live runs at
+ * once with nothing to say whose is whose — the collector used to guess from
+ * mtime, and handed one conversation's report to another conversation's user.
+ * A per-execution directory makes that ownership structural instead of inferred.
+ *
+ * Keyed by the *task id*, not the run id, because the engine is the side that
+ * has to tell the Agent where to write and the engine only ever sees the task
+ * id. For every channel that builds its task id with `buildTaskId` the two are
+ * the same thing; A2A hands the engine the caller's protocol task id as-is, and
+ * the collector must follow the engine there rather than look where the run id
+ * would have put it. Deriving both sides from one function is what makes it
+ * impossible for them to disagree.
+ *
+ * The segment is sanitised because `extractRunId` falls back to the raw task
+ * id when it carries no run id, and a task id contains separators.
+ */
+export function artifactsDirForTask(workspaceDir: string, taskId: string): string {
+  return join(workspaceDir, 'artifacts', sanitizePathSegment(extractRunId(taskId)))
+}
+
 function inferWorkspaceType(request: ExecuteRequest): RuntimeWorkspaceType {
   const workspaceType = request.agentConfig?.workspaceType
   if (workspaceType === 'scm') return 'scm-local'
@@ -254,10 +282,19 @@ export function prepareRuntimeContext(
   const runId = extractRunId(request.taskId)
   const workspaceDir = resolveWorkspaceDir(request, options)
   const workspaceType = inferWorkspaceType(request)
-  const artifactsDir = join(workspaceDir, 'artifacts')
+  const artifactsDir = artifactsDirForTask(workspaceDir, request.taskId)
 
   for (const dir of [agentHomeDir, cacheDir, configDir, tmpDir, claudeDir, codexHomeDir]) {
     mkdirSync(dir, { recursive: true })
+  }
+  // The artifacts directory is removed when the execution settles, so unlike
+  // the old flat `artifacts/` on a warm workspace it never pre-exists; an
+  // Agent doing `cp report.md "$A2WAVE_ARTIFACTS_DIR/"` would fail on every
+  // run. Best effort only: a read-only workspace must not fail the run here.
+  try {
+    mkdirSync(artifactsDir, { recursive: true })
+  } catch (err) {
+    logger.warn({ err, artifactsDir }, 'Could not create the artifacts directory for this run')
   }
 
   return {

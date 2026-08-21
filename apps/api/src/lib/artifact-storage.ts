@@ -8,16 +8,18 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
 } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import AdmZip from 'adm-zip'
 import { and, eq, gt, inArray, isNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { artifactShares, artifacts } from '../db/schema.js'
+import { artifactsDirForTask } from '../engine/runtime-context.js'
 import { deleteStaleShares } from './artifact-share.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
@@ -98,16 +100,15 @@ export interface RegisteredArtifact {
 }
 
 /**
- * 递归复制目录，逐项 lstat 跳过 symlink（含嵌套层级）。
- * 返回复制的文件总大小、文件数和最新文件 mtime（用于陈旧目录判断）。
+ * Recursively copy a directory, lstat-ing each entry so symlinks are skipped at
+ * every depth. Returns the total size and number of files copied.
  */
 function copyDirSkippingSymlinks(
   src: string,
   dest: string,
-): { totalSize: number; fileCount: number; maxMtimeMs: number } {
+): { totalSize: number; fileCount: number } {
   let totalSize = 0
   let fileCount = 0
-  let maxMtimeMs = 0
   ensureDir(dest)
   for (const entry of readdirSync(src)) {
     const srcPath = join(src, entry)
@@ -121,41 +122,130 @@ function copyDirSkippingSymlinks(
       const sub = copyDirSkippingSymlinks(srcPath, destPath)
       totalSize += sub.totalSize
       fileCount += sub.fileCount
-      maxMtimeMs = Math.max(maxMtimeMs, sub.maxMtimeMs)
     } else if (stat.isFile()) {
       copyFileSync(srcPath, destPath)
       totalSize += stat.size
       fileCount += 1
-      maxMtimeMs = Math.max(maxMtimeMs, stat.mtimeMs)
     }
   }
-  return { totalSize, fileCount, maxMtimeMs }
+  return { totalSize, fileCount }
+}
+
+/** Workspaces already reported by warnOnWorkspaceLevelArtifacts, see below. */
+const workspaceLevelArtifactsReported = new Set<string>()
+
+/**
+ * Files directly under the workspace's `artifacts/` sit one level above where
+ * the collector looks and are never collected. Two things put them there: a
+ * workspace that predates per-run directories (every run used to write to the
+ * flat `artifacts/`, and nothing ever removed it), or an Agent that hardcodes
+ * a relative `artifacts/` instead of following the injected absolute path.
+ * Name them, so either cause is diagnosable from the run's own logs rather
+ * than only from an empty artifact list.
+ *
+ * Only plain files count. Every *directory* at that level is some execution's
+ * own drop-box — a run's, or an evaluation turn's, whose taskId carries no
+ * `run_` prefix at all — and on a P4 source, where evaluations share the one
+ * checkout with chat, a name-prefix test would tell the author to write to
+ * $A2WAVE_ARTIFACTS_DIR about a directory they wrote there correctly.
+ *
+ * Reported once per workspace per process, not once per run: a workspace that
+ * predates per-run directories still holds the files those runs left at the top
+ * level, and every artifact-less run afterwards would otherwise repeat the same
+ * list forever. Once is enough to act on; a restart re-reports if it was not.
+ */
+function warnOnWorkspaceLevelArtifacts(workDir: string, runId: string): void {
+  const workspaceLevelDir = join(workDir, 'artifacts')
+  if (workspaceLevelArtifactsReported.has(workspaceLevelDir)) return
+  let strays: string[]
+  try {
+    strays = readdirSync(workspaceLevelDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+  } catch (err) {
+    // Absent is the normal case for a run that wrote nothing. Anything else —
+    // a repo that tracks a plain file named `artifacts`, say — means no run on
+    // this workspace can have a directory to collect, which is worth one line.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    workspaceLevelArtifactsReported.add(workspaceLevelDir)
+    logger.warn(
+      { err, runId, workspaceLevelDir },
+      'The workspace artifacts path is not a directory; no artifacts can be collected on this workspace',
+    )
+    return
+  }
+  if (strays.length === 0) return
+  workspaceLevelArtifactsReported.add(workspaceLevelDir)
+  logger.warn(
+    { runId, workspaceLevelDir, entries: strays.slice(0, 20) },
+    'Files found directly under the workspace artifacts directory; they belong to no run and ' +
+      'are not collected. They predate per-run artifact directories, or the Agent wrote ' +
+      'outside $A2WAVE_ARTIFACTS_DIR.',
+  )
 }
 
 /**
- * 扫描 workDir/artifacts/ 目录，将产物注册到 DB。
- * 顶层文件注册为 file 产物；顶层目录整体注册为 directory 产物（递归复制）。
- * 文件复制到隔离存储路径后批量 INSERT
+ * Drop the execution's artifacts directory once the run has settled. Keyed by
+ * the task id for the reason artifactsDirForTask gives.
+ *
+ * Registration copies every artifact into isolated storage, so the workspace
+ * copy is scratch from that point on. Removing it is what keeps a persistent
+ * workspace — a per-Agent worktree or a shared SCM checkout — from growing one
+ * directory per run forever.
+ *
+ * Async because this runs on the terminal path of every run and a directory
+ * artifact may be hundreds of megabytes across many files: a synchronous
+ * recursive delete would hold the single API event loop for the whole walk.
+ */
+export async function discardRunArtifactsDir(
+  workDir: string | undefined,
+  taskId: string,
+): Promise<void> {
+  if (!workDir) return
+  try {
+    await rm(artifactsDirForTask(workDir, taskId), { recursive: true, force: true })
+  } catch (err) {
+    logger.warn({ err, taskId, workDir }, 'Failed to remove the run artifacts directory')
+  }
+}
+
+/**
+ * Register everything this run dropped in its own artifacts directory.
+ *
+ * The source is `artifactsDirForTask(workDir, taskId)`, never the workspace-wide
+ * `artifacts/`: the workspace is shared by concurrent runs (see that helper),
+ * so scanning it registered whatever a sibling run happened to be writing.
+ * Ownership is now positional — a run can only ever see its own directory —
+ * which is why no mtime filter is needed to tell the two apart.
+ *
+ * Top-level files register as `file` artifacts; top-level directories register
+ * whole as `directory` artifacts (copied recursively).
  */
 export async function scanAndRegisterArtifacts(
   runId: string,
   agentId: string,
   userId: string | null,
   workDir: string,
-  options?: { registeredAfterMs?: number },
+  taskId: string,
 ): Promise<RegisteredArtifact[]> {
-  const sourceDir = join(workDir, 'artifacts')
+  const sourceDir = artifactsDirForTask(workDir, taskId)
   if (!existsSync(sourceDir)) {
+    warnOnWorkspaceLevelArtifacts(workDir, runId)
     return []
   }
 
   const stat = statSync(sourceDir)
   if (!stat.isDirectory()) {
+    logger.warn(
+      { runId, sourceDir },
+      'The run artifacts path is not a directory; nothing was collected',
+    )
     return []
   }
 
   const entries = readdirSync(sourceDir)
   if (entries.length === 0) {
+    warnOnWorkspaceLevelArtifacts(workDir, runId)
     return []
   }
 
@@ -166,7 +256,6 @@ export async function scanAndRegisterArtifacts(
   const retentionMs = getArtifactRetentionMs()
   const expiresAt = retentionMs > 0 ? new Date(Date.now() + retentionMs) : null
   const registered: RegisteredArtifact[] = []
-  const registeredAfterMs = options?.registeredAfterMs
 
   for (const filename of entries) {
     const srcPath = join(sourceDir, filename)
@@ -191,32 +280,16 @@ export async function scanAndRegisterArtifacts(
     let size: number
 
     if (isDirectory) {
-      const { totalSize, fileCount, maxMtimeMs } = copyDirSkippingSymlinks(srcPath, resolvedDest)
-      // 空目录不注册；目录内没有任何本次运行新产生的文件时视为上次残留
-      if (
-        (await fileCount) === 0 ||
-        (registeredAfterMs != null && maxMtimeMs < registeredAfterMs)
-      ) {
+      const { totalSize, fileCount } = copyDirSkippingSymlinks(srcPath, resolvedDest)
+      // An empty directory is not an artifact — the Agent left a shell behind.
+      if (fileCount === 0) {
         rmSync(resolvedDest, { recursive: true, force: true })
-        if ((await fileCount) > 0) {
-          logger.info(
-            { filename, runId, maxMtimeMs, registeredAfterMs },
-            'Skipping stale directory artifact from previous run',
-          )
-        }
         continue
       }
       kind = 'directory'
       mimeType = null
       size = totalSize
     } else {
-      if (registeredAfterMs != null && srcStat.mtimeMs < registeredAfterMs) {
-        logger.info(
-          { filename, runId, mtimeMs: srcStat.mtimeMs, registeredAfterMs },
-          'Skipping stale artifact from previous run',
-        )
-        continue
-      }
       copyFileSync(srcPath, resolvedDest)
       kind = 'file'
       mimeType = guessMimeType(filename)

@@ -30,9 +30,9 @@ import {
 } from './mcp-sync.js'
 import { isModelError, selectFallbackModel } from './model-fallback.js'
 import { assembleSystemPrompt, buildPromptParts } from './prompt-builder.js'
-import { prepareRuntimeContext } from './runtime-context.js'
+import { artifactsDirForTask, prepareRuntimeContext } from './runtime-context.js'
 import { type SkillFile, syncSkillsToWorkspaceAsync } from './skill-sync.js'
-import { type TemplateContext, engineTypeToAgentProviderLabel } from './template-renderer.js'
+import { engineTypeToAgentProviderLabel, type TemplateContext } from './template-renderer.js'
 import type { AgentEngine, ExecuteRequest, ExecuteResult, StreamExecuteRequest } from './types.js'
 import { accumulateUsage, extractUsageFromError } from './usage.js'
 
@@ -246,7 +246,7 @@ export abstract class BaseAgentEngine implements AgentEngine {
     if (request.runtimeContext?.artifacts.dir) {
       parts.artifactsDir = request.runtimeContext.artifacts.dir
     } else if (request.workDir) {
-      parts.artifactsDir = join(request.workDir, 'artifacts')
+      parts.artifactsDir = artifactsDirForTask(request.workDir, taskId)
     }
     const cfg = (agentConfig ?? {}) as Record<string, unknown>
     if (cfg.memoryEnabled && (cfg.memoryContextMode as string) !== 'off') {

@@ -155,6 +155,7 @@ const {
   sqliteExec,
   sqliteState,
   mockScanAndRegisterArtifacts,
+  mockDiscardRunArtifactsDir,
   mockDbGet,
   mockDbRun,
   mockDbInsertRun,
@@ -170,6 +171,7 @@ const {
   sqliteExec: vi.fn(),
   sqliteState: { inTransaction: false },
   mockScanAndRegisterArtifacts: vi.fn().mockResolvedValue([]),
+  mockDiscardRunArtifactsDir: vi.fn(),
   mockDbGet: vi.fn().mockReturnValue({ name: 'Test Agent' }),
   mockDbRun: vi.fn().mockReturnValue({ changes: 1 }),
   mockDbInsertRun: vi.fn(),
@@ -292,6 +294,7 @@ vi.mock('../qq-official-service.js', () => ({
 
 vi.mock('../artifact-storage.js', () => ({
   scanAndRegisterArtifacts: mockScanAndRegisterArtifacts,
+  discardRunArtifactsDir: mockDiscardRunArtifactsDir,
 }))
 
 const mockGetArtifactDownloadUrl = vi.hoisted(() =>
@@ -758,19 +761,77 @@ describe('finishRunSuccess', () => {
     expect(stepSetCall?.output?.error).toBeUndefined()
   })
 
-  it('passes startTime to artifact registration to avoid stale files from previous runs', async () => {
+  it('collects only the run own artifacts directory', async () => {
     await finishRunSuccess(
       { ...baseParams, workDir: '/tmp/a2wave-workdir', userId: 'usr_1' },
       { success: true, output: 'ok', chatId: undefined, durationMs: 0 },
     )
 
+    // No timestamp argument: which files belong to this run is decided by the
+    // directory it wrote them to, not by when they were written. The task id
+    // goes along because that directory is keyed by it — the engine only ever
+    // saw the task id, and on A2A that carries no run id at all.
     expect(mockScanAndRegisterArtifacts).toHaveBeenCalledWith(
       runId,
       agentId,
       'usr_1',
       '/tmp/a2wave-workdir',
-      { registeredAfterMs: baseParams.startTime },
+      baseParams.taskId,
     )
+  })
+
+  it('discards the run artifacts directory once the run settles', async () => {
+    await finishRunSuccess(
+      { ...baseParams, workDir: '/tmp/a2wave-workdir', userId: 'usr_1' },
+      { success: true, output: 'ok', chatId: undefined, durationMs: 0 },
+    )
+
+    expect(mockDiscardRunArtifactsDir).toHaveBeenCalledWith(
+      '/tmp/a2wave-workdir',
+      baseParams.taskId,
+    )
+  })
+
+  it('discards the run artifacts directory even when the run fails', async () => {
+    // A failed run never reaches the scan, so nothing else would remove what it
+    // wrote — and a persistent workspace would keep it forever.
+    await finishRunError(
+      { ...baseParams, workDir: '/tmp/a2wave-workdir' },
+      new Error('engine exploded'),
+    )
+
+    expect(mockDiscardRunArtifactsDir).toHaveBeenCalledWith(
+      '/tmp/a2wave-workdir',
+      baseParams.taskId,
+    )
+  })
+
+  it('keeps the run artifacts directory when registration itself failed', async () => {
+    // The workspace copy is the only copy until registration has copied it into
+    // isolated storage. A failed INSERT or a full disk must not turn into a
+    // silent deletion of the run's deliverables.
+    mockScanAndRegisterArtifacts.mockRejectedValueOnce(new Error('SQLITE_BUSY'))
+
+    await finishRunSuccess(
+      { ...baseParams, workDir: '/tmp/a2wave-workdir', userId: 'usr_1' },
+      { success: true, output: 'ok', chatId: undefined, durationMs: 0 },
+    )
+
+    expect(mockDiscardRunArtifactsDir).not.toHaveBeenCalled()
+    expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)
+  })
+
+  it('releases the execution lease before removing the artifacts directory', async () => {
+    // The recursive delete can be large; the Agent's next queued run must not
+    // wait behind it.
+    await finishRunSuccess(
+      { ...baseParams, workDir: '/tmp/a2wave-workdir', userId: 'usr_1' },
+      { success: true, output: 'ok', chatId: undefined, durationMs: 0 },
+    )
+
+    const leaseOrder = mockCompleteExecutionLease.mock.invocationCallOrder[0]
+    const discardOrder = mockDiscardRunArtifactsDir.mock.invocationCallOrder[0]
+    expect(leaseOrder).toBeLessThan(discardOrder)
   })
 
   it('awaits scanAndRegisterArtifacts BEFORE cleanupWorktreeIfEphemeral (no race on workDir)', async () => {
