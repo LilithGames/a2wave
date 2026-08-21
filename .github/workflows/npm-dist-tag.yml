@@ -1,0 +1,80 @@
+# a2wave npm dist-tag — move a dist-tag to an already-published version.
+#
+# Manual-only. Publishing happens in cli-publish.yml; this workflow publishes
+# nothing and creates no version. It repoints an existing dist-tag, which is why
+# it exists at all: the npm token lives only as a repository secret, so moving a
+# pointer would otherwise require putting a publish credential on a laptop.
+#
+# Note that cli-publish.yml deliberately routes a prerelease to `next` so a plain
+# `npm i -g a2wave` cannot land on an unsoaked build. Pointing `latest` at a
+# prerelease here overrides that rule, and nothing restores it automatically —
+# the next stable release moves `latest` forward again, but until then the
+# pointer stays wherever this workflow leaves it.
+#
+# Required secret: NPM_TOKEN (an npm automation token with publish rights).
+
+name: npm dist-tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published version to point at (e.g. 0.7.2 or 0.7.3-rc.2)'
+        required: true
+        type: string
+      tag:
+        description: 'dist-tag to move'
+        required: true
+        default: latest
+        type: choice
+        options:
+          - latest
+          - next
+
+permissions: {}
+
+jobs:
+  dist-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Fail fast and legibly, as cli-publish.yml does: without this the run dies
+      # later on an ENEEDAUTH, which reads as an auth problem rather than a
+      # missing repository secret.
+      - name: Check publish credentials
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN repository secret is not configured"
+            exit 1
+          fi
+
+      # A dist-tag may only name a version that exists. npm rejects a missing one
+      # anyway, but it does so after the credential is already in play; checking
+      # first turns a typo into a clean failure instead.
+      - name: Verify the version is published
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! npm view "a2wave@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::a2wave@${VERSION} is not published"
+            exit 1
+          fi
+          echo "a2wave@${VERSION} exists"
+
+      - name: Move the dist-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          echo "Before:"
+          npm dist-tag ls a2wave
+          npm dist-tag add "a2wave@${VERSION}" "${TAG}"
+          echo "After:"
+          npm dist-tag ls a2wave
