@@ -4,9 +4,9 @@ import { defineCommand } from 'citty'
 import { createClient, urlArg } from '../client.js'
 import { CliError } from '../errors.js'
 import {
-  EXAMPLE_AGENT_YAML,
   computeDiff,
   describeDestructiveDiff,
+  EXAMPLE_AGENT_YAML,
   parseAgentYaml,
   resolveRefs,
   toCreatePayload,
@@ -149,6 +149,28 @@ interface DiagnoseResult {
   ok: boolean
   meta: { scope: string; checkedAt: string }
   checks: DiagnoseCheck[]
+}
+
+interface AgentSelfReport {
+  meta: {
+    id: string
+    name: string
+    icon: string
+    description: string | null
+    status: string
+    publishStatus: string
+    channels: string[]
+    model: string | null
+  }
+  health: { ok: boolean; checks: DiagnoseCheck[] }
+  queue: {
+    running: number
+    queued: number
+    maxConcurrency: number
+    queueLimit: number
+    capacity: 'idle' | 'busy' | 'full'
+  }
+  checkedAt: string
 }
 
 interface AgentStats {
@@ -448,6 +470,40 @@ export const agentsCommand = defineCommand({
         }
         for (const c of d.checks) {
           console.log(`${sym[c.severity]} [${c.severity}] ${c.id}: ${c.message}`)
+        }
+      },
+    }),
+
+    status: defineCommand({
+      meta: {
+        name: 'status',
+        agentMeta: { risk: 'read' },
+        description: 'Agent metadata, health and live queue depth (GET /agents/:id/status)',
+      },
+      args: {
+        id: { type: 'positional', description: 'Agent ID or name', required: true },
+        ...jsonArg,
+        ...urlArg,
+      },
+      run: async ({ args }) => {
+        const client = createClient({ url: args.url as string | undefined })
+        const agentId = await client.resolveAgentId(args.id as string)
+        const result = await client.get<{ data: AgentSelfReport }>(`/api/agents/${agentId}/status`)
+        const r = result.data
+        // Set before emit(), which returns straight after printing: deciding it
+        // afterwards would make `status --json | jq` exit 0 on an unrunnable Agent.
+        if (!r.health.ok) process.exitCode = 1
+        if (emit(args, result)) return
+        console.log(`${r.meta.icon} ${r.meta.name}  [${r.meta.status}/${r.meta.publishStatus}]`)
+        console.log(`model:    ${r.meta.model ?? '(none)'}`)
+        console.log(`channels: ${r.meta.channels.join(', ') || '(none)'}`)
+        console.log(
+          `queue:    ${r.queue.capacity} — ${r.queue.running}/${r.queue.maxConcurrency} running, ${r.queue.queued} queued (limit ${r.queue.queueLimit})`,
+        )
+        console.log(`health:   ${r.health.ok ? '✓ ok' : '✗ not runnable'}`)
+        const sym = { error: '✗', warn: '!', info: '·' } as const
+        for (const c of r.health.checks) {
+          console.log(`  ${sym[c.severity]} [${c.severity}] ${c.id}: ${c.message}`)
         }
       },
     }),

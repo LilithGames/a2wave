@@ -87,6 +87,7 @@ import {
   deleteAgentWithBindingGuard,
   mutateAgentBinding,
 } from '../lib/agent-scm-binding-mutation.js'
+import { buildAgentSelfReport } from '../lib/agent-self-report.js'
 import { createShareToken } from '../lib/agent-share.js'
 import { askerCountExpr } from '../lib/asker-identity.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -431,6 +432,21 @@ app.get('/:id/diagnose', async (c) => {
 
   logAudit(c, { action: 'agent.diagnose', resource: 'agent', resourceId: id })
   return c.json({ data })
+})
+
+/**
+ * GET /agents/:id/status — meta + health + live queue depth in one read.
+ *
+ * Separate from /diagnose rather than an extension of it: diagnose is an
+ * owner-view deep check that fans out over peer Agents and probes the provider
+ * CLI, so it is too heavy to poll. This one is cheap enough to answer a chat
+ * command on every invocation, and shares the health checks so the two cannot
+ * disagree. Read-only, so no audit entry -- unlike diagnose, it probes nothing.
+ */
+app.get('/:id/status', async (c) => {
+  const { id } = c.req.param()
+  const { agent } = await requireAgentRead(c, id)
+  return c.json({ data: await buildAgentSelfReport(agent) })
 })
 
 /** GET /agents/:id - 获取单个 Agent */

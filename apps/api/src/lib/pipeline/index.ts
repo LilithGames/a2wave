@@ -5,18 +5,19 @@
  * 不要在别处手搓 LifecyclePlugin[]。测试可通过 channel 入口的 extraPlugins 显式注入。
  */
 import { newCommandPlugin } from './commands/defs/new.js'
+import { statusCommandPlugin } from './commands/defs/status.js'
 import { createCommandDispatchPlugin } from './commands/dispatch-plugin.js'
 import type { CommandPlugin } from './commands/types.js'
 import type { LifecyclePlugin } from './types.js'
 
-export * from './types.js'
 export { emit, emitStreamFrame } from './emit.js'
+export * from './types.js'
 
 /**
  * 注册的 CommandPlugin 列表——dispatcher 通过闭包持有，
  * 在 onAuthenticated 阶段做前缀仲裁。
  */
-const commandPlugins: readonly CommandPlugin[] = [newCommandPlugin]
+const commandPlugins: readonly CommandPlugin[] = [newCommandPlugin, statusCommandPlugin]
 const commandDispatch = createCommandDispatchPlugin(commandPlugins)
 
 /**

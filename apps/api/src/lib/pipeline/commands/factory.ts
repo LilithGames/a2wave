@@ -31,6 +31,7 @@ export function createCommandPlugin(init: CommandPluginInit): CommandPlugin {
     allowedContexts: init.allowedContexts,
     emptyTextFallback: init.emptyTextFallback,
     longRunningAck: init.longRunningAck,
+    respond: init.respond,
 
     // LifecyclePlugin 字段
     name: `cmd:${init.commandName}`,

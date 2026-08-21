@@ -830,6 +830,21 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/agents/{agentId}/status': {
+      get: {
+        operationId: 'getAgentStatus',
+        summary: 'Get an Agent’s metadata, health and live queue depth',
+        description:
+          'One composed read for "what is this Agent doing right now?": identity and bound channels, the execution health checks (provider binding, CLI install and minimum version, credentials), and live queue occupancy against the Agent’s concurrency limit. Requires read access. Cheap enough to poll — unlike `/diagnose`, which additionally probes peer Agents and channel sockets.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/agentId' }],
+        responses: {
+          '200': { description: 'The Agent’s current status report.' },
+          '404': { description: 'Agent not found, or the caller cannot read it.' },
+        },
+      },
+    },
     '/agents/{agentId}/qq-official/registration': {
       post: {
         operationId: 'registerQQOfficialBot',

@@ -1041,6 +1041,7 @@ export async function importAgentFromZip(
       workspaceType: exportedAgent.workspaceType as 'scm' | 'temp',
       scmSourceId,
       maxConcurrency: exportedAgent.maxConcurrency,
+      commandReplyLanguage: exportedAgent.commandReplyLanguage,
       userId,
     })
 

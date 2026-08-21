@@ -187,3 +187,93 @@ describe('commandDispatchPlugin.onAuthenticated — short-circuit & defaults', (
     expect((ctx as MatchedCtx).matchedCommand).toBeUndefined()
   })
 })
+
+describe('commandDispatchPlugin.onAuthenticated — responder commands', () => {
+  const statusPlugin = createCommandPlugin({
+    commandName: 'status',
+    prefixes: ['/status'],
+    respond: async () => 'Reviewer — idle',
+  })
+  const dispatch = createCommandDispatchPlugin([statusPlugin])
+
+  it('aborts with the responder text so the message never reaches the LLM', async () => {
+    const ctx = makeCtx('/status')
+
+    const r = await dispatch.onAuthenticated?.(ctx as AuthenticatedCtx)
+
+    expect(r).toEqual({ abort: { reason: 'Reviewer — idle', code: 'command_status' } })
+  })
+
+  it('does not activate the command plugin, so no run config is patched', async () => {
+    const ctx = makeCtx('/status')
+
+    await dispatch.onAuthenticated?.(ctx as AuthenticatedCtx)
+
+    expect((ctx as MatchedCtx).pendingCommandPlugin).toBeUndefined()
+  })
+
+  it('passes the stripped argument text to the responder', async () => {
+    const seen: string[] = []
+    const echo = createCommandPlugin({
+      commandName: 'status',
+      prefixes: ['/status'],
+      respond: async (c) => {
+        seen.push(c.strippedText)
+        return 'ok'
+      },
+    })
+
+    await createCommandDispatchPlugin([echo]).onAuthenticated?.(
+      makeCtx('/status verbose') as AuthenticatedCtx,
+    )
+
+    expect(seen).toEqual(['verbose'])
+  })
+
+  it('falls through to the LLM when the responder declines', async () => {
+    const declining = createCommandPlugin({
+      commandName: 'status',
+      prefixes: ['/status'],
+      respond: async () => null,
+    })
+
+    const ctx = makeCtx('/status')
+    const r = await createCommandDispatchPlugin([declining]).onAuthenticated?.(
+      ctx as AuthenticatedCtx,
+    )
+
+    expect(r).toBeNull()
+  })
+
+  it('is still bound by allowedContexts', async () => {
+    const p2pOnly = createCommandPlugin({
+      commandName: 'status',
+      prefixes: ['/status'],
+      allowedContexts: ['p2p'],
+      respond: async () => 'never',
+    })
+
+    const r = await createCommandDispatchPlugin([p2pOnly]).onAuthenticated?.(
+      makeCtx('/status', { chatType: 'group', isThreadReply: false }) as AuthenticatedCtx,
+    )
+
+    expect(r).toBeNull()
+  })
+
+  it('aborts with a generic message rather than leaking a responder failure', async () => {
+    const boom = createCommandPlugin({
+      commandName: 'status',
+      prefixes: ['/status'],
+      respond: async () => {
+        throw new Error('db down at 10.0.0.4:5432')
+      },
+    })
+
+    const r = await createCommandDispatchPlugin([boom]).onAuthenticated?.(
+      makeCtx('/status') as AuthenticatedCtx,
+    )
+
+    expect(r).toMatchObject({ abort: { code: 'command_failed' } })
+    expect(JSON.stringify(r)).not.toContain('10.0.0.4')
+  })
+})
