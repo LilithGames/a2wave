@@ -1,3 +1,17 @@
+import type {
+  A2ARouteTarget,
+  AgentPermission,
+  ArtifactPolicy,
+  CreateAgentInput,
+  UpdateAgentInput,
+} from '@a2wave/shared'
+import { slugify } from '@a2wave/shared'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import type { PublishConfig } from '@/hooks/use-agents'
 import {
   useAgent,
   useCloneAgent,
@@ -8,7 +22,6 @@ import {
   useStopAgent,
   useUpdateAgent,
 } from '@/hooks/use-agents'
-import type { PublishConfig } from '@/hooks/use-agents'
 import { useCurrentUser } from '@/hooks/use-auth'
 import { useFormDraft } from '@/hooks/use-form-draft'
 import { useKbDocuments } from '@/hooks/use-kb-documents'
@@ -26,18 +39,6 @@ import { confirm } from '@/lib/confirm'
 import { idSuffix } from '@/lib/id-suffix'
 import { safeSetItem } from '@/lib/safe-storage'
 import { uniqueId } from '@/lib/utils'
-import type {
-  A2ARouteTarget,
-  AgentPermission,
-  ArtifactPolicy,
-  CreateAgentInput,
-  UpdateAgentInput,
-} from '@a2wave/shared'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useForm } from 'react-hook-form'
-import { useTranslation } from 'react-i18next'
-import { useNavigate } from 'react-router-dom'
 import { confirmDeleteAgent } from './confirm-delete-agent'
 import { buildProviderChainSubmission, validateProviderChainSubmission } from './provider-chain'
 import type { EnvEntry, FormData, ProviderChainEntry, RemoteEntry } from './types'
@@ -170,11 +171,10 @@ export function useAgentForm(
       if (source) return { path: source.localPath, scmType: source.type as 'p4' | 'git' | null }
     }
     const suffix = idSuffix(id)
-    const slug = (watchedName || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-    const dirName = slug ? `${slug}-${suffix}` : suffix
+    // Use the shared slugify so this preview matches the directory the API
+    // actually creates in resolveAgentWorkDir; a local ASCII-only regex used to
+    // strip CJK and show `mr-<id>` for an agent living in `mr-自动评审-<id>`.
+    const dirName = watchedName ? `${slugify(watchedName)}-${suffix}` : suffix
     return { path: `${workspacePath}/${dirName}`, scmType: null }
   }, [workspaceType, selectedScmSourceId, scmSourcesList, id, watchedName, workspacePath])
 

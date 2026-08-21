@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { slugify } from '@a2wave/shared'
 /**
  * Agent 导出逻辑
  * 将 Agent 及其关联实体（MCP Server、Skill）打包为 ZIP，导出时脱敏敏感数据。
@@ -13,7 +14,6 @@ import { normalizeOauthAccessMode } from './gateway-auth-errors.js'
 import { maskAllStringRecord, redactMcpGroupConfig, redactMcpUrl } from './mcp-redaction.js'
 import { canNonAdminUseSkill } from './skill-access.js'
 import { getSkillStoragePath } from './skill-storage.js'
-import { slugify } from './slug.js'
 
 // ============================================================
 // Types

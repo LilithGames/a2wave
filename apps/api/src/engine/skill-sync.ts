@@ -8,10 +8,9 @@
 
 import { access, cp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PRESET_PROVIDERS } from '@a2wave/shared'
+import { PRESET_PROVIDERS, slugify } from '@a2wave/shared'
 import matter from 'gray-matter'
 import { getSkillStoragePath } from '../lib/skill-storage.js'
-import { slugify } from '../lib/slug.js'
 
 const SKILL_MANAGED_MARKER = '.a2wave-managed'
 

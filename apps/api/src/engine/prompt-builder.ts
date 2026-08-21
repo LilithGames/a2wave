@@ -5,10 +5,10 @@
  * - assembleSystemPrompt: 将 PromptParts 组装为最终扁平 XML prompt
  */
 
+import { slugify } from '@a2wave/shared'
 import type { AgentConfig } from '../lib/agent-helpers.js'
 import { logger } from '../lib/logger.js'
-import { slugify } from '../lib/slug.js'
-import { type TemplateContext, hasTemplateVariables, renderTemplate } from './template-renderer.js'
+import { hasTemplateVariables, renderTemplate, type TemplateContext } from './template-renderer.js'
 
 // ============================================================
 // XML 转义
