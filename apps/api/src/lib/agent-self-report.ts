@@ -192,8 +192,14 @@ export function formatAgentSelfReport(
   ]
 
   for (const check of health.checks) {
-    if (check.severity === 'error') lines.push(`  ✗ ${check.message}`)
+    if (check.severity === 'error') lines.push(`✗ ${check.message}`)
   }
 
-  return lines.join('\n')
+  // Blank line between fields, not a bare newline: chat surfaces render replies
+  // as Markdown, where a lone newline is a SOFT break that collapsed the whole
+  // report onto one line. The usual fix -- two trailing spaces -- cannot be used
+  // here, because prepareNativeChatText strips `[ \t]+\n` before Slack, Discord,
+  // Telegram and QQ ever see the text, so the hard breaks would vanish silently
+  // on four channels. A blank line survives every sanitizer on the way out.
+  return lines.join('\n\n')
 }

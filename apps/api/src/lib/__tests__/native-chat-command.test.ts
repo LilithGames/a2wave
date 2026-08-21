@@ -175,3 +175,15 @@ describe('interceptNativeChatCommand — side-effecting commands', () => {
     expect(r).toEqual({ handled: false })
   })
 })
+
+describe('report formatting survives the native chat sanitizer', () => {
+  it('keeps the blank-line separators through prepareNativeChatText', async () => {
+    // The sanitizer strips `[ \t]+\n` and collapses 3+ newlines to 2, which is
+    // exactly why the report separates fields by a blank line rather than by a
+    // trailing-space hard break.
+    const { prepareNativeChatText } = await import('../native-chat-text.js')
+    const report = 'Reviewer\n\nStatus: active\n\nQueue: idle'
+
+    expect(prepareNativeChatText(report, false)).toBe(report)
+  })
+})

@@ -199,3 +199,36 @@ describe('formatAgentSelfReport', () => {
     expect(formatAgentSelfReport(report, 'en')).toContain('CLI missing')
   })
 })
+
+describe('formatAgentSelfReport — line breaks survive Markdown', () => {
+  it('separates fields by a blank line so Markdown keeps them apart', async () => {
+    // Chat surfaces render replies as Markdown, where a lone newline is a SOFT
+    // break that collapses the report into one paragraph. Trailing-space hard
+    // breaks are not an option: prepareNativeChatText strips `[ \t]+\n` before
+    // Slack/Discord/Telegram/QQ ever see the text. A blank line survives both.
+    const text = formatAgentSelfReport(await buildAgentSelfReport(makeAgent()), 'en')
+
+    expect(text).toContain('\n\n')
+    expect(text).not.toMatch(/[ \t]+\n/)
+  })
+
+  it('keeps every field on its own rendered line', async () => {
+    const text = formatAgentSelfReport(await buildAgentSelfReport(makeAgent()), 'en')
+
+    const blocks = text.split('\n\n')
+    expect(blocks.length).toBeGreaterThanOrEqual(6)
+    expect(blocks.every((b) => !b.includes('\n'))).toBe(true)
+  })
+
+  it('keeps error checks separated too', async () => {
+    mockCollectChecks.mockResolvedValue([
+      { id: 'a', severity: 'error', message: 'first failure' },
+      { id: 'b', severity: 'error', message: 'second failure' },
+    ])
+
+    const text = formatAgentSelfReport(await buildAgentSelfReport(makeAgent()), 'en')
+
+    expect(text).toContain('first failure\n\n')
+    expect(text).toContain('second failure')
+  })
+})
