@@ -56,7 +56,7 @@ The reply covers three things:
 | **Queue** | `idle` / `busy` / `queue full`, plus how many runs are executing against the concurrency limit and how many are waiting |
 | **Health** | Whether the Agent can run right now — and if not, every blocking problem spelled out (provider not bound, CLI not installed, version below minimum, credentials missing) |
 
-Available on Feishu, Slack, Discord, Telegram, QQ Official Bot, and over A2A. Scheduled triggers and the GitLab / GitHub triggers have no conversation to reply into, so they do not support it.
+Available on Feishu, Slack, Discord, Telegram, QQ Official Bot, over A2A, and in the **test drawer and chat page** — so you can check an Agent from the same panel you are debugging it in. Scheduled triggers and the GitLab / GitHub triggers have no conversation to reply into, so they do not support it.
 
 The same report is available outside chat:
 
@@ -73,7 +73,7 @@ a2wave agents status <agent> --json
 
 ### The other command: `/new`
 
-`/new` starts a fresh session immediately, discarding the previous conversation's context. It works on **every chat channel** — Feishu, Slack, Discord, Telegram, and QQ Official Bot — and is **direct-message only**: in a group, `/new` is passed to the Agent as ordinary text, because a group already has natural ways to start over (post a new top-level message, or open a new topic).
+`/new` starts a fresh session immediately, discarding the previous conversation's context. It works on **every chat channel** — Feishu, Slack, Discord, Telegram, QQ Official Bot, and the test drawer / chat page — and in group chats it is **not** applied: in a group, `/new` is passed to the Agent as ordinary text, because a group already has natural ways to start over (post a new top-level message, or open a new topic).
 
 Send it bare to reset, or `/new <text>` to handle `<text>` in the new session.
 

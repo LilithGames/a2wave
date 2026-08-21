@@ -60,6 +60,7 @@ is precisely what an operator cannot act on.
 | CLI | `a2wave agents status <id\|name> [--json]`; **exits 1** when `health.ok` is false |
 | Feishu | via the lifecycle pipeline |
 | Slack · Discord · Telegram · QQ Official | via `interceptNativeChatCommand` |
+| Test drawer · chat page (`POST /:id/chat`) | via `interceptNativeChatCommand`, before any run or chat id is allocated |
 | A2A | `/status` as the prompt; answered as an ordinary completed task |
 | Schedule · `glab` · `gh` | **Not supported** — these channels have no reply path at all |
 
@@ -203,3 +204,10 @@ So, when adding a channel:
 Feishu is the exception to step 1: it runs the full lifecycle pipeline, since its
 hooks patch the run they are about to start. A new channel should follow the
 native-chat path unless it needs that.
+
+The chat endpoint (`POST /:id/chat`, backing both the test drawer and the
+published chat page) is a second variation: it owns its session through
+`chatId` rather than a channel field, so `/new` there is applied by **dropping
+the client-supplied `chatId`** — resolving it would resume the very session
+being reset. It answers `handled: true` in whichever shape the request asked
+for, SSE `done` or plain JSON, with no `runId`, because no run exists.

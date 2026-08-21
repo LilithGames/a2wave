@@ -109,6 +109,7 @@ import { logger } from '../lib/logger.js'
 import { canNonAdminUseMcp } from '../lib/mcp-stdio.js'
 import { clearAgentIndex } from '../lib/memory-index.js'
 import { removeAgentMemory, removeMemoryOverride } from '../lib/memory-storage.js'
+import { interceptNativeChatCommand } from '../lib/native-chat-command.js'
 import {
   isOauthAllowlistMissing,
   OAUTH_ALLOWED_EMAILS_REQUIRED,
@@ -2266,6 +2267,35 @@ app.post('/:id/chat', async (c) => {
       },
       403,
     )
+  }
+
+  // After the channel gates but before any run, chat id or worktree is
+  // allocated: a command answers from platform state, so it must not reserve a
+  // slot or leave a Run behind. The test drawer is where an operator is most
+  // likely to ask, since it is the surface they open when something looks wrong.
+  const command = await interceptNativeChatCommand({
+    agentId: id,
+    text: parsed.data.message,
+    chatType: 'p2p',
+  })
+  if (command.handled) {
+    if (parsed.data.stream) {
+      return streamSSE(c, async (sseStream) => {
+        await sseStream.writeSSE({
+          event: 'done',
+          data: JSON.stringify({ type: 'done', reply: command.reply }),
+        })
+      })
+    }
+    return c.json({ data: { reply: command.reply } })
+  }
+  if (command.intent !== undefined) {
+    // A session command (`/new`): the Agent receives the text without the
+    // prefix. This endpoint owns its session through `chatId`, so the reset is
+    // expressed by dropping the one the client sent rather than by a channel
+    // field -- resolving it would otherwise resume the very session being reset.
+    parsed.data.message = command.intent
+    if (command.resetSession) parsed.data.chatId = undefined
   }
 
   logger.info(
