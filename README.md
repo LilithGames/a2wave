@@ -166,6 +166,13 @@ first-party chat page.
 > The Feishu channel supports Feishu (feishu.cn) apps; Lark international
 > (larksuite.com) is not configurable yet.
 
+## Screenshots
+
+The Agent overview: run volume, success rate, average duration, token usage, and
+trends over the selected window.
+
+![a2wave Agent overview](./docs/images/web-agent-overview-en.png)
+
 ## Documentation
 
 | Document | Contents |
