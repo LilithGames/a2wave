@@ -64,8 +64,23 @@ export const callerAgentInfoSchema = z.object({
 })
 export type CallerAgentInfo = z.infer<typeof callerAgentInfoSchema>
 
+/**
+ * Which API key authenticated the call, for API / A2A channels using `api_key` auth.
+ *
+ * The name is the operator-supplied description and is the only human-readable way
+ * to tell two integrations apart in run history — "CI pipeline" rather than an
+ * opaque key id. Never carries the key itself or its hash.
+ */
+export const gatewayApiKeyInfoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+})
+export type GatewayApiKeyInfo = z.infer<typeof gatewayApiKeyInfoSchema>
+
 export const gatewayChannelInfoSchema = z.object({
   auth: gatewayAuthEnum,
+  /** Absent for `none` auth, OAuth, and legacy single-key callers. */
+  api_key: gatewayApiKeyInfoSchema.optional(),
   client_ip: z.string().optional(),
   request_id: z.string().optional(),
   oauth: gatewayOauthInfoSchema.optional(),

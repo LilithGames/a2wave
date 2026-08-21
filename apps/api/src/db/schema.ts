@@ -56,3 +56,4 @@ export const cliInstallations = active.cliInstallations
 export const gitTriggerStates = active.gitTriggerStates
 export const deviceAuthorizations = active.deviceAuthorizations
 export const cliTokens = active.cliTokens
+export const agentApiKeys = active.agentApiKeys

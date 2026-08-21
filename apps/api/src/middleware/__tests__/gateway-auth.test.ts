@@ -1,4 +1,4 @@
-import { type JWK, type KeyLike, SignJWT, exportJWK, generateKeyPair } from 'jose'
+import { exportJWK, generateKeyPair, type JWK, type KeyLike, SignJWT } from 'jose'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -198,6 +198,90 @@ describe('validateGatewayAuth (none / api_key)', () => {
       { clientIp: '1.2.3.4', authorizationHeader: 'my-secret' },
     )
     expect(result.error).toBeUndefined()
+  })
+
+  it('accepts a key the injected verifier recognises, and reports which key it was', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: null,
+        verifyApiKey: async (plaintext) =>
+          plaintext === 'ak_live'
+            ? { ok: true, keyId: 'aak_1', keyName: 'CI pipeline' }
+            : { ok: false, reason: 'invalid' },
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer ak_live' },
+    )
+    expect(result.error).toBeUndefined()
+    // The run record shows the key's description as the trigger source, so the
+    // identity has to come back out of auth rather than being looked up again.
+    expect(result.apiKey).toEqual({ id: 'aak_1', name: 'CI pipeline' })
+  })
+
+  it('rejects a key the verifier does not recognise', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: null,
+        verifyApiKey: async () => ({ ok: false, reason: 'invalid' }),
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer ak_nope' },
+    )
+    expect(result.error).toEqual({ error: 'Invalid token', status: 403 })
+  })
+
+  it('distinguishes an expired key: the caller can fix that themselves', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: null,
+        verifyApiKey: async () => ({ ok: false, reason: 'expired' }),
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer ak_old' },
+    )
+    expect(result.error).toEqual({ error: 'API key expired', status: 403 })
+  })
+
+  it('falls back to the legacy plaintext column when the verifier misses (dual-read window)', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: 'legacy-plaintext',
+        verifyApiKey: async () => ({ ok: false, reason: 'invalid' }),
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer legacy-plaintext' },
+    )
+    expect(result.error).toBeUndefined()
+  })
+
+  it('does not fall back when the key merely expired — an expired key must not be revived by the legacy column', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: 'legacy-plaintext',
+        verifyApiKey: async () => ({ ok: false, reason: 'expired' }),
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer legacy-plaintext' },
+    )
+    expect(result.error).toEqual({ error: 'API key expired', status: 403 })
+  })
+
+  it('fails closed when there is neither a stored key nor a legacy one', async () => {
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'api_key',
+        endpointApiKey: null,
+        verifyApiKey: async () => ({ ok: false, reason: 'invalid' }),
+      },
+      { clientIp: '1.2.3.4', authorizationHeader: 'Bearer anything' },
+    )
+    expect(result.error).toEqual({ error: 'Invalid token', status: 403 })
   })
 
   it('skips IP check when whitelist is empty array', async () => {

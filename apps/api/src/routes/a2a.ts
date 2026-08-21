@@ -1,19 +1,26 @@
 import { A2A_VERSION_HEADER } from '@a2a-js/sdk'
 import { eq } from 'drizzle-orm'
-import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { Hono } from 'hono'
 import { buildAgentCard, serializeAgentCard } from '../a2a/agent-card.js'
 import { handleA2ARequest } from '../a2a/handle-request.js'
 import { createRecordedA2ACancelFn, createRecordedA2AExecuteFn } from '../a2a/run-recording.js'
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
 import { agents } from '../db/schema.js'
+import { verifyAgentApiKey } from '../lib/agent-api-key-verify.js'
 import { resolveClientIp } from '../lib/client-ip.js'
-import { type GatewayCaller, validateGatewayAuth } from '../middleware/gateway-auth.js'
+import {
+  type AuthenticatingApiKey,
+  type GatewayCaller,
+  validateGatewayAuth,
+} from '../middleware/gateway-auth.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
 type A2AVariables = {
   oauthCaller?: GatewayCaller
+  /** Set when an `agent_api_keys` row authenticated the request; names the trigger in run history. */
+  gatewayApiKey?: AuthenticatingApiKey
 }
 
 const app = new Hono<{ Variables: A2AVariables }>()
@@ -45,7 +52,11 @@ async function loadAndAuthAgent(c: Context<{ Variables: A2AVariables }>) {
     {
       publishIpWhitelist: (agent.publishIpWhitelist as string[]) || null,
       publishAuthType: agent.a2aAuthType,
+      // Retained only for the dual-read window; cleared once every legacy key is migrated.
       endpointApiKey: agent.a2aEndpointApiKey,
+      // Channel-scoped: an 'api' key can never satisfy an A2A request, preserving the
+      // deliberate decoupling the separate legacy columns provided.
+      verifyApiKey: (plaintext) => verifyAgentApiKey(agent.id, 'a2a', plaintext, { clientIp }),
       // No oauthAccessMode / oauthAllowedEmails: validateGatewayAuth's oauth branch is
       // unreachable from here. `a2aAuthType` is constrained to 'none' | 'api_key' by both
       // publishAuthTypeEnum and the column's own enum, so normalizeAuthType() never yields
@@ -60,6 +71,9 @@ async function loadAndAuthAgent(c: Context<{ Variables: A2AVariables }>) {
   }
   if (authResult.caller) {
     c.set('oauthCaller', authResult.caller)
+  }
+  if (authResult.apiKey) {
+    c.set('gatewayApiKey', authResult.apiKey)
   }
 
   return { agent }

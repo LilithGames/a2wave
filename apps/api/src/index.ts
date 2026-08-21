@@ -28,6 +28,7 @@ import { env } from './env.js'
 import { startArtifactCleanupScheduler } from './lib/artifact-cleanup.js'
 import { startAttachmentStagingCleanupScheduler } from './lib/attachment-cleanup.js'
 import { drainAuditWrites } from './lib/audit.js'
+import { backfillAgentApiKeys } from './lib/backfill-agent-api-keys.js'
 import { backfillWorkspacesPaths } from './lib/backfill-workspaces-path.js'
 import { bootstrapFromEnv } from './lib/bootstrap.js'
 import { ensureInstallRootOnPath, recoverInterruptedInstalls } from './lib/cli-installer.js'
@@ -78,6 +79,7 @@ import { rateLimit } from './middleware/rate-limit.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 import { openApiSpec } from './openapi.js'
 import a2aRoutes from './routes/a2a.js'
+import agentApiKeyRoutes from './routes/agent-api-keys.js'
 import agentMembersRoutes from './routes/agent-members.js'
 import agentSharedRoutes from './routes/agent-shared.js'
 import agentsRoutes from './routes/agents.js'
@@ -306,6 +308,7 @@ app.use('/api/scm-sources/*', authMiddleware)
 app.use('/api/scm-sources', authMiddleware)
 app.route('/api/agents', agentsRoutes)
 app.route('/api/agents', agentMembersRoutes)
+app.route('/api/agents', agentApiKeyRoutes)
 app.route('/api/agents', evaluationRoutes)
 app.route('/api/providers', providersRoutes)
 app.route('/api/mcp-servers', mcpServersRoutes)
@@ -670,6 +673,12 @@ void ensureAdminExists()
     // resolves from whatever exists on disk, so a request served in that window
     // could compute a different root than the one the row settles on.
     await backfillWorkspacesPaths()
+    // Also before markReady: until a published Agent's legacy plaintext key exists as
+    // an agent_api_keys row, its key has no name, no expiry and no last-used stamp in
+    // the management list. The auth path dual-reads the legacy column throughout, so
+    // no request fails during or before this — it only decides how soon the key
+    // becomes manageable.
+    await backfillAgentApiKeys()
     // Seeding done — this instance may now take traffic. Run recovery below is
     // deliberately NOT gated on: it settles stale rows from a previous process
     // and can take a while, but it does not change how a fresh request is served.

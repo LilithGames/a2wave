@@ -497,6 +497,72 @@ export function useRegenerateA2aApiKey() {
   })
 }
 
+// ── Agent API keys (REST gateway + A2A channels) ─────────────────────────────
+
+export type AgentApiKeyChannel = 'api' | 'a2a'
+
+/** What the list returns. Never carries the credential — only its display prefix. */
+export type AgentApiKey = {
+  id: string
+  channel: AgentApiKeyChannel
+  name: string
+  keyPrefix: string
+  expiresAt: string | null
+  lastUsedAt: string | null
+  lastUsedIp: string | null
+  revokedAt: string | null
+  createdAt: string
+}
+
+const agentApiKeysQueryKey = (agentId: string, channel: AgentApiKeyChannel) =>
+  ['agents', agentId, 'api-keys', channel] as const
+
+export function useAgentApiKeys(agentId: string | undefined, channel: AgentApiKeyChannel) {
+  return useQuery({
+    queryKey: agentApiKeysQueryKey(agentId ?? '', channel),
+    queryFn: () => api.get<AgentApiKey[]>(`/agents/${agentId}/api-keys?channel=${channel}`),
+    enabled: !!agentId,
+    select: (res) => res.data,
+  })
+}
+
+export function useCreateAgentApiKey(agentId: string | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { channel: AgentApiKeyChannel; name: string; expiresInDays?: number }) =>
+      // The plaintext comes back exactly once, here — the caller must surface it
+      // immediately because it is unrecoverable afterwards.
+      api.post<AgentApiKey & { key: string }>(`/agents/${agentId}/api-keys`, input),
+    onSuccess: (_res, input) => {
+      queryClient.invalidateQueries({
+        queryKey: agentApiKeysQueryKey(agentId ?? '', input.channel),
+      })
+    },
+  })
+}
+
+export function useUpdateAgentApiKey(agentId: string | undefined, channel: AgentApiKeyChannel) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ keyId, ...body }: { keyId: string; name?: string; expiresAt?: string | null }) =>
+      api.patch<AgentApiKey>(`/agents/${agentId}/api-keys/${keyId}`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: agentApiKeysQueryKey(agentId ?? '', channel) })
+    },
+  })
+}
+
+export function useRevokeAgentApiKey(agentId: string | undefined, channel: AgentApiKeyChannel) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (keyId: string) =>
+      api.delete<{ id: string; revoked: boolean }>(`/agents/${agentId}/api-keys/${keyId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: agentApiKeysQueryKey(agentId ?? '', channel) })
+    },
+  })
+}
+
 export type QQOfficialRegistrationTask = {
   taskId: string
   bindKey: string

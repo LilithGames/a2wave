@@ -1715,3 +1715,55 @@ export const cliTokens = sqliteTable(
     userIdIdx: index('cli_tokens_user_id_idx').on(table.userId),
   }),
 )
+
+/**
+ * Named, individually revocable API keys for an Agent's inbound channels.
+ *
+ * Supersedes the single-key `agents.endpoint_api_key` / `a2a_endpoint_api_key`
+ * columns: rotating those broke every integration at once, and being plaintext they
+ * made a database read yield working credentials for every published Agent. Only the
+ * SHA-256 lives here; the plaintext is returned once at creation and never again.
+ */
+export const agentApiKeys = sqliteTable(
+  'agent_api_keys',
+  {
+    id: text('id').primaryKey(), // aak_xxx
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    /**
+     * Which inbound channel this key authenticates. The two never interchange —
+     * the lookup filters on it, so an A2A key presented to the REST gateway fails
+     * exactly as an unknown key would.
+     */
+    channel: text('channel', { enum: ['api', 'a2a'] }).notNull(),
+    /** SHA-256 (hex) of the key. Unique, so the lookup is a single indexed read. */
+    keyHash: text('key_hash').notNull().unique(),
+    /** Short prefix of the plaintext, shown in the list to tell two keys apart. */
+    keyPrefix: text('key_prefix').notNull(),
+    /** Required label ("CI pipeline"). Without it two keys are indistinguishable later. */
+    name: text('name').notNull(),
+    /**
+     * Null means no expiry. Deliberately allowed: a credential that silently dies
+     * mid-quarter is worse than one an operator can see and rotate on purpose.
+     */
+    expiresAt: integer('expires_at', { mode: 'timestamp' }),
+    /**
+     * Stamped best-effort on use, throttled. The only signal separating a live key
+     * from a forgotten one — without it keys accumulate and nobody dares revoke any.
+     */
+    lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
+    /** Most recent caller IP, to answer "who is still using this" before revoking. */
+    lastUsedIp: text('last_used_ip'),
+    revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+    /** Null once the creating user is deleted; the key itself stays valid. */
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The management list is per Agent and channel; the auth path reads by hash.
+    agentChannelIdx: index('agent_api_keys_agent_channel_idx').on(table.agentId, table.channel),
+  }),
+)
