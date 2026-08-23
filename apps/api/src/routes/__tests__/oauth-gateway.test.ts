@@ -1,6 +1,6 @@
 import { GatewayErrorCode } from '@a2wave/shared'
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { GatewayAuthErrors } from '../../lib/gateway-auth-errors.js'
 
 type Json = Record<string, unknown>
@@ -182,7 +182,7 @@ const validCaller = {
 import { db } from '../../db/client.js'
 import { engineRegistry } from '../../engine/index.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
-import { WorktreeOccupiedError, buildAgentConfig, resolveWorkDir } from '../../lib/agent-helpers.js'
+import { buildAgentConfig, resolveWorkDir, WorktreeOccupiedError } from '../../lib/agent-helpers.js'
 import { ProviderConfigurationError } from '../../lib/errors.js'
 import { registerPendingContext } from '../../lib/pending-job-registry.js'
 import { runWithLifecycle } from '../../lib/run-launcher.js'
@@ -931,6 +931,31 @@ describe('OAuth Gateway routes', () => {
         expect.any(String),
         expect.objectContaining({ chatId: 'chat_previous' }),
         expect.any(Object),
+      )
+    })
+
+    it('hands the resolved workDir and the owner to the lifecycle so artifacts are collected, attributed and cleaned up', async () => {
+      // Without workDir the lifecycle skips the artifact scan entirely AND cannot
+      // remove the run's artifacts directory, so every OAuth invocation leaves
+      // one behind in a workspace that persists across runs. Without userId the
+      // artifacts it does collect are filed under no owner, unlike the same
+      // Agent invoked through the API-key gateway.
+      ;(db.select as Mock).mockImplementation(() =>
+        makeDbChain({ ...oauthAgent, userId: 'usr_owner' }),
+      )
+      ;(runWithLifecycle as Mock).mockResolvedValue({
+        success: true,
+        output: 'ok',
+        durationMs: 10,
+      })
+
+      const res = await invokeRequest({ message: 'hi', async: false })
+
+      expect(res.status).toBe(200)
+      expect(runWithLifecycle).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ workDir: '/tmp/work', userId: 'usr_owner' }),
       )
     })
 

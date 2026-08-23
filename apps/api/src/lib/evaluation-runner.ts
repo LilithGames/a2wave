@@ -18,6 +18,7 @@
  */
 import type { RunChannelContext } from '@a2wave/shared'
 import type { AgentConfig } from './agent-helpers.js'
+import { discardRunArtifactsDir } from './artifact-storage.js'
 import { executeWithRetry } from './execute-with-retry.js'
 import { logger } from './logger.js'
 
@@ -151,6 +152,12 @@ export async function replayCase(params: ReplayCaseParams): Promise<ReplayCaseRe
         durationMs: Date.now() - turnStartedAt,
       })
       break
+    } finally {
+      // Each turn ran under its own taskId and so its own $A2WAVE_ARTIFACTS_DIR.
+      // Evaluation never registers artifacts, so nothing downstream removes the
+      // directory — and a checkout that outlives the task would accumulate one
+      // per turn.
+      await discardRunArtifactsDir(workDir, turnTaskId)
     }
   }
 

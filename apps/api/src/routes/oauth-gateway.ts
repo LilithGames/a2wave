@@ -531,7 +531,20 @@ app.post('/:agentId/invoke', async (c) => {
     agentConfig,
   }
 
-  const lifecycleParams = { taskId, runId, stepId, agentId, startTime: Date.now() }
+  // workDir is what lets the lifecycle collect this run's artifacts and, when it
+  // settles, remove the directory they were written to. Omitting it silently
+  // skipped both — no artifacts on this channel, and one abandoned directory per
+  // invocation in a workspace that outlives the run. userId files what is
+  // collected under the Agent's owner, as the API-key gateway does.
+  const lifecycleParams = {
+    taskId,
+    runId,
+    stepId,
+    agentId,
+    startTime: Date.now(),
+    workDir: resolvedWorkDir,
+    userId: agent.userId ?? undefined,
+  }
 
   // 分支顺序（main 侧语义）：stream 优先于 async——`stream:true` 即使 async 缺省（默认 true）
   // 也必须走 SSE，否则调用方拿到 202 却收不到流。

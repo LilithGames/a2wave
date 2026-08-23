@@ -75,18 +75,29 @@ vi.mock('drizzle-orm', () => ({
 
 // ── Import after mocks ─────────────────────────────────────────────────────
 
+import { asyncQuery } from '../../test/async-query.js'
+import { deleteStaleShares } from '../artifact-share.js'
 import {
   deleteExpiredArtifacts,
+  discardRunArtifactsDir,
   getArtifactDir,
   getArtifactRetentionMs,
   getArtifactsStorageRoot,
   scanAndRegisterArtifacts,
 } from '../artifact-storage.js'
-
-import { asyncQuery } from '../../test/async-query.js'
-import { deleteStaleShares } from '../artifact-share.js'
+import { logger } from '../logger.js'
 
 // ── Test fixtures ──────────────────────────────────────────────────────────
+
+/**
+ * Where a run drops its artifacts, spelled out rather than imported: the tests
+ * pin the on-disk layout the Agent is pointed at, so a change to it has to be
+ * a deliberate edit here and not something the implementation can redefine
+ * under them.
+ */
+function runArtifactsDir(workDir: string, runId: string): string {
+  return join(workDir, 'artifacts', runId)
+}
 
 let testRoot: string
 
@@ -188,23 +199,23 @@ describe('scanAndRegisterArtifacts', () => {
     mkdirSync(workDir, { recursive: true })
     // No artifacts/ subdir
 
-    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir, 'run_1')
     expect(mockDbInsert).not.toHaveBeenCalled()
     expect(result).toEqual([])
   })
 
   it('does nothing when artifacts dir is empty', async () => {
     const workDir = join(testRoot, 'empty_workdir')
-    mkdirSync(join(workDir, 'artifacts'), { recursive: true })
+    mkdirSync(runArtifactsDir(workDir, 'run_1'), { recursive: true })
 
-    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir, 'run_1')
     expect(mockDbInsert).not.toHaveBeenCalled()
     expect(result).toEqual([])
   })
 
   it('copies files and inserts DB records for each artifact', async () => {
     const workDir = join(testRoot, 'workdir1')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_1')
     mkdirSync(artifactsDir, { recursive: true })
     writeFileSync(join(artifactsDir, 'report.md'), '# Report\nHello')
     writeFileSync(join(artifactsDir, 'data.json'), '{"key":"value"}')
@@ -212,7 +223,7 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts('run_1', 'agt_1', 'usr_1', workDir, 'run_1')
 
     expect(mockDbInsert).toHaveBeenCalledTimes(2)
 
@@ -231,14 +242,14 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('copies file content to storage dir correctly', async () => {
     const workDir = join(testRoot, 'workdir_copy')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_copy')
     mkdirSync(artifactsDir, { recursive: true })
     writeFileSync(join(artifactsDir, 'output.txt'), 'artifact content')
 
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    await scanAndRegisterArtifacts('run_copy', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_copy', 'agt_1', 'usr_1', workDir, 'run_copy')
 
     // The stored file should have the same content
     const storedPath = (mockValues.mock.calls[0][0] as { storagePath: string }).storagePath
@@ -248,7 +259,7 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('sets correct MIME type for known extensions', async () => {
     const workDir = join(testRoot, 'workdir_mime')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_mime')
     mkdirSync(artifactsDir, { recursive: true })
     writeFileSync(join(artifactsDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
     writeFileSync(join(artifactsDir, 'doc.json'), '{}')
@@ -256,7 +267,7 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    await scanAndRegisterArtifacts('run_mime', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_mime', 'agt_1', 'usr_1', workDir, 'run_mime')
 
     const records = mockValues.mock.calls.map(
       (c: unknown[]) => c[0] as { filename: string; mimeType: string },
@@ -270,7 +281,7 @@ describe('scanAndRegisterArtifacts', () => {
   it('sets expiresAt based on retentionHours', async () => {
     mockRetentionHours = '24'
     const workDir = join(testRoot, 'workdir_expiry')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_exp')
     mkdirSync(artifactsDir, { recursive: true })
     writeFileSync(join(artifactsDir, 'file.txt'), 'data')
 
@@ -278,7 +289,7 @@ describe('scanAndRegisterArtifacts', () => {
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
     const before = Date.now()
-    await scanAndRegisterArtifacts('run_exp', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_exp', 'agt_1', 'usr_1', workDir, 'run_exp')
     const after = Date.now()
 
     const record = mockValues.mock.calls[0][0] as { expiresAt: Date }
@@ -290,14 +301,14 @@ describe('scanAndRegisterArtifacts', () => {
   it('sets null expiresAt when retentionHours is 0', async () => {
     mockRetentionHours = '0'
     const workDir = join(testRoot, 'workdir_noexpiry')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_0h')
     mkdirSync(artifactsDir, { recursive: true })
     writeFileSync(join(artifactsDir, 'file.txt'), 'data')
 
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    await scanAndRegisterArtifacts('run_0h', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_0h', 'agt_1', 'usr_1', workDir, 'run_0h')
 
     const record = mockValues.mock.calls[0][0] as { expiresAt: unknown }
     expect(record.expiresAt).toBeUndefined()
@@ -305,14 +316,14 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('skips empty subdirectories inside artifacts dir', async () => {
     const workDir = join(testRoot, 'workdir_subdir')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_sub')
     mkdirSync(join(artifactsDir, 'subdir'), { recursive: true })
     writeFileSync(join(artifactsDir, 'file.txt'), 'ok')
 
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    await scanAndRegisterArtifacts('run_sub', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_sub', 'agt_1', 'usr_1', workDir, 'run_sub')
 
     // Only the file should be registered, not the empty subdir
     expect(mockDbInsert).toHaveBeenCalledTimes(1)
@@ -322,7 +333,7 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('registers a non-empty subdirectory as a directory artifact with recursive size', async () => {
     const workDir = join(testRoot, 'workdir_dir_artifact')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_dir')
     const siteDir = join(artifactsDir, 'site')
     mkdirSync(join(siteDir, 'assets'), { recursive: true })
     writeFileSync(join(siteDir, 'index.html'), '<html>hi</html>')
@@ -331,7 +342,7 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    const result = await scanAndRegisterArtifacts('run_dir', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts('run_dir', 'agt_1', 'usr_1', workDir, 'run_dir')
 
     expect(result).toHaveLength(1)
     expect(result[0].kind).toBe('directory')
@@ -351,7 +362,7 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('skips symlinks nested inside a directory artifact', async () => {
     const workDir = join(testRoot, 'workdir_dir_symlink')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_dir_sym')
     const pkgDir = join(artifactsDir, 'pkg')
     mkdirSync(pkgDir, { recursive: true })
     const sensitiveFile = join(testRoot, 'nested-sensitive.txt')
@@ -362,35 +373,22 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    const result = await scanAndRegisterArtifacts('run_dir_sym', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts(
+      'run_dir_sym',
+      'agt_1',
+      'usr_1',
+      workDir,
+      'run_dir_sym',
+    )
 
     expect(result).toHaveLength(1)
     expect(existsSync(join(result[0].storagePath, 'real.txt'))).toBe(true)
     expect(existsSync(join(result[0].storagePath, 'leak.txt'))).toBe(false)
   })
 
-  it('skips stale directory artifacts that predate the current run start time', async () => {
-    const workDir = join(testRoot, 'workdir_dir_stale')
-    const artifactsDir = join(workDir, 'artifacts')
-    const oldDir = join(artifactsDir, 'old-report')
-    mkdirSync(oldDir, { recursive: true })
-    writeFileSync(join(oldDir, 'old.txt'), 'stale')
-
-    const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
-    mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
-
-    // registeredAfterMs 在未来：目录内所有文件都视为陈旧
-    const result = await scanAndRegisterArtifacts('run_dir_stale', 'agt_1', 'usr_1', workDir, {
-      registeredAfterMs: Date.now() + 60_000,
-    })
-
-    expect(result).toHaveLength(0)
-    expect(mockDbInsert).not.toHaveBeenCalled()
-  })
-
   it('skips symlinks in artifacts dir', async () => {
     const workDir = join(testRoot, 'workdir_symlink')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_sym')
     mkdirSync(artifactsDir, { recursive: true })
     // Create a real file outside artifacts dir (simulating sensitive file)
     const sensitiveFile = join(testRoot, 'sensitive.txt')
@@ -403,7 +401,7 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    const result = await scanAndRegisterArtifacts('run_sym', 'agt_1', 'usr_1', workDir)
+    const result = await scanAndRegisterArtifacts('run_sym', 'agt_1', 'usr_1', workDir, 'run_sym')
 
     // Only the legit file should be registered
     expect(mockDbInsert).toHaveBeenCalledTimes(1)
@@ -414,7 +412,7 @@ describe('scanAndRegisterArtifacts', () => {
 
   it('records correct size for each file', async () => {
     const workDir = join(testRoot, 'workdir_size')
-    const artifactsDir = join(workDir, 'artifacts')
+    const artifactsDir = runArtifactsDir(workDir, 'run_size')
     mkdirSync(artifactsDir, { recursive: true })
     const content = 'hello world'
     writeFileSync(join(artifactsDir, 'sized.txt'), content)
@@ -422,37 +420,29 @@ describe('scanAndRegisterArtifacts', () => {
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    await scanAndRegisterArtifacts('run_size', 'agt_1', 'usr_1', workDir)
+    await scanAndRegisterArtifacts('run_size', 'agt_1', 'usr_1', workDir, 'run_size')
 
     const record = mockValues.mock.calls[0][0] as { size: number }
     expect(record.size).toBe(Buffer.byteLength(content))
   })
 
-  it('skips stale artifacts that predate the current run start time', async () => {
-    const workDir = join(testRoot, 'workdir_since')
-    const artifactsDir = join(workDir, 'artifacts')
-    mkdirSync(artifactsDir, { recursive: true })
+  it('leaves a previous run output in place instead of re-registering it', async () => {
+    const workDir = join(testRoot, 'workdir_previous')
+    // The run before this one, in the same workspace. Its directory survives
+    // only when cleanup could not run (a crashed process); either way it is not
+    // this run's to collect, and no timestamp comparison decides that.
+    const previousDir = runArtifactsDir(workDir, 'run_previous')
+    mkdirSync(previousDir, { recursive: true })
+    writeFileSync(join(previousDir, 'old-report.md'), 'previous conversation output')
 
-    const oldFile = join(artifactsDir, 'old-report.md')
-    writeFileSync(oldFile, 'stale artifact')
-    const runStartedAt = Date.now()
-    utimesSync(oldFile, new Date(runStartedAt - 10_000), new Date(runStartedAt - 10_000))
-
-    const newFile = join(artifactsDir, 'new-report.md')
-    writeFileSync(newFile, 'fresh artifact')
-    // Pin the fresh file's mtime the same way the stale one is pinned, instead
-    // of trusting the write to land at or after `runStartedAt`. Filesystem
-    // timestamp granularity is coarser than Date.now() on some Linux setups, so
-    // the mtime could round *below* runStartedAt and the file the test calls
-    // "fresh" would be filtered as stale — green on macOS, red on the CI runner.
-    utimesSync(newFile, new Date(runStartedAt + 1_000), new Date(runStartedAt + 1_000))
+    const mineDir = runArtifactsDir(workDir, 'run_mine')
+    mkdirSync(mineDir, { recursive: true })
+    writeFileSync(join(mineDir, 'new-report.md'), 'fresh artifact')
 
     const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
     mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
 
-    const result = await scanAndRegisterArtifacts('run_since', 'agt_1', 'usr_1', workDir, {
-      registeredAfterMs: runStartedAt,
-    })
+    const result = await scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine')
 
     expect(mockDbInsert).toHaveBeenCalledTimes(1)
     const record = mockValues.mock.calls[0][0] as { filename: string }
@@ -460,6 +450,192 @@ describe('scanAndRegisterArtifacts', () => {
     expect(result).toHaveLength(1)
     expect(result[0]).toMatchObject({ id: 'art_test123', filename: 'new-report.md' })
     expect(result[0].storagePath).toBeTruthy()
+    expect(existsSync(join(previousDir, 'old-report.md'))).toBe(true)
+  })
+
+  it('ignores what a concurrent run wrote into the shared workspace, however fresh', async () => {
+    const workDir = join(testRoot, 'workdir_concurrent')
+    // A sibling run — another Feishu conversation, or another Agent bound to the
+    // same SCM checkout — producing its report while this run is still open.
+    // Its mtime is deliberately *newer* than this run's start: that is exactly
+    // the case the old mtime heuristic mis-attributed, handing one
+    // conversation's file to another conversation's user.
+    const siblingDir = join(workDir, 'artifacts', 'run_sibling')
+    mkdirSync(siblingDir, { recursive: true })
+    const siblingFile = join(siblingDir, 'price-tiers.csv')
+    writeFileSync(siblingFile, 'a different conversation output')
+    const runStartedAt = Date.now()
+    utimesSync(siblingFile, new Date(runStartedAt + 1_000), new Date(runStartedAt + 1_000))
+
+    const result = await scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine')
+
+    expect(result).toEqual([])
+    expect(mockDbInsert).not.toHaveBeenCalled()
+  })
+
+  it('registers only its own directory when two runs share one workspace', async () => {
+    const workDir = join(testRoot, 'workdir_two_runs')
+    mkdirSync(join(workDir, 'artifacts', 'run_sibling'), { recursive: true })
+    writeFileSync(join(workDir, 'artifacts', 'run_sibling', 'theirs.md'), 'theirs')
+    mkdirSync(join(workDir, 'artifacts', 'run_mine'), { recursive: true })
+    writeFileSync(join(workDir, 'artifacts', 'run_mine', 'mine.md'), 'mine')
+
+    const result = await scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine')
+
+    expect(result.map((r) => r.filename)).toEqual(['mine.md'])
+  })
+
+  it('names files written above the run directory, once per workspace', async () => {
+    const workDir = join(testRoot, 'workdir_stray')
+    mkdirSync(join(workDir, 'artifacts'), { recursive: true })
+    // An Agent that hardcoded a relative `artifacts/`: nothing is collected, and
+    // without this warning the author has no way to see why.
+    writeFileSync(join(workDir, 'artifacts', 'misplaced.md'), 'written to the wrong level')
+
+    const result = await scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine')
+
+    expect(result).toEqual([])
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ entries: ['misplaced.md'] }),
+      expect.stringContaining('workspace artifacts directory'),
+    )
+
+    // A workspace holding pre-existing top-level files would otherwise repeat
+    // this on every artifact-less run for the rest of the process's life.
+    vi.mocked(logger.warn).mockClear()
+    await scanAndRegisterArtifacts('run_later', 'agt_1', 'usr_1', workDir, 'run_later')
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('does not mistake another execution scratch directory for a misplaced file', async () => {
+    const workDir = join(testRoot, 'workdir_eval_neighbour')
+    // Evaluation turns get a taskId of their own (`eval/<task>/<case>/<n>`), so
+    // their directory carries no `run_` prefix. On a P4 source, which shares one
+    // checkout between evaluations and chat, telling the author to "write to
+    // $A2WAVE_ARTIFACTS_DIR" about a directory they wrote there correctly is
+    // worse than saying nothing.
+    mkdirSync(join(workDir, 'artifacts', 'eval_evt_1_evc_1_1'), { recursive: true })
+    writeFileSync(join(workDir, 'artifacts', 'eval_evt_1_evc_1_1', 'replay.md'), 'eval output')
+
+    const result = await scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine')
+
+    expect(result).toEqual([])
+    expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('reads the directory the engine derived from the task id, not from the run id', async () => {
+    // A2A hands the engine the caller's protocol task id as-is — no `run_`
+    // segment anywhere in it — so the engine's $A2WAVE_ARTIFACTS_DIR is keyed
+    // by that id. The collector must look in the same place, while the
+    // registration itself still belongs to the platform run.
+    const workDir = join(testRoot, 'workdir_a2a')
+    const engineDir = join(workDir, 'artifacts', 'a2a-task-9f1c')
+    mkdirSync(engineDir, { recursive: true })
+    writeFileSync(join(engineDir, 'report.md'), '# via A2A')
+    const mockValues = vi.fn().mockReturnValue(asyncQuery({ run: vi.fn() }))
+    mockDbInsert.mockReturnValue(asyncQuery({ values: mockValues }))
+
+    const result = await scanAndRegisterArtifacts(
+      'run_a2a',
+      'agt_1',
+      'usr_1',
+      workDir,
+      'a2a-task-9f1c',
+    )
+
+    expect(result).toHaveLength(1)
+    expect(result[0].filename).toBe('report.md')
+    const inserted = (mockValues.mock.calls[0] as unknown[])[0] as Record<string, unknown>
+    expect(inserted.runId).toBe('run_a2a')
+  })
+
+  it('warns once and collects nothing when the workspace artifacts path is a plain file', async () => {
+    // A repo that tracks a top-level file named `artifacts`: neither the run
+    // directory nor the stray scan can exist under it. That is a zero-artifact
+    // run, not a registration failure.
+    const workDir = join(testRoot, 'workdir_file')
+    mkdirSync(workDir, { recursive: true })
+    writeFileSync(join(workDir, 'artifacts'), 'not a directory')
+
+    await expect(
+      scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine'),
+    ).resolves.toEqual([])
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceLevelDir: join(workDir, 'artifacts') }),
+      expect.stringContaining('not a directory'),
+    )
+  })
+
+  it('warns and collects nothing when the run directory itself is a plain file', async () => {
+    const workDir = join(testRoot, 'workdir_rundir_file')
+    mkdirSync(join(workDir, 'artifacts'), { recursive: true })
+    writeFileSync(runArtifactsDir(workDir, 'run_mine'), 'I should have been a directory')
+
+    await expect(
+      scanAndRegisterArtifacts('run_mine', 'agt_1', 'usr_1', workDir, 'run_mine'),
+    ).resolves.toEqual([])
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceDir: runArtifactsDir(workDir, 'run_mine') }),
+      expect.stringContaining('not a directory'),
+    )
+  })
+
+  it('collects what an earlier attempt of the same run produced', async () => {
+    const workDir = join(testRoot, 'workdir_resumed')
+    // A run interrupted by a restart is requeued under its own runId and
+    // resumes its provider session. Its earlier attempt's output is this run's
+    // own work, for this same user and request — dropping it would throw away
+    // exactly what the resume exists to preserve.
+    const mineDir = runArtifactsDir(workDir, 'run_resumed')
+    mkdirSync(mineDir, { recursive: true })
+    const earlier = join(mineDir, 'from-first-attempt.md')
+    writeFileSync(earlier, 'written before the process died')
+    utimesSync(earlier, new Date(Date.now() - 600_000), new Date(Date.now() - 600_000))
+
+    const result = await scanAndRegisterArtifacts(
+      'run_resumed',
+      'agt_1',
+      'usr_1',
+      workDir,
+      'run_resumed',
+    )
+
+    expect(result.map((r) => r.filename)).toEqual(['from-first-attempt.md'])
+  })
+})
+
+describe('discardRunArtifactsDir', () => {
+  it('removes only the run own directory, leaving a concurrent run untouched', async () => {
+    const workDir = join(testRoot, 'workdir_discard')
+    const mine = runArtifactsDir(workDir, 'run_mine')
+    const sibling = runArtifactsDir(workDir, 'run_sibling')
+    mkdirSync(join(mine, 'nested'), { recursive: true })
+    writeFileSync(join(mine, 'nested', 'deep.md'), 'mine')
+    mkdirSync(sibling, { recursive: true })
+    writeFileSync(join(sibling, 'theirs.md'), 'theirs')
+    writeFileSync(join(workDir, 'artifacts', 'top-level.md'), 'not mine either')
+
+    await discardRunArtifactsDir(workDir, 'run_mine')
+
+    expect(existsSync(mine)).toBe(false)
+    expect(existsSync(join(sibling, 'theirs.md'))).toBe(true)
+    expect(existsSync(join(workDir, 'artifacts', 'top-level.md'))).toBe(true)
+    expect(existsSync(join(workDir, 'artifacts'))).toBe(true)
+  })
+
+  it('removes the directory the engine derived from a task id without a run segment', async () => {
+    const workDir = join(testRoot, 'workdir_discard_a2a')
+    const engineDir = join(workDir, 'artifacts', 'a2a-task-9f1c')
+    mkdirSync(engineDir, { recursive: true })
+    writeFileSync(join(engineDir, 'report.md'), 'via A2A')
+
+    await discardRunArtifactsDir(workDir, 'a2a-task-9f1c')
+
+    expect(existsSync(engineDir)).toBe(false)
+  })
+
+  it('does nothing when the run had no workDir', async () => {
+    await expect(discardRunArtifactsDir(undefined, 'run_mine')).resolves.toBeUndefined()
   })
 })
 

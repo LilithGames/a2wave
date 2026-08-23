@@ -40,6 +40,7 @@ vi.mock('../../lib/webhook-notifier.js', () => ({
 
 vi.mock('../../lib/artifact-storage.js', () => ({
   scanAndRegisterArtifacts: vi.fn().mockResolvedValue([]),
+  discardRunArtifactsDir: vi.fn(),
 }))
 
 // ============================================================

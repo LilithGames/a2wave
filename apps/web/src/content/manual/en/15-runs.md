@@ -110,7 +110,7 @@ To keep accumulated run records from slowing down the database, the platform cle
 
 Files produced during a Run are saved as **artifacts**, viewable and downloadable in the artifact list and traceable after the run finishes (`GET /api/artifacts`, `/:id/download`).
 
-> Whether artifacts are retained on disk depends on that invocation's worktree cleanup policy (`ephemeral` deletes immediately / `ttl` retains for N seconds / `persistent` retains long-term); see the `worktree` parameter in [Trigger Methods](/wiki/triggers).
+> Artifacts are copied into the platform's artifact storage when the run finishes, and the run's scratch directory in the workspace is removed regardless of the worktree cleanup policy (`ephemeral` / `ttl` / `persistent` — see the `worktree` parameter in [Trigger Methods](/wiki/triggers), which governs the rest of the workspace). How long the stored copy is kept is set by the retention period on [Settings → Artifacts](/wiki/artifacts).
 
 Beyond downloading, artifacts can also generate an **online share link** in one click, letting the other party preview the web page or report directly — see [Artifacts & Online Sharing](/wiki/artifacts).
 

@@ -17,6 +17,12 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
+const discardRunArtifactsDirMock = vi.fn()
+
+vi.mock('../artifact-storage.js', () => ({
+  discardRunArtifactsDir: (...args: unknown[]) => discardRunArtifactsDirMock(...args),
+}))
+
 const { replayCase } = await import('../evaluation-runner.js')
 
 /** Engine reply helper: succeeds, echoing a chatId so resume can be asserted. */
@@ -32,6 +38,7 @@ const AGENT_CONFIG = { engineType: 'claude-code', model: 'm' }
 
 beforeEach(() => {
   executeWithRetryMock.mockReset()
+  discardRunArtifactsDirMock.mockReset()
 })
 
 describe('replayCase', () => {
@@ -309,5 +316,35 @@ describe('summarizeResults', () => {
 
     expect(summary.passRate).toBeNull()
     expect(summary.unreviewed).toBe(2)
+  })
+})
+
+describe('replayCase artifacts scratch', () => {
+  it('discards every turn artifacts directory, including the turn that failed', async () => {
+    // Each turn runs under its own taskId and therefore its own
+    // $A2WAVE_ARTIFACTS_DIR. Evaluation never registers artifacts, so nothing
+    // else would remove them — and on a shared checkout that outlives the task
+    // they would accumulate one directory per turn, forever.
+    executeWithRetryMock
+      .mockResolvedValueOnce(ok('a'))
+      .mockRejectedValueOnce(new Error('engine crashed'))
+
+    await replayCase({
+      taskId: 'evt_1',
+      caseId: 'evc_1',
+      turns: [
+        { request: 'one', expectedResponse: 'a' },
+        { request: 'two', expectedResponse: 'b' },
+      ],
+      agentConfig: AGENT_CONFIG,
+      workDir: '/tmp/eval-workdir',
+    })
+
+    const turnTaskIds = executeWithRetryMock.mock.calls.map((call) => call[0] as string)
+    expect(turnTaskIds).toHaveLength(2)
+    expect(discardRunArtifactsDirMock.mock.calls.map((call) => call[1])).toEqual(turnTaskIds)
+    for (const call of discardRunArtifactsDirMock.mock.calls) {
+      expect(call[0]).toBe('/tmp/eval-workdir')
+    }
   })
 })
