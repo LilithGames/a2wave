@@ -14,10 +14,13 @@ vi.mock('../../env.js', () => ({
   },
 }))
 
+const mockSignToken = vi.fn(async (_user?: unknown, _remember?: unknown) => 'renewed-token')
+
 vi.mock('../../lib/auth.js', () => ({
   AUTH_COOKIE_NAME: '__Host-a2wave_session',
   LEGACY_AUTH_COOKIE_NAME: 'a2wave_session',
   verifyToken: (...args: unknown[]) => mockVerifyToken(...args),
+  signToken: (user: unknown, remember?: unknown) => mockSignToken(user, remember),
 }))
 
 vi.mock('../../db/schema.js', () => ({
@@ -48,8 +51,11 @@ vi.mock('../../lib/agent-memory-token.js', () => ({
   validateAgentToken: (...args: unknown[]) => mockValidateAgentToken(...args),
 }))
 
+const mockSetAuthCookie = vi.fn()
+
 vi.mock('../../lib/auth-cookie.js', () => ({
   isCookieSecure: () => true,
+  setAuthCookie: (...args: unknown[]) => mockSetAuthCookie(...args),
 }))
 
 const { authMiddleware, memoryAuthMiddleware } = await import('../auth-middleware.js')
@@ -182,5 +188,139 @@ describe('authMiddleware cookie selection', () => {
 
     expect(res.status).toBe(200)
     expect(mockVerifyToken).toHaveBeenCalledWith('host-token')
+  })
+})
+
+/**
+ * Sliding expiry (part B): an actively used session is silently reissued once it
+ * passes its half-life, so it never expires under a user who is still working.
+ */
+describe('authMiddleware sliding renewal', () => {
+  const nowSeconds = () => Math.floor(Date.now() / 1000)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDbUser.mockReturnValue({ id: 'usr_1', role: 'user', tokenVersion: 0, isActive: true })
+    mockSignToken.mockResolvedValue('renewed-token')
+  })
+
+  function createApp() {
+    const app = new Hono()
+    app.use('*', authMiddleware)
+    app.get('/protected', (c) => c.json({ userId: c.get('userId' as never) }))
+    return app
+  }
+
+  function requestWithCookie() {
+    return createApp().request('/protected', {
+      headers: { Cookie: '__Host-a2wave_session=browser-token' },
+    })
+  }
+
+  it('reissues the cookie when the token is past its half-life', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      rm: true,
+      iat: now - 5 * 24 * 60 * 60,
+      exp: now + 2 * 24 * 60 * 60,
+    })
+
+    const res = await requestWithCookie()
+
+    expect(res.status).toBe(200)
+    expect(mockSignToken).toHaveBeenCalledTimes(1)
+    expect(mockSetAuthCookie).toHaveBeenCalledTimes(1)
+    expect(mockSetAuthCookie.mock.calls[0][1]).toBe('renewed-token')
+  })
+
+  it('does not reissue a freshly issued token', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      rm: true,
+      iat: now - 60,
+      exp: now + 7 * 24 * 60 * 60,
+    })
+
+    const res = await requestWithCookie()
+
+    expect(res.status).toBe(200)
+    expect(mockSignToken).not.toHaveBeenCalled()
+    expect(mockSetAuthCookie).not.toHaveBeenCalled()
+  })
+
+  it('preserves remember=false on renewal instead of upgrading the session', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      rm: false,
+      iat: now - 11 * 60 * 60,
+      exp: now + 1 * 60 * 60,
+    })
+
+    await requestWithCookie()
+
+    // The whole point: a renewed short session must stay short, and its cookie
+    // must stay a session cookie. Otherwise sliding expiry quietly promotes
+    // every shared-computer login into a persistent one.
+    expect(mockSignToken.mock.calls[0][1]).toBe(false)
+    expect(mockSetAuthCookie.mock.calls[0][2]).toBe(false)
+  })
+
+  it('treats a token with no rm claim as remembered (pre-existing sessions)', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      iat: now - 5 * 24 * 60 * 60,
+      exp: now + 2 * 24 * 60 * 60,
+    })
+
+    await requestWithCookie()
+
+    expect(mockSignToken.mock.calls[0][1]).toBe(true)
+    expect(mockSetAuthCookie.mock.calls[0][2]).toBe(true)
+  })
+
+  it('never renews a Bearer-presented token (CLI owns its own lifetime)', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      rm: true,
+      iat: now - 6 * 24 * 60 * 60,
+      exp: now + 1 * 24 * 60 * 60,
+    })
+
+    const res = await createApp().request('/protected', {
+      headers: { Authorization: 'Bearer stale-but-valid' },
+    })
+
+    // A Bearer caller has nowhere to receive a rotated cookie, and silently
+    // extending a CLI credential's life server-side would be invisible.
+    expect(res.status).toBe(200)
+    expect(mockSignToken).not.toHaveBeenCalled()
+    expect(mockSetAuthCookie).not.toHaveBeenCalled()
+  })
+
+  it('still serves the request when reissuing fails', async () => {
+    const now = nowSeconds()
+    mockVerifyToken.mockResolvedValue({
+      sub: 'usr_1',
+      tv: 0,
+      rm: true,
+      iat: now - 5 * 24 * 60 * 60,
+      exp: now + 2 * 24 * 60 * 60,
+    })
+    mockSignToken.mockRejectedValue(new Error('signing key unavailable'))
+
+    // Renewal is best-effort: the presented token is still valid, so a failure
+    // to mint its replacement must not 500 an otherwise fine request.
+    const res = await requestWithCookie()
+    expect(res.status).toBe(200)
   })
 })

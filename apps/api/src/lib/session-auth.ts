@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { cliTokens, users } from '../db/schema.js'
-import { verifyToken } from './auth.js'
+import { type JwtPayload, verifyToken } from './auth.js'
 import { hashCliToken, isCliToken } from './cli-token.js'
 
 export interface AuthenticatedSessionUser {
@@ -13,6 +13,15 @@ export interface AuthenticatedSessionUser {
    * minting another credential being the one that matters.
    */
   authMethod: 'session' | 'cli_token'
+  /**
+   * The verified JWT payload, present only on the `session` path. Sliding
+   * renewal needs `iat`/`exp`/`rm` to decide whether to reissue, and re-verifying
+   * the token in the middleware just to read them would double the crypto work
+   * on every request. Absent for CLI tokens, which are opaque and never renewed.
+   */
+  sessionPayload?: JwtPayload
+  /** Current tokenVersion, needed to sign a renewal without a second user lookup. */
+  tokenVersion?: number
 }
 
 /**
@@ -79,7 +88,13 @@ export async function authenticateSessionToken(
       .limit(1)
 
     if (!user?.isActive || (payload.tv ?? -1) !== user.tokenVersion) return null
-    return { id: user.id, role: user.role, authMethod: 'session' }
+    return {
+      id: user.id,
+      role: user.role,
+      authMethod: 'session',
+      sessionPayload: payload,
+      tokenVersion: user.tokenVersion,
+    }
   } catch {
     return null
   }

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 vi.mock('../../db/client.js', () => ({
   db: {
@@ -105,5 +105,81 @@ describe('POST /auth/change-password', () => {
 
     expect(res.status).toBe(200)
     expect((await res.json()) as any).toEqual({ data: { message: 'ok' } })
+  })
+})
+
+describe('POST /auth/change-password preserves the session lifetime choice', () => {
+  let app: Hono
+  let sessionRemember: boolean | undefined
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    sessionRemember = undefined
+    // The route reads `.returning()` rows to detect a lost race, so the mock must
+    // yield exactly one refreshed user row.
+    ;(db.update as Mock).mockReturnValue({
+      set: () =>
+        asyncQuery({
+          where: () => asyncQuery({ get: () => ({ id: 'usr_1', role: 'user', tokenVersion: 2 }) }),
+        }),
+    })
+    ;(db.select as Mock).mockReturnValue(
+      makeSelectGet([
+        { id: 'usr_1', passwordHash: 'old-hash' },
+        { id: 'usr_1', role: 'user', tokenVersion: 1 },
+      ]),
+    )
+
+    const mod = await import('../auth.js')
+    app = new Hono()
+    app.use('*', async (c, next) => {
+      c.set('userId' as never, 'usr_1' as never)
+      if (sessionRemember !== undefined) {
+        c.set('sessionRemember' as never, sessionRemember as never)
+      }
+      await next()
+    })
+    app.route('/api/auth', mod.default)
+  })
+
+  function post() {
+    return app.request('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword: 'OldPass1', newPassword: 'NewPass1' }),
+    })
+  }
+
+  it('keeps a short session short when changing password', async () => {
+    sessionRemember = false
+    const { signToken } = await import('../../lib/auth.js')
+    const { setAuthCookie } = await import('../../lib/auth-cookie.js')
+
+    await post()
+
+    // Changing your password from a shared-computer session must not silently
+    // promote it to a 7-day persistent cookie — that reverses the exact
+    // protection the unchecked box promised.
+    expect((signToken as Mock).mock.calls[0][1]).toBe(false)
+    expect((setAuthCookie as Mock).mock.calls[0][2]).toBe(false)
+  })
+
+  it('keeps a remembered session remembered', async () => {
+    sessionRemember = true
+    const { signToken } = await import('../../lib/auth.js')
+    const { setAuthCookie } = await import('../../lib/auth-cookie.js')
+
+    await post()
+
+    expect((signToken as Mock).mock.calls[0][1]).toBe(true)
+    expect((setAuthCookie as Mock).mock.calls[0][2]).toBe(true)
+  })
+
+  it('defaults to remembered when the context carries no choice (bearer / legacy token)', async () => {
+    const { signToken } = await import('../../lib/auth.js')
+
+    await post()
+
+    expect((signToken as Mock).mock.calls[0][1]).toBe(true)
   })
 })

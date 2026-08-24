@@ -24,6 +24,18 @@ curl -X POST http://localhost:3502/api/auth/setup \
 
 Administrators can go to "Settings → Enterprise Login" to see the effective status of both methods and verify connectivity with each panel's "Test" button. The page only shows configuration status and a non-sensitive summary; it never displays key material.
 
+### Keep me signed in
+
+The password login page has a "Keep me signed in" checkbox, **unchecked by default**. It applies to password login only — enterprise SSO sessions always last 7 days:
+
+- **Unchecked**: the session ends **when you close the browser**, and the server honours it for at most 12 hours. Leave it unchecked on shared or meeting-room machines.
+- **Checked**: the session lasts 7 days (set per deployment by `AUTH_SESSION_TTL_DAYS`).
+
+In both cases the session renews itself automatically while you keep working, so you are never signed out mid-task. Conversely, a session you stop using expires on the schedule above. To end sessions everywhere immediately, use "Log out" or change your password.
+
+> [!TIP]
+> a2wave has no "save password" feature and never stores your password in the browser. Use your browser's own password manager if you want to skip typing it, or sign in through enterprise SSO instead.
+
 > [!IMPORTANT]
 > a2wave is an enterprise-grade platform: **anonymous invocation is not supported, and authentication is never skipped**.
 

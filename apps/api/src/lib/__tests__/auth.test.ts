@@ -13,10 +13,11 @@ vi.mock('../../env.js', () => ({
 
 import {
   AUTH_COOKIE_NAME,
+  getAuthSessionTtlSeconds,
+  getShortSessionTtlSeconds,
+  hashPassword,
   LEGACY_AUTH_COOKIE_NAME,
   PASSWORD_POLICY,
-  getAuthSessionTtlSeconds,
-  hashPassword,
   signToken,
   validatePassword,
   verifyPassword,
@@ -115,5 +116,48 @@ describe('cookie name constants', () => {
   it('matches the documented secure/__Host- / legacy contract', async () => {
     expect(AUTH_COOKIE_NAME).toBe('__Host-a2wave_session')
     expect(LEGACY_AUTH_COOKIE_NAME).toBe('a2wave_session')
+  })
+})
+
+describe('short session ttl (remember=false)', () => {
+  it('exposes a 12h short-session ttl independent of AUTH_SESSION_TTL_DAYS', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 30
+    expect(getShortSessionTtlSeconds()).toBe(12 * 60 * 60)
+  })
+
+  it('signs a short-lived token when remember is false', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    const token = await signToken({ id: 'usr_1', role: 'user', tokenVersion: 1 }, false)
+    const payload = await verifyToken(token)
+
+    expect(payload.exp - payload.iat).toBe(12 * 60 * 60)
+  })
+
+  it('signs a full-ttl token when remember is true', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    const token = await signToken({ id: 'usr_1', role: 'user', tokenVersion: 1 }, true)
+    const payload = await verifyToken(token)
+
+    expect(payload.exp - payload.iat).toBe(7 * 24 * 60 * 60)
+  })
+
+  it('defaults to the full ttl when remember is omitted, preserving existing callers', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    const token = await signToken({ id: 'usr_1', role: 'user', tokenVersion: 1 })
+    const payload = await verifyToken(token)
+
+    expect(payload.exp - payload.iat).toBe(7 * 24 * 60 * 60)
+  })
+
+  it('records the remember choice in the payload so renewal can preserve it', async () => {
+    const remembered = await verifyToken(
+      await signToken({ id: 'usr_1', role: 'user', tokenVersion: 1 }, true),
+    )
+    const shortLived = await verifyToken(
+      await signToken({ id: 'usr_1', role: 'user', tokenVersion: 1 }, false),
+    )
+
+    expect(remembered.rm).toBe(true)
+    expect(shortLived.rm).toBe(false)
   })
 })

@@ -4,11 +4,11 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { users } from '../db/schema.js'
 import { env } from '../env.js'
-import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { logAudit } from '../lib/audit.js'
+import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
+import { hashPassword, signToken, validatePassword, verifyPassword } from '../lib/auth.js'
 import { clearAuthCookie, setAuthCookie } from '../lib/auth-cookie.js'
 import { loadAuthSettings } from '../lib/auth-settings.js'
-import { hashPassword, signToken, validatePassword, verifyPassword } from '../lib/auth.js'
 import type { JwtUserInfo } from '../lib/jwt-auth.js'
 import { logger } from '../lib/logger.js'
 import {
@@ -117,6 +117,14 @@ app.post('/setup', async (c) => {
 const loginSchema = z.object({
   username: z.string(),
   password: z.string(),
+  /**
+   * "Keep me signed in". Defaults to **false**, not true: an older client that
+   * predates the checkbox, or any caller that simply omits the field, must get
+   * the short shared-computer session rather than silently inheriting the full
+   * AUTH_SESSION_TTL_DAYS one. Strict boolean — a stray "false" string coercing
+   * to true is exactly the failure this default exists to prevent.
+   */
+  remember: z.boolean().optional().default(false),
 })
 
 /** POST /auth/login — 用户登录 */
@@ -127,7 +135,7 @@ app.post('/login', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  const { username, password } = parsed.data
+  const { username, password, remember } = parsed.data
 
   const policy = loadAuthSettings()
   if (!(await policy).passwordLoginEnabled) {
@@ -152,15 +160,20 @@ app.post('/login', async (c) => {
     return c.json({ error: 'INVALID_CREDENTIALS' }, 401)
   }
 
-  const token = await signToken({ id: user.id, role: user.role, tokenVersion: user.tokenVersion })
-  setAuthCookie(c, token)
+  const token = await signToken(
+    { id: user.id, role: user.role, tokenVersion: user.tokenVersion },
+    remember,
+  )
+  setAuthCookie(c, token, remember)
 
   logAudit(c, {
     action: AUDIT_ACTIONS.AUTH_LOGIN,
     resource: 'user',
     resourceId: user.id,
     userId: user.id,
-    details: { username },
+    // Session lifetime chosen at login is worth having in the trail: it explains
+    // why one session outlived another when reconstructing an incident.
+    details: { username, remember },
   })
 
   return c.json({
@@ -487,12 +500,21 @@ app.post('/change-password', async (c) => {
   if (!refreshed) {
     return c.json({ error: 'USER_NOT_FOUND' }, 404)
   }
-  const newToken = await signToken({
-    id: refreshed.id,
-    role: refreshed.role,
-    tokenVersion: refreshed.tokenVersion,
-  })
-  setAuthCookie(c, newToken)
+  // Preserve the lifetime this session was created with. Defaulting to `true`
+  // here would take someone who logged in on a shared machine with the box
+  // unchecked and hand them a 7-day persistent cookie just for changing their
+  // password — silently reversing the protection they asked for. Absent on
+  // bearer / pre-`rm` tokens, which were issued as persistent anyway.
+  const sessionRemember = (c.get('sessionRemember' as never) as boolean | undefined) ?? true
+  const newToken = await signToken(
+    {
+      id: refreshed.id,
+      role: refreshed.role,
+      tokenVersion: refreshed.tokenVersion,
+    },
+    sessionRemember,
+  )
+  setAuthCookie(c, newToken, sessionRemember)
 
   logAudit(c, { action: AUDIT_ACTIONS.AUTH_CHANGE_PASSWORD, resource: 'user', resourceId: userId })
 

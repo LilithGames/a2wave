@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { deleteCookie, setCookie } from 'hono/cookie'
 import { env } from '../env.js'
-import { AUTH_COOKIE_NAME, LEGACY_AUTH_COOKIE_NAME, getAuthSessionTtlSeconds } from './auth.js'
+import { AUTH_COOKIE_NAME, getAuthSessionTtlSeconds, LEGACY_AUTH_COOKIE_NAME } from './auth.js'
 
 /**
  * cookie 是否带 Secure + 是否用 __Host- 前缀。默认按 NODE_ENV 推断；显式设了
@@ -21,7 +21,7 @@ export function isCookieSecure(): boolean {
  * 必须 HTTPS、Path=/、无 Domain），secure=false 时退回 legacy 名字以兼容 HTTP 入口。
  * SameSite=Lax 兼顾 SSO 跳转回来时也能携带 cookie，同时阻断跨站 POST CSRF。
  */
-export function setAuthCookie(c: Context, token: string): void {
+export function setAuthCookie(c: Context, token: string, remember = true): void {
   const secure = isCookieSecure()
   const cookieName = secure ? AUTH_COOKIE_NAME : LEGACY_AUTH_COOKIE_NAME
   setCookie(c, cookieName, token, {
@@ -29,7 +29,11 @@ export function setAuthCookie(c: Context, token: string): void {
     secure,
     sameSite: 'Lax',
     path: '/',
-    maxAge: getAuthSessionTtlSeconds(),
+    // remember=false must OMIT maxAge, not set a small one: a session cookie is
+    // defined by the absence of both maxAge and expires, and that absence is the
+    // whole "gone when the browser closes" guarantee on a shared machine. The
+    // token's own 12h exp is the server-side backstop for a restored session.
+    ...(remember ? { maxAge: getAuthSessionTtlSeconds() } : {}),
   })
 }
 
