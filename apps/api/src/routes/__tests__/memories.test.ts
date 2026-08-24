@@ -724,6 +724,21 @@ describe('POST /api/memories/:agentId/consolidate', () => {
     )
   })
 
+  // A negative window puts the cutoff in the future, so every daily log — today's
+  // included — reads as older than it and is summarised away and deleted. The body
+  // was previously taken by cast, which performs no checking at all.
+  it('rejects a non-positive maxAgeDays instead of inverting the cutoff', async () => {
+    const app = await buildTestApp()
+    const res = await app.request('/api/memories/agt_test/consolidate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxAgeDays: -1 }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockConsolidateMemory).not.toHaveBeenCalled()
+  })
+
   it('returns zero count when provider consolidation has nothing to do', async () => {
     mockConsolidateMemory.mockResolvedValue(null)
 
@@ -1082,6 +1097,37 @@ describe('Auth: agent token routes', () => {
       body: JSON.stringify({ content: 'hello' }),
     })
     expect(res.status).toBe(403)
+  })
+
+  // A read-only question mints a read-only runtime token, but requireMemoryWrite
+  // short-circuits on the token path without consulting viewer/editor. These two
+  // routes are destructive and irreversible — consolidation deletes daily logs —
+  // so, like topics/reorganize, they must refuse a runtime token outright rather
+  // than let an Agent subprocess rewrite its own memory.
+  it('refuses a runtime token on the destructive consolidate route', async () => {
+    const { registerAgentToken } = await import('../../lib/agent-memory-token.js')
+    const token = registerAgentToken('agt_test', {})
+    const app = await buildTokenApp('agt_test', token)
+
+    const res = await app.request('/api/memories/agt_test/consolidate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(403)
+    expect(mockConsolidateMemory).not.toHaveBeenCalled()
+  })
+
+  it('refuses a runtime token on the destructive reindex route', async () => {
+    const { registerAgentToken } = await import('../../lib/agent-memory-token.js')
+    const token = registerAgentToken('agt_test', {})
+    const app = await buildTokenApp('agt_test', token)
+
+    const res = await app.request('/api/memories/agt_test/reindex', { method: 'POST' })
+
+    expect(res.status).toBe(403)
+    expect(mockClearAgentIndex).not.toHaveBeenCalled()
   })
 
   it('enforces runtime topic-read budgets', async () => {

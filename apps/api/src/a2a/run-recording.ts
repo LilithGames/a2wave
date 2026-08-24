@@ -49,7 +49,7 @@ export function createRecordedA2ACancelFn(c: Context, agent: AgentRow): CancelFn
     if (currentStatus !== 'running' && currentStatus !== 'queued') {
       return 'not_cancellable'
     }
-    if (!claimRunCancellation(run.id, currentStatus)) {
+    if (!(await claimRunCancellation(run.id, currentStatus))) {
       return 'not_cancellable'
     }
 

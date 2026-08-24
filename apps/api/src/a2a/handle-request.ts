@@ -124,6 +124,14 @@ function buildServerCallContext(
   const isInternalRoute = c.req.path.includes('/internal/a2a/')
   const internalCallerId = isInternalRoute ? c.req.header('X-A2WAVE-Caller-Agent-Id') : undefined
   const authType = normalizeAuthType(agent.a2aAuthType)
+  // NOT scoped per API key, deliberately. Named keys exist for rotation and for
+  // keeping hashes rather than plaintext at rest (docs/agent/agent-api-keys.md
+  // §1) — they are attribution, not a tenant boundary, and the trust model puts
+  // every key holder on the same team. Scoping tasks by key would also strand
+  // every task and idempotency record written before the change: the store keys
+  // envelopes by {tenant, owner}, so an upgrade would hide in-flight work from
+  // GetTask/CancelTask/ListTasks for the full retention window, and A2A retries
+  // would miss their prior run and execute a second time.
   const ownerScope = oauthCaller
     ? oauthUploaderId(oauthCaller)
     : isInternalRoute

@@ -48,7 +48,7 @@ import {
 } from './lib/instance-heartbeat.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
-import { initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
+import { drainActiveScmSyncs, initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
 import { processInstanceId } from './lib/process-instance.js'
 import { qqOfficialConnectionManager } from './lib/qq-official-service.js'
 import { markReady } from './lib/readiness.js'
@@ -512,6 +512,7 @@ function gracefulShutdown(signal: string) {
         await drainDurableExecutionLeaseReleases()
       },
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
+      drainScmSyncs: () => drainActiveScmSyncs(),
       drainAuditWrites: () => drainAuditWrites(),
       releaseInstanceHeartbeat: async () => {
         stopInstanceHeartbeat?.()
@@ -549,6 +550,7 @@ function gracefulShutdown(signal: string) {
         await drainDurableExecutionLeaseReleases()
       },
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
+      drainScmSyncs: () => drainActiveScmSyncs(),
       drainAuditWrites: () => drainAuditWrites(),
       releaseInstanceHeartbeat: async () => {
         stopInstanceHeartbeat?.()

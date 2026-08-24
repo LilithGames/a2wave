@@ -226,6 +226,21 @@ async function createGitWorkspaceUnlocked(
       ? reuseRepos.filter((r) => !existsSync(join(wsPath, r.directory))).map((r) => r.directory)
       : []
 
+    if (incompleteRepos.length > 0 && options?.advance === false) {
+      // `advance: false` means a sibling run of this agent is EXECUTING here
+      // right now. The reuse branch below already refuses `reset --hard` on that
+      // basis; a rebuild is strictly more destructive — `git worktree remove
+      // --force` per sub-repo plus an rmdir of the whole workspace — so it must
+      // honour the same guard. Reusing an incomplete workspace is the lesser
+      // harm: the sibling keeps the sub-repos it is working in, and the rebuild
+      // happens on the next solo run, exactly as the advance does.
+      logger.warn(
+        { wsPath, incompleteRepos },
+        'Workspace is incomplete but a sibling run is executing here; deferring the rebuild',
+      )
+      return { path: wsPath, created: false }
+    }
+
     if (incompleteRepos.length > 0) {
       logger.warn(
         { wsPath, incompleteRepos },

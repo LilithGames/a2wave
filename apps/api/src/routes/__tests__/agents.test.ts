@@ -4,6 +4,10 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
+import {
+  registerAgentDeleteTests,
+  registerChannelTeardownTests,
+} from './agents-channel-teardown-cases.js'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
 import { registerAgentSecretRedactionTests } from './agents-secret-redaction-cases.js'
@@ -142,6 +146,16 @@ vi.mock('../../lib/discord-service.js', () => ({
   },
 }))
 
+vi.mock('../../lib/telegram-service.js', () => ({
+  telegramConnectionManager: {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    getConnectionStatuses: vi.fn().mockReturnValue([]),
+    isRegistered: vi.fn().mockReturnValue(false),
+    isSocketOpen: vi.fn().mockReturnValue(false),
+  },
+}))
+
 const mockRunAgentFeishuDiagnose = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     ok: true,
@@ -183,7 +197,17 @@ vi.mock('@a2wave/shared', async () => {
       safeParse: vi.fn().mockImplementation((input: unknown) => ({ success: true, data: input })),
     },
     publishAuthTypeEnum: z.enum(['none', 'api_key']),
-    publishChannelEnum: z.enum(['api', 'a2a', 'feishu', 'slack', 'discord', 'schedule', 'oauth']),
+    // Mirrors publishChannelEnum in @a2wave/shared.
+    publishChannelEnum: z.enum([
+      'api',
+      'a2a',
+      'feishu',
+      'slack',
+      'discord',
+      'telegram',
+      'schedule',
+      'oauth',
+    ]),
     oauthAccessModeEnum: z.enum(['all_idaas_users', 'specified_users']),
     oauthAllowedEmailsSchema: z.array(z.string().trim().toLowerCase().email().max(320)).max(500),
     isSupportedScheduleCron: (v: string) =>
@@ -1372,6 +1396,16 @@ describe('POST /agents/:id/publish', () => {
     captureUpdate,
   })
 
+  registerChannelTeardownTests({
+    getApp: () => app,
+    SAMPLE_AGENT,
+    mockDb,
+    makeSelectChain,
+    makeUpdateChain,
+    makeUpdateReturningChain,
+    makeDeleteChain,
+  })
+
   it('accepts oauth channel publish in all_idaas_users mode without feishu credentials', async () => {
     const draftAgent = { ...SAMPLE_AGENT, publishStatus: 'draft' as const, feishuConfig: null }
     let capturedSet: Record<string, unknown> = {}
@@ -1877,62 +1911,24 @@ describe('PATCH /agents/:id - published execution-config preflight', () => {
   )
 })
 
-describe('DELETE /agents/:id - connection cleanup', () => {
-  let app: Hono
+// The extracted DELETE suite needs its own app instance, rebuilt per case the same way the
+// in-file suites do (a module re-import after clearAllMocks).
+let deleteSuiteApp: Hono
+beforeEach(async () => {
+  vi.clearAllMocks()
+  const mod = await import('../agents.js')
+  deleteSuiteApp = makeAgentsApp(mod.default)
+})
 
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    const mod = await import('../agents.js')
-    app = makeAgentsApp(mod.default)
-  })
-
-  it('stops both feishu and schedule connections on delete', async () => {
-    const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
-    const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
-
-    // A stopped fixture reaches connection cleanup; published Agents return 409 earlier.
-    mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'stopped' }))
-    mockDb.update.mockReturnValue(makeUpdateChain())
-    mockDb.delete.mockReturnValue(makeDeleteChain())
-
-    await app.request('/agents/agt_original', { method: 'DELETE' })
-
-    expect(feishuConnectionManager.stop).toHaveBeenCalledWith('agt_original')
-    expect(scheduleTriggerManager.stop).toHaveBeenCalledWith('agt_original')
-  })
-
-  it('blocks deleting a published agent with 409 and skips all cleanup', async () => {
-    const { feishuConnectionManager } = await import('../../lib/feishu-service.js')
-    const { scheduleTriggerManager } = await import('../../lib/schedule-trigger.js')
-
-    // Published Agents must be stopped before deletion; 409 must skip every cleanup.
-    mockDb.select.mockReturnValue(makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'published' }))
-
-    const res = await app.request('/agents/agt_original', { method: 'DELETE' })
-
-    expect(res.status).toBe(409)
-    expect(feishuConnectionManager.stop).not.toHaveBeenCalled()
-    expect(scheduleTriggerManager.stop).not.toHaveBeenCalled()
-    expect(mockDb.delete).not.toHaveBeenCalled()
-  })
-
-  it('blocks deleting a stopped SCM Agent while an Evaluation uses its checkout', async () => {
-    mockDb.select.mockReturnValue(
-      makeSelectChain({ ...SAMPLE_AGENT, publishStatus: 'stopped' as const }),
-    )
-    mockFindActiveAgentScmWorkload.mockResolvedValueOnce({
-      type: 'evaluation',
-      id: 'evt_active',
-    })
-
-    const res = await app.request('/agents/agt_original', { method: 'DELETE' })
-
-    expect(res.status).toBe(409)
-    expect((await res.json()) as Json).toEqual({
-      error: 'Cannot delete the Agent while Evaluation evt_active is active',
-    })
-    expect(mockDb.delete).not.toHaveBeenCalled()
-  })
+registerAgentDeleteTests({
+  getApp: () => deleteSuiteApp,
+  SAMPLE_AGENT,
+  mockDb,
+  mockFindActiveAgentScmWorkload,
+  makeSelectChain,
+  makeUpdateChain,
+  makeUpdateReturningChain,
+  makeDeleteChain,
 })
 
 describe('GET /agents/:id/diagnose', () => {

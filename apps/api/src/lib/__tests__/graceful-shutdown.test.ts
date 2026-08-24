@@ -19,6 +19,9 @@ describe('runGracefulShutdownSequence', () => {
         stopTelegram: vi.fn(() => calls.push('stopTelegram')),
         stopQQOfficial: vi.fn(() => calls.push('stopQQOfficial')),
         stopSchedules: vi.fn(() => calls.push('stopSchedules')),
+        drainScmSyncs: vi.fn(async () => {
+          calls.push('drainScmSyncs')
+        }),
         drainExecutionLeases: vi.fn(async () => {
           calls.push('drainExecutionLeases')
         }),
@@ -65,6 +68,9 @@ describe('runGracefulShutdownSequence', () => {
       'stopSchedules',
       'shutdownEngines:start',
       'shutdownEngines:end',
+      // Aborted syncs unwind first: their terminal status write needs the
+      // database, and their child may still hold the checkout path.
+      'drainScmSyncs',
       'drainExecutionLeases',
       'drainWorkspaceRemovalReleases',
       'drainAuditWrites',

@@ -52,7 +52,7 @@ vi.mock('../../lib/run-lifecycle.js', () => ({
   finishRunError: vi.fn().mockReturnValue('error message'),
 }))
 
-const claimRunCancellationMock = vi.hoisted(() => vi.fn().mockReturnValue(true))
+const claimRunCancellationMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
 const cancelRunningTasksMock = vi.hoisted(() => vi.fn())
 const stopLogCollectorMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const logAuditMock = vi.hoisted(() => vi.fn())
@@ -692,7 +692,7 @@ describe('createRecordedA2ACancelFn', () => {
     mockDb.update.mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ run: vi.fn() }) }),
     })
-    claimRunCancellationMock.mockReturnValue(true)
+    claimRunCancellationMock.mockResolvedValue(true)
   })
 
   it('cancels the recorded run and its active CLI task before returning success', async () => {
@@ -728,7 +728,7 @@ describe('createRecordedA2ACancelFn', () => {
   })
 
   it('does not publish a false cancellation when the run loses the terminal-state race', async () => {
-    claimRunCancellationMock.mockReturnValue(false)
+    claimRunCancellationMock.mockResolvedValue(false)
     mockDb.select
       .mockReturnValueOnce(mockSelectChain(undefined))
       .mockReturnValueOnce(mockSelectChain({ status: 'running' }))

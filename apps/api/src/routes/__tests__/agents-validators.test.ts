@@ -10,7 +10,7 @@
  * POST routes (POST = legacy full validation; PATCH = diff-only).
  */
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
 
 type Json = Record<string, unknown>
@@ -344,6 +344,30 @@ describe('validateKbDocumentIds — diff-only behavior', () => {
 
     expect(res.status).toBe(200)
     expect(getOwnerFilter).toHaveBeenCalledWith(expect.anything(), kbDocuments.userId)
+  })
+
+  // Binding an SCM source hands the Agent a checkout of that repository, cloned
+  // with the source's *stored* credentials. Every other mountable resource (KB
+  // documents, Skill groups, MCP servers) is validated through getOwnerFilter;
+  // SCM must be too, or a caller can bind a source they cannot see and read a
+  // private repo through their own Agent.
+  it('validates a newly bound SCM source through getOwnerFilter, not by id alone', async () => {
+    const { getOwnerFilter } = await import('../../lib/owner-filter.js')
+    const { scmSources } = await import('../../db/schema.js')
+    const existing = { ...BASE_AGENT, workspaceType: 'scm' as const, scmSourceId: null }
+
+    mockDb.select.mockImplementation((arg?: unknown) =>
+      makeSelectChain(arg === undefined ? existing : []),
+    )
+    mockDb.update.mockReturnValue(makeUpdateReturningChain(existing))
+
+    await app.request('/agents/agt_1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scmSourceId: 'scm_owned_by_someone_else' }),
+    })
+
+    expect(getOwnerFilter).toHaveBeenCalledWith(expect.anything(), scmSources.userId)
   })
 
   it('PATCH with existingIds=[doc1], input=[doc1, doc2] → only doc2 is validated; missing doc2 → 400', async () => {

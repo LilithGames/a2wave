@@ -26,6 +26,7 @@ import {
   zipDirectoryToBuffer,
 } from './artifact-storage.js'
 import { ProviderConfigurationError } from './errors.js'
+import { createBotIdentityResolver } from './feishu-bot-identity.js'
 import { FeishuStreamingCard } from './feishu-card-streaming.js'
 import { type NormalizedFeishuConfig, normalizeFeishuConfig } from './feishu-config.js'
 import {
@@ -206,6 +207,15 @@ export function shouldTrigger(
 ): boolean {
   if (message.chat_type === 'p2p') return true
 
+  // With the bot's own open_id known, match it exactly. Without it, fall back to
+  // the sequential key `@_user_1` — the FIRST mention in the message, whoever it
+  // points at — which fires on "@Alice can you review this?" too. That fallback
+  // is a deliberate false-positive-over-false-negative trade: refusing every
+  // identified mention instead would stop the bot answering when it is genuinely
+  // @-ed, since real mentions (the bot's included) all carry an open_id.
+  //
+  // The fallback is meant to be transient, so the caller re-probes the bot's
+  // open_id rather than being stuck with `undefined` for the process lifetime.
   const isMentioned = botOpenId
     ? (message.mentions ?? []).some((m) => m.id?.open_id === botOpenId)
     : (message.mentions ?? []).some((m) => m.key === '@_user_1')
@@ -1321,26 +1331,39 @@ class FeishuConnectionManager {
       // Fetch the bot's own open_id for accurate @mention detection.
       // Without this, we'd have to use the sequential key '@_user_1' which matches the first
       // @mention in any message — not necessarily the bot — causing false positive triggers.
-      let botOpenId: string | undefined
-      try {
-        const res = await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
-        botOpenId = res?.bot?.open_id
-        if (botOpenId) {
-          logger.info({ agentId }, 'Feishu bot open_id fetched for mention detection')
-        }
-      } catch (err) {
-        logger.warn(
-          { err, agentId },
-          'Failed to fetch Feishu bot open_id; @mention detection may have false positives when other users are mentioned first',
-        )
-      }
+      //
+      // A failure here used to be permanent: `botOpenId` stayed undefined for the
+      // whole process lifetime, so every group message fell back to `@_user_1`
+      // and a colleague's "@Alice can you review this?" triggered the Agent into
+      // answering an unrelated conversation until someone restarted it. The
+      // probe is therefore retried lazily on the next message instead.
+      const botIdentity = createBotIdentityResolver(client, agentId, (openId) => {
+        // Refresh the stored entry too: the card-resume path reads it from there,
+        // and a late probe must not leave that copy stale.
+        //
+        // Matched on the client, not just the agentId: a retry from a superseded
+        // connection can still be in flight when the Agent is restarted on
+        // different app credentials, and writing the old bot's identity onto the
+        // replacement would make it ignore genuine mentions or answer to the
+        // wrong bot.
+        const entry = this.connections.get(agentId)
+        if (entry?.client === client) entry.botOpenId = openId
+      })
+      await botIdentity.resolve()
 
       const dispatcher = new lark.EventDispatcher({}).register({
         // Must NOT await handleMessage here — the SDK sends the ACK to Feishu only after
         // this handler returns. If we await the full LLM execution (which can take 30s+),
         // Feishu will time out and retry the event, causing duplicate runs.
         'im.message.receive_v1': (data: FeishuMessageEvent) => {
-          this.handleMessage(agentId, client, config, data, botOpenId).catch((err) =>
+          // Handle with whatever identity is known RIGHT NOW and kick the retry
+          // off alongside it, rather than awaiting the probe. Feishu has already
+          // been ACKed by the time this runs, so blocking on a slow or hung
+          // `bot/v3/info` would strand the message instead of letting it take the
+          // documented `@_user_1` fallback. The retry lands for the next message.
+          const knownOpenId = botIdentity.current()
+          if (!knownOpenId) void botIdentity.resolve()
+          this.handleMessage(agentId, client, config, data, knownOpenId).catch((err) =>
             logger.error({ err, agentId }, 'Feishu message handler error'),
           )
         },
@@ -1379,7 +1402,7 @@ class FeishuConnectionManager {
         wsClient,
         client,
         config,
-        botOpenId,
+        botOpenId: botIdentity.current(),
         socketOpen: false,
       }
       this.connections.set(agentId, entry)

@@ -52,6 +52,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
   reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
+  completeExecutionLease: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
@@ -75,8 +76,10 @@ vi.mock('../../engine/task-queue.js', () => ({
   tryAcquireSlot: mockTryAcquireSlot,
 }))
 
+const mockCountOccupiedRunSlots = vi.hoisted(() => vi.fn().mockResolvedValue(0))
 vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
+  countOccupiedRunSlots: mockCountOccupiedRunSlots,
 }))
 
 vi.mock('../../lib/execute-chat-run.js', () => ({
@@ -2497,5 +2500,161 @@ describe('POST /runs/:id/execute — audit trail', () => {
     expect(res.status).toBe(409)
     expect(logAudit).not.toHaveBeenCalled()
     expect(mockRunWithLifecycle).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// Concurrency admission.
+//
+// `POST /runs/:id/execute` flipped pending|queued -> running and reserved the
+// execution lease without ever checking capacity. `withScmWorkloadAdmission`
+// only settles the SCM binding — it does no capacity arbitration — so the
+// endpoint could start a run past the Agent's maxConcurrency, and under a
+// per-agent worktree that means two CLI processes writing one checkout.
+// ============================================================================
+describe('POST /runs/:id/execute — concurrency admission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetRunReadFilter.mockReturnValue(undefined)
+    mockGetCurrentUserId.mockReturnValue('usr_alice')
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockDb.insert.mockReturnValue(makeInsertChain())
+    mockRunWithLifecycle.mockResolvedValue({ success: true, output: 'ok', durationMs: 1 })
+  })
+
+  afterEach(() => {
+    mockGetCurrentUserId.mockReturnValue(undefined)
+    mockCountOccupiedRunSlots.mockResolvedValue(0)
+  })
+
+  async function executeWithOccupancy(
+    occupied: number,
+    maxConcurrency = 1,
+    /** What the post-capacity status re-read sees, i.e. the second run lookup. */
+    statusOnRecheck?: string,
+  ) {
+    mockCountOccupiedRunSlots.mockResolvedValue(occupied)
+    await selectByBoundId({
+      ...(statusOnRecheck ? { step: { status: statusOnRecheck } } : {}),
+      run: {
+        id: 'run_1',
+        status: 'pending',
+        userId: 'usr_alice',
+        initiatorAgentId: null,
+        intent: 'do the thing',
+        config: {},
+      },
+      agents: {
+        agt_owned: {
+          id: 'agt_owned',
+          userId: 'usr_alice',
+          status: 'active',
+          type: 'cursor',
+          name: 'Owned',
+          config: {},
+          maxConcurrency,
+        },
+      },
+    })
+
+    const mod = await import('../runs.js')
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      c.set('userRole' as never, 'user')
+      c.set('userId' as never, 'usr_alice')
+      await next()
+    })
+    app.route('/runs', mod.default)
+
+    return app.request('/runs/run_1/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agt_owned' }),
+    })
+  }
+
+  it('refuses to start the run when the agent is already at capacity', async () => {
+    const res = await executeWithOccupancy(1, 1)
+
+    expect(res.status).toBe(429)
+    expect(mockRunWithLifecycle).not.toHaveBeenCalled()
+    // The run never ran, so it must leave no entry claiming that it did.
+    expect(logAudit).not.toHaveBeenCalled()
+  })
+
+  // Two requests for the same pending run both pass the status read. On the
+  // default maxConcurrency of 1 the loser can reach the capacity check after the
+  // winner has committed, and a bare 429 would tell it the queue is merely full
+  // and the request is worth retrying — when this run has already started and is
+  // never re-executable.
+  it('reports 409, not 429, when the run it lost to is the one occupying the slot', async () => {
+    // Occupied, and the re-read shows the winner already flipped it to running.
+    const res = await executeWithOccupancy(1, 1, 'running')
+
+    expect(res.status).toBe(409)
+  })
+
+  it('admits an idle agent on the default maxConcurrency of 1', async () => {
+    const res = await executeWithOccupancy(0, 1)
+
+    expect(res.status).toBe(200)
+    expect(mockRunWithLifecycle).toHaveBeenCalled()
+  })
+
+  it('starts the run when the agent still has a free slot', async () => {
+    const res = await executeWithOccupancy(1, 2)
+
+    expect(res.status).toBe(200)
+    expect(mockRunWithLifecycle).toHaveBeenCalled()
+  })
+
+  // Leases are keyed by runId, so two requests admitting one run share a single
+  // entry. A request that reserved before the status CAS and then lost it could
+  // not release its own reservation without tearing down the winner's capacity
+  // claim, cancellation tracking and durable SCM lease mid-execution. Reserving
+  // only after the CAS is won means a loser never holds one to unwind.
+  it('does not reserve a lease when it loses the status CAS', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
+
+    // Zero CAS rows is how the route sees "another request already claimed this
+    // run" — the 409 branch.
+    mockDb.update.mockReturnValue(makeUpdateChain(0))
+
+    const res = await executeWithOccupancy(0, 1)
+
+    expect(res.status).toBe(409)
+    expect(reserveExecutionLease).not.toHaveBeenCalled()
+  })
+
+  // The lease is in-memory; the admission is a database transaction. Reserving
+  // inside that transaction means a rollback after the CAS — a failed step
+  // insert, a commit error — leaves an orphaned lease that consumes the agent's
+  // capacity for the process lifetime and stalls graceful shutdown until its
+  // hard deadline. Nothing releases it, because no run lifecycle ever starts.
+  it('leaves no lease behind when the admission transaction fails', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
+
+    mockDb.insert.mockImplementation(() => {
+      throw new Error('step insert failed')
+    })
+
+    const res = await executeWithOccupancy(0, 1)
+
+    expect(res.status).toBe(500)
+    expect(reserveExecutionLease).not.toHaveBeenCalled()
+
+    mockDb.insert.mockReturnValue(makeInsertChain())
+  })
+
+  // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
+  // which an override leaves pointing at the ORIGINAL agent, so the executing
+  // agent's claim on a slot is this lease. It is taken inside the same
+  // transaction as the status CAS, so capacity and admission cannot disagree.
+  it('reserves the executing agent lease inside the admission transaction', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
+
+    await executeWithOccupancy(0, 1)
+
+    expect(reserveExecutionLease).toHaveBeenCalledWith('run_1', 'agt_owned')
   })
 })

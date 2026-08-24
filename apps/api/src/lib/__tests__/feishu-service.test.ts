@@ -1722,6 +1722,41 @@ describe('FeishuConnectionManager lifecycle', () => {
     expect(mockWsClientStart).toHaveBeenCalledOnce()
   })
 
+  // The bot/v3/info probe used to run exactly once. On failure botOpenId stayed
+  // undefined for the whole process lifetime, so every group message fell back to
+  // matching `@_user_1` — the first mention in the message, whoever it points at —
+  // and a colleague's "@Alice can you review this?" triggered the Agent into
+  // answering an unrelated conversation until someone restarted the process.
+  it('retries a failed bot open_id probe instead of latching the failure', async () => {
+    mockClientRequest.mockRejectedValueOnce(new Error('feishu blip during boot'))
+    await feishuConnectionManager.start('agt_probe', BASE_CONFIG)
+
+    const probeCallsAfterStart = mockClientRequest.mock.calls.length
+    mockClientRequest.mockResolvedValue({ bot: { open_id: 'ou_bot_test' } })
+
+    // Any subsequent message must re-probe rather than run on the stale miss.
+    capturedDispatchers['im.message.receive_v1']?.({
+      schema: '2.0',
+      header: { event_id: 'evt_probe' },
+      event: {
+        message: {
+          message_id: 'om_probe',
+          chat_id: 'oc_probe',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'hi' }),
+          mentions: [],
+        },
+        sender: { sender_id: { open_id: 'ou_sender' } },
+      },
+    })
+    await vi.waitFor(() =>
+      expect(mockClientRequest.mock.calls.length).toBeGreaterThan(probeCallsAfterStart),
+    )
+
+    feishuConnectionManager.stopAll()
+  })
+
   it('同一 agentId 重复 start() 时先 close 旧连接再建新连接', async () => {
     await feishuConnectionManager.start('agt_001', BASE_CONFIG)
     vi.clearAllMocks()

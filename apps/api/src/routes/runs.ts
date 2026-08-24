@@ -20,10 +20,10 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { reserveExecutionLeaseForAgent } from '../engine/execution-lease-registry.js'
+import { reserveExecutionLease } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
+import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
 import { getRunReadFilter, hasAgentScopedAccess, requireAgentWrite } from '../lib/agent-access.js'
 import { buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -51,6 +51,7 @@ import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-sta
 import type { WorkerTaskPayload } from '../worker/index.js'
 
 class RunAdmissionLostError extends Error {}
+class RunAtCapacityError extends Error {}
 
 /**
  * Enrich rerun context for Feishu-triggered runs.
@@ -698,6 +699,27 @@ app.post('/:id/execute', async (c) => {
     admission = await withScmWorkloadAdmission(
       { type: 'run', workloadId: id, agentId },
       async (tx, scmAdmission) => {
+        // Capacity is arbitrated here, in the same transaction as the status CAS.
+        // withScmWorkloadAdmission only settles the SCM binding — it does no
+        // capacity check — so without this the endpoint starts runs past
+        // maxConcurrency, and under a per-agent worktree that puts two CLI
+        // processes in one checkout. Counted the way admission and promotion
+        // both count it, so all three agree on what "at capacity" means.
+        //
+        // SCOPE LIMIT, inherited from the `agentId` override asymmetry documented
+        // above: `countOccupiedRunSlots` finds running rows through
+        // runs.initiator_agent_id, which an override leaves pointing at the
+        // ORIGINAL agent, and the executing agent's own claim is an in-memory
+        // lease. So on multi-replica PostgreSQL two overridden runs can each miss
+        // the other and exceed the executing Agent's maxConcurrency. Closing it
+        // means persisting the executing agent — exactly the re-attribution of
+        // runs in stats and the leaderboard that the asymmetry note declines to
+        // do. Left as-is: no first-party client sends the override, and
+        // PostgreSQL is experimental.
+        const occupied = await countOccupiedRunSlots(tx, agentId)
+        if (occupied >= (agent.maxConcurrency ?? 1)) {
+          throw new RunAtCapacityError()
+        }
         const updateRunResult = await tx
           .update(runs)
           // queuedAt is consumed into the step's waitMs below; clearing it in
@@ -719,6 +741,21 @@ app.post('/:id/execute', async (c) => {
       },
     )
   } catch (error) {
+    if (error instanceof RunAtCapacityError) {
+      // A run that is already executing must read as 409, not 429. Two requests
+      // for the same pending run both pass the status read; on the default
+      // maxConcurrency of 1 the loser can reach the capacity check after the
+      // winner commits, and a bare 429 would tell it the queue is merely full
+      // and the request is worth retrying — when in fact this run has already
+      // started and never will be re-executable.
+      const current = (
+        await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
+      )[0]?.status
+      if (current && !canExecuteStatuses.includes(current as 'pending' | 'queued')) {
+        return c.json({ error: `Run cannot be re-executed (current status: ${current})` }, 409)
+      }
+      return c.json({ error: 'Queue is full' }, 429)
+    }
     if (!(error instanceof RunAdmissionLostError)) throw error
   }
 
@@ -732,6 +769,18 @@ app.post('/:id/execute', async (c) => {
       409,
     )
   }
+
+  // Reserved only here: after the CAS was won AND the transaction committed.
+  //
+  // Leases are keyed by runId, so two requests admitting one run share a single
+  // entry — a request that reserved before the CAS and then lost it could not
+  // release its own reservation without tearing down the winner's capacity
+  // claim, cancellation tracking and durable SCM lease mid-execution. Reserving
+  // after the CAS means a loser never holds one. Reserving after the *commit*
+  // additionally means a rolled-back admission (a failed step insert, a commit
+  // error) leaves no orphaned lease behind to consume capacity for the process
+  // lifetime and stall graceful shutdown until its hard deadline.
+  reserveExecutionLease(id, agentId)
 
   // Audit after the status CAS won the race, so a request that lost it (409
   // above) leaves no entry claiming an execution that never happened. `agentId`
@@ -748,7 +797,6 @@ app.post('/:id/execute', async (c) => {
   const taskId = buildTaskId('', id, stepId)
   const startTime = Date.now()
   try {
-    await reserveExecutionLeaseForAgent(id, agentId)
     if (admission.hasScmLease) {
       await activateScmWorkload({
         type: 'run',

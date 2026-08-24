@@ -6,14 +6,15 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
+import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents } from '../db/schema.js'
 import { requireAgentRead, requireAgentWrite } from '../lib/agent-access.js'
 import {
-  type RuntimeMemoryAction,
   agentTokenAllows,
   consumeAgentTopicRead,
   getRuntimeMemoryTokenClaims,
+  type RuntimeMemoryAction,
 } from '../lib/agent-memory-token.js'
 import { logAudit } from '../lib/audit.js'
 import { getEmbeddings, isEmbeddingAvailable } from '../lib/embedding-service.js'
@@ -47,16 +48,16 @@ import {
 } from '../lib/memory-topic-migration.js'
 import {
   ACTIVE_TOPIC_DIR,
-  MEMORY_MAIN_FILE,
-  MemoryTopicError,
-  type MemoryTopicSection,
-  type MemoryTopicSplitReplacement,
   applyInsightToTopics,
   archiveMemoryTopic,
   deleteMemoryTopicFile,
   detectMemoryHierarchyMode,
   isMemoryTopicPath,
   listMemoryTopics,
+  MEMORY_MAIN_FILE,
+  MemoryTopicError,
+  type MemoryTopicSection,
+  type MemoryTopicSplitReplacement,
   mergeMemoryTopics,
   reactivateMemoryTopic,
   readMemoryTopic,
@@ -658,6 +659,10 @@ app.get('/:agentId/stats', async (c) => {
 app.post('/:agentId/reindex', async (c) => {
   const { agentId } = c.req.param()
   await requireMemoryWrite(c, agentId)
+  // requireMemoryWrite short-circuits on the runtime-token path without weighing
+  // viewer/editor, so an Agent's own read-only token would otherwise reach this
+  // destructive lifecycle route. Same stance as topics/reorganize.
+  if (runtimeToken(c)) throw new ForbiddenError('Runtime tokens cannot reindex memory')
 
   clearAgentIndex(agentId)
   reindexAgentFts(agentId)
@@ -670,15 +675,30 @@ app.post('/:agentId/reindex', async (c) => {
   return c.json({ data: { reindexed: true } })
 })
 
+const consolidateBodySchema = z.object({
+  maxAgeDays: z.number().int().min(1).max(3650).optional(),
+})
+
 /** POST /memories/:agentId/consolidate — 手动触发日志合并 */
 app.post('/:agentId/consolidate', async (c) => {
   const { agentId } = c.req.param()
   const agent = await requireMemoryWrite(c, agentId)
+  if (runtimeToken(c)) throw new ForbiddenError('Runtime tokens cannot consolidate memory')
 
-  const body = await c.req
-    .json<{ maxAgeDays?: number }>()
-    .catch(() => ({}) as { maxAgeDays?: number })
-  const result = await consolidateMemory(agentId, { agent: agent }, { maxAgeDays: body.maxAgeDays })
+  // `.json<T>()` is a cast, not a check. A negative maxAgeDays puts the cutoff in
+  // the future, which makes every daily log — including today's — older than it,
+  // so the whole set is summarised away and deleted.
+  const parsed = consolidateBodySchema.safeParse(
+    await c.req.json<unknown>().catch(() => ({}) as unknown),
+  )
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400)
+  }
+  const result = await consolidateMemory(
+    agentId,
+    { agent: agent },
+    { maxAgeDays: parsed.data.maxAgeDays },
+  )
   if (result) {
     logAudit(c, {
       action: 'memory.consolidate',
