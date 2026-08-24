@@ -464,20 +464,6 @@ describe('shouldTrigger', () => {
     ).toBe(true)
   })
 
-  // botOpenId 只在启动时探测一次，失败后整个进程生命周期都是 undefined。此时回退到
-  // 匹配 `@_user_1`（消息里的第一个 @ 对象），于是同事写「@Alice 帮忙看下」也会触发
-  // 机器人去回复一段与它无关的对话——同一条消息触发与否，取决于一次启动探测的成败。
-  // 但 mention 自带 open_id 时，即使不知道机器人是谁，也足以判定它「不是机器人」。
-  it('botOpenId 未知但 mention 带 open_id 时，不把他人的 @ 当成 @机器人', () => {
-    expect(
-      shouldTrigger(
-        { ...OFF_ALL, groupTriggerOnAt: true },
-        { chat_type: 'group', mentions: [{ key: '@_user_1', id: { open_id: 'ou_alice' } }] },
-        undefined,
-      ),
-    ).toBe(false)
-  })
-
   // ── 话题群 ──
   it('话题群 + topicTriggerOnAt=true + @机器人 → 触发', () => {
     expect(
@@ -1734,6 +1720,41 @@ describe('FeishuConnectionManager lifecycle', () => {
   it('start() 调用 WSClient.start()', async () => {
     await feishuConnectionManager.start('agt_001', BASE_CONFIG)
     expect(mockWsClientStart).toHaveBeenCalledOnce()
+  })
+
+  // The bot/v3/info probe used to run exactly once. On failure botOpenId stayed
+  // undefined for the whole process lifetime, so every group message fell back to
+  // matching `@_user_1` — the first mention in the message, whoever it points at —
+  // and a colleague's "@Alice can you review this?" triggered the Agent into
+  // answering an unrelated conversation until someone restarted the process.
+  it('retries a failed bot open_id probe instead of latching the failure', async () => {
+    mockClientRequest.mockRejectedValueOnce(new Error('feishu blip during boot'))
+    await feishuConnectionManager.start('agt_probe', BASE_CONFIG)
+
+    const probeCallsAfterStart = mockClientRequest.mock.calls.length
+    mockClientRequest.mockResolvedValue({ bot: { open_id: 'ou_bot_test' } })
+
+    // Any subsequent message must re-probe rather than run on the stale miss.
+    capturedDispatchers['im.message.receive_v1']?.({
+      schema: '2.0',
+      header: { event_id: 'evt_probe' },
+      event: {
+        message: {
+          message_id: 'om_probe',
+          chat_id: 'oc_probe',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'hi' }),
+          mentions: [],
+        },
+        sender: { sender_id: { open_id: 'ou_sender' } },
+      },
+    })
+    await vi.waitFor(() =>
+      expect(mockClientRequest.mock.calls.length).toBeGreaterThan(probeCallsAfterStart),
+    )
+
+    feishuConnectionManager.stopAll()
   })
 
   it('同一 agentId 重复 start() 时先 close 旧连接再建新连接', async () => {

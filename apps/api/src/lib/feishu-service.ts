@@ -206,14 +206,18 @@ export function shouldTrigger(
 ): boolean {
   if (message.chat_type === 'p2p') return true
 
-  // botOpenId 只在 start() 探测一次，失败即整个进程生命周期为 undefined。回退到匹配
-  // `@_user_1`（消息里的第一个 @ 对象）会让「@Alice 帮忙看下」也触发机器人去回复一段
-  // 与它无关的对话，且只能靠重启恢复。mention 自带 open_id 时，即使不知道机器人是谁，
-  // 也足以判定该 mention「不是机器人」——只有在完全没有 open_id 可比对时才退回序号匹配。
-  const mentions = message.mentions ?? []
+  // With the bot's own open_id known, match it exactly. Without it, fall back to
+  // the sequential key `@_user_1` — the FIRST mention in the message, whoever it
+  // points at — which fires on "@Alice can you review this?" too. That fallback
+  // is a deliberate false-positive-over-false-negative trade: refusing every
+  // identified mention instead would stop the bot answering when it is genuinely
+  // @-ed, since real mentions (the bot's included) all carry an open_id.
+  //
+  // The fallback is meant to be transient, so the caller re-probes the bot's
+  // open_id rather than being stuck with `undefined` for the process lifetime.
   const isMentioned = botOpenId
-    ? mentions.some((m) => m.id?.open_id === botOpenId)
-    : mentions.some((m) => m.key === '@_user_1' && m.id?.open_id === undefined)
+    ? (message.mentions ?? []).some((m) => m.id?.open_id === botOpenId)
+    : (message.mentions ?? []).some((m) => m.key === '@_user_1')
 
   // 话题群：群聊消息携带 thread_id（参见上方 JSDoc 中的假设说明）
   if (message.thread_id) {
@@ -1326,28 +1330,60 @@ class FeishuConnectionManager {
       // Fetch the bot's own open_id for accurate @mention detection.
       // Without this, we'd have to use the sequential key '@_user_1' which matches the first
       // @mention in any message — not necessarily the bot — causing false positive triggers.
+      //
+      // A failure here used to be permanent: `botOpenId` stayed undefined for the
+      // whole process lifetime, so every group message fell back to `@_user_1`
+      // and a colleague's "@Alice can you review this?" triggered the Agent into
+      // answering an unrelated conversation until someone restarted it. The
+      // probe is therefore retried lazily on the next message instead.
       let botOpenId: string | undefined
-      try {
-        const res = await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
-        botOpenId = res?.bot?.open_id
-        if (botOpenId) {
-          logger.info({ agentId }, 'Feishu bot open_id fetched for mention detection')
+      let botOpenIdProbe: Promise<void> | null = null
+
+      const probeBotOpenId = async (): Promise<void> => {
+        try {
+          const res = await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
+          botOpenId = res?.bot?.open_id
+          if (botOpenId) {
+            // Also refresh the stored entry: the card-resume path reads it from
+            // there, and a late probe must not leave that copy stale.
+            const entry = this.connections.get(agentId)
+            if (entry) entry.botOpenId = botOpenId
+            logger.info({ agentId }, 'Feishu bot open_id fetched for mention detection')
+          }
+        } catch (err) {
+          logger.warn(
+            { err, agentId },
+            'Failed to fetch Feishu bot open_id; @mention detection may have false positives until the next attempt',
+          )
         }
-      } catch (err) {
-        logger.warn(
-          { err, agentId },
-          'Failed to fetch Feishu bot open_id; @mention detection may have false positives when other users are mentioned first',
-        )
       }
+
+      /**
+       * Resolve the bot's open_id, retrying a previously failed probe. Concurrent
+       * messages share one in-flight attempt, and a settled failed attempt is
+       * cleared so the next message tries again rather than latching the miss.
+       */
+      const resolveBotOpenId = async (): Promise<string | undefined> => {
+        if (botOpenId) return botOpenId
+        if (!botOpenIdProbe) {
+          botOpenIdProbe = probeBotOpenId().finally(() => {
+            if (!botOpenId) botOpenIdProbe = null
+          })
+        }
+        await botOpenIdProbe
+        return botOpenId
+      }
+
+      await resolveBotOpenId()
 
       const dispatcher = new lark.EventDispatcher({}).register({
         // Must NOT await handleMessage here — the SDK sends the ACK to Feishu only after
         // this handler returns. If we await the full LLM execution (which can take 30s+),
         // Feishu will time out and retry the event, causing duplicate runs.
         'im.message.receive_v1': (data: FeishuMessageEvent) => {
-          this.handleMessage(agentId, client, config, data, botOpenId).catch((err) =>
-            logger.error({ err, agentId }, 'Feishu message handler error'),
-          )
+          resolveBotOpenId()
+            .then((openId) => this.handleMessage(agentId, client, config, data, openId))
+            .catch((err) => logger.error({ err, agentId }, 'Feishu message handler error'))
         },
         // 机器人添加/收到表情反应时会投递；无处理器时 SDK 会 warn「no im.message.reaction.created_v1 handle」
         'im.message.reaction.created_v1': () => {},

@@ -1159,6 +1159,10 @@ describe('auto-sync scheduler', () => {
   // leaving an orphan writing the checkout after the process reported shutdown.
   it('aborts an in-flight recurring sync child on stopAllAutoSync', async () => {
     vi.useRealTimers()
+    // Clears the shutdown latch left by a prior stopAllAutoSync in this file,
+    // which would otherwise abort this sync the moment it registers.
+    startAutoSync('s_abort_reset', 60)
+    stopAutoSync('s_abort_reset')
     mockDbSelectGet({ id: 's_abort', type: 'git', config: {}, localPath: '/repo' })
     mockDbUpdate()
 
@@ -1188,6 +1192,38 @@ describe('auto-sync scheduler', () => {
 
     expect(observedSignal?.aborted).toBe(true)
     await pending
+    vi.useFakeTimers()
+  })
+
+  // Registering the controller inside the sync body — after the checkout acquire
+  // and the status/row reads — left a window where shutdown swept the map, missed
+  // this sync, and let it go on to spawn a child that outlived the process. The
+  // registration is now synchronous with the call, and a sync that still manages
+  // to register afterwards is aborted on arrival by the shutdown latch.
+  it('aborts a sync that is still mid-startup when shutdown sweeps', async () => {
+    vi.useRealTimers()
+    startAutoSync('s_race_reset', 60)
+    stopAutoSync('s_race_reset')
+
+    mockDbSelectGet({ id: 's_race', type: 'git', config: {}, localPath: '/repo' })
+    mockDbUpdate()
+
+    let observedSignal: AbortSignal | undefined
+    mockExecuteGitSync.mockImplementation(
+      (_config: unknown, _path: unknown, _timeout: unknown, signal?: AbortSignal) => {
+        observedSignal = signal
+        return Promise.resolve({ ok: false, message: 'aborted' })
+      },
+    )
+
+    // Shutdown lands in the same tick the sync starts — before it has awaited
+    // its way down to where the child is spawned.
+    const pending = syncScmSource('s_race')
+    stopAllAutoSync()
+    await pending
+
+    // Whether the child ran or not, it must never have been handed a live signal.
+    if (observedSignal) expect(observedSignal.aborted).toBe(true)
     vi.useFakeTimers()
   })
 
