@@ -363,11 +363,23 @@ const SCM_SYNC_DRAIN_TIMEOUT_MS = 2_000
 const activeSyncSettlements = new Set<Promise<unknown>>()
 
 /**
- * Set once `stopAllAutoSync` has run. A sync that registers after that point
- * would otherwise never be aborted by anyone — shutdown has already swept the
- * map — so it is aborted on arrival instead.
+ * Set once `stopAllAutoSync` has run. A sync registering after that point would
+ * otherwise never be aborted by anyone — shutdown has already swept the map — so
+ * it is aborted on arrival instead.
+ *
+ * Deliberately one-way for the process lifetime. An SCM create/PATCH already in
+ * flight when the sweep runs can still reach `startAutoSync`/`startInitialScmSync`
+ * afterwards; letting either clear the latch would let that sync miss the sweep
+ * and keep a `git`/`p4` child writing the checkout after the heartbeat and
+ * database are gone, which is exactly what a peer treats as free to reclaim.
+ * Tests that need a fresh generation call `_resetSyncShutdownLatchForTests`.
  */
 let syncsStopped = false
+
+/** Test-only: shutdown is irreversible in a real process lifetime. */
+export function _resetSyncShutdownLatchForTests(): void {
+  syncsStopped = false
+}
 
 function registerSyncAbort(sourceId: string, controller: AbortController): () => void {
   if (syncsStopped) controller.abort()
@@ -806,12 +818,6 @@ const inFlightAutoSyncs = new Set<string>()
  * running and skips its turn instead of stacking concurrent syncs.
  */
 export function startAutoSync(sourceId: string, intervalMin: number): void {
-  // Scheduling a sync means this process intends to sync again, so the shutdown
-  // latch must not carry over. In production this is a no-op — nothing schedules
-  // after stopAllAutoSync — but it keeps the latch from being a one-way trip for
-  // any caller that restarts the schedulers within a single process lifetime.
-  syncsStopped = false
-
   // Stop the existing timer first.
   stopAutoSync(sourceId)
 

@@ -98,6 +98,7 @@ import { asyncQuery } from '../../test/async-query.js'
 import { p4ClientRootCoversPath, parseP4ClientRoots } from '../p4-client-root.js'
 import type { ScmSyncResult } from '../p4-sync.js'
 import {
+  _resetSyncShutdownLatchForTests,
   cancelInitialScmSync,
   checkP4Connection,
   executeP4Sync,
@@ -1161,8 +1162,7 @@ describe('auto-sync scheduler', () => {
     vi.useRealTimers()
     // Clears the shutdown latch left by a prior stopAllAutoSync in this file,
     // which would otherwise abort this sync the moment it registers.
-    startAutoSync('s_abort_reset', 60)
-    stopAutoSync('s_abort_reset')
+    _resetSyncShutdownLatchForTests()
     mockDbSelectGet({ id: 's_abort', type: 'git', config: {}, localPath: '/repo' })
     mockDbUpdate()
 
@@ -1195,6 +1195,36 @@ describe('auto-sync scheduler', () => {
     vi.useFakeTimers()
   })
 
+  // An SCM create/PATCH already in flight when the sweep runs can still reach
+  // startAutoSync afterwards. If that cleared the latch, the sync it schedules
+  // would miss the completed sweep and keep a git/p4 child writing the checkout
+  // after the heartbeat and database are gone — which a peer treats as free to
+  // reclaim. Shutdown has to stay one-way for the process lifetime.
+  it('stays shut down when a late route schedules another sync', async () => {
+    vi.useRealTimers()
+    _resetSyncShutdownLatchForTests()
+    mockDbSelectGet({ id: 's_late', type: 'git', config: {}, localPath: '/repo' })
+    mockDbUpdate()
+
+    stopAllAutoSync()
+    // The in-flight route lands after the sweep.
+    startAutoSync('s_late', 60)
+    stopAutoSync('s_late')
+
+    let observedSignal: AbortSignal | undefined
+    mockExecuteGitSync.mockImplementation(
+      (_c: unknown, _p: unknown, _t: unknown, signal?: AbortSignal) => {
+        observedSignal = signal
+        return Promise.resolve({ ok: false, message: 'aborted' })
+      },
+    )
+    await syncScmSource('s_late')
+
+    // Aborted on arrival, never handed a live signal.
+    if (observedSignal) expect(observedSignal.aborted).toBe(true)
+    vi.useFakeTimers()
+  })
+
   // Registering the controller inside the sync body — after the checkout acquire
   // and the status/row reads — left a window where shutdown swept the map, missed
   // this sync, and let it go on to spawn a child that outlived the process. The
@@ -1202,8 +1232,7 @@ describe('auto-sync scheduler', () => {
   // to register afterwards is aborted on arrival by the shutdown latch.
   it('aborts a sync that is still mid-startup when shutdown sweeps', async () => {
     vi.useRealTimers()
-    startAutoSync('s_race_reset', 60)
-    stopAutoSync('s_race_reset')
+    _resetSyncShutdownLatchForTests()
 
     mockDbSelectGet({ id: 's_race', type: 'git', config: {}, localPath: '/repo' })
     mockDbUpdate()
