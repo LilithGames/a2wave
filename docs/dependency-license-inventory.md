@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-17 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-08-24 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -83,7 +83,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/traverse | 7.29.0 | MIT |
 | @babel/types | 7.29.0, 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 2.5.8 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.5.9 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.3 | MIT |
 | @codemirror/commands | 6.10.4 | MIT |
 | @codemirror/language | 6.12.4 | MIT |
@@ -228,7 +228,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.2 | MIT |
-| @testing-library/user-event | 14.6.4 | MIT |
+| @testing-library/user-event | 14.6.5 | MIT |
 | @types/adm-zip | 0.5.8 | MIT |
 | @types/aria-query | 5.0.4 | MIT |
 | @types/babel__core | 7.20.5 | MIT |
@@ -256,7 +256,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/ms | 2.1.0 | MIT |
 | @types/mustache | 4.2.6 | MIT |
 | @types/node | 22.20.1 | MIT |
-| @types/pg | 8.21.0 | MIT |
+| @types/pg | 8.23.1 | MIT |
 | @types/qs | 6.15.1 | MIT |
 | @types/react | 19.2.18 | MIT |
 | @types/react-dom | 19.2.4 | MIT |
@@ -269,14 +269,14 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/xml2js | 0.4.14 | MIT |
 | @ungap/structured-clone | 1.3.0 | ISC |
 | @vitejs/plugin-react | 4.7.0 | MIT |
-| @vitest/coverage-v8 | 4.1.10 | MIT |
-| @vitest/expect | 4.1.10 | MIT |
-| @vitest/mocker | 4.1.10 | MIT |
-| @vitest/pretty-format | 4.1.10 | MIT |
-| @vitest/runner | 4.1.10 | MIT |
-| @vitest/snapshot | 4.1.10 | MIT |
-| @vitest/spy | 4.1.10 | MIT |
-| @vitest/utils | 4.1.10 | MIT |
+| @vitest/coverage-v8 | 4.1.11 | MIT |
+| @vitest/expect | 4.1.11 | MIT |
+| @vitest/mocker | 4.1.11 | MIT |
+| @vitest/pretty-format | 4.1.11 | MIT |
+| @vitest/runner | 4.1.11 | MIT |
+| @vitest/snapshot | 4.1.11 | MIT |
+| @vitest/spy | 4.1.11 | MIT |
+| @vitest/utils | 4.1.11 | MIT |
 | @vladfrangu/async_event_emitter | 2.4.7 | MIT |
 | @xmldom/is-dom-node | 1.0.1 | MIT |
 | @xmldom/xmldom | 0.8.13 | MIT |
@@ -403,7 +403,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | environment | 1.1.0 | MIT |
 | es-define-property | 1.0.1 | MIT |
 | es-errors | 1.3.0 | MIT |
-| es-module-lexer | 2.3.1 | MIT |
+| es-module-lexer | 2.3.2 | MIT |
 | es-object-atoms | 1.1.1 | MIT |
 | es-set-tostringtag | 2.1.0 | MIT |
 | es-toolkit | 1.50.0 | MIT |
@@ -835,7 +835,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | vfile-message | 4.0.3 | MIT |
 | victory-vendor | 37.3.6 | MIT AND ISC |
 | vite | 8.2.1 | MIT |
-| vitest | 4.1.10 | MIT |
+| vitest | 4.1.11 | MIT |
 | void-elements | 3.1.0 | MIT |
 | w3c-keyname | 2.2.8 | MIT |
 | w3c-xmlserializer | 5.0.0 | MIT |
