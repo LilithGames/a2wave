@@ -339,6 +339,36 @@ const activeInitialSyncs = new Map<
   string,
   { controller: AbortController; promise: Promise<ScmSyncResult> }
 >()
+/**
+ * Every in-flight sync's abort controller, keyed by source.
+ *
+ * `startInitialScmSync` used to be the only caller passing a signal, so the
+ * recurring tick and the manual sync route ran `git`/`p4` children that nothing
+ * could reap. `stopAllAutoSync` then cleared `busyCheckouts` — releasing the one
+ * in-process guard against a second writer on that path — while those children
+ * kept running, and shutdown went on to close the database and exit. The orphan
+ * was reparented to PID 1 and carried on writing the checkout after the process
+ * reported clean shutdown; on restart, `initAutoSyncSchedulers` reset the row to
+ * idle and could launch a fresh sync into that same directory.
+ */
+const activeSyncAborts = new Map<string, Set<AbortController>>()
+
+/** Settlement promises for every in-flight sync, so shutdown can wait them out. */
+const activeSyncSettlements = new Set<Promise<unknown>>()
+
+function registerSyncAbort(sourceId: string, controller: AbortController): () => void {
+  let controllers = activeSyncAborts.get(sourceId)
+  if (!controllers) {
+    controllers = new Set()
+    activeSyncAborts.set(sourceId, controllers)
+  }
+  controllers.add(controller)
+  return () => {
+    controllers.delete(controller)
+    if (controllers.size === 0) activeSyncAborts.delete(sourceId)
+  }
+}
+
 const INITIAL_SYNC_RECOVERY_CONCURRENCY = 2
 let initialSyncRecoveryGeneration = 0
 
@@ -444,13 +474,31 @@ async function releasePreAcquiredSync(sourceId: string, message: string): Promis
  * is still running. An atomic check-and-set on the `syncing` status is the one
  * gate shared by every caller (auto-sync timer, manual trigger).
  */
-export async function syncScmSource(
+export function syncScmSource(
   sourceId: string,
   options: {
     statusAlreadyAcquired?: boolean
     checkoutAlreadyAcquired?: boolean
     signal?: AbortSignal
   } = {},
+): Promise<ScmSyncResult> {
+  // Tracked so shutdown can wait for an aborted sync to unwind before the
+  // database closes. `runSyncScmSource` is called synchronously here, preserving
+  // the "checkout lock taken before the first await" guarantee documented below.
+  const settlement = runSyncScmSource(sourceId, options)
+  activeSyncSettlements.add(settlement)
+  return settlement.finally(() => {
+    activeSyncSettlements.delete(settlement)
+  })
+}
+
+async function runSyncScmSource(
+  sourceId: string,
+  options: {
+    statusAlreadyAcquired?: boolean
+    checkoutAlreadyAcquired?: boolean
+    signal?: AbortSignal
+  },
 ): Promise<ScmSyncResult> {
   // Take the ONE per-source checkout lock first, synchronously, before any
   // await. This is the single authoritative gate shared by every writer — the
@@ -590,27 +638,38 @@ async function runSyncUnderCheckoutLock(
   // an abort that merely raced a genuine failure erase it: the row settled to a
   // clean 'idle' with no lastSyncError and no webhook, leaving a
   // healthy-looking source that agents cannot use.
-  const abortedBeforeSync = options.signal?.aborted === true
+  // Every sync gets an abortable lifetime, whether or not the caller supplied a
+  // signal, so shutdown can reap its child process. A caller-supplied signal is
+  // chained onto it, preserving cancelInitialScmSync's existing semantics.
+  const syncAbort = new AbortController()
+  const unregisterSyncAbort = registerSyncAbort(sourceId, syncAbort)
+  const callerSignal = options.signal
+  if (callerSignal) {
+    if (callerSignal.aborted) syncAbort.abort()
+    else callerSignal.addEventListener('abort', () => syncAbort.abort(), { once: true })
+  }
+  const effectiveSignal = syncAbort.signal
+
+  const abortedBeforeSync = callerSignal?.aborted === true
 
   // Once the status is held, no throw may escape before the terminal write
   // below — an escaping error would leave the row stuck at 'syncing'.
   try {
     if (source.type === 'p4') {
       const config = source.config as unknown as P4Config
-      result = options.signal
-        ? await executeP4Sync(config, source.localPath, timeoutMs, options.signal)
-        : await executeP4Sync(config, source.localPath, timeoutMs)
+      result = await executeP4Sync(config, source.localPath, timeoutMs, effectiveSignal)
     } else if (source.type === 'git') {
       const config = source.config as unknown as GitConfig
-      result = options.signal
-        ? await executeGitSync(config, source.localPath, timeoutMs, options.signal)
-        : await executeGitSync(config, source.localPath, timeoutMs)
+      result = await executeGitSync(config, source.localPath, timeoutMs, effectiveSignal)
     } else {
       result = { ok: false, message: `Unsupported SCM type: ${source.type}` }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     result = { ok: false, message: `SCM sync failed: ${message}` }
+  } finally {
+    // The child has exited; a later shutdown must not hold a controller for it.
+    unregisterSyncAbort()
   }
   // A cancellation is only credited when the abort actually produced this
   // result — it was already aborted when the sync started, or the sync itself
@@ -618,7 +677,7 @@ async function runSyncUnderCheckoutLock(
   // real error leaves that error intact, status and webhook included.
   const cancelled =
     !result.ok &&
-    options.signal?.aborted === true &&
+    effectiveSignal.aborted &&
     (abortedBeforeSync || /cancel|abort/i.test(result.message))
 
   const handsOffToCodegraph = result.ok && isCodegraphEnabled(source.config)
@@ -784,7 +843,30 @@ export function stopAllAutoSync(): void {
   initialSyncRecoveryGeneration++
   for (const sync of activeInitialSyncs.values()) sync.controller.abort()
   activeInitialSyncs.clear()
+  // Abort every in-flight sync — not just the initial checkouts — before the
+  // checkout locks are dropped below. Clearing the locks while a child is still
+  // writing is what turns a leaked process into a corrupted checkout.
+  for (const controllers of activeSyncAborts.values()) {
+    for (const controller of controllers) controller.abort()
+  }
+  activeSyncAborts.clear()
   busyCheckouts.clear()
+}
+
+/**
+ * Wait for every aborted sync to finish unwinding.
+ *
+ * `stopAllAutoSync` only signals; the child still needs a moment to die and the
+ * sync still has a terminal status write to land. Closing the database before
+ * that leaves the row stuck at 'syncing' — the state `initAutoSyncSchedulers`
+ * has to repair on the next boot.
+ */
+export async function drainActiveScmSyncs(timeoutMs = 10_000): Promise<void> {
+  if (activeSyncSettlements.size === 0) return
+  await Promise.race([
+    Promise.allSettled([...activeSyncSettlements]),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ])
 }
 
 async function resetStuckScmSource(

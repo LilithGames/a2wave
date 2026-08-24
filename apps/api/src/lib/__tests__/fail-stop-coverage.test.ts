@@ -69,4 +69,17 @@ describe('fail-stop fence coverage', () => {
     const index = readFileSync(resolve(apiRoot, 'index.ts'), 'utf8')
     expect(index).toContain('stopAllAutoSync()')
   })
+
+  it('waits for aborted syncs to unwind before closing the database', () => {
+    // Aborting only signals: the `git`/`p4` child still has to exit and the sync
+    // still has a terminal status write to land. Closing the database first
+    // strands the row at 'syncing' until the next boot repairs it — and, because
+    // stopAllAutoSync also clears busyCheckouts, drops the checkout lock while a
+    // child may still be writing that path.
+    const index = readFileSync(resolve(apiRoot, 'index.ts'), 'utf8')
+    expect(index).toContain('drainScmSyncs')
+
+    const shutdown = readFileSync(resolve(apiRoot, 'lib/graceful-shutdown.ts'), 'utf8')
+    expect(shutdown.indexOf('drainScmSyncs')).toBeLessThan(shutdown.indexOf('closeDatabase'))
+  })
 })

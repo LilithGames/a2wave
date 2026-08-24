@@ -849,6 +849,8 @@ describe('syncScmSource', () => {
       expect.objectContaining({ repoUrl: 'https://github.com/org/NEW' }),
       '/new/path',
       expect.any(Number),
+      // Every sync now carries an abort signal so shutdown can reap its child.
+      expect.any(AbortSignal),
     )
   })
 
@@ -1078,7 +1080,12 @@ describe('syncScmSource', () => {
     await syncScmSource('s1')
 
     // executeGitSync should be called with 120 * 60 * 1000 = 7200000ms timeout
-    expect(mockExecuteGitSync).toHaveBeenCalledWith(expect.anything(), '/repo', 120 * 60 * 1000)
+    expect(mockExecuteGitSync).toHaveBeenCalledWith(
+      expect.anything(),
+      '/repo',
+      120 * 60 * 1000,
+      expect.any(AbortSignal),
+    )
   })
 })
 
@@ -1142,6 +1149,46 @@ describe('auto-sync scheduler', () => {
     mockDb.select.mockClear()
     vi.advanceTimersByTime(20 * 60 * 1000)
     expect(mockDb.select).not.toHaveBeenCalled()
+  })
+
+  // stopAllAutoSync clears busyCheckouts — releasing the only in-process guard
+  // against a second writer on that localPath — and index.ts documents it as the
+  // thing that "aborts in-flight sync/index child processes". Only the initial
+  // checkout ever passed a signal, so a recurring or manual sync's `git`/`p4`
+  // child kept running while shutdown released its lock and closed the database,
+  // leaving an orphan writing the checkout after the process reported shutdown.
+  it('aborts an in-flight recurring sync child on stopAllAutoSync', async () => {
+    vi.useRealTimers()
+    mockDbSelectGet({ id: 's_abort', type: 'git', config: {}, localPath: '/repo' })
+    mockDbUpdate()
+
+    let observedSignal: AbortSignal | undefined
+    let markStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    mockExecuteGitSync.mockImplementation(
+      (_config: unknown, _path: unknown, _timeout: unknown, signal?: AbortSignal) => {
+        observedSignal = signal
+        markStarted()
+        return new Promise((resolve) => {
+          signal?.addEventListener('abort', () => resolve({ ok: false, message: 'aborted' }))
+        })
+      },
+    )
+
+    // No signal argument: exactly how the recurring tick and the manual route call it.
+    const pending = syncScmSource('s_abort')
+    await started
+
+    expect(observedSignal).toBeDefined()
+    expect(observedSignal?.aborted).toBe(false)
+
+    stopAllAutoSync()
+
+    expect(observedSignal?.aborted).toBe(true)
+    await pending
+    vi.useFakeTimers()
   })
 
   it('skips the tick while a manual index job holds the checkout', async () => {
