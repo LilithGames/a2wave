@@ -2530,11 +2530,12 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
   async function executeWithOccupancy(
     occupied: number,
     maxConcurrency = 1,
-    afterPriming?: () => void,
+    /** What the post-capacity status re-read sees, i.e. the second run lookup. */
+    statusOnRecheck?: string,
   ) {
     mockCountOccupiedRunSlots.mockResolvedValue(occupied)
-    afterPriming?.()
     await selectByBoundId({
+      ...(statusOnRecheck ? { step: { status: statusOnRecheck } } : {}),
       run: {
         id: 'run_1',
         status: 'pending',
@@ -2579,6 +2580,18 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(mockRunWithLifecycle).not.toHaveBeenCalled()
     // The run never ran, so it must leave no entry claiming that it did.
     expect(logAudit).not.toHaveBeenCalled()
+  })
+
+  // Two requests for the same pending run both pass the status read. On the
+  // default maxConcurrency of 1 the loser can reach the capacity check after the
+  // winner has committed, and a bare 429 would tell it the queue is merely full
+  // and the request is worth retrying — when this run has already started and is
+  // never re-executable.
+  it('reports 409, not 429, when the run it lost to is the one occupying the slot', async () => {
+    // Occupied, and the re-read shows the winner already flipped it to running.
+    const res = await executeWithOccupancy(1, 1, 'running')
+
+    expect(res.status).toBe(409)
   })
 
   it('admits an idle agent on the default maxConcurrency of 1', async () => {

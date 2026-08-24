@@ -742,6 +742,18 @@ app.post('/:id/execute', async (c) => {
     )
   } catch (error) {
     if (error instanceof RunAtCapacityError) {
+      // A run that is already executing must read as 409, not 429. Two requests
+      // for the same pending run both pass the status read; on the default
+      // maxConcurrency of 1 the loser can reach the capacity check after the
+      // winner commits, and a bare 429 would tell it the queue is merely full
+      // and the request is worth retrying — when in fact this run has already
+      // started and never will be re-executable.
+      const current = (
+        await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
+      )[0]?.status
+      if (current && !canExecuteStatuses.includes(current as 'pending' | 'queued')) {
+        return c.json({ error: `Run cannot be re-executed (current status: ${current})` }, 409)
+      }
       return c.json({ error: 'Queue is full' }, 429)
     }
     if (!(error instanceof RunAdmissionLostError)) throw error

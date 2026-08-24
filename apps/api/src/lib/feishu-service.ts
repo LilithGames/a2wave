@@ -1340,8 +1340,14 @@ class FeishuConnectionManager {
       const botIdentity = createBotIdentityResolver(client, agentId, (openId) => {
         // Refresh the stored entry too: the card-resume path reads it from there,
         // and a late probe must not leave that copy stale.
+        //
+        // Matched on the client, not just the agentId: a retry from a superseded
+        // connection can still be in flight when the Agent is restarted on
+        // different app credentials, and writing the old bot's identity onto the
+        // replacement would make it ignore genuine mentions or answer to the
+        // wrong bot.
         const entry = this.connections.get(agentId)
-        if (entry) entry.botOpenId = openId
+        if (entry?.client === client) entry.botOpenId = openId
       })
       await botIdentity.resolve()
 
