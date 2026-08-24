@@ -20,10 +20,7 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import {
-  completeExecutionLease,
-  reserveExecutionLeaseForAgent,
-} from '../engine/execution-lease-registry.js'
+import { reserveExecutionLease } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
@@ -697,35 +694,6 @@ app.post('/:id/execute', async (c) => {
     : and(eq(runs.id, id), inArray(runs.status, canExecuteStatuses))
 
   const stepId = createId('rst')
-  // Reserved before the capacity count below, not after the transaction.
-  //
-  // SCOPE LIMIT, inherited from the override asymmetry documented above: the
-  // lease is process-local, so with an `agentId` override the capacity claim on
-  // the executing agent is only visible within this replica. Multi-replica
-  // PostgreSQL could therefore still exceed maxConcurrency for an overridden
-  // target whose runs carry no SCM lease. Closing it means persisting the
-  // executing agent, which would re-attribute runs in stats and the leaderboard —
-  // exactly what the asymmetry note declines to do. Left as-is: no first-party
-  // client sends the override, and PostgreSQL is experimental.
-  // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
-  // which this endpoint's `agentId` override leaves pointing at the ORIGINAL
-  // agent — so the executing agent's only claim on a slot is this lease. Taking
-  // it afterwards let two concurrent overrides both read a free slot and exceed
-  // maxConcurrency, and a temp-workspace run has no SCM lease to attribute it
-  // either. Released again on every path that does not go on to execute.
-  //
-  // Leases are keyed by runId, so two requests racing the same pending run share
-  // ONE entry. Only the request that created it may release it on a failed
-  // admission — otherwise the loser of the status CAS frees the winner's
-  // capacity while it is still executing, and can drop its durable SCM
-  // reservation before activation. The reservation reports that ownership from
-  // inside the mutex; testing it beforehand is racy, since both callers can read
-  // "absent" while a third party holds the lock.
-  const { created: ownsLease } = await reserveExecutionLeaseForAgent(id, agentId)
-  const releaseLeaseOnFailure = async () => {
-    if (ownsLease) await completeExecutionLease(id)
-  }
-  let admissionSettled = false
   let admission: { hasScmLease: boolean } | null = null
   try {
     admission = await withScmWorkloadAdmission(
@@ -737,13 +705,8 @@ app.post('/:id/execute', async (c) => {
         // maxConcurrency, and under a per-agent worktree that puts two CLI
         // processes in one checkout. Counted the way admission and promotion
         // both count it, so all three agree on what "at capacity" means.
-        // This run's own lease is already reserved (see above) and
-        // countOccupiedRunSlots counts reserved leases, so it occupies one of the
-        // slots it is being measured against. Comparing the raw count would
-        // reject every otherwise-idle Agent on the default maxConcurrency of 1.
         const occupied = await countOccupiedRunSlots(tx, agentId)
-        const occupiedByOthers = Math.max(0, occupied - 1)
-        if (occupiedByOthers >= (agent.maxConcurrency ?? 1)) {
+        if (occupied >= (agent.maxConcurrency ?? 1)) {
           throw new RunAtCapacityError()
         }
         const updateRunResult = await tx
@@ -754,6 +717,14 @@ app.post('/:id/execute', async (c) => {
           .where(executeConditions)
           .returning({ id: runs.id })
         if (updateRunResult.length === 0) throw new RunAdmissionLostError()
+        // Reserved only now, on the winning path — the same ordering
+        // `tryAcquireSlot` uses. Leases are keyed by runId, so two requests
+        // admitting one run share a single entry: a request that reserved before
+        // the CAS and then lost it could not release its own reservation without
+        // tearing down the winner's capacity claim, cancellation tracking and
+        // durable SCM lease mid-execution. Reserving after the CAS means a loser
+        // never holds one, so there is nothing to unwind.
+        reserveExecutionLease(id, agentId)
         await tx.insert(runSteps).values({
           id: stepId,
           runId: id,
@@ -768,20 +739,13 @@ app.post('/:id/execute', async (c) => {
     )
   } catch (error) {
     if (error instanceof RunAtCapacityError) {
-      await releaseLeaseOnFailure()
-      admissionSettled = true
       return c.json({ error: 'Queue is full' }, 429)
     }
-    if (!(error instanceof RunAdmissionLostError)) {
-      await releaseLeaseOnFailure()
-      admissionSettled = true
-      throw error
-    }
+    if (!(error instanceof RunAdmissionLostError)) throw error
   }
 
   // 防重入：若并发请求已先把状态改为 running，本请求的 update 影响 0 行，返回 409。
   if (!admission) {
-    if (!admissionSettled) await releaseLeaseOnFailure()
     const latest = (
       await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
     )[0]

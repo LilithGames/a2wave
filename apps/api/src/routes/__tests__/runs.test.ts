@@ -51,7 +51,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   bindExecutionLeaseTask: vi.fn(),
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
-  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue({ created: true }),
+  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
   completeExecutionLease: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -2573,8 +2573,7 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
   }
 
   it('refuses to start the run when the agent is already at capacity', async () => {
-    // 2 = this run's own lease plus one genuinely running sibling.
-    const res = await executeWithOccupancy(2, 1)
+    const res = await executeWithOccupancy(1, 1)
 
     expect(res.status).toBe(429)
     expect(mockRunWithLifecycle).not.toHaveBeenCalled()
@@ -2582,76 +2581,47 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(logAudit).not.toHaveBeenCalled()
   })
 
-  // The run's own lease is reserved before the count, and countOccupiedRunSlots
-  // includes reserved leases — so the run occupies one of the slots it is being
-  // measured against. Comparing the raw count against maxConcurrency rejects
-  // every otherwise-idle Agent on the default maxConcurrency: 1.
   it('admits an idle agent on the default maxConcurrency of 1', async () => {
-    // 1 = this run's own just-reserved lease, nothing else.
-    const res = await executeWithOccupancy(1, 1)
+    const res = await executeWithOccupancy(0, 1)
 
     expect(res.status).toBe(200)
     expect(mockRunWithLifecycle).toHaveBeenCalled()
   })
 
   it('starts the run when the agent still has a free slot', async () => {
-    const res = await executeWithOccupancy(2, 3)
+    const res = await executeWithOccupancy(1, 2)
 
     expect(res.status).toBe(200)
     expect(mockRunWithLifecycle).toHaveBeenCalled()
   })
 
-  // Execution leases are keyed by runId, so two requests racing the same pending
-  // run share ONE lease entry. The loser of the status CAS must not complete it:
-  // that frees the winner's capacity while it is still executing and can drop its
-  // durable SCM reservation before activation.
-  it('does not release the shared lease when it loses the status CAS', async () => {
-    const { completeExecutionLease, reserveExecutionLeaseForAgent } = await import(
-      '../../engine/execution-lease-registry.js'
-    )
-    // The winner already created the shared lease, so this request's reservation
-    // joins it rather than creating it. Reported by the reservation itself, since
-    // a check before the mutex await can be overtaken by the other request.
-    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: false })
+  // Leases are keyed by runId, so two requests admitting one run share a single
+  // entry. A request that reserved before the status CAS and then lost it could
+  // not release its own reservation without tearing down the winner's capacity
+  // claim, cancellation tracking and durable SCM lease mid-execution. Reserving
+  // only after the CAS is won means a loser never holds one to unwind.
+  it('does not reserve a lease when it loses the status CAS', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
 
     // Zero CAS rows is how the route sees "another request already claimed this
     // run" — the 409 branch.
     mockDb.update.mockReturnValue(makeUpdateChain(0))
 
-    const res = await executeWithOccupancy(1, 1)
+    const res = await executeWithOccupancy(0, 1)
 
     expect(res.status).toBe(409)
-    expect(completeExecutionLease).not.toHaveBeenCalled()
-    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: true })
+    expect(reserveExecutionLease).not.toHaveBeenCalled()
   })
 
   // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
-  // which an override leaves pointing at the ORIGINAL agent. The executing
-  // agent's only claim on a slot is its in-memory execution lease — so that
-  // lease has to exist before the capacity count reads it, or two concurrent
-  // overrides both see a free slot and blow past maxConcurrency. A temp-workspace
-  // run has no SCM lease either, so nothing else attributes it.
-  it('reserves the executing agent lease before counting capacity', async () => {
-    const { reserveExecutionLeaseForAgent } = await import(
-      '../../engine/execution-lease-registry.js'
-    )
-    const order: string[] = []
-    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockImplementation(async () => {
-      order.push('reserveLease')
-      return { created: true }
-    })
-    // executeWithOccupancy re-primes the count, so the recording implementation
-    // has to be installed after it, not before.
-    await executeWithOccupancy(0, 1, () => {
-      mockCountOccupiedRunSlots.mockImplementation(async () => {
-        order.push('countSlots')
-        return 0
-      })
-    })
+  // which an override leaves pointing at the ORIGINAL agent, so the executing
+  // agent's claim on a slot is this lease. It is taken inside the same
+  // transaction as the status CAS, so capacity and admission cannot disagree.
+  it('reserves the executing agent lease inside the admission transaction', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
 
-    expect(order.indexOf('reserveLease')).toBeGreaterThanOrEqual(0)
-    expect(order.indexOf('reserveLease')).toBeLessThan(order.indexOf('countSlots'))
-    mockCountOccupiedRunSlots.mockResolvedValue(0)
-    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: true })
+    await executeWithOccupancy(0, 1)
+
+    expect(reserveExecutionLease).toHaveBeenCalledWith('run_1', 'agt_owned')
   })
 })
