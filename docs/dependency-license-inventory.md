@@ -85,10 +85,10 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @bcoe/v8-coverage | 1.0.2 | MIT |
 | @biomejs/biome | 2.5.9 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.3 | MIT |
-| @codemirror/commands | 6.10.4 | MIT |
+| @codemirror/commands | 6.11.0 | MIT |
 | @codemirror/language | 6.12.4 | MIT |
 | @codemirror/state | 6.7.1 | MIT |
-| @codemirror/view | 6.43.8 | MIT |
+| @codemirror/view | 6.43.9 | MIT |
 | @csstools/color-helpers | 5.1.0 | MIT-0 |
 | @csstools/css-calc | 2.1.4 | MIT |
 | @csstools/css-color-parser | 3.1.0 | MIT |
@@ -116,7 +116,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @gilbarbara/types | 0.2.2 | MIT |
 | @hono/node-server | 2.1.1 | MIT |
 | @hono/swagger-ui | 0.6.1 | MIT |
-| @hookform/resolvers | 5.8.0 | MIT |
+| @hookform/resolvers | 5.9.1 | MIT |
 | @inquirer/ansi | 2.0.5 | MIT |
 | @inquirer/checkbox | 5.1.5 | MIT |
 | @inquirer/confirm | 6.0.13 | MIT |
@@ -290,7 +290,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ansi-escapes | 7.3.0 | MIT |
 | ansi-regex | 5.0.1, 6.2.2 | MIT |
 | ansi-styles | 5.2.0, 6.2.3 | MIT |
-| antd | 6.6.0 | MIT |
+| antd | 6.6.1 | MIT |
 | any-promise | 1.3.0 | MIT |
 | argparse | 1.0.10 | MIT |
 | aria-query | 5.3.0, 5.3.2 | Apache-2.0 |
@@ -367,7 +367,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | data-urls | 5.0.0 | MIT |
 | date-fns | 4.1.0 | MIT |
 | dateformat | 4.6.3 | MIT |
-| dayjs | 1.11.21, 1.11.22 | MIT |
+| dayjs | 1.11.23 | MIT |
 | debug | 4.4.3 | MIT |
 | decimal.js | 10.6.0 | MIT |
 | decimal.js-light | 2.5.1 | MIT |
@@ -464,7 +464,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | hast-util-to-jsx-runtime | 2.3.6 | MIT |
 | hast-util-whitespace | 3.0.0 | MIT |
 | help-me | 5.0.0 | MIT |
-| hono | 4.13.2 | MIT |
+| hono | 4.13.3 | MIT |
 | html-encoding-sniffer | 4.0.0 | MIT |
 | html-escaper | 2.0.2 | MIT |
 | html-parse-stringify | 3.1.0 | MIT |
@@ -545,7 +545,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | magicast | 0.5.4 | MIT |
 | make-dir | 4.0.0 | MIT |
 | markdown-table | 3.0.4 | MIT |
-| marked | 18.0.9 | MIT |
+| marked | 18.0.10 | MIT |
 | math-intrinsics | 1.1.0 | MIT |
 | mdast-util-find-and-replace | 3.0.2 | MIT |
 | mdast-util-from-markdown | 2.0.3 | MIT |
@@ -628,7 +628,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | on-finished | 2.4.1 | MIT |
 | once | 1.4.0 | ISC |
 | onetime | 6.0.0, 7.0.0 | MIT |
-| openid-client | 6.8.5 | MIT |
+| openid-client | 6.8.6 | MIT |
 | oxc-parser | 0.143.0 | MIT |
 | oxc-resolver | 11.24.2 | MIT |
 | p-finally | 1.0.0 | MIT |
