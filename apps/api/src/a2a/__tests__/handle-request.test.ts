@@ -281,6 +281,37 @@ describe('handleA2ARequest', () => {
     expect(await ownerScopeFor('aak_a')).not.toBe(await ownerScopeFor('aak_b'))
   })
 
+  // backfillAgentApiKeys() migrates the legacy a2a key into agent_api_keys at
+  // boot, and verification finds that row before the legacy fallback — so an
+  // unchanged legacy credential arrives WITH a gatewayApiKey after an upgrade.
+  // Scoping it would re-key the owner on every task saved before the upgrade,
+  // hiding them from GetTask / CancelTask / ListTasks for the full 14-day
+  // retention window.
+  it('keeps the legacy owner scope for a migrated key', async () => {
+    const { MIGRATED_KEY_NAME } = await import('../../lib/backfill-agent-api-keys.js')
+    const migratedContext = {
+      req: {
+        url: 'http://localhost:3502/api/a2a/agt_1',
+        path: '/api/a2a/agt_1',
+        header: (name: string) => ({ 'A2A-Version': '1.0' })[name],
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'm' }),
+          ),
+        raw: { headers: new Headers({ 'A2A-Version': '1.0' }) },
+      },
+      get: (name: string) =>
+        name === 'gatewayApiKey' ? { id: 'aak_migrated', name: MIGRATED_KEY_NAME } : undefined,
+      json: <T>(data: T) => data,
+    } as unknown as Parameters<typeof handleA2ARequest>[0]
+
+    mockV1Handle.mockClear()
+    await handleA2ARequest(migratedContext, fakeAgent, fakeTaskStore, baseFn)
+    const lastCall = mockV1Handle.mock.calls[mockV1Handle.mock.calls.length - 1]
+
+    expect((lastCall[1] as { user: { userName: string } }).user.userName).toBe('a2a:agt_1:api_key')
+  })
+
   it('parses the standard v1 extension activation header into the call context', async () => {
     const extensionUri = A2WAVE_CALLER_PROVENANCE_EXTENSION_URI
     const c = createMockContext(

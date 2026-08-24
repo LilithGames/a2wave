@@ -698,6 +698,15 @@ app.post('/:id/execute', async (c) => {
 
   const stepId = createId('rst')
   // Reserved before the capacity count below, not after the transaction.
+  //
+  // SCOPE LIMIT, inherited from the override asymmetry documented above: the
+  // lease is process-local, so with an `agentId` override the capacity claim on
+  // the executing agent is only visible within this replica. Multi-replica
+  // PostgreSQL could therefore still exceed maxConcurrency for an overridden
+  // target whose runs carry no SCM lease. Closing it means persisting the
+  // executing agent, which would re-attribute runs in stats and the leaderboard —
+  // exactly what the asymmetry note declines to do. Left as-is: no first-party
+  // client sends the override, and PostgreSQL is experimental.
   // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
   // which this endpoint's `agentId` override leaves pointing at the ORIGINAL
   // agent — so the executing agent's only claim on a slot is this lease. Taking
@@ -717,8 +726,13 @@ app.post('/:id/execute', async (c) => {
         // maxConcurrency, and under a per-agent worktree that puts two CLI
         // processes in one checkout. Counted the way admission and promotion
         // both count it, so all three agree on what "at capacity" means.
+        // This run's own lease is already reserved (see above) and
+        // countOccupiedRunSlots counts reserved leases, so it occupies one of the
+        // slots it is being measured against. Comparing the raw count would
+        // reject every otherwise-idle Agent on the default maxConcurrency of 1.
         const occupied = await countOccupiedRunSlots(tx, agentId)
-        if (occupied >= (agent.maxConcurrency ?? 1)) {
+        const occupiedByOthers = Math.max(0, occupied - 1)
+        if (occupiedByOthers >= (agent.maxConcurrency ?? 1)) {
           throw new RunAtCapacityError()
         }
         const updateRunResult = await tx

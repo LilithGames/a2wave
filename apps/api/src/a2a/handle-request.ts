@@ -13,6 +13,7 @@ import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { agents } from '../db/schema.js'
 import { buildAgentConfig } from '../lib/agent-helpers.js'
+import { MIGRATED_KEY_NAME } from '../lib/backfill-agent-api-keys.js'
 import { ProviderConfigurationError } from '../lib/errors.js'
 import {
   getStreamingCard,
@@ -127,17 +128,25 @@ function buildServerCallContext(
   // An Agent can hold several named A2A keys, one per integration. The task store
   // scopes every task by {tenant, owner}, so the owner has to name the key that
   // actually authenticated — otherwise every integration shares one scope and can
-  // read, list and subscribe to the others' tasks. A caller on the legacy
-  // single-column key has no key id and keeps the original scope string.
+  // read, list and subscribe to the others' tasks.
+  //
+  // A migrated legacy key is deliberately left on the original scope string.
+  // `backfillAgentApiKeys()` moves the legacy a2a column into `agent_api_keys` at
+  // boot and verification finds that row before the legacy fallback, so an
+  // unchanged legacy credential does arrive with a key id — scoping it would hide
+  // every task saved before the upgrade from GetTask / CancelTask / ListTasks for
+  // the full retention window. A legacy deployment has exactly one key per
+  // channel, so leaving it unscoped isolates nothing that was ever isolated.
   const gatewayApiKey = (c.get as (key: string) => unknown)('gatewayApiKey') as
-    | { id: string }
+    | { id: string; name?: string }
     | undefined
+  const scopedApiKey = gatewayApiKey?.name === MIGRATED_KEY_NAME ? undefined : gatewayApiKey
   const ownerScope = oauthCaller
     ? oauthUploaderId(oauthCaller)
     : isInternalRoute
       ? `internal:${internalCallerId || 'platform'}`
-      : gatewayApiKey
-        ? `a2a:${agent.id}:${authType}:${gatewayApiKey.id}`
+      : scopedApiKey
+        ? `a2a:${agent.id}:${authType}:${scopedApiKey.id}`
         : `a2a:${agent.id}:${authType}`
   const user: User = {
     isAuthenticated: authType !== 'none' || isInternalRoute,

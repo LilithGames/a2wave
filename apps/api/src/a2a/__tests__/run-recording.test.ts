@@ -702,6 +702,21 @@ describe('A2A run idempotency scope', () => {
     // original value, so its in-flight tasks stay addressable across the upgrade.
     expect(a2aIdempotencySessionId('task_shared', undefined)).toBe('task_shared')
   })
+
+  // backfillAgentApiKeys() migrates the legacy a2a_endpoint_api_key into
+  // agent_api_keys at boot, and verification finds that row before the legacy
+  // fallback — so an unchanged legacy credential DOES arrive with a gatewayApiKey
+  // after an upgrade. Scoping it would silently re-key every in-flight task: a
+  // retry would miss its existing run and execute the message a second time, and
+  // a cancel would fail to find it.
+  it('leaves a migrated legacy key on the bare task id', async () => {
+    const { a2aIdempotencySessionId } = await import('../run-recording.js')
+    const { MIGRATED_KEY_NAME } = await import('../../lib/backfill-agent-api-keys.js')
+
+    expect(
+      a2aIdempotencySessionId('task_legacy', { id: 'aak_migrated', name: MIGRATED_KEY_NAME }),
+    ).toBe('task_legacy')
+  })
 })
 
 describe('createRecordedA2ACancelFn', () => {

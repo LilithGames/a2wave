@@ -2573,7 +2573,8 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
   }
 
   it('refuses to start the run when the agent is already at capacity', async () => {
-    const res = await executeWithOccupancy(1, 1)
+    // 2 = this run's own lease plus one genuinely running sibling.
+    const res = await executeWithOccupancy(2, 1)
 
     expect(res.status).toBe(429)
     expect(mockRunWithLifecycle).not.toHaveBeenCalled()
@@ -2581,8 +2582,20 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(logAudit).not.toHaveBeenCalled()
   })
 
+  // The run's own lease is reserved before the count, and countOccupiedRunSlots
+  // includes reserved leases — so the run occupies one of the slots it is being
+  // measured against. Comparing the raw count against maxConcurrency rejects
+  // every otherwise-idle Agent on the default maxConcurrency: 1.
+  it('admits an idle agent on the default maxConcurrency of 1', async () => {
+    // 1 = this run's own just-reserved lease, nothing else.
+    const res = await executeWithOccupancy(1, 1)
+
+    expect(res.status).toBe(200)
+    expect(mockRunWithLifecycle).toHaveBeenCalled()
+  })
+
   it('starts the run when the agent still has a free slot', async () => {
-    const res = await executeWithOccupancy(1, 2)
+    const res = await executeWithOccupancy(2, 3)
 
     expect(res.status).toBe(200)
     expect(mockRunWithLifecycle).toHaveBeenCalled()
