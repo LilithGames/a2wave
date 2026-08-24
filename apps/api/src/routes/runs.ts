@@ -717,14 +717,6 @@ app.post('/:id/execute', async (c) => {
           .where(executeConditions)
           .returning({ id: runs.id })
         if (updateRunResult.length === 0) throw new RunAdmissionLostError()
-        // Reserved only now, on the winning path — the same ordering
-        // `tryAcquireSlot` uses. Leases are keyed by runId, so two requests
-        // admitting one run share a single entry: a request that reserved before
-        // the CAS and then lost it could not release its own reservation without
-        // tearing down the winner's capacity claim, cancellation tracking and
-        // durable SCM lease mid-execution. Reserving after the CAS means a loser
-        // never holds one, so there is nothing to unwind.
-        reserveExecutionLease(id, agentId)
         await tx.insert(runSteps).values({
           id: stepId,
           runId: id,
@@ -754,6 +746,18 @@ app.post('/:id/execute', async (c) => {
       409,
     )
   }
+
+  // Reserved only here: after the CAS was won AND the transaction committed.
+  //
+  // Leases are keyed by runId, so two requests admitting one run share a single
+  // entry — a request that reserved before the CAS and then lost it could not
+  // release its own reservation without tearing down the winner's capacity
+  // claim, cancellation tracking and durable SCM lease mid-execution. Reserving
+  // after the CAS means a loser never holds one. Reserving after the *commit*
+  // additionally means a rolled-back admission (a failed step insert, a commit
+  // error) leaves no orphaned lease behind to consume capacity for the process
+  // lifetime and stall graceful shutdown until its hard deadline.
+  reserveExecutionLease(id, agentId)
 
   // Audit after the status CAS won the race, so a request that lost it (409
   // above) leaves no entry claiming an execution that never happened. `agentId`

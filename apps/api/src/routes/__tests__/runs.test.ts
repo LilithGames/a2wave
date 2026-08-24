@@ -2613,6 +2613,26 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(reserveExecutionLease).not.toHaveBeenCalled()
   })
 
+  // The lease is in-memory; the admission is a database transaction. Reserving
+  // inside that transaction means a rollback after the CAS — a failed step
+  // insert, a commit error — leaves an orphaned lease that consumes the agent's
+  // capacity for the process lifetime and stalls graceful shutdown until its
+  // hard deadline. Nothing releases it, because no run lifecycle ever starts.
+  it('leaves no lease behind when the admission transaction fails', async () => {
+    const { reserveExecutionLease } = await import('../../engine/execution-lease-registry.js')
+
+    mockDb.insert.mockImplementation(() => {
+      throw new Error('step insert failed')
+    })
+
+    const res = await executeWithOccupancy(0, 1)
+
+    expect(res.status).toBe(500)
+    expect(reserveExecutionLease).not.toHaveBeenCalled()
+
+    mockDb.insert.mockReturnValue(makeInsertChain())
+  })
+
   // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
   // which an override leaves pointing at the ORIGINAL agent, so the executing
   // agent's claim on a slot is this lease. It is taken inside the same

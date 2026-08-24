@@ -685,55 +685,6 @@ describe('createRecordedA2AExecuteFn', () => {
   })
 })
 
-// Run-level idempotency keys on (agentId, 'a2a', triggerSessionId). With the raw
-// task id as that key, two named A2A keys on the same Agent share one scope: key
-// B sending a task id key A already used is served key A's cached completed
-// output instead of executing its own request — the same cross-integration
-// disclosure the task-store owner scope closes.
-describe('A2A run idempotency scope', () => {
-  it('keys the idempotency session on the authenticating API key', async () => {
-    const { a2aIdempotencySessionId } = await import('../run-recording.js')
-
-    const keyA = a2aIdempotencySessionId('task_shared', { id: 'aak_a' })
-    const keyB = a2aIdempotencySessionId('task_shared', { id: 'aak_b' })
-
-    expect(keyA).not.toBe(keyB)
-    // A caller on the legacy single-column key has no key id and must keep the
-    // original value, so its in-flight tasks stay addressable across the upgrade.
-    expect(a2aIdempotencySessionId('task_shared', undefined)).toBe('task_shared')
-  })
-
-  // backfillAgentApiKeys() migrates the legacy a2a_endpoint_api_key into
-  // agent_api_keys at boot, and verification finds that row before the legacy
-  // fallback — so an unchanged legacy credential DOES arrive with a gatewayApiKey
-  // after an upgrade. Scoping it would silently re-key every in-flight task: a
-  // retry would miss its existing run and execute the message a second time, and
-  // a cancel would fail to find it.
-  it('leaves a migrated legacy key on the bare task id', async () => {
-    const { a2aIdempotencySessionId } = await import('../run-recording.js')
-
-    expect(
-      a2aIdempotencySessionId('task_legacy', { id: 'aak_migrated', isLegacyMigrated: true }),
-    ).toBe('task_legacy')
-  })
-
-  // Scope is decided by the immutable migration flag, never the key's name — a
-  // name is an editable label, so keying on it would let a rename silently
-  // re-scope a live credential (hiding its tasks, letting retries run twice) and
-  // let an ordinary key named "Migrated key" claim the legacy scope.
-  it('scopes an ordinary key even when it carries the migrated key name', async () => {
-    const { a2aIdempotencySessionId } = await import('../run-recording.js')
-    const { MIGRATED_KEY_NAME } = await import('../../lib/backfill-agent-api-keys.js')
-
-    expect(
-      a2aIdempotencySessionId('task_x', {
-        id: 'aak_ordinary',
-        name: MIGRATED_KEY_NAME,
-      } as { id: string; isLegacyMigrated?: boolean }),
-    ).toBe('task_x#aak_ordinary')
-  })
-})
-
 describe('createRecordedA2ACancelFn', () => {
   beforeEach(() => {
     vi.clearAllMocks()

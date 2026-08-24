@@ -32,43 +32,9 @@ import type { CancelFn, ExecuteFn } from './executor.js'
 
 type AgentRow = typeof agents.$inferSelect
 
-/**
- * Idempotency session key for an A2A task.
- *
- * Run idempotency keys on (agentId, 'a2a', triggerSessionId). An Agent can hold
- * several named A2A keys — one per integration — so keying on the bare task id
- * lets integration B, sending a task id integration A already used, be served
- * A's cached completed output instead of executing its own request. That is the
- * same cross-integration disclosure the task store's owner scope closes, so the
- * key id belongs here too.
- *
- * Two callers keep the bare task id, so nothing in flight is re-keyed by an
- * upgrade: one presenting no key at all, and one on the legacy single-column
- * credential. The latter matters because `backfillAgentApiKeys()` migrates that
- * column into `agent_api_keys` at boot and verification finds the migrated row
- * first — so an unchanged legacy credential does arrive with a key id. Scoping
- * it would make a retry miss its existing run and execute the message twice, and
- * a cancel fail to find it. A legacy deployment has exactly one key per channel,
- * so leaving it unscoped isolates nothing that was ever isolated.
- */
-export function a2aIdempotencySessionId(
-  taskId: string,
-  apiKey: { id: string; isLegacyMigrated?: boolean } | undefined,
-): string {
-  if (!apiKey || apiKey.isLegacyMigrated) return taskId
-  return `${taskId}#${apiKey.id}`
-}
-
 export function createRecordedA2ACancelFn(c: Context, agent: AgentRow): CancelFn {
-  const cancelApiKey = c.get?.('gatewayApiKey' as never) as
-    | { id: string; isLegacyMigrated?: boolean }
-    | undefined
   return async (taskId) => {
-    const run = await findIdempotentRun(
-      agent.id,
-      'a2a',
-      a2aIdempotencySessionId(taskId, cancelApiKey),
-    )
+    const run = await findIdempotentRun(agent.id, 'a2a', taskId)
     if (!run || (run.status !== 'running' && run.status !== 'queued')) {
       return 'not_cancellable'
     }
@@ -202,9 +168,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
 
   // Optional-called: the A2A route sets this variable, but this factory also runs
   // under contexts that carry no variable store at all.
-  const apiKey = c.get?.('gatewayApiKey' as never) as
-    | { id: string; name: string; isLegacyMigrated?: boolean }
-    | undefined
+  const apiKey = c.get?.('gatewayApiKey' as never) as { id: string; name: string } | undefined
   const baseChannelOpts = {
     channel: 'a2a',
     ...(apiKey ? { apiKey } : {}),
@@ -244,8 +208,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
     // --- Idempotency: same A2A taskId → reuse prior run ---
     // Prevents duplicate execution on client retries or on transport-level
     // re-delivery. Uses runs.triggerSessionId (indexed) as the A2A task-id key.
-    const idempotencySessionId = a2aIdempotencySessionId(taskId, apiKey)
-    const existing = await findIdempotentRun(agent.id, 'a2a', idempotencySessionId)
+    const existing = await findIdempotentRun(agent.id, 'a2a', taskId)
     const idempotentResult = existing ? buildA2AIdempotentResult(taskId, existing) : undefined
     if (idempotentResult) return idempotentResult
     if (existing && !isActiveOrCompletedRun(existing.status)) {
@@ -264,7 +227,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         initiatorAgentId: agent.id,
         status: 'pending',
         triggerSource: 'a2a',
-        triggerSessionId: idempotencySessionId,
+        triggerSessionId: taskId,
         triggerUserName: channelResult.displayName,
         triggerAgentName,
         // Normally empty: the workspace is resolved only after admission, and
@@ -275,7 +238,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
       })
     } catch (err) {
       if (isRunIdempotencyConflict(err)) {
-        const conflictingRun = await findIdempotentRun(agent.id, 'a2a', idempotencySessionId)
+        const conflictingRun = await findIdempotentRun(agent.id, 'a2a', taskId)
         const conflictingResult = conflictingRun
           ? buildA2AIdempotentResult(taskId, conflictingRun)
           : undefined

@@ -124,29 +124,19 @@ function buildServerCallContext(
   const isInternalRoute = c.req.path.includes('/internal/a2a/')
   const internalCallerId = isInternalRoute ? c.req.header('X-A2WAVE-Caller-Agent-Id') : undefined
   const authType = normalizeAuthType(agent.a2aAuthType)
-  // An Agent can hold several named A2A keys, one per integration. The task store
-  // scopes every task by {tenant, owner}, so the owner has to name the key that
-  // actually authenticated — otherwise every integration shares one scope and can
-  // read, list and subscribe to the others' tasks.
-  //
-  // A migrated legacy key is deliberately left on the original scope string.
-  // `backfillAgentApiKeys()` moves the legacy a2a column into `agent_api_keys` at
-  // boot and verification finds that row before the legacy fallback, so an
-  // unchanged legacy credential does arrive with a key id — scoping it would hide
-  // every task saved before the upgrade from GetTask / CancelTask / ListTasks for
-  // the full retention window. A legacy deployment has exactly one key per
-  // channel, so leaving it unscoped isolates nothing that was ever isolated.
-  const gatewayApiKey = (c.get as (key: string) => unknown)('gatewayApiKey') as
-    | { id: string; isLegacyMigrated?: boolean }
-    | undefined
-  const scopedApiKey = gatewayApiKey?.isLegacyMigrated ? undefined : gatewayApiKey
+  // NOT scoped per API key, deliberately. Named keys exist for rotation and for
+  // keeping hashes rather than plaintext at rest (docs/agent/agent-api-keys.md
+  // §1) — they are attribution, not a tenant boundary, and the trust model puts
+  // every key holder on the same team. Scoping tasks by key would also strand
+  // every task and idempotency record written before the change: the store keys
+  // envelopes by {tenant, owner}, so an upgrade would hide in-flight work from
+  // GetTask/CancelTask/ListTasks for the full retention window, and A2A retries
+  // would miss their prior run and execute a second time.
   const ownerScope = oauthCaller
     ? oauthUploaderId(oauthCaller)
     : isInternalRoute
       ? `internal:${internalCallerId || 'platform'}`
-      : scopedApiKey
-        ? `a2a:${agent.id}:${authType}:${scopedApiKey.id}`
-        : `a2a:${agent.id}:${authType}`
+      : `a2a:${agent.id}:${authType}`
   const user: User = {
     isAuthenticated: authType !== 'none' || isInternalRoute,
     userName: ownerScope,

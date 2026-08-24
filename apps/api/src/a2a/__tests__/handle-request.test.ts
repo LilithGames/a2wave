@@ -249,12 +249,13 @@ describe('handleA2ARequest', () => {
     })
   })
 
-  // Since per-Agent named A2A keys landed, one Agent can hold many keys — one per
-  // integration. The task store scopes every task by {tenant, owner}, so folding
-  // every key into the constant `a2a:<agentId>:api_key` lets integration B read,
-  // list and subscribe to integration A's tasks on the same Agent.
-  it('separates the task owner scope per authenticating API key', async () => {
-    const publicContext = (keyId: string) =>
+  // Task owner scope is deliberately NOT per API key. Named keys exist for
+  // rotation and hashes-at-rest (docs/agent/agent-api-keys.md §1) — attribution,
+  // not a tenant boundary — and every key holder is on the same team under this
+  // repo's trust model. Scoping by key would also strand every task written
+  // before the change, since the store keys envelopes by {tenant, owner}.
+  it('keeps one owner scope per agent regardless of which key authenticated', async () => {
+    const contextForKey = (keyId: string) =>
       ({
         req: {
           url: 'http://localhost:3502/api/a2a/agt_1',
@@ -266,49 +267,18 @@ describe('handleA2ARequest', () => {
             ),
           raw: { headers: new Headers({ 'A2A-Version': '1.0' }) },
         },
-        get: (name: string) =>
-          name === 'gatewayApiKey' ? { id: keyId, name: `key-${keyId}` } : undefined,
+        get: (name: string) => (name === 'gatewayApiKey' ? { id: keyId } : undefined),
         json: <T>(data: T) => data,
       }) as unknown as Parameters<typeof handleA2ARequest>[0]
 
     const ownerScopeFor = async (keyId: string) => {
       mockV1Handle.mockClear()
-      await handleA2ARequest(publicContext(keyId), fakeAgent, fakeTaskStore, baseFn)
+      await handleA2ARequest(contextForKey(keyId), fakeAgent, fakeTaskStore, baseFn)
       const lastCall = mockV1Handle.mock.calls[mockV1Handle.mock.calls.length - 1]
       return (lastCall[1] as { user: { userName: string } }).user.userName
     }
 
-    expect(await ownerScopeFor('aak_a')).not.toBe(await ownerScopeFor('aak_b'))
-  })
-
-  // backfillAgentApiKeys() migrates the legacy a2a key into agent_api_keys at
-  // boot, and verification finds that row before the legacy fallback — so an
-  // unchanged legacy credential arrives WITH a gatewayApiKey after an upgrade.
-  // Scoping it would re-key the owner on every task saved before the upgrade,
-  // hiding them from GetTask / CancelTask / ListTasks for the full 14-day
-  // retention window.
-  it('keeps the legacy owner scope for a migrated key', async () => {
-    const migratedContext = {
-      req: {
-        url: 'http://localhost:3502/api/a2a/agt_1',
-        path: '/api/a2a/agt_1',
-        header: (name: string) => ({ 'A2A-Version': '1.0' })[name],
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({ jsonrpc: '2.0', method: 'SendMessage', params: {}, id: 'm' }),
-          ),
-        raw: { headers: new Headers({ 'A2A-Version': '1.0' }) },
-      },
-      get: (name: string) =>
-        name === 'gatewayApiKey' ? { id: 'aak_migrated', isLegacyMigrated: true } : undefined,
-      json: <T>(data: T) => data,
-    } as unknown as Parameters<typeof handleA2ARequest>[0]
-
-    mockV1Handle.mockClear()
-    await handleA2ARequest(migratedContext, fakeAgent, fakeTaskStore, baseFn)
-    const lastCall = mockV1Handle.mock.calls[mockV1Handle.mock.calls.length - 1]
-
-    expect((lastCall[1] as { user: { userName: string } }).user.userName).toBe('a2a:agt_1:api_key')
+    expect(await ownerScopeFor('aak_a')).toBe(await ownerScopeFor('aak_b'))
   })
 
   it('parses the standard v1 extension activation header into the call context', async () => {
