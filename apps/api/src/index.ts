@@ -53,7 +53,7 @@ import { processInstanceId } from './lib/process-instance.js'
 import { qqOfficialConnectionManager } from './lib/qq-official-service.js'
 import { markReady } from './lib/readiness.js'
 import { sanitizeRequestLogPath } from './lib/request-log-path.js'
-import { markRunForResume, resolveResumeChatId } from './lib/resume-chat-id.js'
+import { canRequeueInterruptedRun, markRunForResume } from './lib/resume-chat-id.js'
 import { cleanupLegacyRuntimeGroupConfigs } from './lib/runtime-group-config.js'
 import { scheduleTriggerManager } from './lib/schedule-trigger.js'
 import {
@@ -700,8 +700,7 @@ void ensureAdminExists()
         // A run that recorded the session it was already in is requeued and
         // continued instead of abandoned, so a deploy restart does not throw
         // away work in progress.
-        canResume: async (runId, assumeFailureCode) =>
-          (await resolveResumeChatId(runId, assumeFailureCode)) !== null,
+        canResume: canRequeueInterruptedRun,
         onBeforeRequeue: async (runId, failureCode) => await markRunForResume(runId, failureCode),
         onRunRequeued: async (run) => {
           // Mirrors onRunFailed: a requeued run is just as done with the dead

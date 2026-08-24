@@ -45,8 +45,13 @@ vi.mock('../../db/client.js', async () => {
 
 const { db } = await import('../../db/client.js')
 const { runs } = await import('../../db/schema.js')
-const { resolveResumeChatId, recordResumeAttempt, resumeChatIdFromRow, markRunForResume } =
-  await import('../resume-chat-id.js')
+const {
+  resolveResumeChatId,
+  recordResumeAttempt,
+  resumeChatIdFromRow,
+  markRunForResume,
+  canRequeueInterruptedRun,
+} = await import('../resume-chat-id.js')
 
 const NOW = new Date('2026-08-20T10:00:00Z')
 
@@ -142,6 +147,76 @@ describe('resolveResumeChatId', () => {
       executionMetadata: { liveChatId: 'sess_live', nativeChatResetSession: true },
     })
     expect(await resolveResumeChatId('run_1', 'SERVER_RESTART_DURING_EXEC')).toBeNull()
+  })
+})
+
+describe('canRequeueInterruptedRun', () => {
+  beforeEach(async () => {
+    await db.delete(runs)
+  })
+
+  // The shared stdout tap writes `executionStarted` on the CLI's first line, so
+  // its absence on an interrupted run means the process died during setup — a
+  // clone or sync that runs for minutes on a large repository. Such a run has no
+  // session id AND no side effects, so failing it only makes the user re-trigger
+  // by hand: the same replay, performed manually and later.
+  it('requeues a run interrupted before it began executing', async () => {
+    // No executionStarted marker: the CLI never emitted a line. glab is
+    // fire-and-forget, so nothing is awaiting a verdict.
+    await seedRun({
+      triggerSource: 'glab',
+      result: { error: { code: 'INSTANCE_STOPPED_DURING_EXEC' } },
+    })
+
+    expect(await canRequeueInterruptedRun('run_1')).toBe(true)
+    // It resumes by starting over, so there is no session to continue from.
+    expect(await resolveResumeChatId('run_1')).toBeNull()
+  })
+
+  it('refuses a run that had started but announced no session', async () => {
+    // The CLI ran, so replaying the prompt could repeat side effects it already
+    // committed. Only the never-started case earns the restart.
+    await seedRun({
+      triggerSource: 'glab',
+      executionMetadata: { executionStarted: true },
+      result: { error: { code: 'INSTANCE_STOPPED_DURING_EXEC' } },
+    })
+
+    expect(await canRequeueInterruptedRun('run_1')).toBe(false)
+  })
+
+  it('still requeues a started run that recorded its session', async () => {
+    await seedRun({
+      triggerSource: 'glab',
+      executionMetadata: { liveChatId: 'sess_a', executionStarted: true },
+      result: { error: { code: 'INSTANCE_STOPPED_DURING_EXEC' } },
+    })
+
+    expect(await canRequeueInterruptedRun('run_1')).toBe(true)
+    expect(await resolveResumeChatId('run_1')).toBe('sess_a')
+  })
+
+  it('refuses a run that failed on its own merits, however far it got', async () => {
+    await seedRun({ triggerSource: 'glab', result: { error: { code: 'ENGINE_ERROR' } } })
+
+    expect(await canRequeueInterruptedRun('run_1')).toBe(false)
+  })
+
+  // An A2A caller is polling tasks/get, and the protocol already called the task
+  // terminal. Silently re-running it leaves that caller waiting on a verdict it
+  // has been told will not change — so a synchronous trigger is failed, not
+  // restarted, however little the run managed to do.
+  it('refuses to restart a run whose caller is awaiting a verdict', async () => {
+    await seedRun({
+      triggerSource: 'a2a',
+      result: { error: { code: 'INSTANCE_STOPPED_DURING_EXEC' } },
+    })
+
+    expect(await canRequeueInterruptedRun('run_1')).toBe(false)
+  })
+
+  it('refuses a missing run rather than reporting it requeueable', async () => {
+    expect(await canRequeueInterruptedRun('run_absent')).toBe(false)
   })
 })
 

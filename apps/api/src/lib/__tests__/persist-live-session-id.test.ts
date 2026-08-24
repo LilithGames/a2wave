@@ -92,6 +92,9 @@ describe('persistLiveSessionId', () => {
       queuedTurn: { prompt: 'hello' },
       oauthPreviousChatId: 'sess_prev',
       liveChatId: 'sess_a',
+      // Written in the same merge: a run that announced a session has
+      // self-evidently started, and one write beats two competing ones.
+      executionStarted: true,
     })
   })
 
@@ -132,7 +135,11 @@ describe('persistLiveSessionId', () => {
     })
     const metadata = await loadMetadata()
     expect(metadata).not.toHaveProperty('queuedTurn')
-    expect(metadata).toEqual({ runtimeAdminRequesterUserId: 'usr_1', liveChatId: 'sess_a' })
+    expect(metadata).toEqual({
+      runtimeAdminRequesterUserId: 'usr_1',
+      liveChatId: 'sess_a',
+      executionStarted: true,
+    })
   })
 
   it('leaves updatedAt alone so it cannot vouch for a stalled run', async () => {

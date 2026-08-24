@@ -33,6 +33,20 @@ const INTERRUPTION_CODES: ReadonlySet<string> = new Set<FailureReasonCode>([
 export interface ResumeCandidate {
   /** Session id recorded while the run was executing; null if it never announced one. */
   liveChatId: string | null
+  /**
+   * True when this run may be restarted from its original intent.
+   *
+   * Requires two things. Its CLI produced no output before the interruption —
+   * recorded by the shared stdout tap on the first line, so it covers every
+   * engine — which means it cannot have committed side effects. And its trigger
+   * is fire-and-forget, so nothing is synchronously awaiting a verdict: an A2A
+   * or gateway caller polling `tasks/get` must be told the truth rather than
+   * left waiting on a task the protocol already called terminal.
+   *
+   * Without this, such a run is simply failed and a human re-triggers it — the
+   * same replay, performed manually and later.
+   */
+  restartable?: boolean
   /** Resumes already spent on this run. */
   resumeAttempts: number
   /** Why the run was settled. */
@@ -44,7 +58,8 @@ export interface ResumeCandidate {
 }
 
 export type ResumeDecision =
-  | { resume: true; chatId: string; attempt: number }
+  /** `chatId: null` means "start over", reachable only for a restartable run. */
+  | { resume: true; chatId: string | null; attempt: number }
   | {
       resume: false
       reason:
@@ -77,7 +92,12 @@ export function decideResume(candidate: ResumeCandidate): ResumeDecision {
     return { resume: false, reason: 'not-interrupted' }
   }
 
-  if (!candidate.liveChatId) return { resume: false, reason: 'no-session' }
+  // Refusing without a session is right whenever the CLI actually ran: replaying
+  // the prompt would repeat side effects it already committed. A run interrupted
+  // before it emitted a single line has none of those.
+  if (!candidate.liveChatId && !candidate.restartable) {
+    return { resume: false, reason: 'no-session' }
+  }
 
   const spent = candidate.resumeAttempts
   // A corrupt counter must fail closed. Reading NaN as "still has budget" would
