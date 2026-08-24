@@ -10,7 +10,10 @@ export async function getAdminToken(): Promise<string> {
       const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: getE2ePassword() }),
+        // remember: true — a machine credential for the run, not a browser session.
+        // Without it the token takes the endpoint's 12h browser default, and as a
+        // Bearer caller nothing renews it.
+        body: JSON.stringify({ username: 'admin', password: getE2ePassword(), remember: true }),
       })
       if (!res.ok) throw new Error(`Login failed: ${res.status}`)
       const body = (await res.json()) as { data: { token: string } }
@@ -457,7 +460,7 @@ export async function loginByApi(
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, remember: true }),
   })
   if (!res.ok) throw new Error(`loginByApi ${username} failed: ${res.status}`)
   const body = (await res.json()) as { data: { token: string; user: { id: string } } }

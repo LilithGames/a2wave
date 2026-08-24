@@ -26,7 +26,7 @@ CLI tokens are the opposite shape:
 | | Session JWT | CLI token |
 |---|---|---|
 | Form | Signed, stateless | Opaque, stored server-side |
-| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 7) when "Keep me signed in" is checked, else a fixed 12h; slides on use | Chosen per token, or none; never slides |
+| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 7) when "Keep me signed in" is checked — `a2wave login` always asks for it — else a fixed 12h; slides on use (browser only) | Chosen per token, or none; never slides |
 | Revocation | All at once, via `tokenVersion` | One at a time |
 | Identity | Anonymous among a user's tokens | Named, with last-used time |
 

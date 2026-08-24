@@ -26,7 +26,7 @@ Administrators can go to "Settings → Enterprise Login" to see the effective st
 
 ### Keep me signed in
 
-The password login page has a "Keep me signed in" checkbox, **unchecked by default**:
+The password login page has a "Keep me signed in" checkbox, **unchecked by default**. It applies to password login only — enterprise SSO sessions always last 7 days:
 
 - **Unchecked**: the session ends **when you close the browser**, and the server honours it for at most 12 hours. Leave it unchecked on shared or meeting-room machines.
 - **Checked**: the session lasts 7 days (set per deployment by `AUTH_SESSION_TTL_DAYS`).

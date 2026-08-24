@@ -232,7 +232,11 @@ describe('loginCommand — --password (legacy)', () => {
       'https://a2wave.test/api/auth/login',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ username: 'admin', password: 'pass' }),
+        // remember: true — the CLI stores this token on a machine it controls and
+        // is a Bearer caller, so it is excluded from sliding renewal. Without the
+        // flag it would inherit the endpoint's browser-safe 12h default and die
+        // long before AUTH_SESSION_TTL_DAYS, with nothing to extend it.
+        body: JSON.stringify({ username: 'admin', password: 'pass', remember: true }),
       }),
     )
     expect(mockSaveConfig).toHaveBeenCalledWith({ url: 'https://a2wave.test', token: 'jwt-pw' })

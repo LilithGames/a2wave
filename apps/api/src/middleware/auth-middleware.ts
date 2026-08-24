@@ -76,6 +76,13 @@ export async function authMiddleware(c: Context, next: Next) {
   // Use the current DB role; the token role is only a potentially stale issuance-time snapshot.
   c.set('userRole' as never, user.role as never)
   c.set('authMethod' as never, user.authMethod as never)
+  // The session's own "keep me signed in" choice, so a route that reissues a
+  // token (change-password) can preserve it instead of defaulting to persistent.
+  // Absent for CLI tokens and for JWTs predating the claim; both read as `true`
+  // at the point of use, matching how they were actually issued.
+  if (user.sessionPayload?.rm !== undefined) {
+    c.set('sessionRemember' as never, user.sessionPayload.rm as never)
+  }
 
   await maybeRenewSessionCookie(c, user, fromCookie)
 

@@ -500,12 +500,21 @@ app.post('/change-password', async (c) => {
   if (!refreshed) {
     return c.json({ error: 'USER_NOT_FOUND' }, 404)
   }
-  const newToken = await signToken({
-    id: refreshed.id,
-    role: refreshed.role,
-    tokenVersion: refreshed.tokenVersion,
-  })
-  setAuthCookie(c, newToken)
+  // Preserve the lifetime this session was created with. Defaulting to `true`
+  // here would take someone who logged in on a shared machine with the box
+  // unchecked and hand them a 7-day persistent cookie just for changing their
+  // password — silently reversing the protection they asked for. Absent on
+  // bearer / pre-`rm` tokens, which were issued as persistent anyway.
+  const sessionRemember = (c.get('sessionRemember' as never) as boolean | undefined) ?? true
+  const newToken = await signToken(
+    {
+      id: refreshed.id,
+      role: refreshed.role,
+      tokenVersion: refreshed.tokenVersion,
+    },
+    sessionRemember,
+  )
+  setAuthCookie(c, newToken, sessionRemember)
 
   logAudit(c, { action: AUDIT_ACTIONS.AUTH_CHANGE_PASSWORD, resource: 'user', resourceId: userId })
 

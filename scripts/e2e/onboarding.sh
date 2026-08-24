@@ -130,7 +130,7 @@ onboarding::log 'ok: first-time setup claimed the admin account without a token'
 LOGIN_CODE="$(curl -s -o "$ONBOARDING_WORKDIR/login.json" -w '%{http_code}' \
   -X POST "$(onboarding::api_url /api/auth/login)" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}")"
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\",\"remember\":true}")"
 [[ "$LOGIN_CODE" == '200' ]] \
   || onboarding::fail "/api/auth/login returned HTTP $LOGIN_CODE: $(cat "$ONBOARDING_WORKDIR/login.json" 2>/dev/null)"
 

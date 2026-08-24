@@ -160,7 +160,12 @@ export const loginCommand = defineCommand({
     const res = await fetch(`${url}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: username.trim(), password }),
+      // remember: true — /auth/login defaults it to false for browsers, where an
+      // unchecked box means "shared computer". The CLI is the opposite case: a
+      // headless credential stored on a machine the user controls, and a Bearer
+      // caller that sliding renewal deliberately skips. Without this it would get
+      // the 12h short session with nothing to extend it.
+      body: JSON.stringify({ username: username.trim(), password, remember: true }),
     })
 
     if (!res.ok) {
