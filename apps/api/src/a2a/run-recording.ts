@@ -32,9 +32,34 @@ import type { CancelFn, ExecuteFn } from './executor.js'
 
 type AgentRow = typeof agents.$inferSelect
 
+/**
+ * Idempotency session key for an A2A task.
+ *
+ * Run idempotency keys on (agentId, 'a2a', triggerSessionId). An Agent can hold
+ * several named A2A keys — one per integration — so keying on the bare task id
+ * lets integration B, sending a task id integration A already used, be served
+ * A's cached completed output instead of executing its own request. That is the
+ * same cross-integration disclosure the task store's owner scope closes, so the
+ * key id belongs here too.
+ *
+ * A caller on the legacy single-column key has no key id and keeps the original
+ * bare task id, so its in-flight tasks stay addressable across the upgrade.
+ */
+export function a2aIdempotencySessionId(
+  taskId: string,
+  apiKey: { id: string } | undefined,
+): string {
+  return apiKey ? `${taskId}#${apiKey.id}` : taskId
+}
+
 export function createRecordedA2ACancelFn(c: Context, agent: AgentRow): CancelFn {
+  const cancelApiKey = c.get?.('gatewayApiKey' as never) as { id: string } | undefined
   return async (taskId) => {
-    const run = await findIdempotentRun(agent.id, 'a2a', taskId)
+    const run = await findIdempotentRun(
+      agent.id,
+      'a2a',
+      a2aIdempotencySessionId(taskId, cancelApiKey),
+    )
     if (!run || (run.status !== 'running' && run.status !== 'queued')) {
       return 'not_cancellable'
     }
@@ -208,7 +233,8 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
     // --- Idempotency: same A2A taskId → reuse prior run ---
     // Prevents duplicate execution on client retries or on transport-level
     // re-delivery. Uses runs.triggerSessionId (indexed) as the A2A task-id key.
-    const existing = await findIdempotentRun(agent.id, 'a2a', taskId)
+    const idempotencySessionId = a2aIdempotencySessionId(taskId, apiKey)
+    const existing = await findIdempotentRun(agent.id, 'a2a', idempotencySessionId)
     const idempotentResult = existing ? buildA2AIdempotentResult(taskId, existing) : undefined
     if (idempotentResult) return idempotentResult
     if (existing && !isActiveOrCompletedRun(existing.status)) {
@@ -227,7 +253,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         initiatorAgentId: agent.id,
         status: 'pending',
         triggerSource: 'a2a',
-        triggerSessionId: taskId,
+        triggerSessionId: idempotencySessionId,
         triggerUserName: channelResult.displayName,
         triggerAgentName,
         // Normally empty: the workspace is resolved only after admission, and
@@ -238,7 +264,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
       })
     } catch (err) {
       if (isRunIdempotencyConflict(err)) {
-        const conflictingRun = await findIdempotentRun(agent.id, 'a2a', taskId)
+        const conflictingRun = await findIdempotentRun(agent.id, 'a2a', idempotencySessionId)
         const conflictingResult = conflictingRun
           ? buildA2AIdempotentResult(taskId, conflictingRun)
           : undefined

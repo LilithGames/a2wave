@@ -20,7 +20,10 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { reserveExecutionLeaseForAgent } from '../engine/execution-lease-registry.js'
+import {
+  completeExecutionLease,
+  reserveExecutionLeaseForAgent,
+} from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
@@ -694,6 +697,15 @@ app.post('/:id/execute', async (c) => {
     : and(eq(runs.id, id), inArray(runs.status, canExecuteStatuses))
 
   const stepId = createId('rst')
+  // Reserved before the capacity count below, not after the transaction.
+  // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
+  // which this endpoint's `agentId` override leaves pointing at the ORIGINAL
+  // agent — so the executing agent's only claim on a slot is this lease. Taking
+  // it afterwards let two concurrent overrides both read a free slot and exceed
+  // maxConcurrency, and a temp-workspace run has no SCM lease to attribute it
+  // either. Released again on every path that does not go on to execute.
+  await reserveExecutionLeaseForAgent(id, agentId)
+  let admissionSettled = false
   let admission: { hasScmLease: boolean } | null = null
   try {
     admission = await withScmWorkloadAdmission(
@@ -731,13 +743,20 @@ app.post('/:id/execute', async (c) => {
     )
   } catch (error) {
     if (error instanceof RunAtCapacityError) {
+      await completeExecutionLease(id)
+      admissionSettled = true
       return c.json({ error: 'Queue is full' }, 429)
     }
-    if (!(error instanceof RunAdmissionLostError)) throw error
+    if (!(error instanceof RunAdmissionLostError)) {
+      await completeExecutionLease(id)
+      admissionSettled = true
+      throw error
+    }
   }
 
   // 防重入：若并发请求已先把状态改为 running，本请求的 update 影响 0 行，返回 409。
   if (!admission) {
+    if (!admissionSettled) await completeExecutionLease(id)
     const latest = (
       await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
     )[0]
@@ -762,7 +781,6 @@ app.post('/:id/execute', async (c) => {
   const taskId = buildTaskId('', id, stepId)
   const startTime = Date.now()
   try {
-    await reserveExecutionLeaseForAgent(id, agentId)
     if (admission.hasScmLease) {
       await activateScmWorkload({
         type: 'run',

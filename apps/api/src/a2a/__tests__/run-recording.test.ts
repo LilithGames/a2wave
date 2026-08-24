@@ -685,6 +685,25 @@ describe('createRecordedA2AExecuteFn', () => {
   })
 })
 
+// Run-level idempotency keys on (agentId, 'a2a', triggerSessionId). With the raw
+// task id as that key, two named A2A keys on the same Agent share one scope: key
+// B sending a task id key A already used is served key A's cached completed
+// output instead of executing its own request — the same cross-integration
+// disclosure the task-store owner scope closes.
+describe('A2A run idempotency scope', () => {
+  it('keys the idempotency session on the authenticating API key', async () => {
+    const { a2aIdempotencySessionId } = await import('../run-recording.js')
+
+    const keyA = a2aIdempotencySessionId('task_shared', { id: 'aak_a' })
+    const keyB = a2aIdempotencySessionId('task_shared', { id: 'aak_b' })
+
+    expect(keyA).not.toBe(keyB)
+    // A caller on the legacy single-column key has no key id and must keep the
+    // original value, so its in-flight tasks stay addressable across the upgrade.
+    expect(a2aIdempotencySessionId('task_shared', undefined)).toBe('task_shared')
+  })
+})
+
 describe('createRecordedA2ACancelFn', () => {
   beforeEach(() => {
     vi.clearAllMocks()

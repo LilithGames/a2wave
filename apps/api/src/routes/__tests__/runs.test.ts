@@ -52,6 +52,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
   reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
+  completeExecutionLease: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../../lib/scm-workload-lifecycle.js', () => ({
@@ -2526,8 +2527,13 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     mockCountOccupiedRunSlots.mockResolvedValue(0)
   })
 
-  async function executeWithOccupancy(occupied: number, maxConcurrency = 1) {
+  async function executeWithOccupancy(
+    occupied: number,
+    maxConcurrency = 1,
+    afterPriming?: () => void,
+  ) {
     mockCountOccupiedRunSlots.mockResolvedValue(occupied)
+    afterPriming?.()
     await selectByBoundId({
       run: {
         id: 'run_1',
@@ -2580,5 +2586,33 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
 
     expect(res.status).toBe(200)
     expect(mockRunWithLifecycle).toHaveBeenCalled()
+  })
+
+  // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
+  // which an override leaves pointing at the ORIGINAL agent. The executing
+  // agent's only claim on a slot is its in-memory execution lease — so that
+  // lease has to exist before the capacity count reads it, or two concurrent
+  // overrides both see a free slot and blow past maxConcurrency. A temp-workspace
+  // run has no SCM lease either, so nothing else attributes it.
+  it('reserves the executing agent lease before counting capacity', async () => {
+    const { reserveExecutionLeaseForAgent } = await import(
+      '../../engine/execution-lease-registry.js'
+    )
+    const order: string[] = []
+    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockImplementation(async () => {
+      order.push('reserveLease')
+    })
+    // executeWithOccupancy re-primes the count, so the recording implementation
+    // has to be installed after it, not before.
+    await executeWithOccupancy(0, 1, () => {
+      mockCountOccupiedRunSlots.mockImplementation(async () => {
+        order.push('countSlots')
+        return 0
+      })
+    })
+
+    expect(order.indexOf('reserveLease')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('reserveLease')).toBeLessThan(order.indexOf('countSlots'))
+    mockCountOccupiedRunSlots.mockResolvedValue(0)
   })
 })
