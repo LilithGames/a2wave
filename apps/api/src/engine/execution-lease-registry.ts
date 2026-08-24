@@ -65,12 +65,25 @@ export function reserveExecutionLease(runId: string, agentId?: string): Executio
   return toExecutionLease(getOrCreateExecutionLease(runId, agentId))
 }
 
-/** Reserve a lease without racing an SCM binding release for the same Agent. */
+/**
+ * Reserve a lease without racing an SCM binding release for the same Agent.
+ *
+ * `created` reports whether THIS call created the entry, decided inside the
+ * mutex. Leases are keyed by runId, so two requests admitting the same run share
+ * one entry; a caller that releases it on a failed admission must know it owns
+ * it exclusively, or it frees a sibling's capacity — and possibly its durable
+ * SCM reservation — while that sibling is still executing. Checking
+ * `hasExecutionLease` before awaiting the mutex is not equivalent: both callers
+ * can read `false` while a third party holds the lock.
+ */
 export function reserveExecutionLeaseForAgent(
   runId: string,
   agentId: string,
-): Promise<ExecutionLease> {
-  return withAgentScmWorkloadLock(agentId, async () => reserveExecutionLease(runId, agentId))
+): Promise<ExecutionLease & { created: boolean }> {
+  return withAgentScmWorkloadLock(agentId, async () => {
+    const created = !leasesByRunId.has(runId)
+    return { ...reserveExecutionLease(runId, agentId), created }
+  })
 }
 
 /** Bind the eventual CLI task to a lease that may already have been cancelled. */

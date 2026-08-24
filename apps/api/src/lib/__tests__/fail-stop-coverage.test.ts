@@ -70,6 +70,21 @@ describe('fail-stop fence coverage', () => {
     expect(index).toContain('stopAllAutoSync()')
   })
 
+  // drainScmSyncs is the FIRST drain in the sequence. If it could spend the whole
+  // hard-exit budget, the force-exit would fire before the execution-lease,
+  // workspace-release, audit, heartbeat and database drains ever ran — and a
+  // dropped audit entry is not recoverable, unlike a stranded 'syncing' row.
+  it('bounds the sync drain well under the hard shutdown deadline', async () => {
+    const { SHUTDOWN_HARD_TIMEOUT_MS } = await import('../graceful-shutdown.js')
+    const source = readFileSync(resolve(apiRoot, 'lib/p4-sync.ts'), 'utf8')
+    const budget = Number(
+      /SCM_SYNC_DRAIN_TIMEOUT_MS = ([\d_]+)/.exec(source)?.[1].replace(/_/g, ''),
+    )
+
+    expect(budget).toBeGreaterThan(0)
+    expect(budget).toBeLessThanOrEqual(SHUTDOWN_HARD_TIMEOUT_MS / 2)
+  })
+
   it('waits for aborted syncs to unwind before closing the database', () => {
     // Aborting only signals: the `git`/`p4` child still has to exit and the sync
     // still has a terminal status write to land. Closing the database first

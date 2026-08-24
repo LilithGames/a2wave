@@ -22,7 +22,6 @@ import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
 import {
   completeExecutionLease,
-  hasExecutionLease,
   reserveExecutionLeaseForAgent,
 } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
@@ -716,14 +715,15 @@ app.post('/:id/execute', async (c) => {
   // either. Released again on every path that does not go on to execute.
   //
   // Leases are keyed by runId, so two requests racing the same pending run share
-  // ONE entry. Only the request that CREATED it may release it on a failed
+  // ONE entry. Only the request that created it may release it on a failed
   // admission — otherwise the loser of the status CAS frees the winner's
   // capacity while it is still executing, and can drop its durable SCM
-  // reservation before activation.
-  const leasePreexisted = hasExecutionLease(id)
-  await reserveExecutionLeaseForAgent(id, agentId)
+  // reservation before activation. The reservation reports that ownership from
+  // inside the mutex; testing it beforehand is racy, since both callers can read
+  // "absent" while a third party holds the lock.
+  const { created: ownsLease } = await reserveExecutionLeaseForAgent(id, agentId)
   const releaseLeaseOnFailure = async () => {
-    if (!leasePreexisted) await completeExecutionLease(id)
+    if (ownsLease) await completeExecutionLease(id)
   }
   let admissionSettled = false
   let admission: { hasScmLease: boolean } | null = null

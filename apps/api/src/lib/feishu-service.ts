@@ -26,6 +26,7 @@ import {
   zipDirectoryToBuffer,
 } from './artifact-storage.js'
 import { ProviderConfigurationError } from './errors.js'
+import { createBotIdentityResolver } from './feishu-bot-identity.js'
 import { FeishuStreamingCard } from './feishu-card-streaming.js'
 import { type NormalizedFeishuConfig, normalizeFeishuConfig } from './feishu-config.js'
 import {
@@ -1336,54 +1337,29 @@ class FeishuConnectionManager {
       // and a colleague's "@Alice can you review this?" triggered the Agent into
       // answering an unrelated conversation until someone restarted it. The
       // probe is therefore retried lazily on the next message instead.
-      let botOpenId: string | undefined
-      let botOpenIdProbe: Promise<void> | null = null
-
-      const probeBotOpenId = async (): Promise<void> => {
-        try {
-          const res = await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
-          botOpenId = res?.bot?.open_id
-          if (botOpenId) {
-            // Also refresh the stored entry: the card-resume path reads it from
-            // there, and a late probe must not leave that copy stale.
-            const entry = this.connections.get(agentId)
-            if (entry) entry.botOpenId = botOpenId
-            logger.info({ agentId }, 'Feishu bot open_id fetched for mention detection')
-          }
-        } catch (err) {
-          logger.warn(
-            { err, agentId },
-            'Failed to fetch Feishu bot open_id; @mention detection may have false positives until the next attempt',
-          )
-        }
-      }
-
-      /**
-       * Resolve the bot's open_id, retrying a previously failed probe. Concurrent
-       * messages share one in-flight attempt, and a settled failed attempt is
-       * cleared so the next message tries again rather than latching the miss.
-       */
-      const resolveBotOpenId = async (): Promise<string | undefined> => {
-        if (botOpenId) return botOpenId
-        if (!botOpenIdProbe) {
-          botOpenIdProbe = probeBotOpenId().finally(() => {
-            if (!botOpenId) botOpenIdProbe = null
-          })
-        }
-        await botOpenIdProbe
-        return botOpenId
-      }
-
-      await resolveBotOpenId()
+      const botIdentity = createBotIdentityResolver(client, agentId, (openId) => {
+        // Refresh the stored entry too: the card-resume path reads it from there,
+        // and a late probe must not leave that copy stale.
+        const entry = this.connections.get(agentId)
+        if (entry) entry.botOpenId = openId
+      })
+      await botIdentity.resolve()
 
       const dispatcher = new lark.EventDispatcher({}).register({
         // Must NOT await handleMessage here — the SDK sends the ACK to Feishu only after
         // this handler returns. If we await the full LLM execution (which can take 30s+),
         // Feishu will time out and retry the event, causing duplicate runs.
         'im.message.receive_v1': (data: FeishuMessageEvent) => {
-          resolveBotOpenId()
-            .then((openId) => this.handleMessage(agentId, client, config, data, openId))
-            .catch((err) => logger.error({ err, agentId }, 'Feishu message handler error'))
+          // Handle with whatever identity is known RIGHT NOW and kick the retry
+          // off alongside it, rather than awaiting the probe. Feishu has already
+          // been ACKed by the time this runs, so blocking on a slow or hung
+          // `bot/v3/info` would strand the message instead of letting it take the
+          // documented `@_user_1` fallback. The retry lands for the next message.
+          const knownOpenId = botIdentity.current()
+          if (!knownOpenId) void botIdentity.resolve()
+          this.handleMessage(agentId, client, config, data, knownOpenId).catch((err) =>
+            logger.error({ err, agentId }, 'Feishu message handler error'),
+          )
         },
         // 机器人添加/收到表情反应时会投递；无处理器时 SDK 会 warn「no im.message.reaction.created_v1 handle」
         'im.message.reaction.created_v1': () => {},
@@ -1420,7 +1396,7 @@ class FeishuConnectionManager {
         wsClient,
         client,
         config,
-        botOpenId,
+        botOpenId: botIdentity.current(),
         socketOpen: false,
       }
       this.connections.set(agentId, entry)

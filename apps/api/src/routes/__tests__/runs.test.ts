@@ -51,7 +51,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   bindExecutionLeaseTask: vi.fn(),
   hasExecutionLease: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
-  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
+  reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue({ created: true }),
   completeExecutionLease: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -2606,12 +2606,13 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
   // that frees the winner's capacity while it is still executing and can drop its
   // durable SCM reservation before activation.
   it('does not release the shared lease when it loses the status CAS', async () => {
-    const { completeExecutionLease, hasExecutionLease } = await import(
+    const { completeExecutionLease, reserveExecutionLeaseForAgent } = await import(
       '../../engine/execution-lease-registry.js'
     )
-    // The winner reserved the shared lease first, so it already exists when this
-    // request arrives.
-    ;(hasExecutionLease as unknown as Mock).mockReturnValue(true)
+    // The winner already created the shared lease, so this request's reservation
+    // joins it rather than creating it. Reported by the reservation itself, since
+    // a check before the mutex await can be overtaken by the other request.
+    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: false })
 
     // Zero CAS rows is how the route sees "another request already claimed this
     // run" — the 409 branch.
@@ -2621,7 +2622,7 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
 
     expect(res.status).toBe(409)
     expect(completeExecutionLease).not.toHaveBeenCalled()
-    ;(hasExecutionLease as unknown as Mock).mockReturnValue(false)
+    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: true })
   })
 
   // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
@@ -2637,6 +2638,7 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     const order: string[] = []
     ;(reserveExecutionLeaseForAgent as unknown as Mock).mockImplementation(async () => {
       order.push('reserveLease')
+      return { created: true }
     })
     // executeWithOccupancy re-primes the count, so the recording implementation
     // has to be installed after it, not before.
@@ -2650,5 +2652,6 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(order.indexOf('reserveLease')).toBeGreaterThanOrEqual(0)
     expect(order.indexOf('reserveLease')).toBeLessThan(order.indexOf('countSlots'))
     mockCountOccupiedRunSlots.mockResolvedValue(0)
+    ;(reserveExecutionLeaseForAgent as unknown as Mock).mockResolvedValue({ created: true })
   })
 })

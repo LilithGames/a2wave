@@ -353,6 +353,12 @@ const activeInitialSyncs = new Map<
  */
 const activeSyncAborts = new Map<string, Set<AbortController>>()
 
+/**
+ * Slice of the shutdown budget this drain may spend. Deliberately well under
+ * SHUTDOWN_HARD_TIMEOUT_MS so the drains that follow it still get to run.
+ */
+const SCM_SYNC_DRAIN_TIMEOUT_MS = 2_000
+
 /** Settlement promises for every in-flight sync, so shutdown can wait them out. */
 const activeSyncSettlements = new Set<Promise<unknown>>()
 
@@ -883,8 +889,14 @@ export function stopAllAutoSync(): void {
  * sync still has a terminal status write to land. Closing the database before
  * that leaves the row stuck at 'syncing' — the state `initAutoSyncSchedulers`
  * has to repair on the next boot.
+ *
+ * The budget is a small slice of SHUTDOWN_HARD_TIMEOUT_MS, not all of it: this
+ * is the FIRST drain in the sequence, and spending the whole window here would
+ * let the force-exit fire before the execution-lease, workspace-release, audit,
+ * heartbeat and database drains ever run. A stranded 'syncing' row is repaired
+ * on the next boot; a dropped audit entry is not recoverable at all.
  */
-export async function drainActiveScmSyncs(timeoutMs = 10_000): Promise<void> {
+export async function drainActiveScmSyncs(timeoutMs = SCM_SYNC_DRAIN_TIMEOUT_MS): Promise<void> {
   if (activeSyncSettlements.size === 0) return
   await Promise.race([
     Promise.allSettled([...activeSyncSettlements]),
