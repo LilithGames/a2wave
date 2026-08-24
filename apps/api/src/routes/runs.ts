@@ -705,6 +705,17 @@ app.post('/:id/execute', async (c) => {
         // maxConcurrency, and under a per-agent worktree that puts two CLI
         // processes in one checkout. Counted the way admission and promotion
         // both count it, so all three agree on what "at capacity" means.
+        //
+        // SCOPE LIMIT, inherited from the `agentId` override asymmetry documented
+        // above: `countOccupiedRunSlots` finds running rows through
+        // runs.initiator_agent_id, which an override leaves pointing at the
+        // ORIGINAL agent, and the executing agent's own claim is an in-memory
+        // lease. So on multi-replica PostgreSQL two overridden runs can each miss
+        // the other and exceed the executing Agent's maxConcurrency. Closing it
+        // means persisting the executing agent — exactly the re-attribution of
+        // runs in stats and the leaderboard that the asymmetry note declines to
+        // do. Left as-is: no first-party client sends the override, and
+        // PostgreSQL is experimental.
         const occupied = await countOccupiedRunSlots(tx, agentId)
         if (occupied >= (agent.maxConcurrency ?? 1)) {
           throw new RunAtCapacityError()
