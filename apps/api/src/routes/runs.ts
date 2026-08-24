@@ -23,7 +23,7 @@ import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
 import { reserveExecutionLeaseForAgent } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
+import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
 import { getRunReadFilter, hasAgentScopedAccess, requireAgentWrite } from '../lib/agent-access.js'
 import { buildAgentConfig, resolveWorkDir } from '../lib/agent-helpers.js'
 import { extractStepAttachments, pairAttachmentsToMessages } from '../lib/attachment-history.js'
@@ -51,6 +51,7 @@ import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-sta
 import type { WorkerTaskPayload } from '../worker/index.js'
 
 class RunAdmissionLostError extends Error {}
+class RunAtCapacityError extends Error {}
 
 /**
  * Enrich rerun context for Feishu-triggered runs.
@@ -698,6 +699,16 @@ app.post('/:id/execute', async (c) => {
     admission = await withScmWorkloadAdmission(
       { type: 'run', workloadId: id, agentId },
       async (tx, scmAdmission) => {
+        // Capacity is arbitrated here, in the same transaction as the status CAS.
+        // withScmWorkloadAdmission only settles the SCM binding — it does no
+        // capacity check — so without this the endpoint starts runs past
+        // maxConcurrency, and under a per-agent worktree that puts two CLI
+        // processes in one checkout. Counted the way admission and promotion
+        // both count it, so all three agree on what "at capacity" means.
+        const occupied = await countOccupiedRunSlots(tx, agentId)
+        if (occupied >= (agent.maxConcurrency ?? 1)) {
+          throw new RunAtCapacityError()
+        }
         const updateRunResult = await tx
           .update(runs)
           // queuedAt is consumed into the step's waitMs below; clearing it in
@@ -719,6 +730,9 @@ app.post('/:id/execute', async (c) => {
       },
     )
   } catch (error) {
+    if (error instanceof RunAtCapacityError) {
+      return c.json({ error: 'Queue is full' }, 429)
+    }
     if (!(error instanceof RunAdmissionLostError)) throw error
   }
 

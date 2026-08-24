@@ -75,8 +75,10 @@ vi.mock('../../engine/task-queue.js', () => ({
   tryAcquireSlot: mockTryAcquireSlot,
 }))
 
+const mockCountOccupiedRunSlots = vi.hoisted(() => vi.fn().mockResolvedValue(0))
 vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
+  countOccupiedRunSlots: mockCountOccupiedRunSlots,
 }))
 
 vi.mock('../../lib/execute-chat-run.js', () => ({
@@ -2497,5 +2499,86 @@ describe('POST /runs/:id/execute — audit trail', () => {
     expect(res.status).toBe(409)
     expect(logAudit).not.toHaveBeenCalled()
     expect(mockRunWithLifecycle).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// Concurrency admission.
+//
+// `POST /runs/:id/execute` flipped pending|queued -> running and reserved the
+// execution lease without ever checking capacity. `withScmWorkloadAdmission`
+// only settles the SCM binding — it does no capacity arbitration — so the
+// endpoint could start a run past the Agent's maxConcurrency, and under a
+// per-agent worktree that means two CLI processes writing one checkout.
+// ============================================================================
+describe('POST /runs/:id/execute — concurrency admission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetRunReadFilter.mockReturnValue(undefined)
+    mockGetCurrentUserId.mockReturnValue('usr_alice')
+    mockDb.update.mockReturnValue(makeUpdateChain())
+    mockDb.insert.mockReturnValue(makeInsertChain())
+    mockRunWithLifecycle.mockResolvedValue({ success: true, output: 'ok', durationMs: 1 })
+  })
+
+  afterEach(() => {
+    mockGetCurrentUserId.mockReturnValue(undefined)
+    mockCountOccupiedRunSlots.mockResolvedValue(0)
+  })
+
+  async function executeWithOccupancy(occupied: number, maxConcurrency = 1) {
+    mockCountOccupiedRunSlots.mockResolvedValue(occupied)
+    await selectByBoundId({
+      run: {
+        id: 'run_1',
+        status: 'pending',
+        userId: 'usr_alice',
+        initiatorAgentId: null,
+        intent: 'do the thing',
+        config: {},
+      },
+      agents: {
+        agt_owned: {
+          id: 'agt_owned',
+          userId: 'usr_alice',
+          status: 'active',
+          type: 'cursor',
+          name: 'Owned',
+          config: {},
+          maxConcurrency,
+        },
+      },
+    })
+
+    const mod = await import('../runs.js')
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      c.set('userRole' as never, 'user')
+      c.set('userId' as never, 'usr_alice')
+      await next()
+    })
+    app.route('/runs', mod.default)
+
+    return app.request('/runs/run_1/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'agt_owned' }),
+    })
+  }
+
+  it('refuses to start the run when the agent is already at capacity', async () => {
+    const res = await executeWithOccupancy(1, 1)
+
+    expect(res.status).toBe(429)
+    expect(mockRunWithLifecycle).not.toHaveBeenCalled()
+    // The run never ran, so it must leave no entry claiming that it did.
+    expect(logAudit).not.toHaveBeenCalled()
+  })
+
+  it('starts the run when the agent still has a free slot', async () => {
+    const res = await executeWithOccupancy(1, 2)
+
+    expect(res.status).toBe(200)
+    expect(mockRunWithLifecycle).toHaveBeenCalled()
   })
 })

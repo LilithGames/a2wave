@@ -464,6 +464,20 @@ describe('shouldTrigger', () => {
     ).toBe(true)
   })
 
+  // botOpenId 只在启动时探测一次，失败后整个进程生命周期都是 undefined。此时回退到
+  // 匹配 `@_user_1`（消息里的第一个 @ 对象），于是同事写「@Alice 帮忙看下」也会触发
+  // 机器人去回复一段与它无关的对话——同一条消息触发与否，取决于一次启动探测的成败。
+  // 但 mention 自带 open_id 时，即使不知道机器人是谁，也足以判定它「不是机器人」。
+  it('botOpenId 未知但 mention 带 open_id 时，不把他人的 @ 当成 @机器人', () => {
+    expect(
+      shouldTrigger(
+        { ...OFF_ALL, groupTriggerOnAt: true },
+        { chat_type: 'group', mentions: [{ key: '@_user_1', id: { open_id: 'ou_alice' } }] },
+        undefined,
+      ),
+    ).toBe(false)
+  })
+
   // ── 话题群 ──
   it('话题群 + topicTriggerOnAt=true + @机器人 → 触发', () => {
     expect(

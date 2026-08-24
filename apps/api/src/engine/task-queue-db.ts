@@ -50,7 +50,7 @@ function parseRunStatus(s: string): RunStatus | null {
  * Shared by admission (inside its transaction) and queued-run promotion —
  * the two decisions that must agree on what "at capacity" means.
  */
-async function countOccupiedRunSlots(
+export async function countOccupiedRunSlots(
   executor: Pick<TransactionHandle, 'select'>,
   agentId: string,
 ): Promise<number> {

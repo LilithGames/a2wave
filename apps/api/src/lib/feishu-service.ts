@@ -206,9 +206,14 @@ export function shouldTrigger(
 ): boolean {
   if (message.chat_type === 'p2p') return true
 
+  // botOpenId 只在 start() 探测一次，失败即整个进程生命周期为 undefined。回退到匹配
+  // `@_user_1`（消息里的第一个 @ 对象）会让「@Alice 帮忙看下」也触发机器人去回复一段
+  // 与它无关的对话，且只能靠重启恢复。mention 自带 open_id 时，即使不知道机器人是谁，
+  // 也足以判定该 mention「不是机器人」——只有在完全没有 open_id 可比对时才退回序号匹配。
+  const mentions = message.mentions ?? []
   const isMentioned = botOpenId
-    ? (message.mentions ?? []).some((m) => m.id?.open_id === botOpenId)
-    : (message.mentions ?? []).some((m) => m.key === '@_user_1')
+    ? mentions.some((m) => m.id?.open_id === botOpenId)
+    : mentions.some((m) => m.key === '@_user_1' && m.id?.open_id === undefined)
 
   // 话题群：群聊消息携带 thread_id（参见上方 JSDoc 中的假设说明）
   if (message.thread_id) {
