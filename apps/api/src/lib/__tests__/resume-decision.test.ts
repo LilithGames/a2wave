@@ -34,6 +34,28 @@ describe('decideResume', () => {
     })
   })
 
+  // The refusal above is right whenever the CLI actually ran: replaying the
+  // prompt would repeat side effects it already committed. But a run killed
+  // before its CLI emitted a line has no session id AND no side effects, and if
+  // its trigger is fire-and-forget nobody is awaiting a verdict — failing it
+  // just makes the user re-trigger by hand, the same replay performed manually.
+  it('restarts a run that never began executing, since it can have no side effects', () => {
+    expect(decideResume({ ...interrupted, liveChatId: null, restartable: true })).toEqual({
+      resume: true,
+      chatId: null,
+      attempt: 1,
+    })
+  })
+
+  it('still refuses a started run with no session id, even on a retry', () => {
+    // `restartable` is the only thing that distinguishes the two; without it the
+    // conservative refusal has to stand.
+    expect(decideResume({ ...interrupted, liveChatId: null, restartable: false })).toEqual({
+      resume: false,
+      reason: 'no-session',
+    })
+  })
+
   it('refuses once the attempt budget is spent', () => {
     // Without a ceiling, a crash that reproduces on resume becomes an infinite
     // crash-resume loop that is strictly worse than failing fast.

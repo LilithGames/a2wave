@@ -10,7 +10,7 @@ import {
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
-import { resolveResumeChatId } from './resume-chat-id.js'
+import { canRequeueInterruptedRun } from './resume-chat-id.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { syncReapedRunExternalState } from './scm-lease-sweeper.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -157,8 +157,10 @@ export const defaultReaperDepsForTest: OrphanedRunReaperDeps = {
   // it is the only recovery that runs on PostgreSQL, where in-flight rows are
   // deliberately skipped at boot because a booting replica proves nothing
   // about a peer. Without this the resume feature is unreachable there.
-  canResume: async (runId, assumeFailureCode) =>
-    (await resolveResumeChatId(runId, assumeFailureCode)) !== null,
+  // Not `resolveResumeChatId(...) !== null`: that conflates "cannot resume"
+  // with "resume by starting over", and the second is the case a run killed
+  // before its CLI emitted anything falls into.
+  canResume: canRequeueInterruptedRun,
   requeueRun: (runId, interruptionCode) => taskQueueDb.requeueForResume(runId, interruptionCode),
   now: () => new Date(),
 }
