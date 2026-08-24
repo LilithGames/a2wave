@@ -1230,6 +1230,46 @@ describe('git-workspace', () => {
       expect(existsSync(join(rebuilt.path, 'backend', 'README.md'))).toBe(true)
     })
 
+    // `advance: false` means "a sibling run of this agent is executing in this
+    // workspace right now". The reuse branch honours it because `reset --hard`
+    // is not a read-only share — but the rebuild branch ran unconditionally, and
+    // it is far more destructive: `git worktree remove --force` per sub-repo plus
+    // an rmdir of the whole workspace. So if a running agent removed or renamed
+    // one sub-repo directory, the next run of the same agent wiped the sibling's
+    // remaining checkouts and its uncommitted work along with them.
+    it('does not rebuild over a sibling run that is still executing', async () => {
+      const frontendDir = join(REPO_DIR, 'frontend')
+      const backendDir = join(REPO_DIR, 'backend')
+      await rm(REPO_DIR, { recursive: true, force: true })
+      await mkdir(frontendDir, { recursive: true })
+      await mkdir(backendDir, { recursive: true })
+      await initGitRepo(frontendDir)
+      await initGitRepo(backendDir)
+      const multiRepoConfig: GitConfig = {
+        ...singleRepoConfig,
+        repos: [
+          { repoUrl: 'https://example.com/frontend.git', branch: 'main', directory: 'frontend' },
+          { repoUrl: 'https://example.com/backend.git', branch: 'main', directory: 'backend' },
+        ],
+      }
+
+      const first = await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+      })
+      // The running sibling has uncommitted work in the sub-repo that survives.
+      await writeFile(join(first.path, 'frontend', 'sibling-wip.txt'), 'in progress')
+      // ...and something removed the other sub-repo, so the workspace now reads
+      // as incomplete.
+      await rm(join(first.path, 'backend'), { recursive: true, force: true })
+
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'agent-1', multiRepoConfig, {
+        followSource: true,
+        advance: false,
+      })
+
+      expect(existsSync(join(first.path, 'frontend', 'sibling-wip.txt'))).toBe(true)
+    })
+
     it('advances multi-repo workspaces all-or-nothing', async () => {
       // Advancing one sub-repo while another pins leaves the agent with repos at
       // commits that never coexisted upstream, and nothing downstream can see
