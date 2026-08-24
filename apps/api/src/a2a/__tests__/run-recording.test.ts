@@ -711,11 +711,26 @@ describe('A2A run idempotency scope', () => {
   // a cancel would fail to find it.
   it('leaves a migrated legacy key on the bare task id', async () => {
     const { a2aIdempotencySessionId } = await import('../run-recording.js')
+
+    expect(
+      a2aIdempotencySessionId('task_legacy', { id: 'aak_migrated', isLegacyMigrated: true }),
+    ).toBe('task_legacy')
+  })
+
+  // Scope is decided by the immutable migration flag, never the key's name — a
+  // name is an editable label, so keying on it would let a rename silently
+  // re-scope a live credential (hiding its tasks, letting retries run twice) and
+  // let an ordinary key named "Migrated key" claim the legacy scope.
+  it('scopes an ordinary key even when it carries the migrated key name', async () => {
+    const { a2aIdempotencySessionId } = await import('../run-recording.js')
     const { MIGRATED_KEY_NAME } = await import('../../lib/backfill-agent-api-keys.js')
 
     expect(
-      a2aIdempotencySessionId('task_legacy', { id: 'aak_migrated', name: MIGRATED_KEY_NAME }),
-    ).toBe('task_legacy')
+      a2aIdempotencySessionId('task_x', {
+        id: 'aak_ordinary',
+        name: MIGRATED_KEY_NAME,
+      } as { id: string; isLegacyMigrated?: boolean }),
+    ).toBe('task_x#aak_ordinary')
   })
 })
 

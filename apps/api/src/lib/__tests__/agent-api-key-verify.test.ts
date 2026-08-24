@@ -50,6 +50,34 @@ describe('verifyAgentApiKey', () => {
     expect(result).toMatchObject({ ok: true, keyId: 'aak_1', keyName: 'CI pipeline' })
   })
 
+  // Consumers partition per-key state (A2A task owner scope, run idempotency) by
+  // key id. A migrated key IS the Agent's pre-existing legacy credential, so it
+  // must stay on the pre-migration scope or an upgrade orphans everything in
+  // flight. The verdict is derived from the key hash, never the row's name — a
+  // name is an editable label, and keying on it would let a rename silently
+  // re-scope a live credential.
+  it("flags a key that is the agent's migrated legacy credential", async () => {
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain([keyRow({ name: 'anything at all' })]))
+      // The agent's legacy plaintext column still holds this same key.
+      .mockReturnValueOnce(makeSelectChain([{ key: PLAINTEXT }]))
+
+    const result = await verifyAgentApiKey('agt_1', 'api', PLAINTEXT)
+
+    expect(result).toMatchObject({ ok: true, isLegacyMigrated: true })
+  })
+
+  it('does not flag an ordinary key, whatever it is named', async () => {
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain([keyRow({ name: 'Migrated key' })]))
+      // A different credential sits in the legacy column.
+      .mockReturnValueOnce(makeSelectChain([{ key: 'ak_someothervalue' }]))
+
+    const result = await verifyAgentApiKey('agt_1', 'api', PLAINTEXT)
+
+    expect(result).toMatchObject({ ok: true, isLegacyMigrated: false })
+  })
+
   it('rejects a key whose plaintext prefix does not match the channel, without touching the database', async () => {
     const result = await verifyAgentApiKey('agt_1', 'api', 'a2ak_wrongchannelprefix')
 

@@ -13,7 +13,6 @@ import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { agents } from '../db/schema.js'
 import { buildAgentConfig } from '../lib/agent-helpers.js'
-import { MIGRATED_KEY_NAME } from '../lib/backfill-agent-api-keys.js'
 import { ProviderConfigurationError } from '../lib/errors.js'
 import {
   getStreamingCard,
@@ -138,9 +137,9 @@ function buildServerCallContext(
   // the full retention window. A legacy deployment has exactly one key per
   // channel, so leaving it unscoped isolates nothing that was ever isolated.
   const gatewayApiKey = (c.get as (key: string) => unknown)('gatewayApiKey') as
-    | { id: string; name?: string }
+    | { id: string; isLegacyMigrated?: boolean }
     | undefined
-  const scopedApiKey = gatewayApiKey?.name === MIGRATED_KEY_NAME ? undefined : gatewayApiKey
+  const scopedApiKey = gatewayApiKey?.isLegacyMigrated ? undefined : gatewayApiKey
   const ownerScope = oauthCaller
     ? oauthUploaderId(oauthCaller)
     : isInternalRoute

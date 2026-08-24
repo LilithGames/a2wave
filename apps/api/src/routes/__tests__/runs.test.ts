@@ -2601,6 +2601,29 @@ describe('POST /runs/:id/execute — concurrency admission', () => {
     expect(mockRunWithLifecycle).toHaveBeenCalled()
   })
 
+  // Execution leases are keyed by runId, so two requests racing the same pending
+  // run share ONE lease entry. The loser of the status CAS must not complete it:
+  // that frees the winner's capacity while it is still executing and can drop its
+  // durable SCM reservation before activation.
+  it('does not release the shared lease when it loses the status CAS', async () => {
+    const { completeExecutionLease, hasExecutionLease } = await import(
+      '../../engine/execution-lease-registry.js'
+    )
+    // The winner reserved the shared lease first, so it already exists when this
+    // request arrives.
+    ;(hasExecutionLease as unknown as Mock).mockReturnValue(true)
+
+    // Zero CAS rows is how the route sees "another request already claimed this
+    // run" — the 409 branch.
+    mockDb.update.mockReturnValue(makeUpdateChain(0))
+
+    const res = await executeWithOccupancy(1, 1)
+
+    expect(res.status).toBe(409)
+    expect(completeExecutionLease).not.toHaveBeenCalled()
+    ;(hasExecutionLease as unknown as Mock).mockReturnValue(false)
+  })
+
   // `countOccupiedRunSlots` finds running rows through runs.initiator_agent_id,
   // which an override leaves pointing at the ORIGINAL agent. The executing
   // agent's only claim on a slot is its in-memory execution lease — so that

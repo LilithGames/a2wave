@@ -22,6 +22,7 @@ import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
 import {
   completeExecutionLease,
+  hasExecutionLease,
   reserveExecutionLeaseForAgent,
 } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
@@ -713,7 +714,17 @@ app.post('/:id/execute', async (c) => {
   // it afterwards let two concurrent overrides both read a free slot and exceed
   // maxConcurrency, and a temp-workspace run has no SCM lease to attribute it
   // either. Released again on every path that does not go on to execute.
+  //
+  // Leases are keyed by runId, so two requests racing the same pending run share
+  // ONE entry. Only the request that CREATED it may release it on a failed
+  // admission — otherwise the loser of the status CAS frees the winner's
+  // capacity while it is still executing, and can drop its durable SCM
+  // reservation before activation.
+  const leasePreexisted = hasExecutionLease(id)
   await reserveExecutionLeaseForAgent(id, agentId)
+  const releaseLeaseOnFailure = async () => {
+    if (!leasePreexisted) await completeExecutionLease(id)
+  }
   let admissionSettled = false
   let admission: { hasScmLease: boolean } | null = null
   try {
@@ -757,12 +768,12 @@ app.post('/:id/execute', async (c) => {
     )
   } catch (error) {
     if (error instanceof RunAtCapacityError) {
-      await completeExecutionLease(id)
+      await releaseLeaseOnFailure()
       admissionSettled = true
       return c.json({ error: 'Queue is full' }, 429)
     }
     if (!(error instanceof RunAdmissionLostError)) {
-      await completeExecutionLease(id)
+      await releaseLeaseOnFailure()
       admissionSettled = true
       throw error
     }
@@ -770,7 +781,7 @@ app.post('/:id/execute', async (c) => {
 
   // 防重入：若并发请求已先把状态改为 running，本请求的 update 影响 0 行，返回 409。
   if (!admission) {
-    if (!admissionSettled) await completeExecutionLease(id)
+    if (!admissionSettled) await releaseLeaseOnFailure()
     const latest = (
       await db.select({ status: runs.status }).from(runs).where(eq(runs.id, id)).limit(1)
     )[0]

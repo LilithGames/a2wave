@@ -66,13 +66,21 @@ export function oauthUploaderId(caller: GatewayCaller): string {
 
 /** What an injected verifier answers. Mirrors lib/agent-api-key-verify.ts. */
 export type ApiKeyVerification =
-  | { ok: true; keyId: string; keyName: string }
+  | { ok: true; keyId: string; keyName: string; isLegacyMigrated?: boolean }
   | { ok: false; reason: 'invalid' | 'expired' }
 
 /** The key that authenticated the request, surfaced so the run can name its trigger. */
 export interface AuthenticatingApiKey {
   id: string
   name: string
+  /**
+   * True when this key IS the Agent's legacy single-column credential that the
+   * boot backfill copied into `agent_api_keys`. Consumers that partition state
+   * per key must keep it on the pre-migration scope, or an upgrade orphans every
+   * task and idempotency record already in flight. Derived from the key hash,
+   * never the name, which is an editable label.
+   */
+  isLegacyMigrated?: boolean
 }
 
 export interface GatewayAuthOk {
@@ -297,7 +305,13 @@ export async function validateGatewayAuth(
   if (agent.verifyApiKey) {
     const verification = await agent.verifyApiKey(token)
     if (verification.ok) {
-      return { apiKey: { id: verification.keyId, name: verification.keyName } }
+      return {
+        apiKey: {
+          id: verification.keyId,
+          name: verification.keyName,
+          ...(verification.isLegacyMigrated ? { isLegacyMigrated: true } : {}),
+        },
+      }
     }
     // An expired key is reported as such and stops here. Falling through to the
     // legacy column would resurrect a credential its owner deliberately time-boxed,

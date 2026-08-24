@@ -288,7 +288,6 @@ describe('handleA2ARequest', () => {
   // hiding them from GetTask / CancelTask / ListTasks for the full 14-day
   // retention window.
   it('keeps the legacy owner scope for a migrated key', async () => {
-    const { MIGRATED_KEY_NAME } = await import('../../lib/backfill-agent-api-keys.js')
     const migratedContext = {
       req: {
         url: 'http://localhost:3502/api/a2a/agt_1',
@@ -301,7 +300,7 @@ describe('handleA2ARequest', () => {
         raw: { headers: new Headers({ 'A2A-Version': '1.0' }) },
       },
       get: (name: string) =>
-        name === 'gatewayApiKey' ? { id: 'aak_migrated', name: MIGRATED_KEY_NAME } : undefined,
+        name === 'gatewayApiKey' ? { id: 'aak_migrated', isLegacyMigrated: true } : undefined,
       json: <T>(data: T) => data,
     } as unknown as Parameters<typeof handleA2ARequest>[0]
 

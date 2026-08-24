@@ -8,7 +8,6 @@ import { taskQueueDb } from '../engine/task-queue-db.js'
 import { resolveWorkDir } from '../lib/agent-helpers.js'
 import { cleanupMaterializedRoot, materializeForRun } from '../lib/attachment-materializer.js'
 import { logAudit } from '../lib/audit.js'
-import { MIGRATED_KEY_NAME } from '../lib/backfill-agent-api-keys.js'
 import { executeWithRetry } from '../lib/execute-with-retry.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
@@ -54,15 +53,15 @@ type AgentRow = typeof agents.$inferSelect
  */
 export function a2aIdempotencySessionId(
   taskId: string,
-  apiKey: { id: string; name?: string } | undefined,
+  apiKey: { id: string; isLegacyMigrated?: boolean } | undefined,
 ): string {
-  if (!apiKey || apiKey.name === MIGRATED_KEY_NAME) return taskId
+  if (!apiKey || apiKey.isLegacyMigrated) return taskId
   return `${taskId}#${apiKey.id}`
 }
 
 export function createRecordedA2ACancelFn(c: Context, agent: AgentRow): CancelFn {
   const cancelApiKey = c.get?.('gatewayApiKey' as never) as
-    | { id: string; name?: string }
+    | { id: string; isLegacyMigrated?: boolean }
     | undefined
   return async (taskId) => {
     const run = await findIdempotentRun(
@@ -203,7 +202,9 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
 
   // Optional-called: the A2A route sets this variable, but this factory also runs
   // under contexts that carry no variable store at all.
-  const apiKey = c.get?.('gatewayApiKey' as never) as { id: string; name: string } | undefined
+  const apiKey = c.get?.('gatewayApiKey' as never) as
+    | { id: string; name: string; isLegacyMigrated?: boolean }
+    | undefined
   const baseChannelOpts = {
     channel: 'a2a',
     ...(apiKey ? { apiKey } : {}),

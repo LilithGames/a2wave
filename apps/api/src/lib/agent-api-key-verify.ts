@@ -17,12 +17,26 @@ import {
   hashAgentApiKey,
   shouldStampLastUsed,
 } from './agent-api-key.js'
+import { findLegacyPlaintextKey } from './backfill-agent-api-keys.js'
 import { logger } from './logger.js'
 
 export type VerifyFailureReason = 'invalid' | 'expired'
 
 export type VerifyResult =
-  | { ok: true; keyId: string; keyName: string }
+  | {
+      ok: true
+      keyId: string
+      keyName: string
+      /**
+       * True when this key IS the Agent's legacy single-column credential, which
+       * `backfillAgentApiKeys()` copied into this table at boot. Derived from the
+       * hash rather than the row's name, because the name is an editable label:
+       * keying on it would let a rename silently re-scope a live credential.
+       * Callers that partition state per key must keep migrated keys on the
+       * pre-migration scope, or an upgrade orphans everything in flight.
+       */
+      isLegacyMigrated: boolean
+    }
   | { ok: false; reason: VerifyFailureReason }
 
 const INVALID: VerifyResult = { ok: false, reason: 'invalid' }
@@ -75,7 +89,10 @@ export async function verifyAgentApiKey(
 
   await stampLastUsed(row.id, row.lastUsedAt ?? null, now, opts?.clientIp)
 
-  return { ok: true, keyId: row.id, keyName: row.name }
+  const legacyPlaintext = await findLegacyPlaintextKey(agentId, channel)
+  const isLegacyMigrated = legacyPlaintext ? hashAgentApiKey(legacyPlaintext) === keyHash : false
+
+  return { ok: true, keyId: row.id, keyName: row.name, isLegacyMigrated }
 }
 
 /**
