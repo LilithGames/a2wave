@@ -237,7 +237,16 @@ async function setupClient(
     // Some SDK versions may not support this pattern — ignore
   }
 
-  // Fetch initial tools
+  // Fetch initial tools.
+  //
+  // A failure here must propagate. Returning the client anyway would let
+  // getOrCreateClient cache the *resolved* promise for the process lifetime —
+  // its `.catch` evicts only on connection failure — so ensureToolsLoaded would
+  // hit that entry forever and never retry. The backend's tools would stay
+  // permanently missing while list_tools reported success (it only flags an
+  // error when the whole group is empty), leaving the calling Agent to conclude
+  // those tools do not exist. Failing here evicts the entry, so the next call
+  // reconnects and tries again.
   try {
     const result = await client.listTools()
     const entries = mapToolsToEntries(result.tools, backend.name)
@@ -245,6 +254,12 @@ async function setupClient(
     log.info(`[init] ${groupKey}/${backend.name}: ${entries.length} tools cached`)
   } catch (err) {
     log.error(`[init] ${groupKey}/${backend.name} tools fetch failed:`, err)
+    try {
+      await client.close()
+    } catch {
+      /* the transport may already be gone; eviction is what matters */
+    }
+    throw err
   }
 
   return client
