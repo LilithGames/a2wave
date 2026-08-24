@@ -2,9 +2,10 @@ import type { Context, Next } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '../env.js'
 import { validateAgentToken } from '../lib/agent-memory-token.js'
-import { AUTH_COOKIE_NAME, LEGACY_AUTH_COOKIE_NAME } from '../lib/auth.js'
-import { isCookieSecure } from '../lib/auth-cookie.js'
-import { authenticateSessionToken } from '../lib/session-auth.js'
+import { AUTH_COOKIE_NAME, LEGACY_AUTH_COOKIE_NAME, signToken } from '../lib/auth.js'
+import { isCookieSecure, setAuthCookie } from '../lib/auth-cookie.js'
+import { type AuthenticatedSessionUser, authenticateSessionToken } from '../lib/session-auth.js'
+import { shouldRenewSession } from '../lib/session-renewal.js'
 
 const DEFAULT_AUTH_SECRET = 'dev-secret-change-me'
 
@@ -45,9 +46,14 @@ export async function authMiddleware(c: Context, next: Next) {
 
   const authHeader = c.req.header('Authorization')
   let token: string | undefined
+  // Only a cookie-presented session is eligible for sliding renewal: a Bearer
+  // caller has nowhere to receive the rotated cookie, so reissuing for one would
+  // extend nothing while doing the signing work anyway.
+  let fromCookie = false
   if (authHeader?.startsWith('Bearer ')) {
     token = authHeader.slice(7)
   } else {
+    fromCookie = true
     token = getCookie(c, AUTH_COOKIE_NAME)
     // 兼容 secure=false 的部署（HTTP 入口的内网 prod / dev）：写入端回落到 legacy 名字，
     // 读取端也得跟上，否则 cookie 写得进去但下一跳 middleware 找不着 → 401 死循环。
@@ -70,7 +76,44 @@ export async function authMiddleware(c: Context, next: Next) {
   // Use the current DB role; the token role is only a potentially stale issuance-time snapshot.
   c.set('userRole' as never, user.role as never)
   c.set('authMethod' as never, user.authMethod as never)
+
+  await maybeRenewSessionCookie(c, user, fromCookie)
+
   return next()
+}
+
+/**
+ * Sliding expiry: once a cookie session passes its half-life, reissue it so an
+ * actively used session never expires under the user, while an idle one still
+ * dies on schedule.
+ *
+ * Best-effort by construction — the caller already presented a valid token, so
+ * any failure here must leave that token in place rather than fail the request.
+ * The renewal preserves the original "keep me signed in" choice: promoting a
+ * short session to a persistent one would silently undo what the user asked for.
+ */
+async function maybeRenewSessionCookie(
+  c: Context,
+  user: AuthenticatedSessionUser,
+  fromCookie: boolean,
+): Promise<void> {
+  if (!fromCookie || user.authMethod !== 'session') return
+  const payload = user.sessionPayload
+  if (!payload || user.tokenVersion === undefined) return
+  if (!shouldRenewSession(payload, Math.floor(Date.now() / 1000))) return
+
+  // A token predating the `rm` claim was issued with a persistent cookie, so
+  // reading its absence as "remembered" matches how it actually behaves.
+  const remember = payload.rm ?? true
+  try {
+    const renewed = await signToken(
+      { id: user.id, role: user.role, tokenVersion: user.tokenVersion },
+      remember,
+    )
+    setAuthCookie(c, renewed, remember)
+  } catch {
+    // Keep serving with the still-valid token; the next request retries.
+  }
 }
 
 /**

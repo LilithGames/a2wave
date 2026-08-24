@@ -105,12 +105,26 @@ describe('authenticateSessionToken with a CLI token', () => {
     expect(dbUpdate).toHaveBeenCalled()
   })
 
+  it('never exposes renewal fields for a CLI token', async () => {
+    dbSelect.mockImplementation(() => chain([row()]))
+    const result = await authenticateSessionToken(generateCliToken())
+
+    // Sliding renewal keys off these; a CLI token must never be silently
+    // extended, so the fields that would trigger it must stay absent.
+    expect(result?.authMethod).toBe('cli_token')
+    expect(result?.sessionPayload).toBeUndefined()
+    expect(result?.tokenVersion).toBeUndefined()
+  })
+
   it('still authenticates a session JWT unchanged', async () => {
     verifyTokenMock.mockResolvedValue({ sub: 'usr_1', tv: 3 })
     dbSelect.mockImplementation(() =>
       chain([{ id: 'usr_1', role: 'admin', tokenVersion: 3, isActive: true }]),
     )
-    expect(await authenticateSessionToken('not-a-cli-token')).toEqual({
+    // toMatchObject, not toEqual: the session path also returns the verified
+    // payload and tokenVersion for sliding renewal. What this test guards is
+    // that a JWT still authenticates as a session, not the exact field list.
+    expect(await authenticateSessionToken('not-a-cli-token')).toMatchObject({
       id: 'usr_1',
       role: 'admin',
       authMethod: 'session',

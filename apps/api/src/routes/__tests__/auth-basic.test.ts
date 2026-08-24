@@ -57,12 +57,12 @@ vi.mock('../../lib/auth-settings.js', () => ({
 }))
 
 const hashPasswordMock = vi.fn(async (_p?: unknown) => 'hashed')
-const signTokenMock = vi.fn(async (_u?: unknown) => 'TOKEN')
+const signTokenMock = vi.fn(async (_u?: unknown, _r?: unknown) => 'TOKEN')
 const validatePasswordMock = vi.fn()
 const verifyPasswordMock = vi.fn()
 vi.mock('../../lib/auth.js', () => ({
   hashPassword: (p: string) => hashPasswordMock(p),
-  signToken: (u: unknown) => signTokenMock(u),
+  signToken: (u: unknown, r?: unknown) => signTokenMock(u, r),
   validatePassword: (p: string) => validatePasswordMock(p),
   verifyPassword: (h: string, p: string) => verifyPasswordMock(h, p),
 }))
@@ -413,6 +413,65 @@ describe('POST /auth/login', () => {
     const res = await post({ username: 'bob', password: 'wrong' })
     expect(res.status).toBe(401)
     expect(((await res.json()) as any).error).toBe('INVALID_CREDENTIALS')
+  })
+
+  function activeUser() {
+    return {
+      id: 'usr_1',
+      username: 'bob',
+      passwordHash: 'h',
+      isActive: true,
+      role: 'user',
+      tokenVersion: 1,
+      displayName: 'Bob',
+      email: 'bob@example.com',
+      idaasSub: null,
+      onboarding: {},
+    }
+  }
+
+  it('passes remember=true through to signToken and setAuthCookie', async () => {
+    loadAuthSettingsMock.mockReturnValue({ passwordLoginEnabled: true })
+    queueSelects({ get: activeUser() })
+    verifyPasswordMock.mockResolvedValue(true)
+
+    const res = await post({ username: 'bob', password: 'p', remember: true })
+
+    expect(res.status).toBe(200)
+    expect(signTokenMock.mock.calls[0][1]).toBe(true)
+    expect(setAuthCookieMock.mock.calls[0][2]).toBe(true)
+  })
+
+  it('passes remember=false through to signToken and setAuthCookie', async () => {
+    loadAuthSettingsMock.mockReturnValue({ passwordLoginEnabled: true })
+    queueSelects({ get: activeUser() })
+    verifyPasswordMock.mockResolvedValue(true)
+
+    const res = await post({ username: 'bob', password: 'p', remember: false })
+
+    expect(res.status).toBe(200)
+    expect(signTokenMock.mock.calls[0][1]).toBe(false)
+    expect(setAuthCookieMock.mock.calls[0][2]).toBe(false)
+  })
+
+  it('defaults remember to false when the field is absent (safe default)', async () => {
+    loadAuthSettingsMock.mockReturnValue({ passwordLoginEnabled: true })
+    queueSelects({ get: activeUser() })
+    verifyPasswordMock.mockResolvedValue(true)
+
+    const res = await post({ username: 'bob', password: 'p' })
+
+    // Omitting the field must not silently grant the long session — an older
+    // client that never learned about the checkbox gets the safer lifetime.
+    expect(res.status).toBe(200)
+    expect(signTokenMock.mock.calls[0][1]).toBe(false)
+    expect(setAuthCookieMock.mock.calls[0][2]).toBe(false)
+  })
+
+  it('rejects a non-boolean remember instead of coercing it', async () => {
+    loadAuthSettingsMock.mockReturnValue({ passwordLoginEnabled: true })
+    const res = await post({ username: 'bob', password: 'p', remember: 'yes' })
+    expect(res.status).toBe(400)
   })
 
   it('returns user data + token on success', async () => {

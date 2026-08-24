@@ -1,5 +1,5 @@
 import type { InputRef } from 'antd'
-import { Input } from 'antd'
+import { Checkbox, Input } from 'antd'
 import { Loader2, Waves } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -151,6 +151,9 @@ export function LoginPage() {
   const login = useLogin()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  // Defaults to false: the long-lived session is opt-in, so a user who never
+  // notices the box gets the safer shared-computer lifetime.
+  const [remember, setRemember] = useState(false)
   const [error, setError] = useState('')
   // oidc/saml 标准流失败时服务端 302 回 /login?ssoError=<CODE>；只读一次并从 URL 清掉，防刷新重现。
   const [ssoErrorCode, setSsoErrorCode] = useState<string | null>(() =>
@@ -203,7 +206,7 @@ export function LoginPage() {
     setSsoErrorCode(null)
     if (!username || !password) return
     try {
-      await login.mutateAsync({ username, password })
+      await login.mutateAsync({ username, password, remember })
       navigate(returnTo ?? '/')
     } catch (err) {
       setError(formatApiError(err, t))
@@ -350,6 +353,17 @@ export function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   onPressEnter={handleSubmit}
                 />
+              </div>
+
+              <div>
+                <Checkbox
+                  id="login-remember"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                >
+                  <span className="text-sm text-foreground">{t('auth.rememberMe')}</span>
+                </Checkbox>
+                <p className="mt-1 text-xs text-muted-foreground">{t('auth.rememberMeHint')}</p>
               </div>
 
               {displayError && (

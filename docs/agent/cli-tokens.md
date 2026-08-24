@@ -26,7 +26,7 @@ CLI tokens are the opposite shape:
 | | Session JWT | CLI token |
 |---|---|---|
 | Form | Signed, stateless | Opaque, stored server-side |
-| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 7) | Chosen per token, or none |
+| Lifetime | `AUTH_SESSION_TTL_DAYS` (default 7) when "Keep me signed in" is checked, else a fixed 12h; slides on use | Chosen per token, or none; never slides |
 | Revocation | All at once, via `tokenVersion` | One at a time |
 | Identity | Anonymous among a user's tokens | Named, with last-used time |
 
@@ -126,6 +126,12 @@ AUTH_SESSION_TTL_DAYS=30
 
 Changing it affects only newly issued tokens; existing ones keep their original
 expiry.
+
+Two browser-only behaviours that do **not** extend to CLI tokens: a login where
+"Keep me signed in" is left unchecked lasts a fixed 12h instead, and an active
+browser session is silently reissued once past its half-life. Sliding renewal is
+restricted to cookie-authenticated requests precisely so a CLI token's lifetime
+stays exactly what was chosen when it was minted.
 
 ---
 

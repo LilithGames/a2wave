@@ -31,7 +31,7 @@ exception; see `AUTH_SECRET`.
 |------|--------|------|
 | `A2WAVE_HOST_PORT` | `3502` | Host port the Docker deployment publishes on. Remaps the **host** side only — the container always listens on 3502, because the image's `EXPOSE`, `PORT` default and `HEALTHCHECK` all hardcode it |
 | `ADMIN_PASSWORD` | empty | Optional initial admin password, applied on first boot only and never overwritten. **Left empty, the first person to reach the setup page claims the admin account — no token guards it.** Set it if you cannot accept that window |
-| `AUTH_SESSION_TTL_DAYS` | `7` | Login session lifetime (days) for browser cookies and login-issued bearer tokens, range `1~365`. A working week, so an ordinary user signs in about weekly. Not the lifetime of a [CLI token](./cli-tokens.md), which is chosen per token |
+| `AUTH_SESSION_TTL_DAYS` | `7` | Lifetime (days) of a session the user asked to keep — the "Keep me signed in" box on the login page — for browser cookies and login-issued bearer tokens, range `1~365`. A working week, so an ordinary user signs in about weekly. Sessions where the box is left unchecked instead last a fixed 12h and end when the browser closes; that value is deliberately not configurable, since raising it would silently remove the shared-computer protection the checkbox promises. Not the lifetime of a [CLI token](./cli-tokens.md), which is chosen per token |
 | `CORS_ORIGIN` | `http://localhost:3501` | Frontend origin, when it is served from a **different** origin than the API (the dev two-port setup). It grants both cross-origin reads and cookie-authenticated writes. The single-container deployment serves the frontend from the API itself, so same-origin requests are always allowed and this needs no change |
 | `TRUSTED_PROXY` | `false` | Trust `X-Forwarded-For` only when the direct TCP peer is allowlisted below |
 | `TRUSTED_PROXY_ADDRESSES` | empty | Comma-separated exact proxy IPv4/IPv6 addresses or CIDRs; proxies must overwrite XFF or append each hop |
@@ -44,6 +44,15 @@ exception; see `AUTH_SECRET`.
 > Adjusting `AUTH_SESSION_TTL_DAYS` only affects new logins / newly issued tokens; to
 > immediately tighten already-issued tokens, combine it with logout, password change,
 > or `tokenVersion` revocation.
+
+> **Sessions slide.** A browser session past half its lifetime is silently reissued on
+> its next request, so someone working continuously is never signed out mid-task while
+> an idle session still expires on schedule. Renewal preserves the original "Keep me
+> signed in" choice — a 12h session stays 12h and stays browser-scoped — and applies
+> only to cookie-authenticated requests: a `Bearer` caller (CLI, automation) keeps the
+> lifetime its token was issued with. There is no absolute cap, so a continuously
+> active session can persist indefinitely; `tokenVersion` revocation (logout / password
+> change / `pnpm set-admin-password`) remains the way to end one on demand.
 
 ## macOS Docker Desktop
 

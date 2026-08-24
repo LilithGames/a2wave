@@ -1,6 +1,6 @@
-import { api } from '@/lib/api'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
+import { api } from '@/lib/api'
 
 /**
  * 浏览器认证态走 HttpOnly cookie，前端不再读写 token。
@@ -72,7 +72,7 @@ export function useLogin() {
   const queryClient = useQueryClient()
   return useMutation({
     meta: { handleLocally: true },
-    mutationFn: (data: { username: string; password: string }) =>
+    mutationFn: (data: { username: string; password: string; remember: boolean }) =>
       api.post<LoginResponse>('/auth/login', data).then((r) => r.data),
     onSuccess: (data) => {
       queryClient.setQueryData(['auth', 'me'], data.user)

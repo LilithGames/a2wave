@@ -27,14 +27,14 @@ vi.mock('hono/cookie', () => ({
   deleteCookie: (...args: unknown[]) => deleteCookieMock(...args),
 }))
 
-import { clearAuthCookie, isCookieSecure, setAuthCookie } from '../auth-cookie.js'
 import {
   AUTH_COOKIE_NAME,
-  LEGACY_AUTH_COOKIE_NAME,
   getAuthSessionTtlSeconds,
+  LEGACY_AUTH_COOKIE_NAME,
   signToken,
   verifyToken,
 } from '../auth.js'
+import { clearAuthCookie, isCookieSecure, setAuthCookie } from '../auth-cookie.js'
 
 const fakeCtx = {} as Context
 
@@ -138,5 +138,51 @@ describe('clearAuthCookie', () => {
     expect(hostCall[2]).toMatchObject({ path: '/', secure: true })
     expect(legacyCall[1]).toBe(LEGACY_AUTH_COOKIE_NAME)
     expect(legacyCall[2]).toMatchObject({ path: '/' })
+  })
+})
+
+describe('setAuthCookie remember semantics', () => {
+  it('omits maxAge entirely when remember=false, making it a session cookie', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    setAuthCookie(fakeCtx, 'tok-short', false)
+    const [, , , opts] = setCookieMock.mock.calls[0]
+
+    // A session cookie is expressed by the ABSENCE of maxAge/expires — setting
+    // either one turns it into a persistent cookie that survives browser close.
+    expect(opts.maxAge).toBeUndefined()
+    expect(opts.expires).toBeUndefined()
+    expect(opts).toMatchObject({ httpOnly: true, sameSite: 'Lax', path: '/' })
+  })
+
+  it('uses the full session ttl for maxAge when remember=true', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    setAuthCookie(fakeCtx, 'tok-long', true)
+    const [, , , opts] = setCookieMock.mock.calls[0]
+
+    expect(opts).toMatchObject({ maxAge: 7 * 24 * 60 * 60 })
+  })
+
+  it('keeps the __Host- / legacy name contract regardless of remember', async () => {
+    envMock.NODE_ENV = 'production'
+    setAuthCookie(fakeCtx, 'tok-a', false)
+    expect(setCookieMock.mock.calls[0][1]).toBe(AUTH_COOKIE_NAME)
+
+    setCookieMock.mockClear()
+    envMock.NODE_ENV = 'development'
+    setAuthCookie(fakeCtx, 'tok-b', false)
+    expect(setCookieMock.mock.calls[0][1]).toBe(LEGACY_AUTH_COOKIE_NAME)
+  })
+
+  it('keeps a short-lived cookie consistent with its JWT expiry', async () => {
+    envMock.AUTH_SESSION_TTL_DAYS = 7
+    const token = await signToken({ id: 'usr_1', role: 'admin', tokenVersion: 1 }, false)
+    const payload = await verifyToken(token)
+    setAuthCookie(fakeCtx, token, false)
+    const [, , , opts] = setCookieMock.mock.calls[0]
+
+    // The browser drops the cookie at browser close; the server refuses the token
+    // 12h after issuance. Neither side can outlive the other's intent.
+    expect(payload.exp - payload.iat).toBe(12 * 60 * 60)
+    expect(opts.maxAge).toBeUndefined()
   })
 })
