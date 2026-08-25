@@ -27,6 +27,7 @@ const baseFormData: FormData = {
   timeoutMinutes: 10,
   totalTimeoutMinutes: null,
   maxRetries: 2,
+  maxJobRetries: 0,
 }
 
 function chainEntry(overrides: Partial<ProviderChainEntry> = {}): ProviderChainEntry {

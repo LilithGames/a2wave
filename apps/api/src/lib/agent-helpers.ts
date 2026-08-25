@@ -48,6 +48,7 @@ import {
   WorktreeDirtyError,
 } from './git-workspace.js'
 import { getInternalAdminToken, INTERNAL_ADMIN_TOKEN_ENV } from './internal-admin-auth.js'
+import { clampJobRetries } from './job-retry-policy.js'
 import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { canNonAdminUseMcp, introducesStdioExecution } from './mcp-stdio.js'
@@ -343,6 +344,7 @@ export interface AgentConfig {
   timeoutMinutes?: number
   /** 单个 Provider 的最大重试次数，0–5，默认 2；预算用尽后换链上下一个 Provider */
   maxRetries?: number
+  maxJobRetries?: number
   /** 整个 Run 的挂钟预算（分钟），5–600；未配置则不限。在两次执行之间判定，不打断进行中的 worker */
   totalTimeoutMinutes?: number
   [key: string]: unknown
@@ -1102,6 +1104,13 @@ export async function buildAgentConfig(
   const rawRetries = agentConfig.maxRetries
   agentConfig.maxRetries = clampRetries(
     rawRetries != null && Number.isFinite(Number(rawRetries)) ? Number(rawRetries) : 2,
+  )
+  // Job-level retry defaults to OFF: replaying a whole job repeats any side
+  // effects it already committed (a chat reply, an MR, an MCP write), so opting
+  // in belongs to the Agent author.
+  const rawJobRetries = agentConfig.maxJobRetries
+  agentConfig.maxJobRetries = clampJobRetries(
+    rawJobRetries != null && Number.isFinite(Number(rawJobRetries)) ? Number(rawJobRetries) : 0,
   )
   // 未配置总预算时保持 undefined（不限），不套默认值 —— 加默认值会改变既有 Agent 的行为。
   const rawTotalTimeout = agentConfig.totalTimeoutMinutes

@@ -159,6 +159,7 @@ export function useAgentForm(
       commandReplyLanguage: 'auto',
       timeoutMinutes: 10,
       maxRetries: 2,
+      maxJobRetries: 0,
       totalTimeoutMinutes: null,
     },
   })
@@ -402,6 +403,7 @@ export function useAgentForm(
         commandReplyLanguage: 'auto',
         timeoutMinutes: 10,
         maxRetries: 2,
+        maxJobRetries: 0,
         totalTimeoutMinutes: null,
       },
       { keepDefaultValues: false },
@@ -579,6 +581,7 @@ export function useAgentForm(
           .commandReplyLanguage as FormData['commandReplyLanguage']) ?? 'auto',
       timeoutMinutes: typeof config?.timeoutMinutes === 'number' ? config.timeoutMinutes : 10,
       maxRetries: typeof config?.maxRetries === 'number' ? config.maxRetries : 2,
+      maxJobRetries: typeof config?.maxJobRetries === 'number' ? config.maxJobRetries : 0,
       totalTimeoutMinutes:
         typeof config?.totalTimeoutMinutes === 'number' ? config.totalTimeoutMinutes : null,
     })
@@ -751,6 +754,7 @@ export function useAgentForm(
           cleanResult: data.cleanResult,
           timeoutMinutes: data.timeoutMinutes,
           maxRetries: data.maxRetries,
+          maxJobRetries: data.maxJobRetries,
           totalTimeoutMinutes: data.totalTimeoutMinutes ?? undefined,
         },
       }
@@ -855,6 +859,7 @@ export function useAgentForm(
         cleanResult: data.cleanResult,
         timeoutMinutes: data.timeoutMinutes,
         maxRetries: data.maxRetries,
+        maxJobRetries: data.maxJobRetries,
         totalTimeoutMinutes: data.totalTimeoutMinutes ?? undefined,
       },
     }

@@ -45,6 +45,7 @@ const agentFixture = {
     cleanResult: true,
     timeoutMinutes: 10,
     maxRetries: 2,
+    maxJobRetries: 0,
   },
   status: 'active',
   icon: '🤖',
@@ -923,6 +924,7 @@ describe('useAgentForm — post-create redirect does not force a channel dialog 
     maxConcurrency: 1,
     timeoutMinutes: 10,
     maxRetries: 2,
+    maxJobRetries: 0,
     totalTimeoutMinutes: null,
   }
 

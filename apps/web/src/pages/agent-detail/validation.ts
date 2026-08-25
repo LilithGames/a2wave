@@ -26,5 +26,6 @@ export const agentFormSchema = z.object({
   commandReplyLanguage: z.enum(['auto', 'en', 'zh']),
   timeoutMinutes: z.number().int().min(5).max(120),
   maxRetries: z.number().int().min(0).max(5),
+  maxJobRetries: z.number().int().min(0).max(3),
   totalTimeoutMinutes: z.number().int().min(5).max(600).nullable(),
 })

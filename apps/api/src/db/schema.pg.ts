@@ -745,6 +745,18 @@ export const runs = pgTable(
        */
       queuedTurn?: boolean
       /**
+       * Job-level auto-retry chain (see lib/job-retry-policy.ts).
+       *
+       * `jobRetryOf` names the run that failed and caused this replay — the
+       * ORIGINAL run of the chain, not the immediate predecessor, so the whole
+       * chain is queryable from one id. `jobRetryAttempt` counts replays already
+       * spent (1 = first automatic retry) and MUST be carried forward on every
+       * new run: without it each replay reads its own attempt as 0 and the chain
+       * never terminates.
+       */
+      jobRetryOf?: string
+      jobRetryAttempt?: number
+      /**
        * The merge/pull request a `glab` / `gh` run was fired for.
        *
        * Persisted (rather than left in the in-memory channel context) because

@@ -27,6 +27,7 @@ On the Agent detail page you can configure:
 - **Environment variables (env)**: injected into the subprocess; can be marked `sensitive` for masking and clearing on clone.
 - **Max concurrency (maxConcurrency)**: 1–5, controls how many Runs this Agent executes simultaneously; excess ones are queued.
 - **Timeout**: a single Run can be set to 5–120 minutes, default 10 minutes; the execution is terminated when the limit is reached.
+- **Job auto-retry (maxJobRetries)**: 0–3, **default 0 (off)**. When a Run fails, the whole job is replayed as a **new Run** — the same thing the **Rerun** button does: fresh workspace, fresh session, re-queued, with the original Run left `failed` so every attempt stays its own record. Distinct from *Max Retries per Provider*, which retries inside a single execution. Cancelled Runs are never replayed, and neither are permanent errors (auth, content policy, quota) that a replay would only hit again. Leave it at 0 for Agents whose jobs have side effects (posting a reply, opening an MR, writing through MCP) — a replay repeats them.
 - **Long-term Memory**: see [Long-term Memory](/wiki/memory).
 - **Evaluation**: verify config changes and compare models, see [Evaluation](/wiki/evaluation).
 - **Publish channels and triggers**: see [Trigger Methods](/wiki/triggers).

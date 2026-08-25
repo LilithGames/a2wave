@@ -278,6 +278,7 @@ export function ConfigTab({
   const watchedCommandReplyLanguage = watch('commandReplyLanguage')
   const watchedTimeoutMinutes = watch('timeoutMinutes')
   const watchedMaxRetries = watch('maxRetries')
+  const watchedMaxJobRetries = watch('maxJobRetries')
   const watchedTotalTimeoutMinutes = watch('totalTimeoutMinutes')
   const watchedSystemPrompt = watch('systemPrompt') ?? ''
 
@@ -2105,6 +2106,20 @@ export function ConfigTab({
               max={5}
               value={watchedMaxRetries}
               onChange={(val) => setValue('maxRetries', val ?? 2, { shouldDirty: true })}
+              className="w-20 shrink-0"
+            />
+            <div className="space-y-0.5 min-w-0">
+              <Label className="text-sm font-medium text-foreground">
+                {t('agentDetail.maxJobRetries')}
+              </Label>
+              <p className="text-xs text-muted-foreground">{t('agentDetail.maxJobRetriesHint')}</p>
+            </div>
+            <InputNumber
+              data-testid="agent-max-job-retries"
+              min={0}
+              max={3}
+              value={watchedMaxJobRetries}
+              onChange={(val) => setValue('maxJobRetries', val ?? 0, { shouldDirty: true })}
               className="w-20 shrink-0"
             />
             <div className="space-y-0.5 min-w-0">
