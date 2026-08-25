@@ -19,6 +19,7 @@ export type FormData = {
   commandReplyLanguage: 'auto' | 'en' | 'zh'
   timeoutMinutes: number
   maxRetries: number
+  maxJobRetries: number
   /** null = 不限（沿用历史行为） */
   totalTimeoutMinutes: number | null
 }

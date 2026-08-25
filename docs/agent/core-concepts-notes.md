@@ -37,6 +37,41 @@ Run, ChatMessage, Settings, Evaluation Set / Case / Task.
   additionally requires an explicitly identified **active backend administrator**.
 - Group backends follow the same runtime rule.
 
+## Run — the two retry layers
+
+They are different layers and both exist; do not collapse them.
+
+- **`maxRetries` (0–5, default 2)** — retries *inside* one job execution
+  (`lib/execute-with-retry.ts`). Same `runs` row, same concurrency slot, same
+  workspace, and on a same-provider retry the same chat session. Exponential
+  backoff with jitter, plus depth-first provider-chain fallback: each provider
+  gets its own budget, then the chain moves on and never comes back. The right
+  tool for a flaky subprocess — but it inherits whatever dirty state the failed
+  attempt left in the workspace.
+- **`maxJobRetries` (0–3, default 0 = off)** — replays the *whole job* as a
+  **new `runs` row** (`lib/job-retry-scheduler.ts`), which is exactly what the
+  manual **Rerun** button builds. Fresh workspace, fresh session, re-admitted
+  through `tryAcquireSlot`; the failed run keeps its `failed` status so every
+  attempt stays its own auditable record.
+
+Both layers multiply, and both are bounded by `totalTimeoutMinutes`.
+
+Job retry is deliberately **narrower than the Rerun button**, because it fires
+unattended: `cancelled` runs are never replayed (someone asked for it to stop),
+and neither are permanent or hard-quota errors (401/403, content policy,
+worktree/SCM, session/daily limits) — a fresh job hits the identical wall. Soft
+429s *are* replayed, since the rate window has usually moved on by then.
+
+Default-off is the product decision, not an oversight: a job that already posted
+a reply, opened an MR, or wrote through MCP has no idempotency key, so replaying
+it repeats those effects. Opting in belongs to the Agent author.
+
+The chain is bounded by `executionMetadata.jobRetryAttempt`, carried forward on
+every replay, with `jobRetryOf` pointing at the chain's *original* run so the
+whole chain is queryable from one id. Dropping either field makes the chain
+non-terminating. Each replay writes a `run.auto_retry` background audit entry
+(Iron Rule 5 — background work still needs a trail).
+
 ## Evaluation
 
 An Evaluation Set groups Cases (each an ordered list of

@@ -21,6 +21,7 @@ import { executeWithRetry } from './execute-with-retry.js'
  * "execute and finalize" middle section to keep behavior identical across
  * the three entrypoints.
  */
+import { runJobRetryHook } from './job-retry-hook.js'
 import { logger } from './logger.js'
 // Import directly from emit.js + types.js (NOT the barrel) so that consumers
 // of run-launcher don't transitively load buildDefaultPlugins → commandsPlugin →
@@ -30,8 +31,8 @@ import { logger } from './logger.js'
 import { emit } from './pipeline/emit.js'
 import type { LifecyclePlugin, PipelineError, RunCtx, RunOutcome } from './pipeline/types.js'
 import {
-  type FinishRunParams,
   createPersistingLogCollector,
+  type FinishRunParams,
   finishRunError,
   finishRunSuccess,
 } from './run-lifecycle.js'
@@ -199,6 +200,10 @@ export async function runWithLifecycle(
       result.usage,
     )
     await drainStreamFrames()
+    // Replay as a fresh job when the Agent opted in. Fire-and-forget: the
+    // retry is a new run with its own lifecycle, so finalization of THIS run
+    // must not wait on it.
+    void runJobRetryHook(lifecycleParams.runId, engineError)
     const enginePipelineError: PipelineError = {
       success: false,
       error: engineError,
@@ -231,6 +236,7 @@ export async function runWithLifecycle(
     )
     const thrownDurationMs = Date.now() - lifecycleParams.startTime
     await drainStreamFrames()
+    void runJobRetryHook(lifecycleParams.runId, publicErrorMsg)
     const thrownPipelineError: PipelineError = {
       success: false,
       error: publicErrorMsg,

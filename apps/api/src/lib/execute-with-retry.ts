@@ -15,10 +15,10 @@ import type {
   ExecuteWorkerResult,
   WorkerTaskPayload,
 } from '../worker/types.js'
-import { type ResolvedProviderBinding, applyProviderBinding } from './agent-helpers.js'
+import { applyProviderBinding, type ResolvedProviderBinding } from './agent-helpers.js'
 import { logger } from './logger.js'
-import { createLogCollector } from './run-lifecycle.js'
 import type { RetryRecord } from './run-lifecycle.js'
+import { createLogCollector } from './run-lifecycle.js'
 import { createRunLogFileWriter } from './run-log-file.js'
 
 const A2WAVE_AGENT_ROUTER_MCP_NAME = 'a2wave-agent-router'
@@ -296,7 +296,7 @@ function isProviderFallbackableError(error: string | undefined): boolean {
   return matchAnyPattern(error, PROVIDER_FALLBACK_PATTERNS)
 }
 
-function isPermanentError(error: string | undefined): boolean {
+export function isPermanentError(error: string | undefined): boolean {
   // Account fallback errors are not permanent even if they share substrings with
   // permanent patterns — a different provider/account may still recover.
   if (matchAnyPattern(error, ACCOUNT_PROVIDER_FALLBACK_PATTERNS)) return false
@@ -309,7 +309,7 @@ function isPermanentError(error: string | undefined): boolean {
  * fast-fail when there's no fallback provider left — soft per-minute 429s instead
  * fall through to a backoff retry, which usually clears the rate window.
  */
-function isHardQuotaError(error: string | undefined): boolean {
+export function isHardQuotaError(error: string | undefined): boolean {
   return matchAnyPattern(error, HARD_QUOTA_PATTERNS)
 }
 
