@@ -1,6 +1,6 @@
 # OAuth Authorization Channel (External IdP JWT + configurable access scope)
 
-> Status: v1.3. External IdP JWT signature verification + per-Agent access scope (all enterprise users / specific enterprise users). The channel is configuration-driven, works with any OIDC identity provider, and has **no dependency on Feishu**.
+> Status: v1.4. External IdP JWT signature verification + standard UserInfo fallback + per-Agent access scope (all enterprise users / specific enterprise users). The channel is configuration-driven, works with any OIDC identity provider, and has **no dependency on Feishu**.
 
 ## Table of Contents
 
@@ -28,17 +28,17 @@ Beyond `none` / `api_key`, a2wave provides a third authentication method: **OAut
 
 **Two layers of validation**:
 
-1. **Identity layer (who are you?)** — IdP JWT signature verification, confirming a user of your identity provider and extracting claims like sub / email
+1. **Identity layer (who are you?)** — IdP JWT signature verification, confirming a user of your identity provider and extracting claims like sub / email. If the verified JWT omits email, the same bearer is sent to the provider's standard UserInfo endpoint and the returned `sub` must match
 2. **Authorization layer (can you use this agent?)** — executed per the Agent's `oauthAccessMode`:
-   - `all_idaas_users` (default): allow if the JWT is valid and carries an `email` claim — every such user of the identity provider can call
-   - `specified_users`: the caller's **verified** `email` claim must appear in the Agent's email allowlist (`agents.oauth_allowed_emails`); comparison is case-insensitive and whitespace-trimmed
+   - `all_idaas_users` (default): allow if the JWT is valid and an email is resolved from the JWT or UserInfo — every such user of the identity provider can call
+   - `specified_users`: the caller's **verified** email resolved from the JWT or UserInfo must appear in the Agent's email allowlist (`agents.oauth_allowed_emails`); comparison is case-insensitive and whitespace-trimmed
 
 Both layers must pass before allowing the request. The verified identity `{email?, sub, tenant?}` is
 written into the run channel context for business permission decisions or auditing. An address
 explicitly marked `email_verified: false` satisfies the revocation gate in `all_idaas_users`, but it
 is not promoted into `user_info.email`.
 
-> ⚠️ **Fail-closed allowlist**: `specified_users` with an empty or unset allowlist denies **everyone**. There is no "empty means unrestricted" shortcut — an Agent narrowed on purpose must never widen itself because its roster was cleared. Callers whose token carries no verified `email` claim are rejected in this mode as well (`MISSING_VERIFIED_EMAIL`).
+> ⚠️ **Fail-closed allowlist**: `specified_users` with an empty or unset allowlist denies **everyone**. There is no "empty means unrestricted" shortcut — an Agent narrowed on purpose must never widen itself because its roster was cleared. Callers for whom neither the JWT nor UserInfo supplies a verified email are rejected in this mode as well (`MISSING_VERIFIED_EMAIL`).
 
 **Explicitly not done**: a2wave self-signed tokens / refresh tokens / dynamic client registration / a self-built user table / per-agent IdP credentials / directory group lookups (the allowlist is a literal list of emails, not a query against your IdP's groups).
 
@@ -69,13 +69,14 @@ is not promoted into `user_info.email`.
      │                  │                            │
      │                  │        ┌───────────────────┴───────────────┐
      │                  │        │ 2b) email claim present?          │
-     │                  │        │      no  → 403 CLAIMS_INVALID     │
+     │                  │        │      no → UserInfo(token, sub)    │
+     │                  │        │      no email → 403 CLAIMS_INVALID│
      │                  │        │ 2c) read oauthAccessMode          │
      │                  │        │                                   │
      │                  │        │  all_idaas_users → allow          │
      │                  │        │                                   │
      │                  │        │  specified_users →                │
-     │                  │        │    verified email claim present?  │
+     │                  │        │    verified email present?        │
      │                  │        │      no  → 403 CLAIMS_INVALID     │
      │                  │        │    email ∈ oauth_allowed_emails?  │
      │                  │        │      (case-insensitive, trimmed)  │
@@ -91,9 +92,10 @@ is not promoted into `user_info.email`.
 
 - JWT verification: the enterprise **OIDC** config (Settings → Enterprise login) — signature via the IdP's JWKS, plus strict `iss / exp / sub`. Keys rotate through JWKS, so there is no static public key to paste or re-paste
 - Accepted signature algorithms: `RS256` / `RS384` / `RS512` / `PS256` / `ES256` / `ES384` (symmetric algorithms are always rejected). The CLI mirrors this by exchanging any non-`HS256` JWT, so an IdP on an elliptic-curve algorithm needs no client-side change
-- Access scope: both modes require an `email` claim; `all_idaas_users` has no further email-authorization check, while `specified_users` requires a verified email and an Agent allowlist match
-- Allowlist decision (`specified_users` only): the JWT must carry a **verified** `email` claim (an unverified email is treated as absent); the value is trimmed and lower-cased on both sides before comparison. An empty or NULL `agents.oauth_allowed_emails` denies everyone
-- The decision is a **local column read** — no outbound call, no cache, no TTL, so an allowlist edit takes effect on the very next request
+- Identity enrichment: when the JWT has no email at all, the gateway sends the same bearer token to the discovery-advertised UserInfo endpoint. `openid-client` requires the UserInfo `sub` to equal the verified JWT subject. A JWT with either a verified or explicitly unverified email takes the zero-network fast path
+- Access scope: both modes require an email resolved from the JWT or UserInfo; `all_idaas_users` has no further email-authorization check, while `specified_users` requires a verified email and an Agent allowlist match
+- Allowlist decision (`specified_users` only): the resolved email must be **verified** (an explicitly unverified email is treated as absent); the value is trimmed and lower-cased on both sides before comparison. An empty or NULL `agents.oauth_allowed_emails` denies everyone
+- The allowlist decision is a **local column read** — no directory lookup, cache, or TTL, so an allowlist edit takes effect on the very next request. Only the missing-email identity fallback makes an outbound UserInfo request
 - Identity landing: `runSteps.input.context.channel.channel_info.oauth` + `user_info.email` when the email is accepted as verified; otherwise `user_info` may be null
 
 Code entry points:
@@ -196,8 +198,8 @@ The `OAuth Authorization` subpage of the publish page provides two access scopes
 
 | Access scope | zh copy | Behavior | Use case |
 |----------|------|------|----------|
-| `all_idaas_users` (default) | 全体企业用户 | Allow once the IdP JWT passes and carries an email claim | Every user of the identity provider with an email claim can call |
-| `specified_users` | 指定企业用户 | After the IdP JWT passes, require the caller's verified email to be on the Agent's allowlist | A named set of people — a pilot group, one team, a handful of integrators |
+| `all_idaas_users` (default) | 全体企业用户 | Allow once the IdP JWT passes and email is resolved from the JWT or UserInfo | Every user of the identity provider with a resolvable email can call |
+| `specified_users` | 指定企业用户 | After the IdP JWT passes, require the caller's verified email from the JWT or UserInfo to be on the Agent's allowlist | A named set of people — a pilot group, one team, a handful of integrators |
 
 The English labels are "All enterprise users" / "Specific enterprise users".
 
@@ -205,7 +207,7 @@ The English labels are "All enterprise users" / "Specific enterprise users".
 
 The allowlist lives on the Agent itself (`agents.oauth_allowed_emails`, a JSON string array), so the Owner maintains it in a2wave — there is no external directory, group, or third-party app to configure.
 
-- Enter one **login email per person**, exactly as the IdP issues it in the `email` claim
+- Enter one **login email per person**, exactly as the IdP issues it in the JWT or UserInfo `email` claim
 - Matching is **case-insensitive** and ignores surrounding whitespace, so `Alice@Example.com ` and `alice@example.com` are the same person
 - The claim must be **verified** by the IdP; a token carrying an unverified email is treated as carrying none and is rejected with `403 CALLER_TOKEN_CLAIMS_INVALID`
 - **An empty list denies everyone.** This is deliberate: an Agent restricted on purpose must not fall open when its roster is cleared. To open an Agent up, switch the mode to `all_idaas_users` rather than emptying the list
@@ -262,13 +264,13 @@ Obtain a token from your caller's OIDC client for the configured a2wave resource
 Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no
 valid OIDC configuration exists in Settings.
 
-The token must also carry an email claim: the gateway rejects an address-less token with `403` in **both** access modes, and `specified_users` additionally requires that address to be **verified** and on the Agent's allowlist.
+The caller should provide an access token. When its verified JWT already carries email, the gateway uses that value directly and makes no UserInfo request. When the JWT has no email at all, the gateway sends the same bearer to the provider's standard `userinfo_endpoint` and requires the returned `sub` to match the JWT. The gateway rejects the call with `403` if neither source provides an email; `specified_users` additionally requires that address to be **verified** and on the Agent's allowlist. An ID token without email normally cannot satisfy this fallback because UserInfo expects an access token.
 
 The token cached by `a2wave login` is **not** automatically accepted — it is minted for the login client (`aud === client_id`), which the allowlist deliberately excludes. Without a matching `aud` the call fails with `401`, not `403`.
 
 ```bash
 # Obtain this through the caller application's OIDC flow. Configure that IdP client
-# to request the a2wave resource audience and the email scope.
+# to request the a2wave resource audience and an email scope, or expose email through UserInfo.
 TOKEN='<JWT issued by the configured OIDC provider for the a2wave resource audience>'
 ```
 
@@ -363,12 +365,12 @@ subject for auditing and do not treat the unverified address as caller identity.
 | JWT valid + has access | 200 / 202 | — | Process the response normally or poll the Run |
 | Missing `Authorization` header | 401 | `AUTH_REQUIRED` | Obtain an IdP token and add the Bearer header |
 | JWT invalid, expired, or verification failed | 401 | `CALLER_TOKEN_INVALID` | Request a new JWT from the caller's OIDC client for the configured a2wave resource audience |
-| JWT missing an `email` claim (both modes) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request a new JWT containing `email` |
-| JWT email is not verified (`specified_users` only) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request a new JWT containing a verified `email` |
+| JWT and UserInfo both omit `email` (both modes) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request an access token whose JWT or UserInfo response provides `email` |
+| Resolved email is not verified (`specified_users` only) | 403 | `CALLER_TOKEN_CLAIMS_INVALID` | Request an access token whose JWT or UserInfo response provides a verified `email` |
 | Email not on the Agent's allowlist | 403 | `CALLER_NOT_AUTHORIZED` | Contact the Agent owner for authorization |
 | IP not in the allowlist | 403 | `IP_NOT_ALLOWED` | Switch to an allowed network or update the allowlist |
 | OAuth policy not deployed | 503 | `OAUTH_NOT_CONFIGURED` | Contact the platform admin; changing the token won't help |
-| IdP unreachable during token verification | 503 | `AUTHORIZATION_CHECK_UNAVAILABLE` | **Retry** (`retryable: true`) — the caller's credentials are not implicated |
+| IdP unreachable during token verification or UserInfo | 503 | `AUTHORIZATION_CHECK_UNAVAILABLE` | **Retry** (`retryable: true`) — the caller's credentials are not implicated |
 | Agent Provider login expired | 424 | `PROVIDER_REAUTH_REQUIRED` | Agent owner re-logs into the Provider; the caller need not re-log in |
 
 The error envelope uniformly contains `code`, `message`, `source`, `action`, `retryable`, and an optional `details.runId`. Synchronous, SSE, and async-polling execution errors use the same structure.
@@ -422,20 +424,26 @@ The JWT is valid, but the caller's email is not on the Agent's allowlist (`speci
 
 Fix: `Agent details → Publish → OAuth Authorization`, add the email, re-publish. It takes effect on the next request; there is no cache to wait out.
 
-### 7.4 Call returns `403` on the email claim
+### 7.4 Call returns `401` or `403` while resolving email
 
-Two distinct gates, in this order — the first runs **before** the access-mode branch, so switching
-the Agent's mode does not bypass it:
+The gateway first verifies the JWT. If it has no email at all, it then calls the standard UserInfo
+endpoint with the same bearer token and requires the returned `sub` to match. The remaining gates
+run before or inside the access-mode branch, so switching the Agent's mode does not bypass them:
 
-1. **No email claim at all** (`MISSING_EMAIL_CLAIM`) — rejected in **both** access modes. The
-   address is what makes a disabled account revocable, so an address-less token is refused even
-   under `all_idaas_users`. An `email_verified: false` address still satisfies *this* gate.
-2. **No verified email** (`MISSING_VERIFIED_EMAIL` / `CALLER_TOKEN_CLAIMS_INVALID`) — reachable
+1. **UserInfo rejects the bearer or returns another subject** — rejected with `401
+   CALLER_TOKEN_INVALID`. This usually means the caller supplied an ID token without email rather
+   than an access token accepted by UserInfo.
+2. **No email from either JWT or UserInfo** (`MISSING_EMAIL_CLAIM`) — rejected in **both** access
+   modes. The address is what makes a disabled account revocable, so an address-less identity is
+   refused even under `all_idaas_users`. An `email_verified: false` address in the JWT still
+   satisfies *this* gate and intentionally skips UserInfo.
+3. **No verified email** (`MISSING_VERIFIED_EMAIL` / `CALLER_TOKEN_CLAIMS_INVALID`) — reachable
    only under `specified_users`, which matches the verified address against the allowlist.
 
-- The IdP client is not requesting the `email` scope → add it to the caller's client config
+- The IdP client is not requesting the `email` scope and UserInfo also omits email → add the appropriate scope to the caller's client config
+- The bearer is an ID token without email → request the resource access token instead
 - The claim is present but `email_verified` is false → the IdP treats that address as unconfirmed; a2wave will not authorize on it under `specified_users`. Have the user verify the address at the IdP
-- Switching to `all_idaas_users` relaxes only gate 2. A token carrying **no** email claim keeps failing in either mode
+- Switching to `all_idaas_users` relaxes only gate 3. An identity with no email from either source keeps failing in either mode
 
 ### 7.5 Call returns `424 PROVIDER_REAUTH_REQUIRED`
 
@@ -448,9 +456,9 @@ the Agent's mode does not bypass it:
 - Expected behavior. After switching the auth method, the old shared key is no longer accepted
 - The caller needs to migrate to an IdP-issued JWT, or temporarily fall back to `api_key` and re-publish
 
-### 7.7 Discovery / JWKS unreachable
+### 7.7 Discovery / JWKS / UserInfo unreachable
 
-- Verification fetches `{issuer}/.well-known/openid-configuration` and then the JWKS. If the API process cannot reach the IdP (egress firewall, split-horizon DNS, proxy), every call fails `503` (`AUTHORIZATION_CHECK_UNAVAILABLE`) — deliberately not `401`, since the caller's credentials are not at fault
+- Verification fetches `{issuer}/.well-known/openid-configuration` and then the JWKS. A JWT without email also uses the Discovery `userinfo_endpoint`. If the API process cannot reach the required IdP endpoint (egress firewall, split-horizon DNS, proxy), the call fails `503` (`AUTHORIZATION_CHECK_UNAVAILABLE`) — deliberately not `401`, since the caller's credentials are not at fault
 - Settings → Enterprise login → OIDC → "Test" runs the same discovery from the server, so it reproduces the failure with a clearer message
 
 ### 7.8 Browser SSO doesn't redirect back
@@ -461,7 +469,7 @@ the Agent's mode does not bypass it:
 
 **Check logs**: keywords `OAuth request authenticated` (passed) / `OAuth request rejected`
 
-**Compare the actual claim against the allowlist**: decode the caller's token and read `email` / `email_verified` — this is the exact pair the allowlist is matched against, so it settles most 403s on the spot
+**Compare the resolved identity against the allowlist**: first decode the caller's token and read `email` / `email_verified`. If `email` is absent, inspect the standard UserInfo response for the same access token as well. The allowlist matches the resolved verified email, so checking both sources settles most 403s
 
 ```bash
 printf '%s' "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{email, email_verified, aud, iss}'
@@ -527,11 +535,11 @@ sqlite3 data/a2wave.db \
 
 ### 8.2 The allowlist is a manual roster, not a directory query
 
-`specified_users` matches literal emails stored on the Agent; it does not resolve IdP groups, departments, or organizational units. A team whose membership changes often has to be maintained by hand on every affected Agent, and the same person appearing on ten Agents means ten edits. This is a deliberate trade for having **no** outbound dependency in the authorization path — the decision is a local column read, so it cannot fail, time out, or go stale. Population-level authorization by directory group is out of scope for this version.
+`specified_users` matches literal emails stored on the Agent; it does not resolve IdP groups, departments, or organizational units. A team whose membership changes often has to be maintained by hand on every affected Agent, and the same person appearing on ten Agents means ten edits. The allowlist decision itself is a local column read, so it cannot fail, time out, or go stale; only identity enrichment for a JWT that omits email depends on UserInfo. Population-level authorization by directory group is out of scope for this version.
 
 ### 8.3 Only the login email identifies the caller
 
-Authorization keys on the JWT's **verified** `email` claim alone. A user whose IdP issues a different address than the one the Owner entered is rejected, and mail aliases are not resolved — only the exact claim value (case-insensitive, trimmed) counts. There is no fallback to `sub` or any other claim, keeping the decision criteria unified and auditable.
+Authorization keys on the **verified** `email` resolved from the JWT or standard UserInfo response. A user whose IdP issues a different address than the one the Owner entered is rejected, and mail aliases are not resolved — only the exact resolved value (case-insensitive, trimmed) counts. There is no authorization fallback to `sub` or any other identifier; `sub` is used only to bind the UserInfo response to the already verified JWT identity.
 
 ### 8.4 No per-caller revocation before token expiry
 
@@ -554,3 +562,4 @@ Removing an email from the allowlist stops the **next** call, but a token alread
 | v1.1 | 2026-04-21 | Added Feishu app visible-scope permission decision; the default permission list includes `contact:user.id:readonly` and 8 others; `channel_info.feishu_scope` persisted |
 | v1.2 | 2026-06-26 | OAuth publish adds access scope: default Feishu app visible scope, switchable to all IdP users (`all_idaas_users`) |
 | v1.3 | 2026-08-05 | Retired the Feishu visible-scope mode (`feishu_scope`) and its Feishu credential dependency; replaced by an email allowlist (`specified_users`, `agents.oauth_allowed_emails`), with `all_idaas_users` now the default. Rows that actually published the oauth channel are migrated fail-closed by `0100_awesome_marrow.sql` (`specified_users` + NULL allowlist) while the rest land on the new default — `feishu_scope` was also the column DEFAULT, so it marked far more than the restricted subset. Publishing an empty allowlist is rejected with `400 OAUTH_ALLOWED_EMAILS_REQUIRED`; `channel_info.feishu_scope` is no longer written |
+| v1.4 | 2026-08-26 | Added a generic OIDC UserInfo fallback when the verified caller JWT omits email. Existing email claims keep the zero-network path; UserInfo must return the same `sub`, token rejection is a caller fault, and endpoint availability failures remain retryable platform errors |

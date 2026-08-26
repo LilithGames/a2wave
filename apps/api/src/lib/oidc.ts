@@ -14,7 +14,7 @@
  * 本文件只做配置解析、Configuration/JWKS 缓存与 claims → JwtUserInfo 归一。
  */
 import type { SsoConfigSource } from '@a2wave/shared'
-import { type JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose'
+import { createRemoteJWKSet, type JWTPayload, jwtVerify } from 'jose'
 import * as oidcClient from 'openid-client'
 import type { JwtUserInfo } from './jwt-auth.js'
 import { readOidcClientSecret, readSsoDbConfig } from './sso-settings.js'
@@ -309,6 +309,12 @@ const TOKEN_FAULT_CODES: ReadonlySet<string> = new Set([
   'ERR_JWKS_NO_MATCHING_KEY',
   'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
   'ERR_JOSE_ALG_NOT_ALLOWED',
+  // A verified JWT can still be unusable as a UserInfo access token, or the endpoint can
+  // return a different subject. Both are attributable to the caller credential rather than
+  // IdP availability, so callers must obtain the correct access token instead of retrying.
+  'OAUTH_RESPONSE_BODY_ERROR',
+  'OAUTH_WWW_AUTHENTICATE_CHALLENGE',
+  'OAUTH_JSON_ATTRIBUTE_COMPARISON_FAILED',
 ])
 
 /**
@@ -341,6 +347,36 @@ export async function verifyOidcIdToken(idToken: string): Promise<JwtUserInfo> {
 }
 
 /**
+ * Completes an already verified OIDC identity from the provider's standard UserInfo endpoint.
+ *
+ * The caller must verify the JWT before reaching this function. `openid-client` sends the same
+ * bearer token to the discovery-provided endpoint and enforces that the returned `sub` equals the
+ * verified subject. The original JWT claims remain the audit source; UserInfo only supplies
+ * identity fields that the token omitted.
+ */
+export async function enrichOidcIdentityFromUserInfo(
+  token: string,
+  identity: JwtUserInfo,
+): Promise<JwtUserInfo> {
+  const configuration = await getOidcConfiguration()
+  const userInfo = await oidcClient.fetchUserInfo(configuration, token, identity.sub)
+  const supplemental = oidcClaimsToUserInfo(userInfo as unknown as JWTPayload, identity.issuer)
+  const maySupplyEmail = !identity.email && !identity.unverifiedEmail
+
+  return {
+    ...identity,
+    ...(maySupplyEmail && supplemental.email ? { email: supplemental.email } : {}),
+    ...(maySupplyEmail && supplemental.unverifiedEmail
+      ? { unverifiedEmail: supplemental.unverifiedEmail }
+      : {}),
+    ...(!identity.username && supplemental.username ? { username: supplemental.username } : {}),
+    ...(!identity.mobile && supplemental.mobile ? { mobile: supplemental.mobile } : {}),
+    ...(!identity.tenantId && supplemental.tenantId ? { tenantId: supplemental.tenantId } : {}),
+    ...(!identity.unionId && supplemental.unionId ? { unionId: supplemental.unionId } : {}),
+  }
+}
+
+/**
  * Verifies a caller token received by the OAuth publish channel.
  *
  * This uses the same enterprise OIDC configuration and JWKS as `verifyOidcIdToken`, but the
@@ -353,7 +389,12 @@ export async function verifyOidcIdToken(idToken: string): Promise<JwtUserInfo> {
  * does not implicitly add `clientId`. An empty list makes verification fail closed.
  */
 export async function verifyOauthChannelToken(token: string): Promise<JwtUserInfo> {
-  return verifyWithIdpJwks(token, await oauthChannelAudiences())
+  const identity = await verifyWithIdpJwks(token, await oauthChannelAudiences())
+  // Preserve the zero-network fast path whenever the token carries any email claim. An
+  // explicitly unverified address remains useful for the conservative revocation lookup in
+  // all_idaas_users mode, but must not be upgraded by an avoidable UserInfo dependency.
+  if (identity.email || identity.unverifiedEmail) return identity
+  return enrichOidcIdentityFromUserInfo(token, identity)
 }
 
 /**

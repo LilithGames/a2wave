@@ -261,8 +261,8 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
 
   // OAuth: pull oauth metadata + email-derived user_info.
   let userInfo: UserInfo | null = null
-  // `displayName` is set even when `userInfo` stays null (api_key-only or oauth
-  // without email claim) — for OAuth that means we still surface the IdP
+  // `displayName` is set even when `userInfo` stays null (api_key-only or OAuth
+  // without email from either JWT or UserInfo) — for OAuth that means we still surface the IdP
   // username in the runs list, which is the common case the feature was built for.
   let displayName: string | null = null
   if (opts.oauthCaller && opts.oauthCaller.kind === 'idaas_user') {
@@ -285,7 +285,7 @@ export function buildGatewayChannel(c: Context, opts: BuildGatewayChannelOpts): 
     } else {
       logger.warn(
         { sub: u.sub, issuer: u.issuer },
-        'OAuth user has no email claim — user_info will be null',
+        'OAuth user has no email from JWT or UserInfo — user_info will be null',
       )
     }
     displayName = u.username || null
@@ -362,7 +362,7 @@ export function buildOAuthChannel(c: Context, opts: BuildOAuthChannelOpts): Chan
     } else {
       logger.warn(
         { sub: u.sub, issuer: u.issuer },
-        'OAuth channel user has no email claim — user_info will be null',
+        'OAuth channel user has no email from JWT or UserInfo — user_info will be null',
       )
     }
     displayName = u.username || null

@@ -155,7 +155,7 @@ OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用�
 | code | 谁需要处理 | 下一步 |
 |------|------------|--------|
 | `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | 调用者 | 从调用方自己的 OIDC client 获取面向已配置 a2wave 资源受众的新 JWT |
-| `CALLER_TOKEN_CLAIMS_INVALID` | 调用者 / 平台管理员 | 从已配置的 OIDC provider 获取包含 email claim 的新 JWT；`specified_users` 还要求邮箱已验证 |
+| `CALLER_TOKEN_CLAIMS_INVALID` | 调用者 / 平台管理员 | 获取本身带邮箱，或能被身份提供商标准 UserInfo 接口接受的 access token；`specified_users` 还要求邮箱已验证 |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | 调用者 + Agent 所有者 | 申请权限或切换允许的网络 |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent 所有者 | 重新登录或更新 Agent 的 Provider 凭证；调用者无需重登 |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent 所有者 | 修复引擎、模型、MCP 或工作区配置；非占用类错误返回 `424` |
