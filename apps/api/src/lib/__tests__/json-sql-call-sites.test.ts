@@ -719,8 +719,17 @@ describe('JSON helper call sites pass JSON-bearing columns', () => {
  *
  * These are type-checked as real program files, which is what lets the last
  * two — local shadowing and an undeclared helper — be caught at all.
+ *
+ * Each case builds its own `ts.Program`, which costs ~0.5-0.8s locally and
+ * several times that on a loaded CI runner — enough to cross vitest's 5s
+ * default and fail the nightly suite on timing alone (observed on run
+ * 32923301720, "flags: aliased import"). The timeout is raised per describe
+ * rather than globally so the rest of the suite keeps the strict default, and
+ * the programs are deliberately not shared: each fixture must be checked in
+ * isolation, or one fixture's declarations would be visible to the next and
+ * an evasion could pass by borrowing another's imports.
  */
-describe('the analyzer itself, against every known evasion shape', () => {
+describe('the analyzer itself, against every known evasion shape', { timeout: 30_000 }, () => {
   const analyzeFixture = (body: string) => {
     const fileName = resolve(SRC, 'routes/__fixture__.ts')
     const preamble = `import { runs, users, runSteps } from '../db/schema.js'\nvoid runs; void users; void runSteps;\n`
