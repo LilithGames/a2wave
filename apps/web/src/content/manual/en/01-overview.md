@@ -1,6 +1,6 @@
 # Overview & Navigation
 
-Welcome to the **a2wave** User Manual. a2wave is a general-purpose **Agent building and orchestration platform** for enterprises: you use it to turn "intent" into externally triggerable, auditable, and operable automated Agents. Under the hood it reuses mature agent CLIs such as Claude Code, Cursor Agent, and OpenAI Codex, and extends capabilities via Skill / MCP / Knowledge Base / memory.
+Welcome to the **a2wave** User Manual. a2wave is a general-purpose **Agent building and orchestration platform** for enterprises: you use it to turn "intent" into externally triggerable, auditable, and operable automated Agents. Under the hood it reuses mature agent CLIs such as Claude Code, OpenAI Codex, and Cursor Agent, and extends capabilities via Skill / MCP / Knowledge Base / memory.
 
 This page is the entry point of the manual. The table of contents on the left lists all chapters; below are recommended reading paths organized by "what you want to do" and "who you are".
 

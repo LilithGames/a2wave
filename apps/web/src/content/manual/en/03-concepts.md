@@ -4,7 +4,7 @@ Understanding a2wave's design orientation helps you decide "how a given requirem
 
 ## In One Sentence: Orchestrate, Don't Execute
 
-a2wave is the **orchestration layer**. It is responsible for creating, configuring, triggering, and monitoring Agents; the actual reasoning and code execution are delegated to the underlying mature agent CLIs (Claude Code / Cursor Agent / OpenAI Codex). The platform **does not build its own** LLM inference, code execution, or sandbox runtime.
+a2wave is the **orchestration layer**. It is responsible for creating, configuring, triggering, and monitoring Agents; the actual reasoning and code execution are delegated to the underlying mature agent CLIs (Claude Code / OpenAI Codex / Cursor Agent). The platform **does not build its own** LLM inference, code execution, or sandbox runtime.
 
 This leads to a direct corollary: **without a configured, available [Provider](/wiki/providers), an Agent cannot run** — because all execution capability comes from the CLI behind the Provider.
 

@@ -145,7 +145,7 @@ curl -X POST ".../api/gateway/<agentId>/runs/<runId>/cancel" -H "Authorization: 
 
 ### OAuth（企业 OIDC JWT）调用
 
-OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用者自己的 `Authorization: Bearer <OIDC_JWT>`；该 token 只证明“调用者是谁”，与 Agent 执行时使用的 Codex / Cursor / Claude Code 凭证相互独立。
+OAuth 调用地址是 `POST /api/oauth/:agentId/invoke`。请求头携带调用者自己的 `Authorization: Bearer <OIDC_JWT>`；该 token 只证明“调用者是谁”，与 Agent 执行时使用的 Claude Code / Codex / Cursor 凭证相互独立。
 
 > [!IMPORTANT]
 > 本渠道**只接受企业 OIDC 身份提供商签发的 JWT**（通常是 access token），按 IdP 的 JWKS 验签，且 `aud` 必须命中**当前生效的 OIDC 渠道受众配置**。Settings 中的配置优先；仅当 Settings 中没有有效 OIDC 配置时，才回落到 `A2WAVE_OIDC_CHANNEL_AUDIENCES`。SAML 登录走的是浏览器断言流程，不产生可放进 `Authorization` 头的 token，因此**只配置了 SAML 的部署无法使用 OAuth 调用渠道**。

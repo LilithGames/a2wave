@@ -2,7 +2,7 @@
 
 ## a2wave 自己会跑模型吗？
 
-不会。a2wave 是 **编排层**，执行来自底层 agent CLI（Cursor / Claude Code / Codex）。平台不自建 LLM 推理、代码执行或沙箱。必须先配好 [Provider](/wiki/providers) 才能让 Agent 运行。详见 [核心理念与架构](/wiki/concepts)。
+不会。a2wave 是 **编排层**，执行来自底层 agent CLI（Claude Code / Codex / Cursor）。平台不自建 LLM 推理、代码执行或沙箱。必须先配好 [Provider](/wiki/providers) 才能让 Agent 运行。详见 [核心理念与架构](/wiki/concepts)。
 
 ## 加新能力该用 Skill 还是 MCP，还是知识库/记忆？
 

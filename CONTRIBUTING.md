@@ -28,7 +28,7 @@ decline a finished pull request.
 
 | # | Rule | What it means |
 |---|------|------|
-| 1 | **Orchestrate, don't execute** | a2wave is the orchestration layer; execution comes from the underlying agent CLIs (Claude Code / Cursor / Codex / …). We do not build our own LLM inference, code execution, or sandbox runtime. |
+| 1 | **Orchestrate, don't execute** | a2wave is the orchestration layer; execution comes from the underlying agent CLIs (Claude Code / Codex / Cursor / …). We do not build our own LLM inference, code execution, or sandbox runtime. |
 | 2 | **Extend through composition** | New capabilities arrive as Skills + MCP Servers, not as business logic hardcoded into the platform core. If a Skill or an MCP server can do it, it should not become a built-in feature. |
 | 3 | **Natural-language-driven, not flow-driven** | Agents are configured and orchestrated in natural language — prompts, intents, A2A messages. No drag-and-drop DAG editor, no variable mapping, no conditional-branch primitives. |
 | 4 | **Agent autonomy** | The platform creates, configures, triggers, and monitors Agents; it does not interfere with an Agent's runtime reasoning or tool-call decisions. No step approval or manual checkpoints that break autonomy. |

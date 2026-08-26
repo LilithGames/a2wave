@@ -27,7 +27,7 @@
         ],
         "properties": {
           "kind": {
-            "enum": ["cursor", "claude-code", "codex", "opencode", "qoder", "trae", "kimi", "pi"]
+            "enum": ["claude-code", "codex", "cursor", "opencode", "qoder", "trae", "kimi", "pi"]
           },
           "version": {
             "type": "string",

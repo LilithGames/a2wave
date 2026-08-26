@@ -12,8 +12,8 @@ Provider 是 Agent 背后的底层执行引擎及其凭证。a2wave 本身不做
 | Provider | 底层 CLI | Skills 目录 | MCP 配置 | 代表模型 |
 |----------|---------|------------|---------|---------|
 | **Claude Code** | `claude-code` | `.claude/skills` | `.mcp.json` | `claude-opus-4-8`、`claude-sonnet-4-6`、`claude-haiku-4-5-20251001` |
-| **Cursor CLI** | `cursor` | `.cursor/skills` | `.cursor/mcp.json` | `composer-1.5`、`opus-4.6`、`sonnet-4.5`、`gemini-3-pro`、`gpt-5.x-codex` 等 |
 | **Codex CLI** | `codex` | `.codex/skills` | 每次运行注入，不落文件 | `gpt-5.3-codex`、`gpt-5.4`、`gpt-5.2-codex` |
+| **Cursor CLI** | `cursor` | `.cursor/skills` | `.cursor/mcp.json` | `composer-1.5`、`opus-4.6`、`sonnet-4.5`、`gemini-3-pro`、`gpt-5.x-codex` 等 |
 | **OpenCode CLI** | `opencode` | `.opencode/skills` | 每次运行注入，不落文件 | 取决于服务器上配置的供应商（`provider/model` 二段式） |
 | **Qoder CLI** | `qoder` | `.qoder/skills` | `.mcp.json` | `auto`、`ultimate`、`performance`、`efficient`、`lite`（可在线拉取账号实际可用清单） |
 | **Trae CLI** | `trae` | `.traecli/skills` | `.trae/mcp.json` | 由 TRAE 企业控制台配置，在线拉取（如 `kimi-k2`、`doubao-seed` 系列） |
@@ -48,7 +48,7 @@ Provider 只是「配置」，真正干活的是它背后的 CLI。**镜像不�
 > [!TIP]
 > 内网、气隙或由 IT 统一管控的环境装不上、也升级不了平台锁定的版本时，可以让 a2wave 直接用机器上已有的二进制：给服务进程设置对应的环境变量指向它，跳过平台自己的安装流程。
 >
-> `CURSOR_AGENT_PATH`、`CLAUDE_CODE_PATH`、`CODEX_PATH`、`OPENCODE_PATH`、`QODER_PATH`、`KIMI_PATH`、`PI_PATH`、`TRAE_PATH`
+> `CLAUDE_CODE_PATH`、`CODEX_PATH`、`CURSOR_AGENT_PATH`、`OPENCODE_PATH`、`QODER_PATH`、`KIMI_PATH`、`PI_PATH`、`TRAE_PATH`
 >
 > 不设时默认按二进制名（如 `claude`、`qodercli`）在 `PATH` 上查找。诊断里「升级」类提示提到的「让部署指向另一个二进制」，指的就是这个。
 
@@ -97,9 +97,9 @@ docker compose exec -u appuser a2wave qodercli login
 
 | Provider | 登录命令 | 默认持久化位置 |
 |----------|---------|----------------|
-| Cursor | `cursor-agent login` | `~/.cursor` |
 | Claude Code | `claude login` | `~/.claude` |
 | Codex | `codex login` | `~/.codex` |
+| Cursor | `cursor-agent login` | `~/.cursor` |
 | OpenCode | `opencode auth login` | `~/.local/share/opencode`、`~/.config/opencode` |
 | Qoder | `qodercli login` | `~/.qoder` |
 | Trae | `traecli` | `~/.trae` |
@@ -121,7 +121,7 @@ OpenCode 是开源的多供应商聚合 CLI——你在服务器上自行配置�
 - 挂载的 MCP Server 与 Skill 由平台在每次运行时自动注入，无需在 OpenCode 侧手工配置。
 
 > [!NOTE]
-> 如果 Agent 需要各自独立的凭证，请选择 Claude Code / Cursor / Codex / Qoder / Trae / Pi 并使用 apiKey 模式。OpenCode 与 Kimi Code 适合「服务器统一配好一套模型，所有 Agent 共享」的场景；Pi 两种模式都支持。
+> 如果 Agent 需要各自独立的凭证，请选择 Claude Code / Codex / Cursor / Qoder / Trae / Pi 并使用 apiKey 模式。OpenCode 与 Kimi Code 适合「服务器统一配好一套模型，所有 Agent 共享」的场景；Pi 两种模式都支持。
 
 ### Qoder 与 Trae
 

@@ -10,7 +10,7 @@
     "menuItem": "About",
     "title": "About",
     "version": "Version {{version}}",
-    "description": "a2wave is an enterprise-grade platform for building and orchestrating agents, powered by mature agent CLIs such as Cursor Agent, Claude Code and Codex, with capabilities extended through Skills and MCP Servers.",
+    "description": "a2wave is an enterprise-grade platform for building and orchestrating agents, powered by mature agent CLIs such as Claude Code, Codex and Cursor Agent, with capabilities extended through Skills and MCP Servers.",
     "developer": "Developed and open-sourced by the Lilith Games technology team.",
     "changelog": "Changelog"
   },

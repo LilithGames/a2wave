@@ -206,7 +206,7 @@ Providers are preset entities (cannot be created or deleted) and are entirely re
 ```bash
 a2wave providers list
 a2wave providers get <provider-id-or-name>
-a2wave providers login-status pi                  # Kind: cursor | claude-code | codex | opencode | qoder | trae | kimi | pi
+a2wave providers login-status pi                  # Kind: claude-code | codex | cursor | opencode | qoder | trae | kimi | pi
 a2wave providers dependents <provider-id-or-name>  # Agents that depend on this Provider
 ```
 

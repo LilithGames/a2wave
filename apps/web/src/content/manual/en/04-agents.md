@@ -6,7 +6,7 @@ The Agent is a2wave's core orchestration unit. An Agent = **system prompt + exec
 
 | Type | Description | Typical Use |
 |------|------|---------|
-| **cursor** (default) | Runs the Cursor Agent CLI, with full code editing + Shell execution | Editing code, running commands, engineering tasks |
+| **cursor** (default, legacy name) | Runs the agent CLI bound to the Provider (Claude Code / Codex / Cursor, etc.), with full code editing + Shell execution | Editing code, running commands, engineering tasks |
 | **llm** | Pure conversation/reasoning, no code execution | Q&A, text processing, lightweight assistants |
 | **script** | Custom script execution | Scripted tasks with a fixed workflow |
 

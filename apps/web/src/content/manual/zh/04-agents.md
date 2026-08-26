@@ -6,7 +6,7 @@ Agent 是 a2wave 的核心编排单元。一个 Agent = **系统提示词 + 执�
 
 | 类型 | 说明 | 典型用途 |
 |------|------|---------|
-| **cursor**（默认） | 走 Cursor Agent CLI，具备完整代码编辑 + Shell 执行 | 改代码、跑命令、工程类任务 |
+| **cursor**（默认，历史命名） | 走 Provider 绑定的 Agent CLI（Claude Code / Codex / Cursor 等），具备完整代码编辑 + Shell 执行 | 改代码、跑命令、工程类任务 |
 | **llm** | 纯对话/推理，无代码执行 | 问答、文本处理、轻量助手 |
 | **script** | 自定义脚本执行 | 固定流程的脚本化任务 |
 

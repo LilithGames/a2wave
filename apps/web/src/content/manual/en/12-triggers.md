@@ -151,7 +151,7 @@ private DNS hostnames without disabling the remaining protections.
 
 ### OAuth (enterprise OIDC JWT) invocation
 
-The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <OIDC_JWT>`; that token only proves "who the caller is" and is independent of the Codex / Cursor / Claude Code credentials the Agent uses when executing.
+The OAuth invocation endpoint is `POST /api/oauth/:agentId/invoke`. The request header carries the caller's own `Authorization: Bearer <OIDC_JWT>`; that token only proves "who the caller is" and is independent of the Claude Code / Codex / Cursor credentials the Agent uses when executing.
 
 > [!IMPORTANT]
 > This channel accepts **only JWTs issued by your enterprise OIDC provider** (typically an access token), verified against the IdP JWKS with an `aud` in the **current effective OIDC channel audience configuration**. Settings takes precedence; `A2WAVE_OIDC_CHANNEL_AUDIENCES` is only the environment fallback when no valid OIDC configuration exists in Settings. SAML login uses a browser-based assertion flow and produces no token that can be placed in an `Authorization` header, so **a SAML-only deployment cannot use the OAuth invocation channel**.

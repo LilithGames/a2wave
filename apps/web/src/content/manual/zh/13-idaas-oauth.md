@@ -147,7 +147,7 @@ OAuth API 的错误包含 `code`、`message`、`source`、`action` 和 `retryabl
 |--------|----------|------------|
 | `caller` | 调用方 token、权限、IP 或请求内容有问题 | 当前调用者 |
 | `agent` | Agent 发布、队列、工作区或配置有问题 | Agent 所有者 |
-| `provider` | Codex / Cursor / Claude Code 登录、额度或服务有问题 | Agent 所有者或稍后重试 |
+| `provider` | Claude Code / Codex / Cursor 登录、额度或服务有问题 | Agent 所有者或稍后重试 |
 | `platform` | SSO 或 a2wave 平台异常 | 平台管理员 |
 
 同步调用在顶层 `error` 返回该结构；SSE 在 `event: error` 中返回；默认异步调用则在轮询结果的 `data.result.error` 返回。三者的 code 和 message 一致。

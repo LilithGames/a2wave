@@ -12,8 +12,8 @@ The platform ships with eight non-deletable presets. Each preset has a stable ki
 | Provider | Underlying CLI | Skills Directory | MCP Config | Representative Models |
 |----------|---------|------------|---------|---------|
 | **Claude Code** | `claude-code` | `.claude/skills` | `.mcp.json` | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
-| **Cursor CLI** | `cursor` | `.cursor/skills` | `.cursor/mcp.json` | `composer-1.5`, `opus-4.6`, `sonnet-4.5`, `gemini-3-pro`, `gpt-5.x-codex`, etc. |
 | **Codex CLI** | `codex` | `.codex/skills` | Injected per run, not written to a file | `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.2-codex` |
+| **Cursor CLI** | `cursor` | `.cursor/skills` | `.cursor/mcp.json` | `composer-1.5`, `opus-4.6`, `sonnet-4.5`, `gemini-3-pro`, `gpt-5.x-codex`, etc. |
 | **OpenCode CLI** | `opencode` | `.opencode/skills` | Injected per run, not written to a file | Depends on the providers configured on the server (`provider/model` two-part format) |
 | **Qoder CLI** | `qoder` | `.qoder/skills` | `.mcp.json` | `auto`, `ultimate`, `performance`, `efficient`, `lite` (the account's actual catalog can be fetched online) |
 | **Trae CLI** | `trae` | `.traecli/skills` | `.trae/mcp.json` | Configured in the TRAE enterprise console, fetched online (e.g. `kimi-k2`, `doubao-seed` series) |
@@ -48,7 +48,7 @@ To reclaim disk space for a CLI you no longer need, use Uninstall on that Provid
 > [!TIP]
 > Where the pinned version cannot be installed or upgraded — an internal network, an air-gapped host, an IT-managed machine — point a2wave at a binary the machine already has instead, by setting the matching environment variable on the service process. That bypasses the platform's own install flow.
 >
-> `CURSOR_AGENT_PATH`, `CLAUDE_CODE_PATH`, `CODEX_PATH`, `OPENCODE_PATH`, `QODER_PATH`, `KIMI_PATH`, `PI_PATH`, `TRAE_PATH`
+> `CLAUDE_CODE_PATH`, `CODEX_PATH`, `CURSOR_AGENT_PATH`, `OPENCODE_PATH`, `QODER_PATH`, `KIMI_PATH`, `PI_PATH`, `TRAE_PATH`
 >
 > Left unset, each resolves its binary name (`claude`, `qodercli`, …) on `PATH`. This is what the diagnosis means when an upgrade hint offers to "point the deployment at another binary".
 
@@ -97,9 +97,9 @@ Replace the last command for each CLI:
 
 | Provider | Login command | Default persistent location |
 |----------|---------------|-----------------------------|
-| Cursor | `cursor-agent login` | `~/.cursor` |
 | Claude Code | `claude login` | `~/.claude` |
 | Codex | `codex login` | `~/.codex` |
+| Cursor | `cursor-agent login` | `~/.cursor` |
 | OpenCode | `opencode auth login` | `~/.local/share/opencode`, `~/.config/opencode` |
 | Qoder | `qodercli login` | `~/.qoder` |
 | Trae | `traecli` | `~/.trae` |
@@ -121,7 +121,7 @@ OpenCode is an open-source multi-provider aggregation CLI — you configure the 
 - Mounted MCP Servers and Skills are injected automatically by the platform on each run, with no manual configuration needed on the OpenCode side.
 
 > [!NOTE]
-> If Agents need independent credentials each, choose Claude Code / Cursor / Codex / Qoder / Trae / Pi and use apiKey mode. OpenCode and Kimi Code suit the scenario of "a unified set of models configured on the server, shared by all Agents"; Pi can use either pattern.
+> If Agents need independent credentials each, choose Claude Code / Codex / Cursor / Qoder / Trae / Pi and use apiKey mode. OpenCode and Kimi Code suit the scenario of "a unified set of models configured on the server, shared by all Agents"; Pi can use either pattern.
 
 ### Qoder and Trae
 

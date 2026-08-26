@@ -81,7 +81,7 @@ a2wave login --token a2wc_xxxxxxxxxxxx
 
 ## 五分钟上手
 
-1. **配置 Provider**：进入「Providers」，在预设的 **Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI** 中选一个。凭证与模型配置在 Agent 上：填入凭证（API Key 或 OAuth，或使用服务器登录态）后点「拉取模型」并选择。详见 [Provider 执行引擎](/wiki/providers)。
+1. **配置 Provider**：进入「Providers」，在预设的 **Claude Code / Codex CLI / Cursor CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI** 中选一个。凭证与模型配置在 Agent 上：填入凭证（API Key 或 OAuth，或使用服务器登录态）后点「拉取模型」并选择。详见 [Provider 执行引擎](/wiki/providers)。
 2. **创建 Agent**：进入「Agents」→「新建 Agent」，选择「空白创建」或合适的场景模板。模板会预填名称、提示词和部分安全默认值，但凭证始终为空；确认 Provider、模型及所需能力后保存。
 3. **挂载能力（可选）**：按需挂载 [Skill](/wiki/skills)、[MCP Server](/wiki/mcp-servers)、[代码源](/wiki/scm-sources)、[知识库](/wiki/knowledge-base)；需要跨会话记忆就开启 [长期记忆](/wiki/memory)。
 4. **先调试**：在 Agent 详情页用 **Chat 调试**，无需对外触发即可验证提示词与能力是否符合预期。

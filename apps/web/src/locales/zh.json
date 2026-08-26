@@ -10,7 +10,7 @@
     "menuItem": "关于",
     "title": "关于",
     "version": "版本 {{version}}",
-    "description": "a2wave 是面向企业的通用 Agent 搭建与编排平台，底层复用 Cursor Agent / Claude Code / Codex 等成熟 Agent CLI，通过 Skill 与 MCP Server 组合扩展能力。",
+    "description": "a2wave 是面向企业的通用 Agent 搭建与编排平台，底层复用 Claude Code / Codex / Cursor Agent 等成熟 Agent CLI，通过 Skill 与 MCP Server 组合扩展能力。",
     "developer": "由莉莉丝游戏（Lilith Games）技术团队开发并开源维护。",
     "changelog": "更新日志"
   },

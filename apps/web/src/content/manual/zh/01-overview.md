@@ -1,6 +1,6 @@
 # 概览与导航
 
-欢迎使用 **a2wave** 使用手册。a2wave 是面向企业的通用 **Agent 搭建与编排平台**：你用它把「意图」变成可被外部触发、可审计、可运维的自动化 Agent，底层复用 Claude Code、Cursor Agent、OpenAI Codex 等成熟 agent CLI，通过 Skill / MCP / 知识库 / 记忆扩展能力。
+欢迎使用 **a2wave** 使用手册。a2wave 是面向企业的通用 **Agent 搭建与编排平台**：你用它把「意图」变成可被外部触发、可审计、可运维的自动化 Agent，底层复用 Claude Code、OpenAI Codex、Cursor Agent 等成熟 agent CLI，通过 Skill / MCP / 知识库 / 记忆扩展能力。
 
 本页是手册的入口。左侧目录是完整章节列表；下面按「你想做什么」和「你是谁」给出推荐阅读路径。
 
