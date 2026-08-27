@@ -85,6 +85,17 @@ vi.mock('../pi-agent.js', () => ({
 
 import { engineRegistry } from '../registry.js'
 
+/**
+ * These tests build their app with a dynamic `import()` of a large route module.
+ * Evaluating it is CPU-bound and happens while the rest of the api suite runs in
+ * parallel, so the work is real but the wall-clock is dominated by contention,
+ * not by anything under test. Vitest's 5s default was tight enough that a loaded
+ * machine tipped these into "Test timed out" — a flake whose only signal is how
+ * busy the box was. The file-level budget bounds a genuine hang without letting
+ * scheduling noise fail a passing assertion.
+ */
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 })
+
 afterEach(() => {
   vi.restoreAllMocks()
 })

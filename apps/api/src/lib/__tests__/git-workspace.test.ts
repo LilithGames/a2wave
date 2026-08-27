@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   cleanupStaleWorkspaces,
   createGitWorkspace,
@@ -28,7 +28,11 @@ vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
 
 const execFileAsync = promisify(execFile)
 
-const TEST_DIR = join(tmpdir(), `git-workspace-test-${Date.now()}`)
+// `Date.now()` alone is not unique: two files created in the same millisecond
+// collide, and a crashed run leaves the directory behind for the next one to
+// inherit (which surfaced as `ENOTEMPTY` on rmdir). mkdtempSync gets a fresh,
+// exclusively-created directory per run.
+const TEST_DIR = mkdtempSync(join(tmpdir(), 'git-workspace-test-'))
 const REPO_DIR = join(TEST_DIR, 'repo')
 const WS_ROOT = join(TEST_DIR, 'workspaces')
 
@@ -66,6 +70,12 @@ describe('git-workspace', () => {
   })
 
   afterEach(async () => {
+    await rm(TEST_DIR, { recursive: true, force: true })
+  })
+
+  // beforeEach/afterEach only clear TEST_DIR's *contents* between tests; the
+  // mkdtemp directory itself would otherwise be left in the system temp dir.
+  afterAll(async () => {
     await rm(TEST_DIR, { recursive: true, force: true })
   })
 

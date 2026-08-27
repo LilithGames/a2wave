@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -44,7 +44,7 @@ const mockedListMemoryFiles = vi.mocked(listMemoryFiles)
 let testRoot: string
 
 beforeEach(() => {
-  testRoot = join(tmpdir(), `memory-index-test-${Date.now()}`)
+  testRoot = mkdtempSync(join(tmpdir(), 'memory-index-test-'))
   mkdirSync(testRoot, { recursive: true })
   // memory-index.ts computes dbPath as:
   //   resolve(process.cwd(), env.A2WAVE_MEMORY_STORAGE, '..', 'memory-index.db')

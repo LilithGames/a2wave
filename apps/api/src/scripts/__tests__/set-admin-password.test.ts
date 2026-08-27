@@ -10,6 +10,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { asyncQuery } from '../../test/async-query.js'
 
+/**
+ * Wait until the script under test has attached its stdin 'data' listener.
+ *
+ * The listener is attached by a dynamic `import()`, so the wait races module
+ * evaluation rather than anything this test controls. `vi.waitFor` defaults to
+ * a **1000ms** timeout that does NOT follow `testTimeout`, so under a loaded
+ * machine (the api suite runs files in parallel) evaluation can lose that race
+ * and the test fails with a bare "not attached yet" — a flake with no relation
+ * to the behaviour being asserted. The explicit timeout is generous because it
+ * only bounds a failure path: when the listener attaches, the poll returns on
+ * the next interval regardless.
+ */
+async function waitForStdinListener(stdin: EventEmitter): Promise<void> {
+  await vi.waitFor(
+    () => {
+      if (stdin.listenerCount('data') === 0) throw new Error('not attached yet')
+    },
+    { timeout: 15000, interval: 10 },
+  )
+}
+
 class ExitCalled extends Error {
   constructor(public code: number) {
     super(`process.exit(${code})`)
@@ -128,14 +149,10 @@ describe('scripts/set-admin-password', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
 
     const importPromise = import('../set-admin-password.js?case=success')
-    await vi.waitFor(() => {
-      if (fakeStdin.listenerCount('data') === 0) throw new Error('not attached yet')
-    })
+    await waitForStdinListener(fakeStdin)
     for (const ch of 'Str0ngPass') fakeStdin.emit('data', ch)
     fakeStdin.emit('data', '\r')
-    await vi.waitFor(() => {
-      if (fakeStdin.listenerCount('data') === 0) throw new Error('not attached yet')
-    })
+    await waitForStdinListener(fakeStdin)
     for (const ch of 'Str0ngPass') fakeStdin.emit('data', ch)
     fakeStdin.emit('data', '\r')
 
@@ -181,14 +198,10 @@ describe('scripts/set-admin-password', () => {
     // Arrow keys around the real characters, plus one sequence split across two
     // 'data' events — dropping only the ESC byte would leave '[A' in the value.
     for (const send of ['Str0ng', '\x1b[A', 'Pass', '\x1b[', 'B', '\r']) {
-      await vi.waitFor(() => {
-        if (fakeStdin.listenerCount('data') === 0) throw new Error('not attached yet')
-      })
+      await waitForStdinListener(fakeStdin)
       fakeStdin.emit('data', send)
     }
-    await vi.waitFor(() => {
-      if (fakeStdin.listenerCount('data') === 0) throw new Error('not attached yet')
-    })
+    await waitForStdinListener(fakeStdin)
     fakeStdin.emit('data', 'Str0ngPass\r')
 
     await expect(importPromise).rejects.toBeInstanceOf(ExitCalled)
