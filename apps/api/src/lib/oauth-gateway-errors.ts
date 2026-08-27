@@ -105,7 +105,7 @@ export function classifyOAuthAuthError(
         httpStatus: 403,
         error: createOAuthGatewayError(
           GatewayErrorCode.CALLER_TOKEN_CLAIMS_INVALID,
-          "The caller's token does not contain an email claim. Obtain a new JWT from the configured OIDC provider that includes an email claim, then retry the request.",
+          "Neither the caller's verified JWT nor the provider's UserInfo response contains an email. Obtain an access token that provides email through either source, then retry the request.",
           {
             source: 'caller',
             action: 'obtain_new_access_token',
@@ -118,7 +118,7 @@ export function classifyOAuthAuthError(
         httpStatus: 403,
         error: createOAuthGatewayError(
           GatewayErrorCode.CALLER_TOKEN_CLAIMS_INVALID,
-          "The caller's token does not contain the verified email required by this agent's specified-users access policy. Obtain a new JWT from the configured OIDC provider with a verified email claim, then retry the request.",
+          "Neither the caller's verified JWT nor the provider's UserInfo response provides the verified email required by this agent's specified-users access policy. Obtain an access token with a verified email, then retry the request.",
           {
             source: 'caller',
             action: 'obtain_new_access_token',

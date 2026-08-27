@@ -94,10 +94,12 @@ Two access scopes are supported:
 
 | Access scope | Description |
 |--------------|-------------|
-| All enterprise users | Any employee holding a JWT issued by enterprise OIDC whose `aud` is on the allowlist, **and that carries an email claim**, can invoke it. |
+| All enterprise users | Any employee holding a JWT issued by enterprise OIDC whose `aud` is on the allowlist, and whose email is resolved from the JWT or standard UserInfo endpoint, can invoke it. |
 | Specific enterprise users | Only the listed addresses can invoke it; everyone else is denied. Search for colleagues to add them, or type an address directly. |
 
-Under **Specific enterprise users** an empty list means **nobody** can invoke the Agent (it denies rather than allows), so add at least one member before publishing. Entries are matched case-insensitively against the `email` claim in the OIDC JWT.
+If the verified JWT has no email claim, a2wave sends the same bearer token to the provider's standard `userinfo_endpoint` from OIDC Discovery and requires the returned `sub` to match the verified JWT. A token that already carries an email stays on the direct path and causes no UserInfo request. If neither source provides an email, the call is denied. This fallback requires an access token accepted by UserInfo; an ID token without email is not sufficient.
+
+Under **Specific enterprise users** an empty list means **nobody** can invoke the Agent (it denies rather than allows), so add at least one member before publishing. Entries are matched case-insensitively against the verified email resolved from the OIDC JWT or UserInfo response.
 
 > [!NOTE]
 > The former "Feishu app visibility scope" has been retired. On upgrade, Agents that used it **and publish the OAuth channel** are migrated to **Specific enterprise users** with an empty list — they deny every call until the Agent owner fills the list in. This keeps an upgrade from silently opening a deliberately restricted Agent to every employee. Agents without an OAuth channel simply land on the new "All enterprise users" default and are unaffected.
@@ -110,8 +112,8 @@ Under **Specific enterprise users** an empty list means **nobody** can invoke th
 |------|------|
 | The settings-page OAuth switch turns on, but SSO doesn't work | Neither OIDC nor SAML is fully configured, or both are disabled; hit "Test" on the relevant panel to see the exact reason |
 | Red text appears after enabling OAuth authorization on the publish page | Enterprise OIDC is not configured (the channel returns `503`). Note this is unrelated to the OIDC *login* toggle — turning login off does not stop the channel |
-| A newly onboarded caller always gets 401 | Usually the caller obtained a token for the wrong resource. Ask it to request a token issued for the configured a2wave audience; do not copy an arbitrary observed `aud` into the allowlist, because that token may have been issued for another service |
-| Every caller returns 503 "identity provider unavailable" at once | a2wave cannot reach the IdP (discovery / JWKS fetch failed). Caller credentials are fine and need no re-issuing; check egress, DNS and proxy |
+| A newly onboarded caller always gets 401 | Usually the caller obtained a token for the wrong resource, or supplied an ID token without email that UserInfo cannot accept. Ask it to request an access token issued for the configured a2wave audience; do not copy an arbitrary observed `aud` into the allowlist, because that token may have been issued for another service |
+| Every caller returns 503 "identity provider unavailable" at once | a2wave cannot reach the IdP (Discovery / JWKS / UserInfo failed). Caller credentials are fine and need no re-issuing; check egress, DNS and proxy |
 | Sending `/api/oauth/:agentId/invoke` directly to someone else still won't work for them | The other party must first authenticate at the enterprise IdP to obtain a token, and must be within that Agent's permission boundary |
 
 ## Handling invocation errors

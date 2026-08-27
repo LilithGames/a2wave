@@ -161,7 +161,7 @@ When an error is returned, prefer reading `error.code`, `error.message`, and `er
 | code | Who needs to act | Next step |
 |------|------------|--------|
 | `AUTH_REQUIRED` / `CALLER_TOKEN_INVALID` | Caller | Obtain a fresh JWT from the caller's own OIDC client for the configured a2wave resource audience |
-| `CALLER_TOKEN_CLAIMS_INVALID` | Caller / platform admin | Obtain a new JWT from the configured OIDC provider containing an email claim; `specified_users` additionally requires a verified email |
+| `CALLER_TOKEN_CLAIMS_INVALID` | Caller / platform admin | Obtain an access token that either carries email or is accepted by the provider's standard UserInfo endpoint; `specified_users` additionally requires a verified email |
 | `CALLER_NOT_AUTHORIZED` / `IP_NOT_ALLOWED` | Caller + Agent owner | Request permission or switch to an allowed network |
 | `PROVIDER_REAUTH_REQUIRED` / `PROVIDER_AUTH_FAILED` | Agent owner | Re-log in or update the Agent's Provider credentials; the caller does not need to re-log in |
 | `AGENT_CONFIGURATION_ERROR` / `AGENT_WORKSPACE_UNAVAILABLE` | Agent owner | Fix the engine, model, MCP, or workspace configuration; non-occupancy errors return `424` |

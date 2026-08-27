@@ -219,13 +219,13 @@ export async function validateGatewayAuth(
     // user-selectable), but for revocation the direction of the error matters: using it can
     // only ever match *more* disabled rows, never authorize someone. Rejecting those callers
     // outright would break every deployment whose IdP marks service or non-federated
-    // accounts unverified — the login path survives that by backfilling from the userinfo
-    // endpoint, which this path has no access token to call.
+    // accounts unverified. UserInfo fallback is reserved for identities with no email at all;
+    // it must not upgrade an explicitly unverified address through an avoidable network call.
     const revocationEmail = userInfo.email ?? userInfo.unverifiedEmail
     if (!revocationEmail) {
       logger.warn(
         { clientIp: request.clientIp, sub: userInfo.sub, issuer: userInfo.issuer },
-        'OAuth request rejected: token has no email claim (identity cannot be revocation-checked)',
+        'OAuth request rejected: JWT and UserInfo provided no email (identity cannot be revocation-checked)',
       )
       return { error: { error: GatewayAuthErrors.MISSING_EMAIL_CLAIM, status: 403 } }
     }
@@ -268,7 +268,7 @@ export async function validateGatewayAuth(
           sub: userInfo.sub,
           hasUnverifiedEmail: !!userInfo.unverifiedEmail,
         },
-        'OAuth request rejected: no verified email claim (cannot match the allowed user list)',
+        'OAuth request rejected: no verified email from JWT or UserInfo (cannot match the allowed user list)',
       )
       return { error: { error: GatewayAuthErrors.MISSING_VERIFIED_EMAIL, status: 403 } }
     }

@@ -157,7 +157,7 @@ export const openApiSpec: OpenAPIV3.Document = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description:
-          'Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the current effective OIDC channel audience configuration. Settings takes precedence; the environment variable is only a fallback when no valid Settings configuration exists. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. The token must carry an email claim. This is independent from the agent execution provider credentials.',
+          "Caller JWT issued by your enterprise OIDC provider (typically an access token), verified against the IdP JWKS and the current effective OIDC channel audience configuration. Settings takes precedence; the environment variable is only a fallback when no valid Settings configuration exists. When the JWT omits email, a2wave uses the same bearer token with the provider's discovery-advertised UserInfo endpoint and requires the returned subject to match. SAML login mints an a2wave session for the regular authenticated APIs, but no token usable on this channel. This is independent from the agent execution provider credentials.",
       },
     },
     parameters: {
@@ -1062,7 +1062,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             'Caller OIDC JWT is missing, invalid, or expired. Obtain a new caller token.',
           ),
           '403': oauthErrorResponse(
-            'Caller, network, publication, or OAuth-channel policy denied access. The token must carry an email claim in every access mode; specified_users additionally requires a verified address on the agent allowlist.',
+            'Caller, network, publication, or OAuth-channel policy denied access. The verified JWT or its standard UserInfo response must provide an email in every access mode; specified_users additionally requires a verified address on the agent allowlist.',
           ),
           '404': oauthErrorResponse('The requested agent does not exist.'),
           '409': oauthErrorResponse('The session or agent workspace is currently busy.'),

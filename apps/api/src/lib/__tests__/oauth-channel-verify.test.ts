@@ -12,7 +12,7 @@
  * lib/oidc.ts: within an ES module, internal calls bind locally, so spying on
  * `getOidcConfiguration`/`getOidcEnv` would not intercept the callers inside the same file.
  */
-import { type KeyLike, SignJWT, exportJWK, generateKeyPair } from 'jose'
+import { exportJWK, generateKeyPair, type KeyLike, SignJWT } from 'jose'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const ISSUER = 'https://idp.example.test'
@@ -22,7 +22,9 @@ const CALLER_AUD = 'partner-service'
 const state = vi.hoisted(() => ({
   jwksUri: '',
   discoveryCalls: 0,
+  userInfoCalls: [] as unknown[][],
   discovery: (..._args: unknown[]): Promise<unknown> => Promise.reject(new Error('not set')),
+  fetchUserInfo: (..._args: unknown[]): Promise<unknown> => Promise.reject(new Error('not set')),
 }))
 
 vi.mock('../sso-settings.js', () => ({
@@ -33,13 +35,21 @@ vi.mock('../sso-settings.js', () => ({
 vi.mock('../settings.js', () => ({ getCategorySettings: () => ({}) }))
 vi.mock('openid-client', () => ({
   discovery: (...args: unknown[]) => state.discovery(...args),
+  fetchUserInfo: (...args: unknown[]) => {
+    state.userInfoCalls.push(args)
+    return state.fetchUserInfo(...args)
+  },
   allowInsecureRequests: Symbol('allowInsecureRequests'),
 }))
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
+vi.mock('../user-status.js', () => ({ isSsoAccountDisabled: () => false }))
 
+import { validateGatewayAuth } from '../../middleware/gateway-auth.js'
 import {
+  enrichOidcIdentityFromUserInfo,
+  isIdpUnavailableError,
   isOauthChannelConfigured,
   isOidcConfigured,
   oauthChannelAudiences,
@@ -91,6 +101,8 @@ beforeEach(() => {
   vi.stubEnv('A2WAVE_OIDC_CHANNEL_AUDIENCES', CALLER_AUD)
   resetOidcForTests()
   state.discoveryCalls = 0
+  state.userInfoCalls = []
+  state.fetchUserInfo = () => Promise.reject(new Error('unexpected UserInfo request'))
   state.discovery = () => {
     state.discoveryCalls += 1
     return Promise.resolve({
@@ -174,6 +186,172 @@ describe('verifyOauthChannelToken', () => {
   it('accepts a token whose aud is on the allowlist', async () => {
     const info = await verifyOauthChannelToken(await issue({ aud: CALLER_AUD }))
     expect(info).toMatchObject({ sub: 'user-1', issuer: ISSUER, email: 'user@example.com' })
+    expect(state.userInfoCalls).toHaveLength(0)
+  })
+
+  it('fills a missing email from the standard UserInfo endpoint', async () => {
+    state.fetchUserInfo = async () => ({
+      sub: 'user-1',
+      email: 'user@example.com',
+      name: 'Example User',
+    })
+    const token = await issue({ aud: CALLER_AUD, email: undefined })
+
+    const info = await verifyOauthChannelToken(token)
+
+    expect(info).toMatchObject({
+      sub: 'user-1',
+      issuer: ISSUER,
+      email: 'user@example.com',
+      username: 'Example User',
+    })
+    expect(state.userInfoCalls).toHaveLength(1)
+    expect(state.userInfoCalls[0]?.[1]).toBe(token)
+    expect(state.userInfoCalls[0]?.[2]).toBe('user-1')
+  })
+
+  it('authorizes a UserInfo-resolved email through the specified-users allowlist', async () => {
+    state.fetchUserInfo = async () => ({
+      sub: 'user-1',
+      email: 'allowlisted@example.com',
+      email_verified: true,
+    })
+    const token = await issue({ aud: CALLER_AUD, email: undefined })
+
+    const result = await validateGatewayAuth(
+      {
+        publishIpWhitelist: null,
+        publishAuthType: 'oauth',
+        endpointApiKey: null,
+        oauthAccessMode: 'specified_users',
+        oauthAllowedEmails: ['allowlisted@example.com'],
+      },
+      { clientIp: '127.0.0.1', authorizationHeader: `Bearer ${token}` },
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(result.caller?.userInfo.email).toBe('allowlisted@example.com')
+    expect(state.userInfoCalls).toHaveLength(1)
+  })
+
+  it('never overwrites or upgrades an email identity that the JWT already supplied', async () => {
+    state.fetchUserInfo = async () => ({
+      sub: 'user-1',
+      email: 'userinfo@example.com',
+      email_verified: true,
+    })
+
+    const verified = await enrichOidcIdentityFromUserInfo('access-token', {
+      sub: 'user-1',
+      userId: 'user-1',
+      issuer: ISSUER,
+      email: 'jwt@example.com',
+      raw: { sub: 'user-1', email: 'jwt@example.com' },
+    })
+    const unverified = await enrichOidcIdentityFromUserInfo('access-token', {
+      sub: 'user-1',
+      userId: 'user-1',
+      issuer: ISSUER,
+      unverifiedEmail: 'unverified-jwt@example.com',
+      raw: {
+        sub: 'user-1',
+        email: 'unverified-jwt@example.com',
+        email_verified: false,
+      },
+    })
+
+    expect(verified.email).toBe('jwt@example.com')
+    expect(unverified.email).toBeUndefined()
+    expect(unverified.unverifiedEmail).toBe('unverified-jwt@example.com')
+  })
+
+  it('preserves unverified UserInfo email and fills other omitted identity fields', async () => {
+    state.fetchUserInfo = async () => ({
+      sub: 'user-1',
+      email: 'unverified@example.com',
+      email_verified: false,
+      name: 'Example User',
+      phone_number: '+1-555-0100',
+      tenant_id: 'tenant-1',
+      union_id: 'union-1',
+    })
+
+    const info = await enrichOidcIdentityFromUserInfo('access-token', {
+      sub: 'user-1',
+      userId: 'user-1',
+      issuer: ISSUER,
+      raw: { sub: 'user-1' },
+    })
+
+    expect(info).toMatchObject({
+      unverifiedEmail: 'unverified@example.com',
+      username: 'Example User',
+      mobile: '+1-555-0100',
+      tenantId: 'tenant-1',
+      unionId: 'union-1',
+    })
+    expect(info.email).toBeUndefined()
+  })
+
+  it('does not call UserInfo when the token carries an explicitly unverified email', async () => {
+    const info = await verifyOauthChannelToken(
+      await issue({
+        aud: CALLER_AUD,
+        email: 'unverified@example.com',
+        email_verified: false,
+      }),
+    )
+
+    expect(info.email).toBeUndefined()
+    expect(info.unverifiedEmail).toBe('unverified@example.com')
+    expect(state.userInfoCalls).toHaveLength(0)
+  })
+
+  it('keeps the caller email-less when UserInfo returns no email', async () => {
+    state.fetchUserInfo = async () => ({ sub: 'user-1', name: 'Example User' })
+
+    const info = await verifyOauthChannelToken(await issue({ aud: CALLER_AUD, email: undefined }))
+
+    expect(info.email).toBeUndefined()
+    expect(info.username).toBe('Example User')
+    expect(state.userInfoCalls).toHaveLength(1)
+  })
+
+  it('classifies a UserInfo subject mismatch as a caller token fault', async () => {
+    state.fetchUserInfo = async () => {
+      throw Object.assign(new Error('unexpected UserInfo sub'), {
+        code: 'OAUTH_JSON_ATTRIBUTE_COMPARISON_FAILED',
+      })
+    }
+
+    const error = await verifyOauthChannelToken(
+      await issue({ aud: CALLER_AUD, email: undefined }),
+    ).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(isIdpUnavailableError(error)).toBe(false)
+  })
+
+  it.each(['OAUTH_RESPONSE_BODY_ERROR', 'OAUTH_WWW_AUTHENTICATE_CHALLENGE'])(
+    'classifies a UserInfo token rejection (%s) as a caller token fault',
+    (code) => {
+      expect(
+        isIdpUnavailableError(Object.assign(new Error('access token rejected'), { code })),
+      ).toBe(false)
+    },
+  )
+
+  it('classifies an unreachable UserInfo endpoint as an IdP availability failure', async () => {
+    state.fetchUserInfo = async () => {
+      throw new TypeError('fetch failed')
+    }
+
+    const error = await verifyOauthChannelToken(
+      await issue({ aud: CALLER_AUD, email: undefined }),
+    ).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(isIdpUnavailableError(error)).toBe(true)
   })
 
   it('rejects an a2wave login token unless clientId is explicitly allowlisted', async () => {

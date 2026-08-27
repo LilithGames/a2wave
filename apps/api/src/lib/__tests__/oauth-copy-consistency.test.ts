@@ -45,8 +45,10 @@ describe('OAuth documentation security model', () => {
     expect(audienceGuidance).not.toContain('aud 指向调用方而非 a2wave')
     expect(audienceGuidance).not.toContain('channelAudiences + 隐式 clientId')
 
-    expect(enOauthManual).toContain('request a token issued for the configured a2wave audience')
-    expect(zhOauthManual).toContain('申请一枚面向已配置 a2wave 受众的 token')
+    expect(enOauthManual).toContain(
+      'request an access token issued for the configured a2wave audience',
+    )
+    expect(zhOauthManual).toContain('申请一枚面向已配置 a2wave 受众的 access token')
     expect(oauthDeveloperDoc).toContain(
       'request a token issued for the configured a2wave resource audience',
     )
@@ -138,8 +140,14 @@ describe('OAuth documentation security model', () => {
     expect(oauthDeveloperDoc).not.toContain('jq -r .access_token ~/.a2wave/oauth.json')
   })
 
-  it('documents the email claim requirement in both OAuth access modes', () => {
-    expect(oauthDeveloperDoc).toContain('both modes require an `email` claim')
+  it('documents JWT-or-UserInfo email resolution in both OAuth access modes', () => {
+    expect(oauthDeveloperDoc).toContain(
+      'both modes require an email resolved from the JWT or UserInfo',
+    )
+    expect(oauthDeveloperDoc).toContain(
+      'requires the UserInfo `sub` to equal the verified JWT subject',
+    )
+    expect(oidcSource).toContain('fetchUserInfo(configuration, token, identity.sub)')
     expect(oauthDeveloperDoc).toContain('{email?, sub, tenant?}')
     expect(oauthDeveloperDoc).toContain(
       '`user_info.email` when the email is accepted as verified; otherwise `user_info` may be null',
