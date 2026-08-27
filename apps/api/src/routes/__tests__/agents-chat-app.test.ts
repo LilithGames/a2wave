@@ -9,7 +9,7 @@
  *   - config falls back to sane defaults for agents saved before the channel existed
  */
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 vi.mock('../../db/client.js', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
@@ -66,9 +66,19 @@ vi.mock('../../lib/agent-execution-diagnose.js', () => ({
 
 import { db } from '../../db/client.js'
 import { AppError } from '../../lib/errors.js'
+import { asyncQuery } from '../../test/async-query.js'
 import { createTestAgent } from '../../test/factories.js'
 
-import { asyncQuery } from '../../test/async-query.js'
+/**
+ * These tests build their app with a dynamic `import()` of a large route module.
+ * Evaluating it is CPU-bound and happens while the rest of the api suite runs in
+ * parallel, so the work is real but the wall-clock is dominated by contention,
+ * not by anything under test. Vitest's 5s default was tight enough that a loaded
+ * machine tipped these into "Test timed out" — a flake whose only signal is how
+ * busy the box was. The file-level budget bounds a genuine hang without letting
+ * scheduling noise fail a passing assertion.
+ */
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 })
 
 const mockDb = db as unknown as { select: Mock }
 

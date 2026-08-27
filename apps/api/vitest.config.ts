@@ -5,21 +5,25 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
-    // Run test files one at a time. In parallel this suite fails a handful of
-    // assertions per run — a *different* handful each time (measured 8, then 4,
-    // then 0; and 0/2/0 on an unmodified main, so it predates the test gate).
-    // Every one of them passes when its file runs alone, so the cause is shared
-    // state across files, not any single test. Serial trades ~34s for ~123s and
-    // gets a deterministic gate; a gate that is red at random teaches people to
-    // re-run until green, which is worse than having no gate at all.
-    // Remove this once the cross-file state is isolated.
-    fileParallelism: false,
+    // NOTE: this suite used to run with `fileParallelism: false`, on the theory
+    // that the intermittent parallel failures came from state shared across test
+    // files. Measurement said otherwise: every failure was `Test timed out in
+    // 5000ms`, never a wrong value, and the affected files pass alone *and* fail
+    // when run concurrently with nothing but each other — which rules out any
+    // particular file's leftovers as the cause. They each `await import()` a
+    // large route module, and with 12 workers on 12 cores that evaluation lost
+    // the race against vitest's 5s default. Raising only the timeout, changing
+    // nothing else, took a reproducing set from 8 failures to 0.
+    //
+    // The fix is per-file (`vi.setConfig`) on the handful of import-heavy files
+    // rather than a global bump, so a genuine hang anywhere else still fails in
+    // 5s instead of stalling the run. Parallel is ~2.8x faster: 282s -> ~100s.
     coverage: {
       provider: 'v8',
       // Coverage is an on-demand diagnostic, not a merge gate. CI requires the
       // behavior tests themselves; it does not block on a repository-wide
-      // percentage that can reward shallow tests and makes this serial suite
-      // materially slower.
+      // percentage that can reward shallow tests and makes the suite materially
+      // slower.
       reporter: ['text', 'lcov', 'html'],
       reportsDirectory: './coverage',
       include: ['src/**/*.ts'],

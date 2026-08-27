@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -30,7 +30,7 @@ import {
 let testRoot: string
 
 beforeEach(() => {
-  testRoot = join(tmpdir(), `memory-test-${Date.now()}`)
+  testRoot = mkdtempSync(join(tmpdir(), 'memory-test-'))
   mkdirSync(testRoot, { recursive: true })
   ;(env as { A2WAVE_MEMORY_STORAGE: string }).A2WAVE_MEMORY_STORAGE = testRoot
 })

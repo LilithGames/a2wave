@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,10 +22,10 @@ vi.mock('../logger.js', () => ({
 
 import { env } from '../../env.js'
 import {
-  MAX_SKILL_TOTAL_UPLOAD_BYTES,
   findSkillRoot,
   getSkillStoragePath,
   listSkillFiles,
+  MAX_SKILL_TOTAL_UPLOAD_BYTES,
   makeTempSkillId,
   parseSkillMd,
   readAllSkillFiles,
@@ -34,7 +42,7 @@ import {
 let testRoot: string
 
 beforeEach(() => {
-  testRoot = join(tmpdir(), `skill-test-${Date.now()}`)
+  testRoot = mkdtempSync(join(tmpdir(), 'skill-test-'))
   mkdirSync(testRoot, { recursive: true })
   ;(env as any).A2WAVE_SKILLS_STORAGE = testRoot
 })
