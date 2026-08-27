@@ -3,7 +3,7 @@
 Quick reference of a2wave's core terms. Click a link to go to the corresponding chapter.
 
 - **Agent** — the platform's core orchestration unit, = system prompt + Provider + mounted capabilities + trigger methods + members. See [Agent Management](/wiki/agents).
-- **Provider (execution engine)** — the underlying agent CLI and its credentials (Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI), which actually run inference and code. See [Provider](/wiki/providers).
+- **Provider (execution engine)** — the underlying agent CLI and its credentials (Claude Code / Codex CLI / Cursor CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI), which actually run inference and code. See [Provider](/wiki/providers).
 - **authMode (credential mode)** — the way the Agent injects credentials: `apiKey` / `oauth` / `localSession`. See [Provider](/wiki/providers).
 - **MCP Server** — a service that provides tools to the Agent via the Model Context Protocol, of types stdio / sse / http / group. See [MCP Server](/wiki/mcp-servers).
 - **Progressive disclosure** — when a group-type MCP lists tools, it returns only concise info and expands the full definition on demand, lowering context overhead. See [MCP Server](/wiki/mcp-servers).

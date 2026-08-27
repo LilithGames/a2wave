@@ -21,7 +21,7 @@ exception; see `AUTH_SECRET`.
 > cannot read. Because PostgreSQL is the multi-instance backend, the container refuses
 > to start rather than generate one when `DATABASE_URL` points at PostgreSQL.
 
-> **Provider API keys** (`CURSOR_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) are
+> **Provider API keys** (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CURSOR_API_KEY`) are
 > **not** configured here — set them per Agent, on the Agent detail page → Environment
 > Variables.
 

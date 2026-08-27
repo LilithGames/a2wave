@@ -98,7 +98,7 @@ forgotten and safe to delete. Deletion takes effect immediately.
 
 ## Five-Minute Quick Start
 
-1. **Configure a Provider**: go to "Providers", pick one of the presets **Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI**. Credentials and models are configured on the Agent: enter credentials (API Key or OAuth, or use the server login session), then click "Fetch models" and pick one. See [Provider Execution Engine](/wiki/providers) for details.
+1. **Configure a Provider**: go to "Providers", pick one of the presets **Claude Code / Codex CLI / Cursor CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI**. Credentials and models are configured on the Agent: enter credentials (API Key or OAuth, or use the server login session), then click "Fetch models" and pick one. See [Provider Execution Engine](/wiki/providers) for details.
 2. **Create an Agent**: go to "Agents" → "New Agent", then choose "Blank" or a suitable scenario template. Templates prefill the name, prompt, and some safe defaults, but credentials remain empty; confirm the Provider, model, and required capabilities before saving.
 3. **Mount capabilities (optional)**: as needed, mount [Skills](/wiki/skills), [MCP Servers](/wiki/mcp-servers), [SCM Sources](/wiki/scm-sources), and [Knowledge Bases](/wiki/knowledge-base); enable [Long-term Memory](/wiki/memory) if you need cross-session memory.
 4. **Debug first**: use **Chat debugging** on the Agent detail page to verify that the prompt and capabilities work as expected, without exposing any external trigger.

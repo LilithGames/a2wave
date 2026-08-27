@@ -122,7 +122,7 @@ OAuth API errors contain `code`, `message`, `source`, `action`, and `retryable`.
 |--------|----------|------------|
 | `caller` | A problem with the caller's token, permission, IP, or request content | The current caller |
 | `agent` | A problem with the Agent's publishing, queue, workspace, or configuration | The Agent owner |
-| `provider` | A problem with the Codex / Cursor / Claude Code login, quota, or service | The Agent owner, or retry later |
+| `provider` | A problem with the Claude Code / Codex / Cursor login, quota, or service | The Agent owner, or retry later |
 | `platform` | An SSO or a2wave platform anomaly | The platform admin |
 
 Synchronous calls return this structure in the top-level `error`; SSE returns it in `event: error`; the default async call returns it in the polled result's `data.result.error`. The code and message are consistent across all three.

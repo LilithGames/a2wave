@@ -249,9 +249,9 @@ All rows recorded 2026-08-07.
 
 | Provider | Asset | Source | License / basis | `fgClass` |
 |---|---|---|---|---|
-| Cursor CLI | `cursor.svg` | [Simple Icons](https://simpleicons.org/?q=cursor) | CC0 1.0 (copyright waived; **trademark is not** — see NOTICE) | `text-zinc-900` |
 | Claude Code | `claude-color.svg` | [lobe-icons](https://github.com/lobehub/lobe-icons) | MIT, © 2023 LobeHub → [`licenses/lobe-icons-MIT.txt`](../../licenses/lobe-icons-MIT.txt) | `text-orange-600 dark:text-orange-300` (SVG bakes in the Anthropic brand color `#D97757`) |
 | Codex CLI | `openai.svg` | [lobe-icons](https://github.com/lobehub/lobe-icons) | MIT, © 2023 LobeHub → [`licenses/lobe-icons-MIT.txt`](../../licenses/lobe-icons-MIT.txt) | `text-neutral-900` |
+| Cursor CLI | `cursor.svg` | [Simple Icons](https://simpleicons.org/?q=cursor) | CC0 1.0 (copyright waived; **trademark is not** — see NOTICE) | `text-zinc-900` |
 | Pi CLI | `pi.svg` | [pi.dev](https://pi.dev/logo-auto.svg) | MIT, © 2025 Mario Zechner → [`licenses/pi-MIT.txt`](../../licenses/pi-MIT.txt) | `text-zinc-900` |
 | Kimi CLI | `kimi.png` | Official Moonshot AI app icon | Brand mark — nominative use, no copyright license granted | `text-neutral-50` |
 | Qoder | `qoder.svg` | Official Alibaba Qoder brand mark (cropped from the source export) | Brand mark — nominative use, no copyright license granted | `text-neutral-50` |

@@ -3,8 +3,8 @@
 ## Product identity
 
 a2wave is a general-purpose Agent building and orchestration platform for
-enterprises. It builds on mature agent CLIs such as Cursor Agent / Claude Code /
-OpenAI Codex, extends capabilities via Skills and MCP Servers, and publishes
+enterprises. It builds on mature agent CLIs such as Claude Code / OpenAI Codex /
+Cursor Agent, extends capabilities via Skills and MCP Servers, and publishes
 Agents over API / Feishu / Slack / Discord / A2A / scheduled / chat page / GitLab
 repository trigger / GitHub repository trigger.
 
@@ -45,12 +45,12 @@ Every new feature must be checked against these first.
 
 | # | Iron Rule | Description |
 |---|------|------|
-| 1 | **Orchestrate, don't execute** | a2wave is the orchestration layer; execution capability comes from the underlying agent CLIs (Cursor/Claude Code/Codex). Do not build our own LLM inference, code execution, or sandbox runtime. |
+| 1 | **Orchestrate, don't execute** | a2wave is the orchestration layer; execution capability comes from the underlying agent CLIs (Claude Code/Codex/Cursor). Do not build our own LLM inference, code execution, or sandbox runtime. |
 | 2 | **Extend through composition** | New capabilities are delivered by combining Skills + MCP Servers, not by hardcoding business logic into the platform core. If a feature can be solved with a Skill or MCP, it should not become a built-in platform feature. |
 | 3 | **Natural-language-driven, not flow-driven** | Agents are configured and orchestrated in natural language — prompts, intents, and A2A messages. No drag-and-drop DAG editor, no traditional workflow primitives like variable mapping or conditional branches. |
 | 4 | **Agent autonomy — the platform does not intervene in execution details** | The platform creates, configures, triggers, and monitors Agents; it does not interfere with an Agent's runtime reasoning or tool-call decisions. No "step approval", "manual checkpoints", or other flow controls that break Agent autonomy. |
 | 5 | **Enterprise-grade constraints, scoped by the trust model** | Security (AUTH_SECRET, rate limiting), auditability (Run records; for background work that deliberately writes none, an equivalent audit-log entry — see Evaluation), and operability (health checks, logs) are hard requirements. Never sacrifice infrastructure for "quick trial" experiences. No anonymous invocation; never skip authentication. But the goal is **accountability and least privilege among trusted colleagues** (see the trust model above), *not* containment of a hostile insider — do not harden against threats that only a malicious authenticated author could pose. |
-| 6 | **The barrier is lowered by the user's own local Agent, not by our UI** | Our users already run Claude Code, Codex, Cursor Agent on their own machines. Anything they can accomplish by asking *that* Agent — writing a prompt, filling in a config, generating an Agent YAML, driving the CLI or API — does not earn a platform screen. The platform's effort concentrates on what no local Agent can provide: runtime, observability, fault tolerance, Skill and tool hosting, channels, permissions and audit. |
+| 6 | **The barrier is lowered by the user's own local Agent, not by our UI** | Our users already run Claude Code, Codex, or Cursor Agent on their own machines. Anything they can accomplish by asking *that* Agent — writing a prompt, filling in a config, generating an Agent YAML, driving the CLI or API — does not earn a platform screen. The platform's effort concentrates on what no local Agent can provide: runtime, observability, fault tolerance, Skill and tool hosting, channels, permissions and audit. |
 
 > **For feature requests that violate the Iron Rules, contact the maintainers for
 > confirmation before proceeding.**

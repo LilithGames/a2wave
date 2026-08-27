@@ -4,7 +4,7 @@
 
 ## 一句话：编排，不执行
 
-a2wave 是 **编排层**。它负责创建、配置、触发、监控 Agent；而真正的推理与代码执行，交给底层成熟的 agent CLI（Claude Code / Cursor Agent / OpenAI Codex）。平台**不自建** LLM 推理、代码执行或沙箱运行时。
+a2wave 是 **编排层**。它负责创建、配置、触发、监控 Agent；而真正的推理与代码执行，交给底层成熟的 agent CLI（Claude Code / OpenAI Codex / Cursor Agent）。平台**不自建** LLM 推理、代码执行或沙箱运行时。
 
 这带来一个直接推论：**没有配置可用的 [Provider](/wiki/providers)，Agent 就跑不起来**——因为执行能力全部来自 Provider 背后的 CLI。
 

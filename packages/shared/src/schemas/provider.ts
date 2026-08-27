@@ -15,9 +15,9 @@ import { authModeEnum } from './agent.js'
  * constant that silently drifts from what the account can actually run.
  */
 export const PROVIDER_KINDS = [
-  'cursor',
   'claude-code',
   'codex',
+  'cursor',
   'opencode',
   'qoder',
   'trae',
@@ -264,16 +264,6 @@ export interface PresetProvider {
 
 const PRESET_PROVIDER_DEFS: PresetProvider[] = [
   {
-    kind: 'cursor',
-    name: 'Cursor CLI',
-    description: 'Cursor Agent CLI — AI-powered coding agent',
-    initScript: 'curl https://cursor.com/install -fsS | bash',
-    checkScript: 'cursor-agent --version',
-    skillsDir: '.cursor/skills',
-    mcpConfigPath: '.cursor/mcp.json',
-    minVersion: null,
-  },
-  {
     kind: 'claude-code',
     name: 'Claude Code',
     description: 'Claude Code CLI — Anthropic AI coding agent',
@@ -299,6 +289,16 @@ const PRESET_PROVIDER_DEFS: PresetProvider[] = [
     // Codex does not read a workspace-local JSON mcp file. a2wave injects the
     // selected MCP servers into `codex exec` with `-c mcp_servers=...` per run.
     mcpConfigPath: null,
+    minVersion: null,
+  },
+  {
+    kind: 'cursor',
+    name: 'Cursor CLI',
+    description: 'Cursor Agent CLI — AI-powered coding agent',
+    initScript: 'curl https://cursor.com/install -fsS | bash',
+    checkScript: 'cursor-agent --version',
+    skillsDir: '.cursor/skills',
+    mcpConfigPath: '.cursor/mcp.json',
     minVersion: null,
   },
   {

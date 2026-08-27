@@ -2,7 +2,7 @@
 
 ## Does a2wave run models itself?
 
-No. a2wave is the **orchestration layer**; execution comes from the underlying agent CLIs (Cursor / Claude Code / Codex). The platform does not build its own LLM inference, code execution, or sandbox. You must configure a [Provider](/wiki/providers) first before an Agent can run. See [Core Concepts & Architecture](/wiki/concepts).
+No. a2wave is the **orchestration layer**; execution comes from the underlying agent CLIs (Claude Code / Codex / Cursor). The platform does not build its own LLM inference, code execution, or sandbox. You must configure a [Provider](/wiki/providers) first before an Agent can run. See [Core Concepts & Architecture](/wiki/concepts).
 
 ## For a new capability, should I use a Skill, an MCP, or a Knowledge Base / Memory?
 

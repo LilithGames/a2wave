@@ -440,7 +440,7 @@ the Agent's mode does not bypass it:
 ### 7.5 Call returns `424 PROVIDER_REAUTH_REQUIRED`
 
 - The caller's IdP token has already been verified; do not have the caller re-log in
-- Based on `details.provider`, have the Agent owner re-log into the affected Provider CLI (for example Codex, Cursor, Claude Code, or Pi) in the a2wave execution environment
+- Based on `details.provider`, have the Agent owner re-log into the affected Provider CLI (for example Claude Code, Codex, Cursor, or Pi) in the a2wave execution environment
 - After the fix, use `details.runId` to cross-reference the logs, then re-issue the call
 
 ### 7.6 After switching to oauth, the old API Key call gets 401

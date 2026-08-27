@@ -3,7 +3,7 @@
 按拼音/英文速查 a2wave 的核心术语。点击链接进入对应章节。
 
 - **Agent** — 平台的核心编排单元，= 系统提示词 + Provider + 挂载能力 + 触发方式 + 成员。见 [Agent 管理](/wiki/agents)。
-- **Provider（执行引擎）** — 底层 agent CLI 及其凭证（Claude Code / Cursor CLI / Codex CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI），真正执行推理与代码。见 [Provider](/wiki/providers)。
+- **Provider（执行引擎）** — 底层 agent CLI 及其凭证（Claude Code / Codex CLI / Cursor CLI / OpenCode CLI / Qoder CLI / Trae CLI / Kimi Code CLI / Pi CLI），真正执行推理与代码。见 [Provider](/wiki/providers)。
 - **authMode（凭证模式）** — Agent 注入凭证的方式：`apiKey` / `oauth` / `localSession`。见 [Provider](/wiki/providers)。
 - **MCP Server** — 通过 Model Context Protocol 给 Agent 提供工具的服务，类型有 stdio / sse / http / group。见 [MCP Server](/wiki/mcp-servers)。
 - **渐进式披露（progressive disclosure）** — group 类型 MCP 列举工具时只返回精简信息，按需再展开完整定义，降低上下文开销。见 [MCP Server](/wiki/mcp-servers)。

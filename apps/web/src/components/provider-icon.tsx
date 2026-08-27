@@ -2,9 +2,9 @@
  * Provider brand icons.
  *
  * SVG sources:
- *   - Cursor   — simpleicons.org (CC0)
  *   - Claude   — lobehub/lobe-icons (MIT), brand-colored swirl
  *   - OpenAI   — lobehub/lobe-icons (MIT), used for Codex CLI
+ *   - Cursor   — simpleicons.org (CC0)
  *   - Qoder    — official brand mark (green glyph with a white cutout), cropped
  *     from the wordmark; paired with a dark tile so the cutout reads
  *   - Trae     — official app icon (green glyph on black), raster PNG with its
@@ -20,6 +20,9 @@
  * single-color paths that show black on a light tile.
  */
 
+import type { ProviderKind } from '@a2wave/shared'
+import { Shield } from 'lucide-react'
+import type { ReactElement } from 'react'
 import claudeIconUrl from '@/assets/provider-icons/claude-color.svg'
 import cursorIconUrl from '@/assets/provider-icons/cursor.svg'
 import kimiIconUrl from '@/assets/provider-icons/kimi.png'
@@ -28,9 +31,6 @@ import opencodeIconUrl from '@/assets/provider-icons/opencode.svg'
 import piIconUrl from '@/assets/provider-icons/pi.svg'
 import qoderIconUrl from '@/assets/provider-icons/qoder.svg'
 import traeIconUrl from '@/assets/provider-icons/trae.png'
-import type { ProviderKind } from '@a2wave/shared'
-import { Shield } from 'lucide-react'
-import type { ReactElement } from 'react'
 
 export interface ProviderIconSpec {
   /** Renders an icon (the caller picks the size, e.g. h-5 w-5) */
@@ -79,11 +79,6 @@ const SHIELD_FALLBACK: ProviderIconSpec = {
 /** Return the brand icon for a stable Provider kind. */
 export function getProviderIconSpec(kind: ProviderKind | undefined): ProviderIconSpec {
   switch (kind) {
-    case 'cursor':
-      return {
-        Icon: makeImgIcon(cursorIconUrl, 'Cursor'),
-        fgClass: 'text-zinc-900',
-      }
     case 'claude-code':
       return {
         Icon: makeImgIcon(claudeIconUrl, 'Claude'),
@@ -93,6 +88,11 @@ export function getProviderIconSpec(kind: ProviderKind | undefined): ProviderIco
       return {
         Icon: makeImgIcon(openaiIconUrl, 'OpenAI'),
         fgClass: 'text-neutral-900',
+      }
+    case 'cursor':
+      return {
+        Icon: makeImgIcon(cursorIconUrl, 'Cursor'),
+        fgClass: 'text-zinc-900',
       }
     case 'opencode':
       return {
