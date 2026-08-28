@@ -36,7 +36,13 @@ const createSchema = z.object({
   expiresInDays: z.number().int().min(1).max(MAX_EXPIRES_IN_DAYS).optional(),
 })
 
-/** GET /cli-tokens — the caller's own tokens, newest first. Never returns a credential. */
+/**
+ * GET /cli-tokens — the caller's own live tokens, newest first. Never returns a credential.
+ *
+ * Revoked rows are filtered out rather than shown greyed: deletion is the last thing
+ * anyone does to a token, so a lingering row offers only a delete button that 404s.
+ * The row survives in the database, and the revocation is in the audit log.
+ */
 app.get('/', async (c) => {
   const userId = c.get('userId' as never) as string
   const rows = await db
@@ -46,11 +52,10 @@ app.get('/', async (c) => {
       tokenPrefix: cliTokens.tokenPrefix,
       expiresAt: cliTokens.expiresAt,
       lastUsedAt: cliTokens.lastUsedAt,
-      revokedAt: cliTokens.revokedAt,
       createdAt: cliTokens.createdAt,
     })
     .from(cliTokens)
-    .where(eq(cliTokens.userId, userId))
+    .where(and(eq(cliTokens.userId, userId), isNull(cliTokens.revokedAt)))
     .orderBy(desc(cliTokens.createdAt))
 
   return c.json({ data: rows })

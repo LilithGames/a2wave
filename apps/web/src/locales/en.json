@@ -2710,7 +2710,6 @@
     "deleteContent": "\"{{name}}\" will stop working immediately, and anything using it will lose access.",
     "status": {
       "active": "Active",
-      "revoked": "Deleted",
       "expired": "Expired"
     },
     "pageDesc": "Tokens for the a2wave CLI, CI jobs, and scripts. Each one is yours alone and can be deleted on its own.",

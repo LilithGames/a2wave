@@ -150,16 +150,29 @@ describe('CliTokensCard', () => {
     expect(screen.getByText(/AUTH_SESSION_TTL_DAYS/)).toBeInTheDocument()
   })
 
-  it('distinguishes deleted and expired tokens from live ones', async () => {
+  it('distinguishes expired tokens from live ones', async () => {
     mockList([
-      token({ id: 'a', name: 'gone', revokedAt: new Date().toISOString() }),
       token({ id: 'b', name: 'stale', expiresAt: new Date(Date.now() - 1000).toISOString() }),
       token({ id: 'c', name: 'live' }),
     ])
     renderWithProviders(<CliTokensCard />)
-    expect(await screen.findByText('已删除')).toBeInTheDocument()
-    expect(screen.getByText('已过期')).toBeInTheDocument()
+    expect(await screen.findByText('已过期')).toBeInTheDocument()
     expect(screen.getByText('生效中')).toBeInTheDocument()
+  })
+
+  it('drops a deleted token from the list instead of leaving a dead row behind', async () => {
+    // The API omits revoked tokens from the list, so the refetch that follows a
+    // delete must take the row away — not leave one whose only action would 404.
+    let rows: unknown[] = [token()]
+    mockList(rows)
+    apiDeleteMock.mockImplementation(() => {
+      rows = []
+      mockList(rows)
+      return Promise.resolve({ data: {} })
+    })
+    renderWithProviders(<CliTokensCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /删除/ }))
+    await waitFor(() => expect(screen.queryByText('CI runner')).not.toBeInTheDocument())
   })
 
   it('says a token was never used, since that is what makes it safe to delete', async () => {
