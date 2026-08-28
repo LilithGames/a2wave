@@ -38,9 +38,12 @@ const SSO_URL_ENV_VAR = 'A2WAVE_SSO_URL'
  *
  * This flow needs an IdP entry that redirects back to the CLI's loopback listener, which is not
  * the platform's own OIDC login (that one redirects to the server's callback and ends in a browser
- * session, not a token this process can read). So it is resolved purely from `A2WAVE_SSO_URL`;
- * without it, the supported headless path is `--idaas-token` with an IdP-issued id_token, which
- * the server verifies against the enterprise OIDC JWKS.
+ * session, not a token this process can read). So it is resolved purely from `A2WAVE_SSO_URL`.
+ *
+ * Without it, `--device` is the path to reach for first: the device grant needs nothing
+ * configured up front and works against any server new enough to expose
+ * `/api/auth/device/code`. `--idaas-token` stays listed below it because it is still the
+ * only option when the server predates device login (that endpoint 404s).
  */
 export async function resolveSsoEntryUrl(): Promise<string> {
   const fromEnv = process.env[SSO_URL_ENV_VAR]?.trim()
@@ -49,9 +52,10 @@ export async function resolveSsoEntryUrl(): Promise<string> {
   throw new CliError(
     [
       `No SSO login entry configured ($${SSO_URL_ENV_VAR} is not set).`,
-      `  1. Export ${SSO_URL_ENV_VAR}=<IdP SSO URL> (the IdP entry that redirects back to the CLI; may include query params)`,
-      '  2. Or pass an IdP-issued id_token directly: a2wave login --idaas-token <JWT>',
-      '  3. Or use username/password: a2wave login',
+      '  1. Approve a code from a browser on any machine (nothing to configure): a2wave login --device',
+      `  2. Or export ${SSO_URL_ENV_VAR}=<IdP SSO URL> (the IdP entry that redirects back to the CLI; may include query params)`,
+      '  3. Or pass an IdP-issued id_token directly: a2wave login --idaas-token <JWT>',
+      '  4. Or use username/password: a2wave login --password',
     ].join('\n'),
   )
 }

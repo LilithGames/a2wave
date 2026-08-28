@@ -223,4 +223,30 @@ describe('resolveSsoEntryUrl', () => {
     await expect(resolveSsoEntryUrl()).rejects.toThrow(/--idaas-token/)
     expect(mockFetch).not.toHaveBeenCalled()
   })
+
+  // Device login needs nothing configured up front, so it is the one path that
+  // just works here. It must be offered first; before this it was missing from
+  // the list entirely and users were sent to set up an IdP entry instead.
+  it('offers --device first when $A2WAVE_SSO_URL is unset', async () => {
+    mockLoadConfig.mockReturnValue({ url: 'https://a2wave.test', token: '' })
+    const err = await resolveSsoEntryUrl().catch((e: Error) => e)
+    const message = (err as Error).message
+
+    expect(message).toContain('--device')
+    expect(message.indexOf('--device')).toBeLessThan(message.indexOf('--idaas-token'))
+    expect(message.indexOf('--device')).toBeLessThan(
+      message.indexOf('A2WAVE_SSO_URL=<IdP SSO URL>'),
+    )
+  })
+
+  // The old line read "use username/password: a2wave login", which is the exact
+  // command that just failed — it looped the user back into this same error.
+  it('names --password for the password path, not bare `a2wave login`', async () => {
+    mockLoadConfig.mockReturnValue({ url: 'https://a2wave.test', token: '' })
+    const err = await resolveSsoEntryUrl().catch((e: Error) => e)
+    const message = (err as Error).message
+
+    expect(message).toMatch(/a2wave login --password/)
+    expect(message).not.toMatch(/username\/password: a2wave login$/m)
+  })
 })
