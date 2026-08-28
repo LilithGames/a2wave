@@ -191,6 +191,13 @@ describe('GET /cli-tokens', () => {
     expect(body).toContain('CI runner')
     expect(body).not.toContain('tokenHash')
   })
+
+  it('leaves revoked tokens out entirely, so a deleted one disappears', async () => {
+    await makeApp().request('/api/cli-tokens')
+    // The filter is part of the WHERE clause, not a post-filter: a revoked row must
+    // never reach the client, where it would render as a row with a dead delete button.
+    expect(JSON.stringify(callArg(dbSelect, 'where'))).toContain('cli_tokens.revoked_at')
+  })
 })
 
 describe('DELETE /cli-tokens/:id', () => {

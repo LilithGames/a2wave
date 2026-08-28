@@ -2710,7 +2710,6 @@
     "deleteContent": "「{{name}}」会立即失效，正在使用它的地方将无法访问。",
     "status": {
       "active": "生效中",
-      "revoked": "已删除",
       "expired": "已过期"
     },
     "pageDesc": "供 a2wave CLI、CI 任务和脚本使用的令牌。每个都只属于你，可以单独删除。",

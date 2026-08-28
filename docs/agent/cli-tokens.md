@@ -68,7 +68,7 @@ their own tokens here.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/cli-tokens` | List the caller's tokens. Never returns a credential |
+| `GET /api/cli-tokens` | List the caller's **live** tokens — revoked ones are filtered out. Never returns a credential |
 | `POST /api/cli-tokens` | Mint one. The **only** time the plaintext is returned. Requires a real session — a CLI token gets `403 SESSION_REQUIRED` |
 | `DELETE /api/cli-tokens/:id` | Revoke. Takes effect on the next request |
 | `GET /api/cli-tokens/session-policy` | Read-only session lifetime, for display |
@@ -84,7 +84,10 @@ their own tokens here.
 - **A short display prefix** is kept so the list can distinguish two tokens without
   showing enough to reconstruct either.
 - **Revocation is scoped by `userId` and guarded on "not already revoked"**, so one
-  user cannot revoke another's token and a repeat call cannot re-audit.
+  user cannot revoke another's token and a repeat call cannot re-audit. The row is
+  kept (soft delete) but **excluded from `GET /api/cli-tokens`**: deletion is the last
+  thing anyone does to a token, so a lingering row would offer only a delete button
+  that answers `404`. The revocation itself lives in the audit log.
 - **Disabling an account cuts off its tokens too** — `isActive` is checked on every
   request, not just at creation.
 - **`tokenVersion` deliberately does not apply.** That is what makes a password

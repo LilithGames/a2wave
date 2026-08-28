@@ -27,7 +27,6 @@ interface CliToken {
   tokenPrefix: string
   expiresAt: string | null
   lastUsedAt: string | null
-  revokedAt: string | null
   createdAt: string
 }
 
@@ -38,17 +37,15 @@ interface SessionPolicy {
 
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const
 
-type TokenStatus = 'active' | 'revoked' | 'expired'
+type TokenStatus = 'active' | 'expired'
 
 function statusOf(token: CliToken): TokenStatus {
-  if (token.revokedAt) return 'revoked'
   if (token.expiresAt && dayjs(token.expiresAt).isBefore(dayjs())) return 'expired'
   return 'active'
 }
 
 const STATUS_COLOR: Record<TokenStatus, string> = {
   active: 'green',
-  revoked: 'default',
   expired: 'orange',
 }
 
@@ -57,7 +54,8 @@ const STATUS_COLOR: Record<TokenStatus, string> = {
  *
  * The list is the page; creation lives behind a button, because minting a token is
  * occasional and the form would otherwise dominate a surface people mostly visit to
- * audit what already exists.
+ * audit what already exists. Deleting a token removes its row — the API omits revoked
+ * tokens, so there is no such thing here as a row whose only action would 404.
  */
 export function CliTokensCard() {
   const { t } = useTranslation()
