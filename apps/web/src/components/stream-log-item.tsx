@@ -12,11 +12,12 @@ import {
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { StreamLogEntry } from '@/hooks/use-agents'
+import { formatLocaleTime } from '@/lib/date-time'
 import { formatTokens } from '@/lib/format-tokens'
 
 /** Format a timestamp relative to a base time */
-export function formatRelativeTs(ts: number, baseTs?: number): string {
-  if (!baseTs) return new Date(ts).toLocaleTimeString('zh-CN')
+export function formatRelativeTs(ts: number, baseTs: number | undefined, language: string): string {
+  if (!baseTs) return formatLocaleTime(ts, language)
   const diff = Math.round((ts - baseTs) / 1000)
   if (diff < 0) return '0s'
   const min = Math.floor(diff / 60)
@@ -132,8 +133,8 @@ function ToolCallEntry({
 
 /** Render a single stream log entry */
 export function StreamLogItem({ entry, baseTs }: { entry: StreamLogEntry; baseTs?: number }) {
-  const { t } = useTranslation()
-  const timeLabel = formatRelativeTs(entry.ts, baseTs)
+  const { t, i18n } = useTranslation()
+  const timeLabel = formatRelativeTs(entry.ts, baseTs, i18n.language)
 
   switch (entry.type) {
     case 'system': {

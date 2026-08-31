@@ -1,8 +1,8 @@
-import { StreamLogItem, formatRelativeTs } from '@/components/stream-log-item'
-import type { StreamLogEntry } from '@/hooks/use-agents'
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { formatRelativeTs, StreamLogItem } from '@/components/stream-log-item'
+import type { StreamLogEntry } from '@/hooks/use-agents'
 
 interface StreamingStatusProps {
   logs: StreamLogEntry[]
@@ -44,7 +44,7 @@ function getLatestActivity(
 }
 
 export function StreamingStatus({ logs, isStreaming }: StreamingStatusProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [expanded, setExpanded] = useState(true)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const prevStreamingRef = useRef(isStreaming)
@@ -79,7 +79,8 @@ export function StreamingStatus({ logs, isStreaming }: StreamingStatusProps) {
   const baseTs = logs[0]?.ts
   const stepCount = countSteps(logs)
   const latestActivity = getLatestActivity(logs, t)
-  const elapsed = logs.length > 0 ? formatRelativeTs(logs[logs.length - 1].ts, baseTs) : ''
+  const elapsed =
+    logs.length > 0 ? formatRelativeTs(logs[logs.length - 1].ts, baseTs, i18n.language) : ''
 
   return (
     <div className="space-y-1.5">
