@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-24 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-08-31 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -83,7 +83,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/traverse | 7.29.0 | MIT |
 | @babel/types | 7.29.0, 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 2.5.9 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.5.10 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.3 | MIT |
 | @codemirror/commands | 6.11.0 | MIT |
 | @codemirror/language | 6.12.4 | MIT |
@@ -146,7 +146,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @modelcontextprotocol/sdk | 1.30.0 | MIT |
 | @node-rs/argon2 | 2.1.0 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
-| @oxc-project/types | 0.143.0, 0.144.0 | MIT |
+| @oxc-project/types | 0.143.0, 0.147.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
 | @playwright/test | 1.62.1 | Apache-2.0 |
@@ -228,7 +228,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.2 | MIT |
-| @testing-library/user-event | 14.6.5 | MIT |
+| @testing-library/user-event | 14.6.6 | MIT |
 | @types/adm-zip | 0.5.8 | MIT |
 | @types/aria-query | 5.0.4 | MIT |
 | @types/babel__core | 7.20.5 | MIT |
@@ -259,7 +259,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/pg | 8.23.1 | MIT |
 | @types/qs | 6.15.1 | MIT |
 | @types/react | 19.2.18 | MIT |
-| @types/react-dom | 19.2.4 | MIT |
+| @types/react-dom | 19.2.5 | MIT |
 | @types/retry | 0.12.0 | MIT |
 | @types/sanitize-html | 2.16.1 | MIT |
 | @types/unist | 2.0.11, 3.0.3 | MIT |
@@ -652,7 +652,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | pg-types | 2.2.0 | MIT |
 | pgpass | 1.0.5 | MIT |
 | picocolors | 1.1.1 | ISC |
-| picomatch | 2.3.2, 4.0.5 | MIT |
+| picomatch | 2.3.2, 4.0.5, 4.0.7 | MIT |
 | pidtree | 0.6.0 | MIT |
 | pino | 10.3.1 | MIT |
 | pino-abstract-transport | 3.0.0 | MIT |
@@ -716,7 +716,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | restore-cursor | 5.1.0 | MIT |
 | retry | 0.13.1 | MIT |
 | rfdc | 1.4.1 | MIT |
-| rolldown | 1.2.4 | MIT |
+| rolldown | 1.2.6 | MIT |
 | rollup | 4.61.0 | MIT |
 | router | 2.2.0 | MIT |
 | rrweb-cssom | 0.7.1, 0.8.0 | MIT |
@@ -834,7 +834,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | vfile | 6.0.3 | MIT |
 | vfile-message | 4.0.3 | MIT |
 | victory-vendor | 37.3.6 | MIT AND ISC |
-| vite | 8.2.1 | MIT |
+| vite | 8.2.2 | MIT |
 | vitest | 4.1.11 | MIT |
 | void-elements | 3.1.0 | MIT |
 | w3c-keyname | 2.2.8 | MIT |
