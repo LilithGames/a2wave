@@ -223,8 +223,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @tailwindcss/node | 4.3.3 | MIT |
 | @tailwindcss/oxide | 4.3.3 | MIT |
 | @tailwindcss/vite | 4.3.3 | MIT |
-| @tanstack/query-core | 5.101.4 | MIT |
-| @tanstack/react-query | 5.101.4 | MIT |
+| @tanstack/query-core | 5.102.3 | MIT |
+| @tanstack/react-query | 5.102.3 | MIT |
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.2 | MIT |
@@ -464,7 +464,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | hast-util-to-jsx-runtime | 2.3.6 | MIT |
 | hast-util-whitespace | 3.0.0 | MIT |
 | help-me | 5.0.0 | MIT |
-| hono | 4.13.3 | MIT |
+| hono | 4.13.4 | MIT |
 | html-encoding-sniffer | 4.0.0 | MIT |
 | html-escaper | 2.0.2 | MIT |
 | html-parse-stringify | 3.1.0 | MIT |
@@ -507,7 +507,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | istanbul-lib-report | 3.0.1 | BSD-3-Clause |
 | istanbul-reports | 3.2.0 | BSD-3-Clause |
 | jiti | 2.7.0 | MIT |
-| jose | 5.10.0, 6.2.3, 6.2.8, 6.2.9 | MIT |
+| jose | 5.10.0, 6.2.3, 6.2.8, 6.2.10 | MIT |
 | joycon | 3.1.1 | MIT |
 | js-md4 | 0.3.2 | MIT |
 | js-tokens | 4.0.0, 10.0.0 | MIT |
@@ -545,7 +545,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | magicast | 0.5.4 | MIT |
 | make-dir | 4.0.0 | MIT |
 | markdown-table | 3.0.4 | MIT |
-| marked | 18.0.10 | MIT |
+| marked | 18.0.11 | MIT |
 | math-intrinsics | 1.1.0 | MIT |
 | mdast-util-find-and-replace | 3.0.2 | MIT |
 | mdast-util-from-markdown | 2.0.3 | MIT |
@@ -628,7 +628,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | on-finished | 2.4.1 | MIT |
 | once | 1.4.0 | ISC |
 | onetime | 6.0.0, 7.0.0 | MIT |
-| openid-client | 6.8.6 | MIT |
+| openid-client | 6.8.7 | MIT |
 | oxc-parser | 0.143.0 | MIT |
 | oxc-resolver | 11.24.2 | MIT |
 | p-finally | 1.0.0 | MIT |
@@ -688,7 +688,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | rc | 1.2.8 | (BSD-2-Clause OR MIT OR Apache-2.0) |
 | react | 19.2.8 | MIT |
 | react-dom | 19.2.8 | MIT |
-| react-hook-form | 7.85.0 | MIT |
+| react-hook-form | 7.86.0 | MIT |
 | react-i18next | 16.6.6 | MIT |
 | react-innertext | 1.1.5 | MIT |
 | react-is | 17.0.2, 19.2.8 | MIT |
