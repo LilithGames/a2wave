@@ -41,6 +41,37 @@ Every trigger generates a [Run](/wiki/runs). Regardless of which channel it come
 > [!TIP]
 > Selection mnemonic: use [MCP](/wiki/mcp-servers) to call external systems/tools; use [Skill](/wiki/skills) to package a workflow or knowledge; use the [Knowledge Base](/wiki/knowledge-base) for retrievable factual material; use [Long-term Memory](/wiki/memory) for cross-session preferences and history.
 
+## Four Scopes: Identity, Credentials, Login State, and Runs
+
+When several people invoke Agents at the same time, four different scopes work together. They answer different questions and should not be treated as four layers of credentials:
+
+```text
+User / caller identity        Who requested the work?
+          │
+          ▼
+Agent Provider binding       Which CLI, model, auth mode, and credential should run it?
+          │
+          ▼
+Deployment CLI login state   Which shared server-side account is used for localSession?
+          │
+          ▼
+Run                           Which execution record, queue slot, logs, and workspace belong to this task?
+```
+
+| Scope | What it controls | What it does not mean |
+|------|------------------|-----------------------|
+| **User / caller identity** | Attribution, permissions, and audit provenance when the trigger can identify a person | It does not automatically select that person's model account or API Key |
+| **Agent Provider binding** | Provider, model, fallback order, `authMode`, and Agent-scoped injected credentials | A shared Provider preset does not force every Agent to share one API Key |
+| **Deployment CLI login state** | The server/container account used when a binding selects `localSession` | It is not isolated per user or per Run; Agents using the same CLI local session share that deployment identity |
+| **Run** | One task's lifecycle, queue position, input/output, logs, token usage, and workspace handling | Run isolation does not create a new model account or credential for every task |
+
+For example, Alice and Bob can send different messages to the same Feishu-published Agent at the same time. a2wave creates two Runs and records the available caller provenance separately, but both Runs use that Agent's Provider chain. If the binding uses `apiKey`, both use the credential saved on that Agent binding; if it uses `localSession`, both use the CLI account logged in on the a2wave deployment. To use separate model accounts, bind different Agent credentials (or use different Agents); merely having different callers or Run IDs is not enough.
+
+The Run list names the Agent that actually executed each task, while Run details and execution logs show the Provider attempts and model activity available for that execution. Regular Runs keep execution history but do not freeze a reusable copy of the Agent's secret credentials. Evaluation tasks are different: they freeze a Provider/model/prompt snapshot for comparison, and that snapshot deliberately excludes credentials.
+
+> [!CAUTION]
+> Never copy an API Key, token, CLI credential file, or raw credential configuration into Run metadata, logs, audit details, screenshots, or exported diagnostics.
+
 ## The Six Iron Rules
 
 These are the platform's hard boundaries; no feature will ever cross them — understanding them helps you avoid detours:
