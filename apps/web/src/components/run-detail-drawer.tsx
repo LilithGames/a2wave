@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import type { ChatMessageWithAttachments } from '@/hooks/use-chat-history'
 import { useCancelRun, useRerunRun, useRun } from '@/hooks/use-runs'
 import { historyRefToSentAttachment } from '@/lib/attachments'
+import { formatLocaleTime } from '@/lib/date-time'
 import { formatTokens } from '@/lib/format-tokens'
 import { cn } from '@/lib/utils'
 
@@ -51,7 +52,7 @@ export function RunDetailDrawer({
   open: boolean
   onClose: () => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [showLogs, setShowLogs] = useState(false)
   const { data: run, isLoading } = useRun(runId ?? '')
   const cancelRun = useCancelRun()
@@ -216,7 +217,7 @@ export function RunDetailDrawer({
                 {t('runDetail.selectRun')}
               </div>
             ) : (
-              <ChatContent run={run} isLoading={isLoading} t={t} />
+              <ChatContent run={run} isLoading={isLoading} t={t} language={i18n.language} />
             )}
           </div>
         </div>
@@ -230,10 +231,12 @@ function ChatContent({
   run,
   isLoading,
   t,
+  language,
 }: {
   run: ReturnType<typeof useRun>['data']
   isLoading: boolean
   t: (key: string) => string
+  language: string
 }) {
   if (isLoading) {
     return (
@@ -328,7 +331,7 @@ function ChatContent({
             <span
               className={`text-2xs text-muted-foreground/50 mt-0.5 ${message.role === 'user' ? 'mr-8' : 'ml-8'}`}
             >
-              {new Date(message.createdAt).toLocaleTimeString('zh-CN')}
+              {formatLocaleTime(message.createdAt, language)}
             </span>
           </div>
         )

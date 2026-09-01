@@ -1,12 +1,27 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StreamLogEntry } from '@/hooks/use-agents'
 import i18n from '@/i18n'
 import { renderWithProviders, screen } from '@/test/render'
-import { StreamLogsTimeline } from '../stream-log-item'
+import { StreamLogItem, StreamLogsTimeline } from '../stream-log-item'
 
 describe('StreamLogsTimeline', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en')
+  })
+
+  it('formats absolute timestamps using the active UI language', () => {
+    const format = vi.spyOn(Date.prototype, 'toLocaleTimeString').mockReturnValue('localized time')
+    const entry = {
+      type: 'system',
+      subtype: 'init',
+      ts: Date.parse('2026-09-01T13:05:00Z'),
+    } as StreamLogEntry
+
+    renderWithProviders(<StreamLogItem entry={entry} />)
+
+    expect(screen.getByText('localized time')).toBeInTheDocument()
+    expect(format).toHaveBeenCalledWith('en-US')
+    format.mockRestore()
   })
 
   it('shows A2A Task lifecycle metadata in the ordinary Run timeline', () => {
