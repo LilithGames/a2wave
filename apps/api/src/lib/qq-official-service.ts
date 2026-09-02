@@ -515,7 +515,7 @@ interface QQShardState {
   ready: boolean
   /** Handshakes failed back-to-back; reset the moment the shard is READY/RESUMED. */
   consecutiveFailures: number
-  /** Most recent socket/payload error, surfaced on `/chat-connections` when we give up. */
+  /** Most recent socket/payload error, surfaced on `/chat-connections` once the budget is spent. */
   lastError?: string
 }
 
@@ -530,9 +530,10 @@ interface QQConnection {
   shards: Map<number, QQShardState>
   stopping: boolean
   /**
-   * Set when a shard exhausts its reconnect budget. The connection then stays
-   * registered but idle so `/chat-connections` can explain the silence; only
-   * re-saving the config (which calls `start()` again) resumes it.
+   * Set when a shard exhausts its reconnect budget, so `/chat-connections` can
+   * explain the silence. Reporting a connection as failed does not stop it:
+   * reconnects continue at the capped delay, and a completed handshake
+   * (READY/RESUMED) clears this on its own — no config re-save required.
    */
   failureReason?: string
 }
