@@ -54,6 +54,20 @@ stopped sharing a working directory because a run of Agent B re-mounting
   excludes them verbatim, and exempting a whole shared root would let
   `reset --hard` silently revert a repo-tracked `.claude/settings.json` the agent
   edited.
+- **Git must be told too.** Workspace creation *and* reuse append the same set,
+  anchored (`/.mcp.json`), to `git rev-parse --git-path info/exclude`,
+  idempotently. The dirty check treating these paths as invisible only bound the
+  platform; git still offered them to `git add -A`, and the MCP config holds
+  Authorization bearer tokens and stdio API keys verbatim — so "commit and push
+  my changes" published the MCP owner's credentials. `--git-path` resolves to the
+  **common** repository's exclude file, which is intended: the shared checkout is
+  a run's fallback workspace and needs the same cover.
+- The MCP config is also **deleted at run end** (`cleanupManagedMcpConfigAsync`,
+  from the engine's `finally`), so credentials do not sit in a persistent
+  worktree between runs. The sidecar marker decides what may go: a file that
+  predates any sync is user-authored and only loses the managed entries whose
+  fingerprint still matches. Sibling runs sharing the worktree hold references,
+  so the last one out removes the file.
 - Workspace **removal** needs root names instead and derives them —
   `platformWorkspaceEntries()` = top segment of each path. It deletes the
   registered paths first and **logs by name** anything left in a shared root that

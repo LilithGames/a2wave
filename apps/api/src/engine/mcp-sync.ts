@@ -12,8 +12,9 @@
  * - marker 记录"上次由 a2wave 写入的条目名与指纹"，用于下次安全清理旧托管条目。
  */
 
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { logger } from '../lib/logger.js'
 import { BUILTIN_PROVIDER_MANIFESTS } from './provider-catalog.js'
 
 export interface ResolvedMcpServer {
@@ -54,7 +55,25 @@ export function mcpSyncWorkspacePaths(): string[] {
 
 interface ManagedMcpMarker {
   managedServers: Record<string, string>
+  /**
+   * True when the config file exists only because a2wave created it, so run-end
+   * cleanup may delete the whole file. A file that predates the first sync is
+   * user-authored and is only ever stripped of managed entries.
+   */
+  createdByPlatform?: boolean
 }
+
+/**
+ * Live references to a managed MCP config file, keyed by absolute path.
+ *
+ * Same-Agent runs share one worktree without an occupancy check (see
+ * docs/agent/worktree-isolation.md), so a sibling's run-end cleanup must not
+ * pull the config out from under a run still executing. Every sync takes a
+ * reference and every cleanup releases one; the file is deleted only when the
+ * last one goes. In-process state is enough because a worktree is only ever
+ * executed in by this container.
+ */
+const managedMcpConfigRefs = new Map<string, number>()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -94,12 +113,13 @@ async function readJsonRecordAsync(filePath: string): Promise<Record<string, unk
 
 async function readManagedMarkerAsync(markerPath: string): Promise<ManagedMcpMarker> {
   const parsed = await readJsonRecordAsync(markerPath)
-  if (!isRecord(parsed.managedServers)) return { managedServers: {} }
+  const createdByPlatform = parsed.createdByPlatform === true
+  if (!isRecord(parsed.managedServers)) return { managedServers: {}, createdByPlatform }
   const managedServers: Record<string, string> = {}
   for (const [name, fingerprint] of Object.entries(parsed.managedServers)) {
     if (typeof fingerprint === 'string') managedServers[name] = fingerprint
   }
-  return { managedServers }
+  return { managedServers, createdByPlatform }
 }
 
 async function writeManagedMarkerAsync(
@@ -196,6 +216,10 @@ export async function syncMcpToWorkspaceAtPathAsync(
   await mkdir(dirname(filePath), { recursive: true })
   const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
 
+  // Sampled before the write so run-end cleanup can tell a file a2wave created
+  // (deletable in full — it holds MCP bearer tokens and API keys) from a
+  // user-authored one (only managed entries may be stripped).
+  const fileExistedBeforeSync = await pathExists(filePath)
   const existingConfig = await readJsonRecordAsync(filePath)
   const existingServersRaw = existingConfig.mcpServers
   const existingServers = isRecord(existingServersRaw) ? { ...existingServersRaw } : {}
@@ -210,7 +234,10 @@ export async function syncMcpToWorkspaceAtPathAsync(
   }
 
   const managedServers = buildManagedMcpServers(servers, options.dialect)
-  const nextManagedMarker: ManagedMcpMarker = { managedServers: {} }
+  const nextManagedMarker: ManagedMcpMarker = {
+    managedServers: {},
+    createdByPlatform: !fileExistedBeforeSync || previousMarker.createdByPlatform === true,
+  }
   for (const [requestedName, serverConfig] of Object.entries(managedServers)) {
     const resolvedName = resolveNonConflictingMcpName(requestedName, existingServers)
     existingServers[resolvedName] = serverConfig
@@ -224,4 +251,61 @@ export async function syncMcpToWorkspaceAtPathAsync(
 
   await writeFile(filePath, JSON.stringify(nextConfig, null, 2))
   await writeManagedMarkerAsync(markerPath, nextManagedMarker)
+  managedMcpConfigRefs.set(filePath, (managedMcpConfigRefs.get(filePath) ?? 0) + 1)
+}
+
+/**
+ * Drop the MCP config a run's sync wrote, at run end.
+ *
+ * The managed entries carry live credentials — `headers.Authorization` bearer
+ * tokens and stdio `env` API keys — in plaintext, and a per-Agent worktree is
+ * persistent, so leaving the file behind means those secrets sit on disk
+ * between runs and land in `git add -A` when a colleague asks the Agent to
+ * commit. (`.gitignore` coverage is the other half of that fix; see
+ * `ensurePlatformPathsExcluded` in lib/git-workspace.ts.)
+ *
+ * The sidecar marker decides what may be removed:
+ * - **no marker** → the file predates any a2wave sync; never touched;
+ * - **marker + `createdByPlatform`** and nothing left but our own entries →
+ *   the whole file goes;
+ * - otherwise → only the managed entries whose fingerprint still matches are
+ *   stripped, so a user-authored file (and any entry the user edited) survives.
+ *
+ * Best-effort: a failure here must never fail a finished run.
+ */
+export async function cleanupManagedMcpConfigAsync(
+  workDir: string,
+  relativePath: string,
+): Promise<void> {
+  const filePath = join(workDir, relativePath)
+  const remainingRefs = (managedMcpConfigRefs.get(filePath) ?? 0) - 1
+  if (remainingRefs > 0) {
+    managedMcpConfigRefs.set(filePath, remainingRefs)
+    return
+  }
+  managedMcpConfigRefs.delete(filePath)
+
+  const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
+  try {
+    if (!(await pathExists(markerPath))) return
+    const marker = await readManagedMarkerAsync(markerPath)
+    const config = await readJsonRecordAsync(filePath)
+    const serversRaw = config.mcpServers
+    const servers = isRecord(serversRaw) ? { ...serversRaw } : {}
+    for (const [name, fingerprint] of Object.entries(marker.managedServers)) {
+      if (!(name in servers)) continue
+      if (stableStringify(servers[name]) === fingerprint) delete servers[name]
+    }
+
+    const onlyOurContent =
+      Object.keys(servers).length === 0 && Object.keys(config).every((key) => key === 'mcpServers')
+    if (marker.createdByPlatform && onlyOurContent) {
+      await rm(filePath, { force: true })
+    } else {
+      await writeFile(filePath, JSON.stringify({ ...config, mcpServers: servers }, null, 2))
+    }
+    await rm(markerPath, { force: true })
+  } catch (err) {
+    logger.warn({ err, filePath }, 'Failed to clean up managed MCP config after the run')
+  }
 }
