@@ -68,6 +68,17 @@ stopped sharing a working directory because a run of Agent B re-mounting
   predates any sync is user-authored and only loses the managed entries whose
   fingerprint still matches. Sibling runs sharing the worktree hold references,
   so the last one out removes the file.
+- Both the sync and the release run under a **keyed lock on the absolute config
+  path** (`withKeyedLock`, lib/keyed-mutex.ts). Each is a read-modify-write
+  spanning several awaits, so unserialised a sibling's fresh config could land
+  inside another run's cleanup window and then be deleted by it; the reference
+  count is therefore also re-read inside the critical section.
+- Cleanup **waits for a sync still in flight**. A sibling prepare step rejecting
+  mid-write leaves the engine's `finally` looking at a reference that has not
+  been taken yet: walking away there would let the write land credentials in the
+  worktree with nothing left to release them, and every later run in that
+  worktree would then see a non-zero reference count and skip cleanup for the
+  lifetime of the process.
 - Workspace **removal** needs root names instead and derives them —
   `platformWorkspaceEntries()` = top segment of each path. It deletes the
   registered paths first and **logs by name** anything left in a shared root that
