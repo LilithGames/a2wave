@@ -77,6 +77,11 @@ export function buildSsoRedirectUrl(
   } catch {
     throw new CliError(`Invalid SSO entry URL: ${ssoEntryUrl}`)
   }
+  // The result of this is handed to the system browser opener, so the scheme is
+  // part of the contract: only a web page may be opened.
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new CliError(`SSO entry URL must be http(s): ${ssoEntryUrl}`)
+  }
   url.searchParams.set('redirect_uri', callbackUrl)
   url.searchParams.set('state', nonce)
   url.searchParams.set('nonce', nonce)
@@ -150,7 +155,26 @@ function getJwtExpiry(token: string): Date {
 // Browser opener
 // ---------------------------------------------------------------------------
 
+/** Only a web page may be handed to the OS opener. */
+function isOpenableWebUrl(candidate: string): boolean {
+  try {
+    const parsed = new URL(candidate)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function openBrowser(targetUrl: string): boolean {
+  // The URL can come from a server response (the device grant's
+  // verificationUriComplete), so its scheme is not ours to trust: `javascript:`,
+  // `file:` and `data:` all mean something very different to the system opener
+  // than "show the user a page".
+  if (!isOpenableWebUrl(targetUrl)) {
+    console.warn(`Refusing to open a non-http(s) URL: ${targetUrl}`)
+    return false
+  }
+
   const platform = process.platform
   let cmd: string
   let args: string[]
@@ -158,8 +182,11 @@ export function openBrowser(targetUrl: string): boolean {
     cmd = 'open'
     args = [targetUrl]
   } else if (platform === 'win32') {
-    cmd = 'cmd'
-    args = ['/c', 'start', '', targetUrl]
+    // NOT `cmd /c start`: libuv quotes an argument only when it contains a space,
+    // tab or quote, so `&`, `|` and `^` in the URL would reach cmd.exe's parser as
+    // operators and run as commands. rundll32 takes the URL as a plain argument.
+    cmd = 'rundll32'
+    args = ['url.dll,FileProtocolHandler', targetUrl]
   } else {
     cmd = 'xdg-open'
     args = [targetUrl]

@@ -1,9 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CliError } from '../../errors.js'
 
 const mockLoadConfig = vi.fn()
+const mockResolveCredential = vi.fn<(url: string) => string>()
 vi.mock('../../config.js', () => ({
   loadConfig: () => mockLoadConfig(),
+  resolveCredential: (url: string) => mockResolveCredential(url),
 }))
+
+/**
+ * Stands in for the real `resolveCredential`, keeping its one load-bearing rule:
+ * the legacy top-level token belongs to `config.url` and to nothing else.
+ */
+function credentialFromMockedConfig(url: string): string {
+  const key = url.replace(/\/+$/, '')
+  const config = mockLoadConfig() as {
+    url?: string
+    token?: string
+    credentials?: Record<string, { token: string }>
+  } | null
+  const perUrl = config?.credentials?.[key]?.token
+  if (perUrl) return perUrl
+  if (config?.token && config.url && config.url.replace(/\/+$/, '') === key) return config.token
+  throw new CliError(
+    config?.token ? `No stored credential for ${key}.` : 'Not logged in. Run: a2wave login',
+    {
+      type: 'auth',
+      subtype: config?.token ? 'no_credential_for_url' : 'not_logged_in',
+      hint: `a2wave login --url ${key}`,
+    },
+  )
+}
 
 const mockExistsSync = vi.fn<(p: string) => boolean>()
 const mockReadFileSync = vi.fn<(p: string) => string>()
@@ -54,6 +81,7 @@ describe('runChecks', () => {
     vi.clearAllMocks()
     mockExistsSync.mockReturnValue(false)
     mockLoadConfig.mockReturnValue(null)
+    mockResolveCredential.mockImplementation(credentialFromMockedConfig)
     clearUrlEnv()
   })
   afterEach(() => {
@@ -259,6 +287,58 @@ describe('runChecks', () => {
     const report = await runChecks()
     expect(byName(report, 'user.identity').status).toBe('warn')
     expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('never sends the stored instance credential to a different --url host', async () => {
+    // The credential belongs to instance A; the probe is aimed at instance B.
+    // Presenting A's token to B leaks it to a host that was never authorized to
+    // see it, so the probe must stop at credentials.token instead.
+    const jwt = makeJwt('HS256', { exp: Math.floor(Date.now() / 1000) + 3600 })
+    mockLoadConfig.mockReturnValue({ url: 'http://instance-a.test', token: jwt })
+    mockFetch.mockResolvedValueOnce(new Response('ok', { status: 200 }))
+
+    const report = await runChecks({ urlOverride: 'http://instance-b.test' })
+
+    expect(mockResolveCredential).toHaveBeenCalledWith('http://instance-b.test')
+    const cred = byName(report, 'credentials.token')
+    expect(cred.status).toBe('warn')
+    expect(cred.detail).toMatchObject({ subtype: 'no_credential_for_url' })
+    expect(byName(report, 'user.identity').status).toBe('warn')
+    // Only the unauthenticated health probe ran, and it carried no Authorization.
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(mockFetch.mock.calls)).not.toContain(jwt)
+  })
+
+  it('uses the per-URL credential when one is stored for the target', async () => {
+    const jwtA = makeJwt('HS256', { exp: Math.floor(Date.now() / 1000) + 3600 })
+    const jwtB = makeJwt('HS256', { exp: Math.floor(Date.now() / 1000) + 7200 })
+    mockLoadConfig.mockReturnValue({
+      url: 'http://instance-a.test',
+      token: jwtA,
+      credentials: { 'http://instance-b.test': { token: jwtB } },
+    })
+    mockFetch
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 'usr_1', username: 'b', role: 'user' } }))
+
+    const report = await runChecks({ urlOverride: 'http://instance-b.test' })
+
+    expect(byName(report, 'credentials.token').status).toBe('pass')
+    expect(byName(report, 'user.identity').status).toBe('pass')
+    const meCall = mockFetch.mock.calls[1]
+    expect(String(meCall[0])).toBe('http://instance-b.test/api/auth/me')
+    expect(meCall[1].headers.Authorization).toBe(`Bearer ${jwtB}`)
+    expect(JSON.stringify(mockFetch.mock.calls)).not.toContain(jwtA)
+  })
+
+  it('skips the credential check entirely when no URL is resolved', async () => {
+    // There is no instance to resolve a credential against, so asking for one
+    // would mean falling back to "whichever token we happen to have".
+    const report = await runChecks()
+    expect(mockResolveCredential).not.toHaveBeenCalled()
+    const cred = byName(report, 'credentials.token')
+    expect(cred.status).toBe('warn')
+    expect(cred.message).toContain('instance.url')
   })
 
   it('every non-pass check carries a runnable hint, and no check carries ANSI', async () => {

@@ -224,7 +224,7 @@ nothing listed the valid values — an asymmetry worse than the feature being ab
 | `a2wave agents regenerate-api-key <id\|name>` | Rotate endpointApiKey; the old key becomes invalid immediately |
 | `a2wave agents diagnose <id\|name>` | Comprehensive diagnosis: execution engine / Provider / Feishu / gateway signing, etc.; exit=1 on error |
 | `a2wave agents stats <id\|name>` | Overview statistics (KPI / user count / channel distribution); note /stats returns an object directly, not wrapped in `{ data }` |
-| `a2wave agents export <id\|name> [-o file.zip]` | Export the full Agent config as a ZIP (filename from `content-disposition` when `-o` is omitted) |
+| `a2wave agents export <id\|name> [-o file.zip] [--force]` | Export the full Agent config as a ZIP. With no `-o`, the name comes from `content-disposition` — but only its **basename**, since that header is server-controlled and `../` or an absolute path in it must not decide where the file lands; a name that decodes to nothing usable (bad percent-encoding, `''` / `.` / `..`) falls back to `<agentId>-export.zip`. Requires `--force` when the target exists, `-o` included. Shares `resolveDownloadFilename` with `artifacts download`, so the two cannot drift |
 | `a2wave agents import <file.zip>` | Import an Agent from a ZIP; reports the created Agent plus any MCP Servers / Skills and warnings |
 | `a2wave agents import-url <url> [--header "K: V"]` | Import from a remote a2wave instance's export URL |
 | `a2wave agents members list\|add\|update\|remove ...` | Members: `add --user <id\|name> --role viewer\|editor`; owner-only for writes |
@@ -729,6 +729,16 @@ Resolution order in `resolveCredential(url)`:
 3. otherwise throw `{type:'auth', subtype:'no_credential_for_url'}` with a
    `a2wave login --url <url>` hint. Never fall through to "some token we happen
    to have" — sending the wrong instance's credential is worse than failing.
+
+**The diagnostics go through the same resolver.** `runChecks()` reads the
+credential with `resolveCredential(url)`, not the legacy top-level `token`;
+`a2wave status --url https://other` used to post the stored instance's token to
+`https://other/api/auth/oauth/exchange` and `/api/auth/me` — a diagnostic
+leaking the very thing it was run to inspect. A resolution failure now *is* the
+`credentials.token` check (a `warn` carrying the resolver's own message and
+`subtype`), so nothing is dialled with a credential that does not belong to the
+target, and `status` says "no stored credential for &lt;url&gt;" instead of the
+misleading "not logged in".
 
 **Migration is implicit and lazy: no version field, no rewrite-on-read.** An
 existing flat `{url, token}` keeps working untouched, and because nothing is
