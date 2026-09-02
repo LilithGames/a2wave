@@ -106,12 +106,18 @@ remote_interactive() {
   local fifo status=0 feeder
   fifo="$(mktemp -u "${TMPDIR:-/tmp}/a2wave-sudo.XXXXXX")"
   mkfifo -m 600 "${fifo}"
-  { printf '%s\n' "${REMOTE_PASS}"; cat; } > "${fifo}" &
+  # bash redirects an async list's stdin from /dev/null unless it is explicitly
+  # given one, so a bare `cat` inside the feeder sees EOF immediately and the
+  # operator's terminal never reaches `codex login`. fd 3 carries this script's
+  # own stdin into the background job instead.
+  exec 3<&0
+  { printf '%s\n' "${REMOTE_PASS}"; cat <&3; } > "${fifo}" &
   feeder=$!
   SSHPASS="${REMOTE_PASS}" sshpass -e ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" \
     "${REMOTE_PRELUDE}
 $*" < "${fifo}" || status=$?
   kill "${feeder}" 2>/dev/null || true
+  exec 3<&-
   rm -f "${fifo}"
   return "${status}"
 }

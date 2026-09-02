@@ -241,7 +241,7 @@ jobs:
       - run: pnpm --filter @a2wave/shared test
       - run: pnpm --filter a2wave test
       - run: pnpm provider-clis:test
-      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs
+      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs scripts/deploy/__tests__/codex-login-remote.test.mjs
       # The api gate's own regression tests — they guard the "a suite that fails to
       # load reports zero failing assertions" hole, which is invisible to the gate
       # it protects. Cheap (synthetic reports, no real suite run), so they live in
