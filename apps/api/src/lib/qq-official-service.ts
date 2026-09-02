@@ -32,7 +32,15 @@ const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const QQ_API_ORIGIN = 'https://api.sgroup.qq.com'
 const DEFAULT_HEARTBEAT_MS = 30_000
 const CONNECT_TIMEOUT_MS = 15_000
-const RECONNECT_DELAY_MS = 1_000
+const RECONNECT_BASE_DELAY_MS = 1_000
+const RECONNECT_MAX_DELAY_MS = 60_000
+/**
+ * Consecutive failed handshakes after which a shard stops retrying. A shard
+ * that cannot Identify is usually mis-configured (revoked secret, unpublished
+ * bot, wrong intents) rather than briefly unlucky, and the retry loop is what
+ * turns that into an endless hot loop against QQ's session-start budget.
+ */
+export const MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES = 10
 const SESSION_START_WINDOW_MS = 5_000
 const TEXT_CHUNK_LENGTH = 1_800
 export const QQ_MAX_ARTIFACT_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -72,6 +80,24 @@ export function classifyQQGatewayClose(code: number): {
     clearSession: code === 4004 || code === 4006 || code === 4007 || code === 9001 || code === 9005,
     invalidateToken: code === 4004,
   }
+}
+
+/**
+ * Delay before the nth consecutive reconnect attempt: exponential from 1s,
+ * capped at 60s, with jitter so the shards of one bot (and the bots of one
+ * process) do not re-Identify in lockstep after a shared outage.
+ *
+ * A fixed 1s delay meant a `getToken()` outage inside the op-10 handler closed
+ * the socket and reconnected forever at 1 Hz, burning the session-start budget
+ * and the log volume with it.
+ */
+export function computeQQReconnectDelay(
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const exponent = Math.max(0, attempt - 1)
+  const ceiling = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** exponent)
+  return Math.round(ceiling * (0.75 + random() * 0.25))
 }
 
 export function planQQShardStarts(
@@ -481,6 +507,10 @@ interface QQShardState {
   heartbeat?: ReturnType<typeof setInterval>
   reconnect?: ReturnType<typeof setTimeout>
   ready: boolean
+  /** Handshakes failed back-to-back; reset the moment the shard is READY/RESUMED. */
+  consecutiveFailures: number
+  /** Most recent socket/payload error, surfaced on `/chat-connections` when we give up. */
+  lastError?: string
 }
 
 interface QQConnection {
@@ -493,6 +523,12 @@ interface QQConnection {
   readyTimeoutMs: number
   shards: Map<number, QQShardState>
   stopping: boolean
+  /**
+   * Set when a shard exhausts its reconnect budget. The connection then stays
+   * registered but idle so `/chat-connections` can explain the silence; only
+   * re-saving the config (which calls `start()` again) resumes it.
+   */
+  failureReason?: string
 }
 
 interface QQPendingStart {
@@ -605,7 +641,7 @@ export class QQOfficialConnectionManager {
       for (const shardIds of shardBatches) {
         for (const id of shardIds) {
           if (this.connections.get(agentId) !== connection) throw new QQStartCancelledError()
-          const shard: QQShardState = { id, sequence: null, ready: false }
+          const shard: QQShardState = { id, sequence: null, ready: false, consecutiveFailures: 0 }
           connection.shards.set(id, shard)
           this.connectShard(agentId, connection, shard)
         }
@@ -644,15 +680,17 @@ export class QQOfficialConnectionManager {
         })
         .catch((error) => {
           acceptPayloads = false
+          shard.lastError = error instanceof Error ? error.message : String(error)
           logger.error({ error, agentId, shardId: shard.id }, 'QQ Gateway payload handler failed')
           // Resume from the last durably handled sequence. Do not let a later
           // dispatch overtake and acknowledge the failed event.
           if (shard.socket === socket) socket.close()
         })
     })
-    socket.on('error', (error) =>
-      logger.warn({ error, agentId, shardId: shard.id }, 'QQ Gateway socket error'),
-    )
+    socket.on('error', (error) => {
+      shard.lastError = error instanceof Error ? error.message : String(error)
+      logger.warn({ error, agentId, shardId: shard.id }, 'QQ Gateway socket error')
+    })
     socket.on('close', (code) => {
       if (shard.socket !== socket) return
       acceptPayloads = false
@@ -665,13 +703,43 @@ export class QQOfficialConnectionManager {
         shard.sessionId = undefined
         shard.sequence = null
       }
-      if (!connection.stopping && this.connections.get(agentId) === connection) {
-        shard.reconnect = setTimeout(
-          () => this.connectShard(agentId, connection, shard),
-          RECONNECT_DELAY_MS,
+      if (connection.stopping || this.connections.get(agentId) !== connection) return
+      shard.consecutiveFailures += 1
+      if (shard.consecutiveFailures >= MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES) {
+        connection.failureReason =
+          shard.lastError ?? `shard ${shard.id} closed with code ${code} and never became ready`
+        logger.error(
+          {
+            agentId,
+            shardId: shard.id,
+            code,
+            attempts: shard.consecutiveFailures,
+            reason: connection.failureReason,
+          },
+          'QQ Gateway reconnect budget exhausted; connection marked failed until the config is re-saved',
         )
+        return
       }
+      const delayMs = computeQQReconnectDelay(shard.consecutiveFailures)
+      logger.warn(
+        { agentId, shardId: shard.id, code, attempt: shard.consecutiveFailures, delayMs },
+        'QQ Gateway disconnected; scheduling reconnect',
+      )
+      shard.reconnect = setTimeout(() => this.connectShard(agentId, connection, shard), delayMs)
     })
+  }
+
+  /**
+   * A completed handshake proves the credentials and intents are good, so the
+   * backoff starts from scratch — and the connection is no longer failed once
+   * every shard is healthy again.
+   */
+  private clearShardFailures(connection: QQConnection, shard: QQShardState): void {
+    shard.consecutiveFailures = 0
+    shard.lastError = undefined
+    if ([...connection.shards.values()].every((entry) => entry.consecutiveFailures === 0)) {
+      connection.failureReason = undefined
+    }
   }
 
   private async handleGatewayPayload(
@@ -731,11 +799,13 @@ export class QQOfficialConnectionManager {
     if (payload.t === 'READY') {
       shard.sessionId = stringValue(recordValue(payload.d).session_id)
       shard.ready = true
+      this.clearShardFailures(connection, shard)
       if (typeof payload.s === 'number') shard.sequence = payload.s
       return
     }
     if (payload.t === 'RESUMED') {
       shard.ready = true
+      this.clearShardFailures(connection, shard)
       if (typeof payload.s === 'number') shard.sequence = payload.s
       return
     }
@@ -960,10 +1030,17 @@ export class QQOfficialConnectionManager {
     )
   }
 
-  getConnectionStatuses(): Array<{ agentId: string; socketOpen: boolean }> {
-    return [...this.connections.keys()].map((agentId) => ({
+  getConnectionStatuses(): Array<{
+    agentId: string
+    socketOpen: boolean
+    failed: boolean
+    lastError?: string
+  }> {
+    return [...this.connections.entries()].map(([agentId, connection]) => ({
       agentId,
       socketOpen: this.isSocketOpen(agentId),
+      failed: connection.failureReason != null,
+      ...(connection.failureReason ? { lastError: connection.failureReason } : {}),
     }))
   }
 
