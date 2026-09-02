@@ -392,6 +392,12 @@ export async function recoverOnStartup(
 
   for (const agentId of activeAgentIds) {
     if (hooks.recoverInFlight !== false) {
+      // Ids this pass just returned to the queue for resume. The Feishu sweep
+      // below re-reads the queue and would otherwise fail the very rows the
+      // running loop rescued: the resume attempt is consumed, the stats lie,
+      // and the surviving feishu_pending_messages row replays the prompt from
+      // scratch — the side-effect replay resume exists to prevent.
+      const requeuedForResume = new Set<string>()
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
         // Requeue rather than abandon when the run recorded the session it was
@@ -433,6 +439,7 @@ export async function recoverOnStartup(
               logger.warn({ error, runId: run.id }, 'requeue hook failed')
             }
           }
+          requeuedForResume.add(run.id)
           stats.runningResumed++
           continue
         }
@@ -454,7 +461,7 @@ export async function recoverOnStartup(
       // run without Feishu context and then block replay).
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        if (run.triggerSource === 'feishu') {
+        if (run.triggerSource === 'feishu' && !requeuedForResume.has(run.id)) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++
         }
