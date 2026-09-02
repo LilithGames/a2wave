@@ -29,6 +29,7 @@ import { ProviderConfigurationError } from './errors.js'
 import { createBotIdentityResolver } from './feishu-bot-identity.js'
 import { FeishuStreamingCard } from './feishu-card-streaming.js'
 import { type NormalizedFeishuConfig, normalizeFeishuConfig } from './feishu-config.js'
+import { larkSdkLogger, summarizeFeishuError } from './feishu-error-log.js'
 import {
   buildInteractiveCardJson,
   buildPlainCardJson,
@@ -949,34 +950,6 @@ function setCachedUserInfo(cacheKey: string, data: Record<string, unknown>): voi
 }
 
 /**
- * 把飞书/axios 错误压成可记日志的精简对象。
- * axios error 自带 request/response/socket 的循环引用，直接喂给 logger 会序列化出几千行。
- * 这里只取排障真正需要的字段：飞书业务码 code/msg、HTTP status、log_id（用于飞书侧排障）、网络层 code。
- */
-function summarizeFeishuError(err: unknown): Record<string, unknown> {
-  const e = err as {
-    code?: string
-    message?: string
-    response?: {
-      status?: number
-      headers?: Record<string, string>
-      data?: { code?: number; msg?: string; error?: { log_id?: string } }
-    }
-  }
-  const resp = e?.response
-  const body = resp?.data
-  const summary: Record<string, unknown> = {}
-  if (e?.code) summary.netCode = e.code // 网络层，如 ECONNRESET / ERR_BAD_REQUEST
-  if (resp?.status) summary.status = resp.status
-  if (body?.code != null) summary.feishuCode = body.code // 飞书业务码，如 41050
-  if (body?.msg) summary.feishuMsg = body.msg
-  const logId = body?.error?.log_id ?? resp?.headers?.['x-tt-logid']
-  if (logId) summary.logId = logId
-  if (!Object.keys(summary).length) summary.message = e?.message ?? String(err)
-  return summary
-}
-
-/**
  * 通过飞书通讯录 API 获取用户信息（bot 身份 / tenant_access_token）。
  *
  * 飞书通讯录权限分两层（两层都适用于 tenant_access_token，不是 OAuth 专属）：
@@ -1197,6 +1170,7 @@ export async function sendFeishuMessageByContext(
       appId: feishuConfig.appId,
       appSecret: feishuConfig.appSecret,
       loggerLevel: lark.LoggerLevel.error,
+      logger: larkSdkLogger,
     })
 
     await client.im.message.create({
@@ -1326,7 +1300,12 @@ class FeishuConnectionManager {
     this.appIdHolder.set(appIdKey, agentId)
 
     try {
-      const client = new lark.Client({ appId, appSecret, loggerLevel: lark.LoggerLevel.error })
+      const client = new lark.Client({
+        appId,
+        appSecret,
+        loggerLevel: lark.LoggerLevel.error,
+        logger: larkSdkLogger,
+      })
 
       // Fetch the bot's own open_id for accurate @mention detection.
       // Without this, we'd have to use the sequential key '@_user_1' which matches the first
@@ -1396,6 +1375,7 @@ class FeishuConnectionManager {
         appSecret,
         autoReconnect: true,
         loggerLevel: lark.LoggerLevel.error,
+        logger: larkSdkLogger,
       })
 
       const entry: WSClientEntry = {
