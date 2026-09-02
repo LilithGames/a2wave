@@ -87,36 +87,31 @@ export abstract class BaseAgentEngine implements AgentEngine {
     // would otherwise leave the secrets and the in-process refcount behind.
     // Fallback attempts all reuse the same file, hence the single outer finally.
     try {
+      // Preparation sits OUTSIDE the fallback try on purpose: only a failure of
+      // the model call itself is a fallback candidate. A prepare failure means
+      // no attempt was ever made, so retrying another model would just repeat
+      // the same broken preparation — it propagates straight to the caller.
       const memoryContextPromise = this.fetchMemoryContext(preparedRequest)
-      let runtimeRequest: StreamExecuteRequest | undefined
-      let memoryContext: string | null = null
-      let modelCallStarted = false
+      await Promise.all([
+        this.prepareSkills(preparedRequest),
+        this.prepareMcpServers(preparedRequest),
+        this.prepareKbDocs(preparedRequest),
+        memoryContextPromise,
+      ])
+      this.prepareMemoryOverride(preparedRequest)
+      const runtimeContext = prepareRuntimeContext(preparedRequest, { defaultWorkDir })
+      const runtimeRequest: StreamExecuteRequest = { ...preparedRequest, runtimeContext }
+      const memoryContext = await memoryContextPromise
+      const enriched = this.enrichPrompt(
+        runtimeRequest,
+        model,
+        memoryContext,
+      ) as StreamExecuteRequest
+
       try {
-        await Promise.all([
-          this.prepareSkills(preparedRequest),
-          this.prepareMcpServers(preparedRequest),
-          this.prepareKbDocs(preparedRequest),
-          memoryContextPromise,
-        ])
-        this.prepareMemoryOverride(preparedRequest)
-        const runtimeContext = prepareRuntimeContext(preparedRequest, {
-          defaultWorkDir,
-        })
-        runtimeRequest = { ...preparedRequest, runtimeContext }
-        memoryContext = await memoryContextPromise
-        const enriched = this.enrichPrompt(
-          runtimeRequest,
-          model,
-          memoryContext,
-        ) as StreamExecuteRequest
-        modelCallStarted = true
         const result = await this.executeStreamWithModel(enriched, model)
         return { ...result, durationMs: Date.now() - start }
       } catch (err) {
-        // Only a failure of the model call itself is a fallback candidate. A
-        // prepare failure means no attempt was ever made, so retrying another
-        // model would repeat the same broken preparation.
-        if (!modelCallStarted || !runtimeRequest) throw err
         return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
       }
     } finally {

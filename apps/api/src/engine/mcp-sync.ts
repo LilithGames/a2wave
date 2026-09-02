@@ -12,7 +12,7 @@
  * - marker 记录"上次由 a2wave 写入的条目名与指纹"，用于下次安全清理旧托管条目。
  */
 
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
@@ -103,31 +103,41 @@ function stableStringify(value: unknown): string {
 
 // --- Async helpers ---
 
-async function pathExists(p: string): Promise<boolean> {
+interface JsonFileRead {
+  /**
+   * Whether the file is on disk. Only a missing file reads as absent: an
+   * existing one that cannot be read or parsed still counts as present, so it
+   * is never mistaken for a file a2wave created and may delete in full.
+   */
+  exists: boolean
+  record: Record<string, unknown>
+}
+
+/** One read answers both "is it there?" and "what is in it?". */
+async function readJsonRecordAsync(filePath: string): Promise<JsonFileRead> {
+  let raw: string
   try {
-    await access(p)
-    return true
+    raw = await readFile(filePath, 'utf-8')
+  } catch (err) {
+    const absent = (err as NodeJS.ErrnoException).code === 'ENOENT'
+    return { exists: !absent, record: {} }
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return { exists: true, record: isRecord(parsed) ? parsed : {} }
   } catch {
-    return false
+    return { exists: true, record: {} }
   }
 }
 
-async function readJsonRecordAsync(filePath: string): Promise<Record<string, unknown>> {
-  if (!(await pathExists(filePath))) return {}
-  try {
-    const parsed = JSON.parse(await readFile(filePath, 'utf-8')) as unknown
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-async function readManagedMarkerAsync(markerPath: string): Promise<ManagedMcpMarker> {
-  const parsed = await readJsonRecordAsync(markerPath)
-  const createdByPlatform = parsed.createdByPlatform === true
-  if (!isRecord(parsed.managedServers)) return { managedServers: {}, createdByPlatform }
+/** The sidecar marker, or null when no a2wave sync has written one yet. */
+async function readManagedMarkerAsync(markerPath: string): Promise<ManagedMcpMarker | null> {
+  const { exists, record } = await readJsonRecordAsync(markerPath)
+  if (!exists) return null
+  const createdByPlatform = record.createdByPlatform === true
+  if (!isRecord(record.managedServers)) return { managedServers: {}, createdByPlatform }
   const managedServers: Record<string, string> = {}
-  for (const [name, fingerprint] of Object.entries(parsed.managedServers)) {
+  for (const [name, fingerprint] of Object.entries(record.managedServers)) {
     if (typeof fingerprint === 'string') managedServers[name] = fingerprint
   }
   return { managedServers, createdByPlatform }
@@ -238,14 +248,14 @@ async function writeMcpConfig(
   // Sampled before the write so run-end cleanup can tell a file a2wave created
   // (deletable in full — it holds MCP bearer tokens and API keys) from a
   // user-authored one (only managed entries may be stripped).
-  const fileExistedBeforeSync = await pathExists(filePath)
-  const existingConfig = await readJsonRecordAsync(filePath)
+  const { exists: fileExistedBeforeSync, record: existingConfig } =
+    await readJsonRecordAsync(filePath)
   const existingServersRaw = existingConfig.mcpServers
   const existingServers = isRecord(existingServersRaw) ? { ...existingServersRaw } : {}
 
   // 清理上次托管内容；仅在指纹匹配时删除，避免误删用户手工修改条目。
   const previousMarker = await readManagedMarkerAsync(markerPath)
-  for (const [managedName, fingerprint] of Object.entries(previousMarker.managedServers)) {
+  for (const [managedName, fingerprint] of Object.entries(previousMarker?.managedServers ?? {})) {
     if (!(managedName in existingServers)) continue
     if (stableStringify(existingServers[managedName]) === fingerprint) {
       delete existingServers[managedName]
@@ -255,7 +265,7 @@ async function writeMcpConfig(
   const managedServers = buildManagedMcpServers(servers, options.dialect)
   const nextManagedMarker: ManagedMcpMarker = {
     managedServers: {},
-    createdByPlatform: !fileExistedBeforeSync || previousMarker.createdByPlatform === true,
+    createdByPlatform: !fileExistedBeforeSync || previousMarker?.createdByPlatform === true,
   }
   for (const [requestedName, serverConfig] of Object.entries(managedServers)) {
     const resolvedName = resolveNonConflictingMcpName(requestedName, existingServers)
@@ -310,9 +320,10 @@ async function releaseMcpConfig(filePath: string): Promise<void> {
 
   const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
   try {
-    if (!(await pathExists(markerPath))) return
     const marker = await readManagedMarkerAsync(markerPath)
-    const config = await readJsonRecordAsync(filePath)
+    // No marker: the file predates any a2wave sync and is never touched.
+    if (!marker) return
+    const { record: config } = await readJsonRecordAsync(filePath)
     const serversRaw = config.mcpServers
     const servers = isRecord(serversRaw) ? { ...serversRaw } : {}
     for (const [name, fingerprint] of Object.entries(marker.managedServers)) {
