@@ -23,8 +23,29 @@ vi.mock('../../config.js', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
-const { readTokenCache, oauthLogin, waitForCallback, resolveSsoEntryUrl, buildSsoRedirectUrl } =
-  await import('../oauth.js')
+const mockExecFileSync = vi.fn()
+vi.mock('node:child_process', () => ({
+  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+}))
+
+const {
+  readTokenCache,
+  oauthLogin,
+  waitForCallback,
+  resolveSsoEntryUrl,
+  buildSsoRedirectUrl,
+  openBrowser,
+} = await import('../oauth.js')
+
+function withPlatform(platform: NodeJS.Platform, fn: () => void): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  try {
+    fn()
+  } finally {
+    if (original) Object.defineProperty(process, 'platform', original)
+  }
+}
 
 describe('readTokenCache', () => {
   let dir: string
@@ -248,5 +269,57 @@ describe('resolveSsoEntryUrl', () => {
 
     expect(message).toMatch(/a2wave login --password/)
     expect(message).not.toMatch(/username\/password: a2wave login$/m)
+  })
+})
+
+describe('openBrowser', () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset()
+  })
+
+  it.each(['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,<h1>x', 'not a url'])(
+    'refuses to hand %s to the system opener',
+    (target) => {
+      // The URL comes from a server response (verificationUriComplete). Handing an
+      // arbitrary scheme to the OS opener turns a login into script/file execution.
+      withPlatform('darwin', () => {
+        expect(openBrowser(target)).toBe(false)
+      })
+      expect(mockExecFileSync).not.toHaveBeenCalled()
+    },
+  )
+
+  it('opens an http(s) URL through the platform opener on darwin', () => {
+    withPlatform('darwin', () => {
+      expect(openBrowser('https://a2wave.example.com/device?code=X')).toBe(true)
+    })
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'open',
+      ['https://a2wave.example.com/device?code=X'],
+      expect.anything(),
+    )
+  })
+
+  it('never routes a URL through cmd.exe on win32', () => {
+    // libuv quotes only arguments containing whitespace or a quote, so `&`, `|` and
+    // `^` in a server-supplied URL would reach cmd.exe's own parser as operators.
+    withPlatform('win32', () => {
+      expect(openBrowser('https://a2wave.example.com/device?a=1&b=2')).toBe(true)
+    })
+    const [command, args] = mockExecFileSync.mock.calls[0] as [string, string[]]
+    expect(command).not.toMatch(/cmd/i)
+    expect(command).toBe('rundll32')
+    expect(args).toEqual([
+      'url.dll,FileProtocolHandler',
+      'https://a2wave.example.com/device?a=1&b=2',
+    ])
+  })
+})
+
+describe('buildSsoRedirectUrl scheme guard', () => {
+  it.each(['javascript:alert(1)', 'file:///etc/passwd'])('rejects %s as an SSO entry', (entry) => {
+    expect(() => buildSsoRedirectUrl(entry, 'http://localhost:20265/callback', 'n')).toThrow(
+      /http/i,
+    )
   })
 })
