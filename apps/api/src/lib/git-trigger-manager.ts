@@ -675,6 +675,14 @@ class GitTriggerManager {
   ): Promise<boolean> {
     if (fired.event !== 'commented') return false
 
+    // Only a delta that consists *solely* of the channel's own comment may be
+    // suppressed. The forges report the newest author, not every author in the
+    // delta, so a larger delta may hide a colleague's comment underneath the
+    // Agent's reply — and suppression advances the fingerprint, losing it
+    // forever. Firing costs the Agent seeing its own comment echoed in the
+    // prompt; that is the cheaper failure of the two.
+    if (fired.newComments !== 1) return false
+
     const account = await this.forgeAccount(agentId, provider, repo.host)
     if (!account) return false
 

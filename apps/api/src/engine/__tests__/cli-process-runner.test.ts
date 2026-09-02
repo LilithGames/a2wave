@@ -164,11 +164,73 @@ describe('CliProcessRunner contract', () => {
     const execution = runner.run(options)
 
     expect(() => children[0].stdout.write(Buffer.from('boom\n'))).not.toThrow()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(children[0].kill).toHaveBeenCalledWith('SIGTERM')
+    children[0].emit('close', null, 'SIGTERM')
 
     await expect(execution).resolves.toMatchObject({
       reason: 'spawn-error',
       error: expect.objectContaining({ message: 'sink exploded' }),
     })
+  })
+
+  it('escalates to SIGKILL when a child ignores SIGTERM after a decode failure', async () => {
+    // Finalizing straight from the decode handler cleared the force-kill timer
+    // and dropped the process from activeProcesses, so a child ignoring SIGTERM
+    // survived the run and was invisible to shutdown().
+    vi.useFakeTimers()
+    const onStdoutLine = vi.fn(() => {
+      throw new Error('sink exploded')
+    })
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+    const child = children[0]
+
+    child.stdout.write(Buffer.from('boom\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+
+    let settled = false
+    void execution.then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+
+    child.emit('close', null, 'SIGKILL')
+    await expect(execution).resolves.toMatchObject({
+      reason: 'spawn-error',
+      error: expect.objectContaining({ message: 'sink exploded' }),
+    })
+    // Exactly one finalize: the cleanup hook is the observable proof.
+    expect(options.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('records only the first decode failure when output keeps arriving', async () => {
+    const onStdoutLine = vi.fn(() => {
+      throw new Error('first failure')
+    })
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+    const child = children[0]
+
+    child.stdout.write(Buffer.from('one\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    onStdoutLine.mockImplementation(() => {
+      throw new Error('second failure')
+    })
+    child.stdout.write(Buffer.from('two\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit('close', null, 'SIGTERM')
+
+    await expect(execution).resolves.toMatchObject({
+      reason: 'spawn-error',
+      error: expect.objectContaining({ message: 'first failure' }),
+    })
+    expect(child.kill).toHaveBeenCalledTimes(1)
   })
 
   it('persists sanitized Agent Router lifecycle events from child stderr', async () => {

@@ -478,6 +478,63 @@ describe('BaseAgentEngine.executeStream — prepare* gating', () => {
     expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
   })
 
+  it('cleans up the MCP config when a sibling prepare step fails', async () => {
+    // prepareMcpServers has already written plaintext credentials into the
+    // workspace by the time a sibling prepare step rejects; the config (and the
+    // in-process refcount) must not be left behind.
+    const engine = new TestEngine('claude')
+    syncSkillsToWorkspaceAsyncMock.mockRejectedValue(new Error('skill sync failed'))
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            skillsDir: '.claude/skills',
+            resolvedSkills: [],
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('skill sync failed')
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('does not release a refcount when its own MCP sync never completed', async () => {
+    // A never-incremented refcount must stay untouched: decrementing it would
+    // pull a concurrent same-worktree run's config out from under it.
+    const engine = new TestEngine('claude')
+    syncMcpToWorkspaceAtPathAsyncMock.mockRejectedValue(new Error('mcp sync failed'))
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('mcp sync failed')
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
+  })
+
+  it('cleans up the MCP config when prompt enrichment fails', async () => {
+    const engine = new TestEngine('claude')
+    prepareRuntimeContextMock.mockImplementation(() => {
+      throw new Error('runtime context failed')
+    })
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('runtime context failed')
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
   it('does not clean up a config it never wrote', async () => {
     const engine = new TestEngine('cursor')
     await engine.executeStream(

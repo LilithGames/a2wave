@@ -23,7 +23,11 @@ vi.mock('../native-chat-attachments.js', () => ({
 vi.mock('../attachment-storage.js', () => ({
   deleteStagedAttachment: mockDeleteStagedAttachment,
 }))
+vi.mock('../logger.js', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
 
+import { logger } from '../logger.js'
 import {
   buildQQOfficialConversationId,
   buildQQOfficialIntents,
@@ -839,7 +843,7 @@ describe('QQ Gateway reconnect backoff', () => {
     expect(created).toBe(3)
   })
 
-  it('stops reconnecting after the failure budget and reports the connection as failed', async () => {
+  it('reports the connection as failed past the budget but keeps re-probing at the cap', async () => {
     vi.useFakeTimers()
     let created = 0
     const { manager, internals, connection, shard } = buildManager(() => {
@@ -847,15 +851,60 @@ describe('QQ Gateway reconnect backoff', () => {
     })
 
     internals.connectShard('agent-1', connection, shard)
-    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES + 5; i++) {
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES; i++) {
       await vi.advanceTimersByTimeAsync(60_000)
     }
 
-    expect(created).toBe(MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES)
     expect(connection.failureReason).toBeTruthy()
     expect(manager.getConnectionStatuses()).toEqual([
       { agentId: 'agent-1', socketOpen: false, failed: true, lastError: connection.failureReason },
     ])
+
+    // An outage longer than the backoff window must not park the channel
+    // offline forever: the probe continues at the 60s cap, so the connection
+    // comes back on its own once the network does.
+    const attemptsAtBudget = created
+    expect(attemptsAtBudget).toBeGreaterThanOrEqual(MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES)
+    await vi.advanceTimersByTimeAsync(60_000 * 5)
+    expect(created).toBeGreaterThan(attemptsAtBudget)
+  })
+
+  it('logs the exhausted budget once and warns periodically afterwards', async () => {
+    vi.useFakeTimers()
+    const { internals, connection, shard } = buildManager(() => {})
+
+    internals.connectShard('agent-1', connection, shard)
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES + 5; i++) {
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+
+    const exhaustedErrors = vi
+      .mocked(logger.error)
+      .mock.calls.filter(([, message]) => String(message).includes('reconnect budget exhausted'))
+    expect(exhaustedErrors).toHaveLength(1)
+    expect(vi.mocked(logger.warn).mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it('clears the failed status when the shard recovers after the budget was spent', async () => {
+    vi.useFakeTimers()
+    const { manager, internals, connection, shard } = buildManager(() => {})
+
+    internals.connectShard('agent-1', connection, shard)
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES + 2; i++) {
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+    expect(manager.getConnectionStatuses()[0].failed).toBe(true)
+
+    await internals.handleGatewayPayload(
+      'agent-1',
+      connection,
+      shard,
+      JSON.stringify({ op: 0, t: 'READY', s: 1, d: { session_id: 'session-1' } }),
+    )
+
+    expect(shard.consecutiveFailures).toBe(0)
+    expect(connection.failureReason).toBeUndefined()
+    expect(manager.getConnectionStatuses()[0].failed).toBe(false)
   })
 
   it('resets the failure budget once the shard is READY again', async () => {

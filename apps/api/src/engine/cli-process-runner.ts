@@ -80,6 +80,13 @@ interface ActiveProcess {
   pendingCloseResult?: CliProcessRunResult
   terminationAttempt?: Promise<void>
   finalize?: (result: CliProcessRunResult) => void
+  /**
+   * The first output-decoding failure, which the exit handler turns into the
+   * run's verdict. Recorded rather than finalized on the spot so the SIGTERM →
+   * SIGKILL escalation this failure triggers stays armed; see
+   * `failOnDecodeError`.
+   */
+  decodeError?: Error
 }
 
 interface LineDecoder {
@@ -338,19 +345,20 @@ export class CliProcessRunner {
        * that carries the Error back to the engine, which turns it into a run
        * failure. The child is terminated first — nothing reads its output any
        * more, and an orphan would hold its worktree and concurrency slot.
+       *
+       * The verdict is only *recorded* here; the exit handler finalizes it.
+       * Finalizing directly cleared the force-kill timer `terminate` had just
+       * armed and dropped the entry from `activeProcesses`, so a child that
+       * ignored SIGTERM was never escalated to SIGKILL and became invisible to
+       * `shutdown()` — the exact orphan this path exists to avoid.
        */
       const failOnDecodeError = (error: unknown) => {
+        // Later chunks from a broken decoder keep throwing; the first failure
+        // is the cause and the rest are its echoes.
+        if (active.decodeError) return
         logger.error({ taskId: options.taskId, error }, `${options.label} output decoding failed`)
+        active.decodeError = error instanceof Error ? error : new Error(String(error))
         this.terminate(options.taskId, 'cancelled')
-        finalize(
-          result({
-            reason: 'spawn-error',
-            exitCode: null,
-            signal: null,
-            stderr: stderrOutput.toString('utf8'),
-            error: error instanceof Error ? error : new Error(String(error)),
-          }),
-        )
       }
 
       if (abortSignal) {
@@ -392,12 +400,20 @@ export class CliProcessRunner {
       })
 
       child.once('close', (exitCode, signal) => {
-        const closeResult = result({
-          reason: active.terminationReason ?? 'completed',
-          exitCode,
-          signal: signal ?? null,
-          stderr: stderrOutput.toString('utf8'),
-        })
+        const closeResult = active.decodeError
+          ? result({
+              reason: 'spawn-error',
+              exitCode: null,
+              signal: null,
+              stderr: stderrOutput.toString('utf8'),
+              error: active.decodeError,
+            })
+          : result({
+              reason: active.terminationReason ?? 'completed',
+              exitCode,
+              signal: signal ?? null,
+              stderr: stderrOutput.toString('utf8'),
+            })
         if (
           active.terminationReason &&
           (active.terminationAttempt ||
@@ -411,11 +427,11 @@ export class CliProcessRunner {
 
       child.once('error', (error) => {
         const errorResult = result({
-          reason: active.terminationReason ?? 'spawn-error',
+          reason: active.decodeError ? 'spawn-error' : (active.terminationReason ?? 'spawn-error'),
           exitCode: null,
           signal: null,
           stderr: stderrOutput.toString('utf8'),
-          error,
+          error: active.decodeError ?? error,
         })
         if (active.terminationReason && active.terminationAttempt) {
           active.pendingCloseResult = errorResult
