@@ -371,6 +371,21 @@ describe('self-authored comment suppression', () => {
     expect([...stateRows.values()][0].state.requests['1'].comments).toBe(2)
   })
 
+  it('fires when the delta holds a colleague comment under the channel’s own', async () => {
+    // A colleague comments, the Agent replies before the next poll: delta 2 with
+    // the bot newest. Suppressing here would advance the fingerprint past the
+    // colleague's comment and lose it forever. Seeing its own comment echoed in
+    // the prompt is the cheaper failure.
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 3 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+  })
+
   it('still fires for a comment written by a colleague', async () => {
     seedOneComment()
     fetchForgeAccount.mockResolvedValue('a2wave-bot')

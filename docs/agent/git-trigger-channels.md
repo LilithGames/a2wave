@@ -39,6 +39,14 @@ equivalent.
   calls. These are not list pages and are not charged to the page budget.
 - GitLab **system** notes ("added 1 commit") are skipped: they never move
   `user_notes_count`, so they are never the comment that fired the event.
+- **Only a delta of exactly one comment can be suppressed.** The forges report
+  the *newest* author, not every author in the delta, so a delta of 2 — a
+  colleague commented and the Agent replied before the next poll — is fired even
+  though the newest comment is the Agent's own. Suppressing it would advance the
+  fingerprint past the colleague's comment and lose it for good; the cost of
+  firing is the Agent seeing its own comment echoed in the prompt, which is the
+  cheaper of the two failures. `diffRepoState` carries the size of the delta on
+  the fired event as `newComments` for exactly this check.
 - **Fails open.** An unresolvable account or author fires the Run. A missed review
   is a worse failure than a duplicate one, and the run cap still applies.
 - Suppression still **advances the fingerprint**. Holding it back would re-detect

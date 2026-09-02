@@ -103,7 +103,21 @@ describe('diffRepoState — event detection', () => {
       polledAt: POLLED_AT,
     })
 
-    expect(result.fired).toEqual([expect.objectContaining({ event: 'commented' })])
+    expect(result.fired).toEqual([expect.objectContaining({ event: 'commented', newComments: 1 })])
+  })
+
+  it('reports how many comments the delta holds', () => {
+    // The self-comment filter needs the size of the delta, not just its
+    // direction: only a delta that is solely the channel's own comment may be
+    // suppressed.
+    const result = diffRepoState({
+      previous: stateOf([makeRequest({ number: 1, comments: 2 })]),
+      observed: [makeRequest({ number: 1, comments: 5 })],
+      events: ALL_EVENTS,
+      polledAt: POLLED_AT,
+    })
+
+    expect(result.fired).toEqual([expect.objectContaining({ event: 'commented', newComments: 3 })])
   })
 
   it('does not fire when a comment is deleted', () => {
