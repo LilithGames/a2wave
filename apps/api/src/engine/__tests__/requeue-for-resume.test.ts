@@ -170,6 +170,45 @@ describe('taskQueueDb.requeueForResume', () => {
   })
 })
 
+describe('taskQueueDb.requeueForResume — owner fence', () => {
+  beforeEach(async () => {
+    await db.delete(runSteps)
+    await db.delete(runs)
+  })
+
+  it('refuses to requeue a run another replica re-promoted under its own id', async () => {
+    // ABA: the reaper judged 'dead-instance' dead, but between its scan and
+    // this write replica C requeued and re-promoted the run, stamping itself.
+    // A status-only CAS would requeue C's live run out from under it.
+    await seedRun({ ownerInstanceId: 'instance-c' })
+
+    expect(
+      await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'dead-instance'),
+    ).toBe(false)
+    const run = await loadRun()
+    expect(run?.status).toBe('running')
+    expect(run?.ownerInstanceId).toBe('instance-c')
+  })
+
+  it('requeues when the expected owner still matches', async () => {
+    await seedRun()
+
+    expect(
+      await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'dead-instance'),
+    ).toBe(true)
+    expect((await loadRun())?.status).toBe('queued')
+  })
+
+  it('requeues regardless of owner when no expected owner is given', async () => {
+    // Startup recovery is the single-owner case: this process IS the previous
+    // owner, and there is no peer whose claim could be fenced against.
+    await seedRun({ ownerInstanceId: 'anything' })
+
+    expect(await taskQueueDb.requeueForResume('run_1')).toBe(true)
+    expect((await loadRun())?.status).toBe('queued')
+  })
+})
+
 describe('taskQueueDb.requeueForResume — the resume mark is part of the transition', () => {
   beforeEach(async () => {
     await db.delete(runSteps)

@@ -67,7 +67,17 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
+  requeueForResume(
+    runId: string,
+    interruptionCode?: string,
+    /**
+     * Fences the transition on the owner the caller judged dead. Omitted by
+     * startup recovery, which is the previous owner itself; the orphaned-run
+     * reaper passes it, because a peer may re-promote the row under its own id
+     * between the liveness verdict and this write.
+     */
+    expectedOwnerInstanceId?: string,
+  ): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
