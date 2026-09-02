@@ -80,31 +80,46 @@ export abstract class BaseAgentEngine implements AgentEngine {
     const preparedRequest = this.withScopedMemoryToken(
       this.withDefaultWorkDir(request, defaultWorkDir),
     )
-    const memoryContextPromise = this.fetchMemoryContext(preparedRequest)
-    await Promise.all([
-      this.prepareSkills(preparedRequest),
-      this.prepareMcpServers(preparedRequest),
-      this.prepareKbDocs(preparedRequest),
-      memoryContextPromise,
-    ])
-    this.prepareMemoryOverride(preparedRequest)
-    const runtimeContext = prepareRuntimeContext(preparedRequest, {
-      defaultWorkDir,
-    })
-    const runtimeRequest: StreamExecuteRequest = { ...preparedRequest, runtimeContext }
-    const memoryContext = await memoryContextPromise
-    const enriched = this.enrichPrompt(runtimeRequest, model, memoryContext) as StreamExecuteRequest
-
+    // The prepare phase is INSIDE the try because `prepareMcpServers` writes
+    // live credentials in plaintext into a workspace that outlives the run
+    // (per-Agent worktrees are persistent). A sibling prepare step rejecting
+    // after that write — or `prepareRuntimeContext` / `enrichPrompt` throwing —
+    // would otherwise leave the secrets and the in-process refcount behind.
+    // Fallback attempts all reuse the same file, hence the single outer finally.
     try {
-      const result = await this.executeStreamWithModel(enriched, model)
-      return { ...result, durationMs: Date.now() - start }
-    } catch (err) {
-      return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+      const memoryContextPromise = this.fetchMemoryContext(preparedRequest)
+      let runtimeRequest: StreamExecuteRequest | undefined
+      let memoryContext: string | null = null
+      let modelCallStarted = false
+      try {
+        await Promise.all([
+          this.prepareSkills(preparedRequest),
+          this.prepareMcpServers(preparedRequest),
+          this.prepareKbDocs(preparedRequest),
+          memoryContextPromise,
+        ])
+        this.prepareMemoryOverride(preparedRequest)
+        const runtimeContext = prepareRuntimeContext(preparedRequest, {
+          defaultWorkDir,
+        })
+        runtimeRequest = { ...preparedRequest, runtimeContext }
+        memoryContext = await memoryContextPromise
+        const enriched = this.enrichPrompt(
+          runtimeRequest,
+          model,
+          memoryContext,
+        ) as StreamExecuteRequest
+        modelCallStarted = true
+        const result = await this.executeStreamWithModel(enriched, model)
+        return { ...result, durationMs: Date.now() - start }
+      } catch (err) {
+        // Only a failure of the model call itself is a fallback candidate. A
+        // prepare failure means no attempt was ever made, so retrying another
+        // model would repeat the same broken preparation.
+        if (!modelCallStarted || !runtimeRequest) throw err
+        return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+      }
     } finally {
-      // The MCP config this run wrote carries live credentials in plaintext and
-      // the workspace outlives the run (per-Agent worktrees are persistent), so
-      // it must not survive the CLI process. Fallback attempts all reuse the
-      // same file, hence the cleanup sits in the outer finally.
       await this.cleanupMcpServers(preparedRequest)
     }
   }
@@ -187,6 +202,7 @@ export abstract class BaseAgentEngine implements AgentEngine {
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
     const target = this.resolveMcpWorkspaceTarget(request)
     if (!target) return
+    this.syncedMcpRequests.delete(request)
     const { workDir, mcpConfigPath, servers } = target
     // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
     // that don't override it keep the original 3-arg call unchanged.
@@ -194,6 +210,8 @@ export abstract class BaseAgentEngine implements AgentEngine {
     await (dialect
       ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers, { dialect })
       : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers))
+    // Only a *completed* sync took a reference; see `cleanupMcpServers`.
+    this.syncedMcpRequests.add(request)
     logger.debug(
       { taskId: request.taskId, count: servers.length, mcpConfigPath },
       'Synced MCP servers to workspace',
@@ -208,10 +226,22 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * delivery is not a workspace file wrote nothing and clean up nothing.
    */
   protected async cleanupMcpServers(request: ExecuteRequest): Promise<void> {
+    // A run whose own sync never completed holds no reference. Releasing one
+    // anyway would decrement a *concurrent* same-worktree run's refcount to
+    // zero and delete the config out from under it, so this path is a no-op.
+    if (!this.syncedMcpRequests.has(request)) return
+    this.syncedMcpRequests.delete(request)
     const target = this.resolveMcpWorkspaceTarget(request)
     if (!target) return
     await cleanupManagedMcpConfigAsync(target.workDir, target.mcpConfigPath)
   }
+
+  /**
+   * Requests whose workspace MCP sync completed, and therefore hold exactly one
+   * reference to the managed config file that run-end cleanup must release.
+   * Weak so a request object that never reaches cleanup cannot leak.
+   */
+  private readonly syncedMcpRequests = new WeakSet<ExecuteRequest>()
 
   /** The workspace MCP config file this request writes, or null if it writes none. */
   private resolveMcpWorkspaceTarget(
