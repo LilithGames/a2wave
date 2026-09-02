@@ -25,6 +25,20 @@ export function isAuthRedirectExempt(pathname: string): boolean {
 }
 
 /**
+ * A 401 sends the browser to /login carrying the page it was on. The plain
+ * `/login` navigation this replaces was a full-page load, so it won out over the
+ * `<Navigate to="/login?returnTo=…">` AuthGuard renders concurrently — and a
+ * shared deep link (a chat page, a run) landed on the dashboard after signing in.
+ * LoginPage validates the value through `safeReturnTo()`.
+ */
+function redirectToLogin(): void {
+  const { pathname, search } = window.location
+  if (isAuthRedirectExempt(pathname)) return
+
+  window.location.href = `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`
+}
+
+/**
  * 浏览器认证态走 HttpOnly cookie（API 写入），fetch 用 credentials: 'include' 自动携带。
  * 这里不再读写 localStorage —— XSS 也偷不到 token。
  */
@@ -45,10 +59,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     if (res.status === 401) {
-      const { pathname } = window.location
-      if (!isAuthRedirectExempt(pathname)) {
-        window.location.href = '/login'
-      }
+      redirectToLogin()
     }
 
     const body = await res.json().catch(() => null)
@@ -100,10 +111,7 @@ export const api = {
 
     if (!res.ok) {
       if (res.status === 401) {
-        const { pathname } = window.location
-        if (!AUTH_REDIRECT_EXEMPT.has(pathname)) {
-          window.location.href = '/login'
-        }
+        redirectToLogin()
       }
       throw new Error(`HTTP_${res.status}`)
     }
