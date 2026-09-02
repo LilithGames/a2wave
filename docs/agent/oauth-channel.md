@@ -502,6 +502,31 @@ OAuth-published Agent answers `503 OAUTH_NOT_CONFIGURED`. The **CLI** has no SAM
 leaves `a2wave login --password` as the only CLI credential. Such deployments must configure OIDC
 in addition to SAML.
 
+### 8.1 SAML `InResponseTo` state is durable
+
+Web SAML sign-in runs with `validateInResponseTo: always` — an assertion is only
+accepted as the answer to an AuthnRequest this SP actually issued, which is what
+blocks IdP-initiated injection and replay. That guarantee needs somewhere to
+remember the issued request ids, and node-saml's default is an in-memory `Map` in
+whichever process built the redirect.
+
+That default is wrong for anything but a single, never-restarted container. The IdP
+form-POSTs the assertion to `/api/auth/saml/acs` through the load balancer, so it
+lands on an arbitrary replica; a restart or a deploy loses the ids just as
+effectively. Either way the login fails with `SAML_RESPONSE_UNSOLICITED`, which
+reads like an IdP misconfiguration and sends the administrator looking in the
+wrong place.
+
+The ids therefore live in the `saml_requests` table
+(`createSamlRequestCacheProvider()` in `apps/api/src/lib/saml.ts`), so the state
+is shared across replicas and survives restarts. Rows are deleted when the ACS
+consumes them; abandoned ones expire after `SAML_REQUEST_EXPIRATION_MS` (8h,
+node-saml's own `requestIdExpirationPeriodMs` default). **Expiry is enforced on
+read as well as by the hourly sweeper** — a late or not-yet-started sweep must
+never widen the window in which an id is replayable. The sweeper starts lazily
+the first time a SAML instance is built, so a deployment with no SAML configured
+holds no timer.
+
 Two wording traps when writing user-facing copy:
 
 - "enterprise SSO" covers both protocols while this channel covers only one, so name OIDC
