@@ -67,7 +67,17 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
+  requeueForResume(
+    runId: string,
+    interruptionCode?: string,
+    /**
+     * Fences the transition on the owner the caller judged dead. Omitted by
+     * startup recovery, which is the previous owner itself; the orphaned-run
+     * reaper passes it, because a peer may re-promote the row under its own id
+     * between the liveness verdict and this write.
+     */
+    expectedOwnerInstanceId?: string,
+  ): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -392,6 +402,12 @@ export async function recoverOnStartup(
 
   for (const agentId of activeAgentIds) {
     if (hooks.recoverInFlight !== false) {
+      // Ids this pass just returned to the queue for resume. The Feishu sweep
+      // below re-reads the queue and would otherwise fail the very rows the
+      // running loop rescued: the resume attempt is consumed, the stats lie,
+      // and the surviving feishu_pending_messages row replays the prompt from
+      // scratch — the side-effect replay resume exists to prevent.
+      const requeuedForResume = new Set<string>()
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
         // Requeue rather than abandon when the run recorded the session it was
@@ -433,6 +449,7 @@ export async function recoverOnStartup(
               logger.warn({ error, runId: run.id }, 'requeue hook failed')
             }
           }
+          requeuedForResume.add(run.id)
           stats.runningResumed++
           continue
         }
@@ -454,7 +471,7 @@ export async function recoverOnStartup(
       // run without Feishu context and then block replay).
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        if (run.triggerSource === 'feishu') {
+        if (run.triggerSource === 'feishu' && !requeuedForResume.has(run.id)) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++
         }

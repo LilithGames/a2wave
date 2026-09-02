@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or } from 'drizzle-orm'
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
 import {
@@ -286,7 +286,7 @@ export interface DeadInstanceWorkloadReaperDeps {
    * status, results/steps, and Evaluation audit back together so the next tick
    * can retry instead of observing a terminal-but-incomplete workload.
    */
-  claimRun: (runId: string) => Promise<boolean>
+  claimRun: (runId: string, expectedOwnerInstanceId: string) => Promise<boolean>
   claimEvaluation: (taskId: string) => Promise<boolean>
   /** Synchronize non-transactional external state after the Run settlement commits. */
   afterRunSettled: (runId: string) => Promise<void>
@@ -305,13 +305,29 @@ const REAPABLE_EVALUATION_STATUSES = ['running', 'pending', 'queued'] as const
  * `.returning()` row count is the claim result — the two drivers disagree
  * about `changes`/`rowCount`, so it is the only portable answer.
  */
-async function claimRunForReap(runId: string): Promise<boolean> {
+export async function claimRunForReap(
+  runId: string,
+  expectedOwnerInstanceId: string,
+): Promise<boolean> {
   const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
   return withScmPathMutation(async (tx) => {
     const claimed = await tx
       .update(runs)
       .set({ status: 'failed', result: { error: reason }, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), inArray(runs.status, [...REAPABLE_RUN_STATUSES])))
+      .where(
+        and(
+          eq(runs.id, runId),
+          inArray(runs.status, [...REAPABLE_RUN_STATUSES]),
+          // The owner fence. Status alone is an ABA check: a peer that
+          // requeued and re-promoted this run leaves it 'running' again, under
+          // itself, and settling it would kill live work. A NULL owner is not
+          // a mismatch but an absence — ownership is stamped only while a run
+          // is running, so the pending and queued rows this pass also settles
+          // legitimately carry none, and an equality-only fence would strand
+          // exactly them.
+          or(isNull(runs.ownerInstanceId), eq(runs.ownerInstanceId, expectedOwnerInstanceId)),
+        ),
+      )
       .returning({ id: runs.id })
     if (claimed.length === 0) return false
     await tx
@@ -451,6 +467,9 @@ export async function failScmWorkloadsOfDeadInstances(
       type: lease.workloadType,
       workloadId: lease.workloadId,
     }
+    // Non-null by the filter above; restated so the owner fence below is typed.
+    const ownerInstanceId = lease.ownerInstanceId
+    if (!ownerInstanceId) continue
     if (deps.isWorkloadLocallyActive(identity)) continue
     if (!isLeaseOwnerDead(lease, liveness, now)) continue
     if (await isWorkloadTerminal(deps.db as WorkloadStatusExecutor, identity)) continue
@@ -462,7 +481,7 @@ export async function failScmWorkloadsOfDeadInstances(
     // The settlement itself uses a status CAS, because completion or
     // cancellation may still win between the read above and the transaction.
     if (identity.type === 'run') {
-      if (!(await deps.claimRun(identity.workloadId))) continue
+      if (!(await deps.claimRun(identity.workloadId, ownerInstanceId))) continue
       await deps.afterRunSettled(identity.workloadId)
     } else {
       if (!(await deps.claimEvaluation(identity.workloadId))) continue

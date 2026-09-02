@@ -13,6 +13,17 @@ import {
 } from './windows-process-tree.js'
 
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024
+/**
+ * Cap on one line of Agent CLI stdout/stderr.
+ *
+ * Generous on purpose: a stream-json event legitimately carries a whole tool
+ * payload on a single line, and truncating real output would corrupt the
+ * parse. The cap is a fuse, not a policy — without it a newline-free stream
+ * grows the decoder's `remainder` unbounded, and past V8's maximum string
+ * length the concat throws RangeError inside a stream 'data' handler, outside
+ * the run promise, which takes the whole API process down.
+ */
+const MAX_AGENT_LINE_CHARS = 8 * 1024 * 1024
 /** SIGTERM → SIGKILL grace for one agent CLI. Part of the fail-stop budget. */
 export const FORCE_KILL_DELAY_MS = 5_000
 
@@ -78,6 +89,8 @@ interface LineDecoder {
 
 interface LineDecoderOptions {
   maxLineChars?: number
+  /** Called with the character count of each dropped oversized line. */
+  onOversizedLine?: (discardedChars: number) => void
 }
 
 export function createLineDecoder(
@@ -88,6 +101,14 @@ export function createLineDecoder(
   const maxLineChars = Math.max(0, options.maxLineChars ?? Number.POSITIVE_INFINITY)
   let remainder = ''
   let discardingOversizedLine = false
+  let discardedChars = 0
+
+  const reportDiscard = () => {
+    if (discardedChars === 0) return
+    const dropped = discardedChars
+    discardedChars = 0
+    options.onOversizedLine?.(dropped)
+  }
 
   const consume = (text: string) => {
     let start = 0
@@ -97,10 +118,16 @@ export function createLineDecoder(
       const fragment = text.slice(start, completeLine ? newline : undefined)
 
       if (discardingOversizedLine) {
-        if (completeLine) discardingOversizedLine = false
+        discardedChars += fragment.length
+        if (completeLine) {
+          discardingOversizedLine = false
+          reportDiscard()
+        }
       } else if (remainder.length + fragment.length > maxLineChars) {
+        discardedChars += remainder.length + fragment.length
         remainder = ''
         discardingOversizedLine = !completeLine
+        if (completeLine) reportDiscard()
       } else if (completeLine) {
         onLine(`${remainder}${fragment}`)
         remainder = ''
@@ -122,6 +149,7 @@ export function createLineDecoder(
       if (!discardingOversizedLine && remainder.trim()) onLine(remainder)
       remainder = ''
       discardingOversizedLine = false
+      reportDiscard()
     },
   }
 }
@@ -242,9 +270,26 @@ export class CliProcessRunner {
     return new Promise((resolve) => {
       let finalized = false
       let stderrOutput: Buffer = Buffer.alloc(0)
-      const stdoutDecoder = createLineDecoder(options.onStdoutLine)
+      // One warning per process: an Agent that emits one oversized line
+      // usually emits many, and a line per drop would bury the run's real log.
+      let oversizedLineWarned = false
+      const onOversizedLine = (discardedChars: number) => {
+        if (oversizedLineWarned) return
+        oversizedLineWarned = true
+        logger.warn(
+          { taskId: options.taskId, discardedChars, maxLineChars: MAX_AGENT_LINE_CHARS },
+          `${options.label} dropped an oversized output line; later drops are not logged`,
+        )
+      }
+      const stdoutDecoder = createLineDecoder(options.onStdoutLine, {
+        maxLineChars: MAX_AGENT_LINE_CHARS,
+        onOversizedLine,
+      })
       const stderrDecoder = options.parseStderrLines
-        ? createLineDecoder(options.onStdoutLine)
+        ? createLineDecoder(options.onStdoutLine, {
+            maxLineChars: MAX_AGENT_LINE_CHARS,
+            onOversizedLine,
+          })
         : undefined
       const processLogDecoder = createLineDecoder(
         (line) => emitExecutionProcessLogLine(options.taskId, line),
@@ -268,15 +313,45 @@ export class CliProcessRunner {
           this.activeProcesses.delete(options.taskId)
         }
         if (result.reason !== 'spawn-error') {
-          stdoutDecoder.flush()
-          stderrDecoder?.flush()
-          processLogDecoder.flush()
+          try {
+            stdoutDecoder.flush()
+            stderrDecoder?.flush()
+            processLogDecoder.flush()
+          } catch (error) {
+            // The verdict is already decided here; only a trailing partial
+            // line is at stake, and throwing would escape the 'close' handler.
+            logger.error({ taskId: options.taskId, error }, `${options.label} output flush failed`)
+          }
         }
         runCleanup(options)
         active.resolveCompletion()
         resolve(result)
       }
       active.finalize = finalize
+
+      /**
+       * Fail the run, never the process, when decoding output throws.
+       *
+       * The stream 'data' handlers run outside this promise's try, so an
+       * exception escaping one is an uncaught exception that ends the API
+       * process. 'spawn-error' is reused deliberately: it is the only reason
+       * that carries the Error back to the engine, which turns it into a run
+       * failure. The child is terminated first — nothing reads its output any
+       * more, and an orphan would hold its worktree and concurrency slot.
+       */
+      const failOnDecodeError = (error: unknown) => {
+        logger.error({ taskId: options.taskId, error }, `${options.label} output decoding failed`)
+        this.terminate(options.taskId, 'cancelled')
+        finalize(
+          result({
+            reason: 'spawn-error',
+            exitCode: null,
+            signal: null,
+            stderr: stderrOutput.toString('utf8'),
+            error: error instanceof Error ? error : new Error(String(error)),
+          }),
+        )
+      }
 
       if (abortSignal) {
         active.abortListener = () => this.terminate(options.taskId, 'cancelled')
@@ -294,18 +369,26 @@ export class CliProcessRunner {
       })
 
       child.stdout?.on('data', (value: Buffer | string) => {
-        stdoutDecoder.write(Buffer.isBuffer(value) ? value : Buffer.from(value))
+        try {
+          stdoutDecoder.write(Buffer.isBuffer(value) ? value : Buffer.from(value))
+        } catch (error) {
+          failOnDecodeError(error)
+        }
       })
 
       child.stderr?.on('data', (value: Buffer | string) => {
-        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
-        stderrOutput = appendBoundedTail(stderrOutput, chunk, this.stderrLimitBytes)
-        processLogDecoder.write(chunk)
-        logger.debug(
-          { taskId: options.taskId },
-          `[${options.label} STDERR] ${chunk.toString('utf8', 0, 500)}`,
-        )
-        stderrDecoder?.write(chunk)
+        try {
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+          stderrOutput = appendBoundedTail(stderrOutput, chunk, this.stderrLimitBytes)
+          processLogDecoder.write(chunk)
+          logger.debug(
+            { taskId: options.taskId },
+            `[${options.label} STDERR] ${chunk.toString('utf8', 0, 500)}`,
+          )
+          stderrDecoder?.write(chunk)
+        } catch (error) {
+          failOnDecodeError(error)
+        }
       })
 
       child.once('close', (exitCode, signal) => {

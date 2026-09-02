@@ -284,6 +284,18 @@ revisiting when this area is next touched:
   Evaluation task/results/audit commit atomically; if any database write fails,
   the workload remains non-terminal and the next tick retries the whole
   settlement rather than releasing a half-written terminal state.
+- **A reap settles the owner it judged, not merely the status it saw.** Both
+  dead-owner passes — the lease-driven one and the orphaned-run reaper that
+  covers temp-workspace Runs holding no lease — snapshot `owner_instance_id`
+  before deciding liveness, so every write they make (fail, or requeue for
+  resume) carries that owner in its WHERE clause alongside the status. Status
+  alone is an ABA check: a peer may requeue and re-promote the Run in the
+  window, leaving it `running` again under itself, and the settlement would
+  then kill live work. An owner mismatch is not an error — it means another
+  replica settled the workload first, the path both passes already have. A NULL
+  owner is an absence, not a mismatch: ownership is stamped only while a Run
+  runs, so the pending and queued rows the lease-driven pass also settles
+  legitimately carry none.
 - PostgreSQL startup must still not reset in-progress Run, Evaluation, sync, or
   index rows merely because another replica started: another replica booting
   says nothing about a peer. Recovery of a peer's work is the heartbeat-driven

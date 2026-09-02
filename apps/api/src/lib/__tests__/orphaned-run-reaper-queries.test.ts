@@ -166,7 +166,7 @@ describe('claimRunForReap', () => {
       createdAt: NOW,
     } as never)
 
-    expect(await claimRunForReap('run_1')).toBe(true)
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(true)
 
     const [run] = await db.select().from(runs)
     expect(run?.status).toBe('failed')
@@ -181,9 +181,21 @@ describe('claimRunForReap', () => {
     // Completion can win between the liveness read and this write.
     await seedRun({ status: 'completed' })
 
-    expect(await claimRunForReap('run_1')).toBe(false)
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(false)
     const [run] = await db.select().from(runs)
     expect(run?.status).toBe('completed')
+  })
+
+  it('loses the CAS when another replica re-promoted the run under its own id', async () => {
+    // ABA: replica B requeued and re-promoted this run since the scan, so the
+    // row is 'running' again — under B, whose process is very much alive. A
+    // status-only CAS would kill that live run.
+    await seedRun({ ownerInstanceId: 'instance-c' })
+
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(false)
+    const [run] = await db.select().from(runs)
+    expect(run?.status).toBe('running')
+    expect(run?.ownerInstanceId).toBe('instance-c')
   })
 
   it('leaves steps of other runs untouched', async () => {
@@ -197,7 +209,7 @@ describe('claimRunForReap', () => {
       createdAt: NOW,
     } as never)
 
-    expect(await claimRunForReap('run_1')).toBe(true)
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(true)
 
     const [step] = await db.select().from(runSteps)
     expect(step?.status).toBe('running')

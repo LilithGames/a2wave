@@ -760,6 +760,89 @@ describe('recoverOnStartup', () => {
     expect(stats.feishuQueuedReset).toBe(1)
   })
 
+  it('does not force-fail a Feishu run the same pass just requeued for resume', async () => {
+    // Stateful fake: getRunsByStatus reflects the requeue exactly as the
+    // database does. With a static mock the requeued row never appears in the
+    // 'queued' set and the bug is invisible — the Feishu sweep re-read the
+    // queue after the running loop and failed the row it had just rescued,
+    // consuming the resume and letting feishu_pending_messages replay the
+    // prompt from scratch, side effects and all.
+    const run = {
+      id: 'run_feishu_running',
+      triggerSource: 'feishu',
+      triggerSessionId: 'msg_1',
+      status: 'running',
+      resumePending: undefined as string | undefined,
+    }
+    const row = () => ({
+      id: run.id,
+      triggerSource: run.triggerSource,
+      triggerSessionId: run.triggerSessionId,
+    })
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_agentId, status) => (run.status === status ? [row()] : [])),
+      requeueForResume: vi.fn(async (runId: string, interruptionCode?: string) => {
+        if (runId !== run.id) return false
+        run.status = 'queued'
+        run.resumePending = interruptionCode
+        return true
+      }),
+      failRunWithStructuredReason: vi.fn(async (runId: string) => {
+        if (runId === run.id) run.status = 'failed'
+      }),
+      updateRunStatus: vi.fn(async (runId: string, status: string) => {
+        if (runId === run.id) run.status = status
+      }),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: async () => true,
+    })
+
+    expect(run.status).toBe('queued')
+    expect(run.resumePending).toBe(FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code)
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
+    expect(stats.runningResumed).toBe(1)
+    expect(stats.feishuQueuedReset).toBe(0)
+  })
+
+  it('still resets a Feishu run that was already queued before this pass', async () => {
+    // The companion of the test above: only the ids this pass requeued are
+    // exempt, never the whole Feishu queue.
+    const statuses = new Map([
+      ['run_feishu_running', 'running'],
+      ['run_feishu_queued', 'queued'],
+    ])
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_agentId, status) =>
+        [...statuses.entries()]
+          .filter(([, rowStatus]) => rowStatus === status)
+          .map(([id]) => ({ id, triggerSource: 'feishu', triggerSessionId: 'msg_1' })),
+      ),
+      requeueForResume: vi.fn(async (runId: string) => {
+        statuses.set(runId, 'queued')
+        return true
+      }),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: async () => true,
+    })
+
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledExactlyOnceWith(
+      'run_feishu_queued',
+      FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY,
+    )
+    expect(stats.runningResumed).toBe(1)
+    expect(stats.feishuQueuedReset).toBe(1)
+  })
+
   it('无 running 也无 queued 时，返回全零统计', async () => {
     const db = createMockDb({
       countRunsByStatus: vi.fn().mockResolvedValue(0),
