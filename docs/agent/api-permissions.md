@@ -98,6 +98,13 @@ ACL.
   sources predating the limit stay editable.
 - **Agent PATCH diffs resource ids**: already-mounted skill/mcp/kb are not removed
   by an update that omits them.
+- **Clone and import project bindings onto the caller**: `POST /:id/clone` and the
+  ZIP/URL import hand the new Agent to the caller, so MCP, Skills, KB documents and
+  the SCM source are each kept only if the caller could bind them themselves (admin
+  sees all). Clone silently drops the rest — SCM falls back to `workspaceType: 'temp'`
+  and the dropped ids land in the `agent.clone` audit `details`; import warns "does
+  not exist on the target instance" and clears the binding, since an archive resolves
+  its references by *name* and a name is not an authorization.
 - **Two upload paths with different lifetimes.** `/api/uploads` is for icons —
   small, and **permanently public** once written. `/api/attachments` is staged: it
   returns a token, obeys `settings.attachments` limits/TTL, and 404s after expiry.

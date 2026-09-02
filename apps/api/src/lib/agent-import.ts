@@ -395,11 +395,15 @@ function assertImportedMcpUrlsSafe(mcp: ExportedMcpServer): void {
   }
 }
 
-/** Import an Agent from a ZIP buffer. `allowStdio` gates stdio MCP servers to admins. */
+/**
+ * Import an Agent from a ZIP buffer. `isAdminImporter` is the caller's admin flag: it
+ * gates stdio MCP servers and widens name-resolved bindings past the importer's own
+ * resources, mirroring the owner filter the create/update routes apply.
+ */
 export async function importAgentFromZip(
   zipBuffer: Buffer,
   userId: string,
-  allowStdio = false,
+  isAdminImporter = false,
 ): Promise<ImportResult> {
   if (zipBuffer.length > MAX_IMPORT_ZIP_BYTES) {
     throw new Error(`ZIP file must not exceed ${MAX_IMPORT_ZIP_BYTES / 1024 / 1024}MB`)
@@ -463,7 +467,7 @@ export async function importAgentFromZip(
       // stdio MCP = arbitrary host command execution; non-admin imports must not
       // create one (same bar as the create route). Reject the whole import so a
       // crafted ZIP can't smuggle in an executable stdio server.
-      if (!allowStdio && importedMcpIntroducesStdio(mcpData)) {
+      if (!isAdminImporter && importedMcpIntroducesStdio(mcpData)) {
         throw new Error('Only admin can import agents that define stdio MCP servers')
       }
       assertImportedMcpUrlsSafe(mcpData)
@@ -503,7 +507,7 @@ export async function importAgentFromZip(
           type: mcpData.type,
           groupConfig: mcpData.groupConfig as GroupConfig | null,
           requested: undefined,
-          isAdmin: allowStdio,
+          isAdmin: isAdminImporter,
           fallback: 'private',
         }),
         userId,
@@ -723,20 +727,27 @@ export async function importAgentFromZip(
     }
 
     // 6. Resolve SCM Source by name
+    //
+    // An archive names its bindings, and a name is not an authorization: resolving
+    // one without an owner condition let any importer mount another user's private
+    // source — cloned with that source's stored credentials — just by naming it.
+    // Candidates are therefore filtered to what the importer may bind, exactly as
+    // the create/update bind checks do; a miss takes the existing "does not exist
+    // on the target instance" path and leaves the binding cleared.
+    const isBindableByImporter = (row: { userId: string | null }): boolean =>
+      isAdminImporter || row.userId === userId
     let scmSourceId: string | null = null
     if (exportedAgent.scmSourceRef) {
-      const scm = (
-        await tx
-          .select()
-          .from(scmSources)
-          .where(
-            and(
-              eq(scmSources.name, exportedAgent.scmSourceRef),
-              isNull(scmSources.deletionRequestedAt),
-            ),
-          )
-          .limit(1)
-      )[0]
+      const scmCandidates = await tx
+        .select({ id: scmSources.id, userId: scmSources.userId })
+        .from(scmSources)
+        .where(
+          and(
+            eq(scmSources.name, exportedAgent.scmSourceRef),
+            isNull(scmSources.deletionRequestedAt),
+          ),
+        )
+      const scm = scmCandidates.find(isBindableByImporter)
       if (scm) {
         scmSourceId = scm.id
       } else {
@@ -749,9 +760,11 @@ export async function importAgentFromZip(
     // 7. Resolve KB Documents by name
     const kbDocIds: string[] = []
     for (const docName of exportedAgent.kbDocumentRefs) {
-      const doc = (
-        await tx.select().from(kbDocuments).where(eq(kbDocuments.name, docName)).limit(1)
-      )[0]
+      const docCandidates = await tx
+        .select({ id: kbDocuments.id, userId: kbDocuments.userId })
+        .from(kbDocuments)
+        .where(eq(kbDocuments.name, docName))
+      const doc = docCandidates.find(isBindableByImporter)
       if (doc) {
         kbDocIds.push(doc.id)
       } else {
@@ -1142,7 +1155,7 @@ export async function importAgentFromUrl(
   url: string,
   userId: string,
   headers?: Record<string, string>,
-  allowStdio = false,
+  isAdminImporter = false,
   fetchOptions: StreamingSafeFetchOptions & { timeoutMs?: number } = {},
 ): Promise<ImportResult> {
   // Preserve the import-specific protocol/literal-host error contract before
@@ -1195,7 +1208,7 @@ export async function importAgentFromUrl(
 
   try {
     const zipBuffer = await Promise.race([download(), timeout])
-    return importAgentFromZip(zipBuffer, userId, allowStdio)
+    return importAgentFromZip(zipBuffer, userId, isAdminImporter)
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle)
   }
