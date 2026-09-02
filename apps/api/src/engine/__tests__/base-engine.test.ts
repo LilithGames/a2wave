@@ -499,6 +499,41 @@ describe('BaseAgentEngine.executeStream — prepare* gating', () => {
     expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
   })
 
+  it('cleans up a sync still in flight when a sibling prepare step fails', async () => {
+    // The sibling rejects while `prepareMcpServers` is mid-write, so the sync
+    // has taken no reference yet when the outer finally runs. Cleanup must wait
+    // for the write to land instead of walking away from the credentials it is
+    // about to put on disk.
+    const engine = new TestEngine('claude')
+    let landSync: () => void = () => {}
+    syncMcpToWorkspaceAtPathAsyncMock.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          landSync = resolve
+        }),
+    )
+    syncSkillsToWorkspaceAsyncMock.mockRejectedValue(new Error('skill sync failed'))
+
+    const run = engine.executeStream(
+      makeReq({
+        agentConfig: {
+          skillsDir: '.claude/skills',
+          resolvedSkills: [],
+          mcpConfigPath: '.mcp.json',
+          resolvedMcpServers: [{ id: 'mcp_1' }],
+        } as never,
+      }),
+    )
+    const settled = expect(run).rejects.toThrow('skill sync failed')
+    // Give the sibling rejection time to reach the outer finally, then let the
+    // in-flight write complete.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    landSync()
+    await settled
+
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
   it('does not release a refcount when its own MCP sync never completed', async () => {
     // A never-incremented refcount must stay untouched: decrementing it would
     // pull a concurrent same-worktree run's config out from under it.

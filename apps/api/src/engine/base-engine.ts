@@ -202,16 +202,25 @@ export abstract class BaseAgentEngine implements AgentEngine {
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
     const target = this.resolveMcpWorkspaceTarget(request)
     if (!target) return
-    this.syncedMcpRequests.delete(request)
     const { workDir, mcpConfigPath, servers } = target
     // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
     // that don't override it keep the original 3-arg call unchanged.
     const dialect = this.mcpDialect
-    await (dialect
-      ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers, { dialect })
-      : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers))
-    // Only a *completed* sync took a reference; see `cleanupMcpServers`.
-    this.syncedMcpRequests.add(request)
+    const sync = (async () =>
+      dialect
+        ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers, { dialect })
+        : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers))()
+    // Recorded *before* the await: a sibling prepare step rejecting mid-write
+    // must not let run-end cleanup walk away from a sync that is still landing
+    // plaintext credentials in the workspace. See `cleanupMcpServers`.
+    this.mcpSyncOutcomes.set(
+      request,
+      sync.then(
+        () => true,
+        () => false,
+      ),
+    )
+    await sync
     logger.debug(
       { taskId: request.taskId, count: servers.length, mcpConfigPath },
       'Synced MCP servers to workspace',
@@ -226,22 +235,29 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * delivery is not a workspace file wrote nothing and clean up nothing.
    */
   protected async cleanupMcpServers(request: ExecuteRequest): Promise<void> {
-    // A run whose own sync never completed holds no reference. Releasing one
-    // anyway would decrement a *concurrent* same-worktree run's refcount to
-    // zero and delete the config out from under it, so this path is a no-op.
-    if (!this.syncedMcpRequests.has(request)) return
-    this.syncedMcpRequests.delete(request)
+    const outcome = this.mcpSyncOutcomes.get(request)
+    // This run's engine writes no workspace config at all, so there is nothing
+    // to release.
+    if (!outcome) return
+    this.mcpSyncOutcomes.delete(request)
+    // A sync still in flight is awaited first: its write is what created the
+    // reference this call has to release.
+    //
+    // A run whose own sync *failed* holds no reference. Releasing one anyway
+    // would decrement a concurrent same-worktree run's refcount to zero and
+    // delete the config out from under it, so that path is a no-op.
+    if (!(await outcome)) return
     const target = this.resolveMcpWorkspaceTarget(request)
     if (!target) return
     await cleanupManagedMcpConfigAsync(target.workDir, target.mcpConfigPath)
   }
 
   /**
-   * Requests whose workspace MCP sync completed, and therefore hold exactly one
-   * reference to the managed config file that run-end cleanup must release.
+   * Per-request workspace MCP sync, resolving true once the write completed and
+   * took its reference to the managed config file, false if it failed.
    * Weak so a request object that never reaches cleanup cannot leak.
    */
-  private readonly syncedMcpRequests = new WeakSet<ExecuteRequest>()
+  private readonly mcpSyncOutcomes = new WeakMap<ExecuteRequest, Promise<boolean>>()
 
   /** The workspace MCP config file this request writes, or null if it writes none. */
   private resolveMcpWorkspaceTarget(
