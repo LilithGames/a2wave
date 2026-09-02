@@ -12,8 +12,10 @@ vi.mock('../kb-sync.js', () => ({
 }))
 
 const syncMcpToWorkspaceAtPathAsyncMock = vi.fn()
+const cleanupManagedMcpConfigAsyncMock = vi.fn()
 vi.mock('../mcp-sync.js', () => ({
   syncMcpToWorkspaceAtPathAsync: (...a: unknown[]) => syncMcpToWorkspaceAtPathAsyncMock(...a),
+  cleanupManagedMcpConfigAsync: (...a: unknown[]) => cleanupManagedMcpConfigAsyncMock(...a),
 }))
 
 const syncSkillsToWorkspaceAsyncMock = vi.fn()
@@ -51,8 +53,7 @@ import {
 } from '../../lib/agent-memory-token.js'
 import { BaseAgentEngine } from '../base-engine.js'
 import { assembleSystemPrompt, buildPromptParts } from '../prompt-builder.js'
-import type { AgentRuntimeContext } from '../types.js'
-import type { ExecuteResult, StreamExecuteRequest } from '../types.js'
+import type { AgentRuntimeContext, ExecuteResult, StreamExecuteRequest } from '../types.js'
 
 function makeRuntimeContext(agentId = 'agt_test'): AgentRuntimeContext {
   return {
@@ -143,6 +144,7 @@ beforeEach(() => {
   clearAgentTokenStoreForTest()
   syncKbDocsToWorkspaceAsyncMock.mockReset()
   syncMcpToWorkspaceAtPathAsyncMock.mockReset()
+  cleanupManagedMcpConfigAsyncMock.mockReset()
   syncSkillsToWorkspaceAsyncMock.mockReset()
   isModelErrorMock.mockReset()
   selectFallbackModelMock.mockReset()
@@ -451,6 +453,42 @@ describe('BaseAgentEngine.executeStream — prepare* gating', () => {
     )
     // Byte-identical call shape for every other provider.
     expect(syncMcpToWorkspaceAtPathAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json', [])
+  })
+
+  it('deletes the MCP config it wrote once the run finishes', async () => {
+    const engine = new TestEngine('claude')
+    await engine.executeStream(
+      makeReq({
+        agentConfig: { mcpConfigPath: '.mcp.json', resolvedMcpServers: [{ id: 'mcp_1' }] } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('deletes the MCP config even when the run fails', async () => {
+    const engine = new TestEngine('claude', async () => {
+      throw new Error('boom')
+    })
+    isModelErrorMock.mockReturnValue(false)
+    await engine.executeStream(
+      makeReq({
+        agentConfig: { mcpConfigPath: '.mcp.json', resolvedMcpServers: [] } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('does not clean up a config it never wrote', async () => {
+    const engine = new TestEngine('cursor')
+    await engine.executeStream(
+      makeReq({
+        agentConfig: {
+          mcpDelivery: { mode: 'runtime-injection' },
+          resolvedMcpServers: [{ id: 'mcp_1' }],
+        } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
   })
 
   it('skips KB sync when there are no docs', async () => {

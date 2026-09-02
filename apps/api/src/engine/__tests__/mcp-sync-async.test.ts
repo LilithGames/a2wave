@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ResolvedMcpServer } from '../mcp-sync.js'
-import { syncMcpToWorkspaceAtPathAsync } from '../mcp-sync.js'
+import { cleanupManagedMcpConfigAsync, syncMcpToWorkspaceAtPathAsync } from '../mcp-sync.js'
 
 const RELATIVE = '.cursor/mcp.json'
 let tmp: string
@@ -188,5 +188,66 @@ describe('syncMcpToWorkspaceAtPathAsync', () => {
       cwd: '/work',
       env: { TOKEN: 'x' },
     })
+  })
+})
+
+describe('cleanupManagedMcpConfigAsync', () => {
+  const configPath = () => path.join(tmp, RELATIVE)
+  const markerPath = () => `${path.join(tmp, RELATIVE)}.a2wave-managed`
+
+  it('removes a config file the platform created, secrets and marker included', async () => {
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [
+      {
+        name: 'api',
+        type: 'http',
+        url: 'https://mcp.example.com',
+        headers: { Authorization: 'Bearer secret-token' },
+      },
+    ])
+    expect(readFileSync(configPath(), 'utf-8')).toContain('secret-token')
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(existsSync(configPath())).toBe(false)
+    expect(existsSync(markerPath())).toBe(false)
+  })
+
+  it('keeps a user-authored config file and strips only managed entries', async () => {
+    mkdirSync(path.dirname(configPath()), { recursive: true })
+    writeFileSync(
+      configPath(),
+      JSON.stringify({ mcpServers: { mine: { command: 'mine' } }, other: true }),
+    )
+
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(existsSync(configPath())).toBe(true)
+    expect(readConfig()).toEqual({ mcpServers: { mine: { command: 'mine' } }, other: true })
+    expect(existsSync(markerPath())).toBe(false)
+  })
+
+  it('never touches a config file that predates the run (no marker)', async () => {
+    mkdirSync(path.dirname(configPath()), { recursive: true })
+    writeFileSync(configPath(), JSON.stringify({ mcpServers: { mine: { command: 'mine' } } }))
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(readConfig()).toEqual({ mcpServers: { mine: { command: 'mine' } } })
+  })
+
+  it('keeps the config alive until the last sibling run in the workspace releases it', async () => {
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+    expect(existsSync(configPath())).toBe(true)
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+    expect(existsSync(configPath())).toBe(false)
+  })
+
+  it('is a no-op when nothing was ever written', async () => {
+    await expect(cleanupManagedMcpConfigAsync(tmp, RELATIVE)).resolves.toBeUndefined()
   })
 })

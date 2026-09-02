@@ -24,6 +24,7 @@ import { buildMemoryContext, buildRecallInstruction } from '../lib/memory-contex
 import { removeMemoryOverride } from '../lib/memory-storage.js'
 import { type KbDocFile, syncKbDocsToWorkspaceAsync } from './kb-sync.js'
 import {
+  cleanupManagedMcpConfigAsync,
   type McpConfigDialect,
   type ResolvedMcpServer,
   syncMcpToWorkspaceAtPathAsync,
@@ -99,6 +100,12 @@ export abstract class BaseAgentEngine implements AgentEngine {
       return { ...result, durationMs: Date.now() - start }
     } catch (err) {
       return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+    } finally {
+      // The MCP config this run wrote carries live credentials in plaintext and
+      // the workspace outlives the run (per-Agent worktrees are persistent), so
+      // it must not survive the CLI process. Fallback attempts all reuse the
+      // same file, hence the cleanup sits in the outer finally.
+      await this.cleanupMcpServers(preparedRequest)
     }
   }
 
@@ -178,29 +185,51 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * with existing user configuration.
    */
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
+    const target = this.resolveMcpWorkspaceTarget(request)
+    if (!target) return
+    const { workDir, mcpConfigPath, servers } = target
+    // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
+    // that don't override it keep the original 3-arg call unchanged.
+    const dialect = this.mcpDialect
+    await (dialect
+      ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers, { dialect })
+      : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers))
+    logger.debug(
+      { taskId: request.taskId, count: servers.length, mcpConfigPath },
+      'Synced MCP servers to workspace',
+    )
+  }
+
+  /**
+   * Remove the workspace MCP config this run's sync wrote.
+   *
+   * Resolved through the same target function as the write, so a config can
+   * never be written to one path and looked for at another. Engines whose MCP
+   * delivery is not a workspace file wrote nothing and clean up nothing.
+   */
+  protected async cleanupMcpServers(request: ExecuteRequest): Promise<void> {
+    const target = this.resolveMcpWorkspaceTarget(request)
+    if (!target) return
+    await cleanupManagedMcpConfigAsync(target.workDir, target.mcpConfigPath)
+  }
+
+  /** The workspace MCP config file this request writes, or null if it writes none. */
+  private resolveMcpWorkspaceTarget(
+    request: ExecuteRequest,
+  ): { workDir: string; mcpConfigPath: string; servers: ResolvedMcpServer[] } | null {
     const { workDir, agentConfig } = request
-    const resolvedMcpServers = agentConfig?.resolvedMcpServers as ResolvedMcpServer[] | undefined
-    if (workDir && resolvedMcpServers !== undefined) {
-      const delivery = agentConfig?.mcpDelivery as ProviderMcpDelivery | undefined
-      if (delivery && delivery.mode !== 'workspace-file') return
-      // Before Provider capabilities were persisted into runtime config, Codex and OpenCode
-      // received MCP servers through runtime arguments. Preserve that legacy behavior instead
-      // of writing an unrelated Cursor config file into their workspace.
-      if (!delivery && (this.type === 'codex' || this.type === 'opencode')) return
-      const mcpConfigPath =
-        (agentConfig?.mcpConfigPath as string | undefined) ||
-        (delivery?.mode === 'workspace-file' ? delivery.defaultPath : '.cursor/mcp.json')
-      // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
-      // that don't override it keep the original 3-arg call unchanged.
-      const dialect = this.mcpDialect
-      await (dialect
-        ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, resolvedMcpServers, { dialect })
-        : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, resolvedMcpServers))
-      logger.debug(
-        { taskId: request.taskId, count: resolvedMcpServers.length, mcpConfigPath },
-        'Synced MCP servers to workspace',
-      )
-    }
+    const servers = agentConfig?.resolvedMcpServers as ResolvedMcpServer[] | undefined
+    if (!workDir || servers === undefined) return null
+    const delivery = agentConfig?.mcpDelivery as ProviderMcpDelivery | undefined
+    if (delivery && delivery.mode !== 'workspace-file') return null
+    // Before Provider capabilities were persisted into runtime config, Codex and OpenCode
+    // received MCP servers through runtime arguments. Preserve that legacy behavior instead
+    // of writing an unrelated Cursor config file into their workspace.
+    if (!delivery && (this.type === 'codex' || this.type === 'opencode')) return null
+    const mcpConfigPath =
+      (agentConfig?.mcpConfigPath as string | undefined) ||
+      (delivery?.mode === 'workspace-file' ? delivery.defaultPath : '.cursor/mcp.json')
+    return { workDir, mcpConfigPath, servers }
   }
 
   // ----------------------------------------------------------

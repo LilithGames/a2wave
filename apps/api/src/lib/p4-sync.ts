@@ -18,6 +18,7 @@ import { verifyP4ClientRootCoverage } from './p4-client-root.js'
 import { selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { legacyScmReclaimRoot, scmReclaimRoot } from './scm-storage.js'
 import { isolateManagedScmStorage } from './scm-storage-reclaim.js'
+import { findSharedCheckoutScmWorkload } from './scm-workload-lifecycle.js'
 import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
@@ -492,6 +493,23 @@ async function releasePreAcquiredSync(sourceId: string, message: string): Promis
 }
 
 /**
+ * Release a held `syncing` status for a sync that was deferred rather than run.
+ *
+ * Terminal status is mandatory — an early return that leaves the row at
+ * `syncing` wedges every later CAS until restart — but the source is healthy
+ * and its data is untouched, so it goes back to `idle` with the reason in
+ * `lastSyncError`. `lastSyncAt` is deliberately not stamped: nothing synced.
+ */
+async function deferSync(sourceId: string, message: string): Promise<void> {
+  await runExclusive(async () => {
+    await db
+      .update(scmSources)
+      .set({ syncStatus: 'idle', lastSyncError: message, updatedAt: new Date() })
+      .where(eq(scmSources.id, sourceId))
+  })
+}
+
+/**
  * Execute a sync and update database state, dispatching by source type.
  *
  * Only one sync may run per source at a time: concurrent syncs write the same
@@ -655,6 +673,22 @@ async function runSyncUnderCheckoutLock(
     releaseCheckout(sourceId)
     await releasePreAcquiredSync(sourceId, 'SCM localPath overlaps the private reclaim root')
     return { ok: false, message: 'SCM localPath overlaps the private reclaim root' }
+  }
+
+  // Durable occupancy gate. `busyCheckouts` only knows about other *syncs*, and
+  // the heartbeat only proves this instance is alive — neither sees a run that
+  // is executing IN the shared checkout. P4 Agents always execute there, and a
+  // git Agent lands there whenever its per-agent worktree could not be created,
+  // so an auto-sync tick or a manual sync would run `p4 sync` / `git checkout
+  // -f -B` underneath a live CLI and silently discard its uncommitted edits.
+  // Deferring costs one tick; the alternative costs the agent's work.
+  const occupant = await findSharedCheckoutScmWorkload(db, sourceId, source.localPath)
+  if (occupant) {
+    const message = `Sync deferred: checkout in use by ${occupant.type} ${occupant.id}`
+    releaseCheckout(sourceId)
+    await deferSync(sourceId, message)
+    logger.info({ sourceId, occupant }, 'Deferring SCM sync: checkout in use by a running workload')
+    return { ok: false, message, alreadyRunning: true }
   }
 
   logger.info({ sourceId, name: source.name, type: source.type }, 'Starting SCM sync')
