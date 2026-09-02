@@ -322,6 +322,20 @@ export const chatAppConfigSchema = z.object({
 })
 export type ChatAppConfig = z.input<typeof chatAppConfigSchema>
 
+/**
+ * True when the runtime's ICU data knows the timezone. `Intl.DateTimeFormat` throws
+ * a RangeError for an unknown IANA name, which is the only portable check available
+ * without pulling in a timezone database.
+ */
+function isValidTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: timezone })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export const singleScheduleConfigSchema = z.object({
   id: z.string().min(1).optional(),
   cron: z.string().min(1).refine(isSupportedScheduleCron, {
@@ -329,7 +343,14 @@ export const singleScheduleConfigSchema = z.object({
       'Unsupported cron expression. Use 5 fields: min hour dom mon dow. Examples: 0 9 * * *, 0 7,19 * * *.',
   }),
   intent: z.string().min(1),
-  timezone: z.string().default('Asia/Shanghai'),
+  // Validated, not just typed: croner's `new Cron(expr, { timezone })` throws
+  // synchronously on an unknown IANA name, and that throw is raised from schedule
+  // registration — where it used to abort every remaining schedule. Rejecting the
+  // typo here keeps a bad name from ever being persisted.
+  timezone: z.string().default('Asia/Shanghai').refine(isValidTimezone, {
+    message:
+      'Unknown timezone. Use an IANA timezone name, for example Asia/Shanghai, UTC, or America/New_York.',
+  }),
 })
 export type SingleScheduleConfig = z.infer<typeof singleScheduleConfigSchema>
 

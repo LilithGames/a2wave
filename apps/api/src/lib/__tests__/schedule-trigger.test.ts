@@ -15,9 +15,13 @@ vi.mock('croner', () => {
   class FakeCron {
     callback: (() => void) | undefined
     stopped = false
-    constructor(pattern: string, _opts: unknown, cb?: () => void) {
+    constructor(pattern: string, opts: { timezone?: string } | undefined, cb?: () => void) {
       if (!pattern || !/^(\S+\s+){4}\S+$/.test(pattern.trim())) {
         throw new Error(`Invalid cron pattern: ${pattern}`)
+      }
+      // Mirrors croner: an unknown IANA name throws synchronously from the constructor.
+      if (opts?.timezone === 'Asia/Shangai') {
+        throw new Error("Failed to convert date to timezone 'Asia/Shangai'")
       }
       if (pattern.trim() === '0 7/12 * * *') {
         throw new Error(
@@ -215,6 +219,51 @@ describe('ScheduleTriggerManager', () => {
     expect(scheduleTriggerManager.getActiveAgentIds()).toContain('agt_pub')
     expect(scheduleTriggerManager.getActiveAgentIds()).not.toContain('agt_no_schedule')
     expect(await getInternalJobs('agt_pub')).toHaveLength(2)
+
+    scheduleTriggerManager.stopAll()
+  })
+
+  it('start skips a schedule whose timezone croner rejects and keeps the valid ones', async () => {
+    const { scheduleTriggerManager } = await import('../schedule-trigger.js')
+    scheduleTriggerManager.stopAll()
+
+    expect(() =>
+      scheduleTriggerManager.start('agt_1', [
+        { cron: '0 9 * * *', intent: 'bad tz', timezone: 'Asia/Shangai' },
+        { cron: '0 18 * * *', intent: 'good tz', timezone: 'Asia/Shanghai' },
+      ]),
+    ).not.toThrow()
+
+    expect(scheduleTriggerManager.getActiveAgentIds()).toContain('agt_1')
+    expect(await getInternalJobs('agt_1')).toHaveLength(1)
+
+    scheduleTriggerManager.stopAll()
+  })
+
+  it('restoreAll keeps restoring later agents when one agent throws', async () => {
+    const { scheduleTriggerManager } = await import('../schedule-trigger.js')
+    scheduleTriggerManager.stopAll()
+
+    mockDbSelectAll.mockReturnValue([
+      {
+        id: 'agt_bad',
+        publishStatus: 'published',
+        publishChannels: ['schedule'],
+        // A non-array, non-object config makes `normalizeScheduleConfigs` yield a
+        // primitive and `start` throw — standing in for any per-agent failure.
+        scheduleConfig: 'not-a-schedule-config',
+      },
+      {
+        id: 'agt_good',
+        publishStatus: 'published',
+        publishChannels: ['schedule'],
+        scheduleConfig: [{ cron: '0 9 * * *', intent: 'daily' }],
+      },
+    ])
+
+    await expect(scheduleTriggerManager.restoreAll()).resolves.toBeUndefined()
+    expect(scheduleTriggerManager.getActiveAgentIds()).toContain('agt_good')
+    expect(scheduleTriggerManager.getActiveAgentIds()).not.toContain('agt_bad')
 
     scheduleTriggerManager.stopAll()
   })
