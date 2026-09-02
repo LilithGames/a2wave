@@ -2039,6 +2039,16 @@ describe('handleMessage via dispatcher', () => {
     expect(mockDbDeleteRun).toHaveBeenCalled()
   })
 
+  it('队列满时告知用户，不静默丢弃（已贴 Get 表情，用户以为已受理）', async () => {
+    mockDbGet.mockReturnValue(makeAgent())
+    mockTryAcquireSlot.mockReturnValue('queue_full')
+    await dispatch(makeData({ chat_type: 'p2p', message_id: 'om_qfull2' }))
+    expect(mockImMessageReply).toHaveBeenCalledOnce()
+    const call = mockImMessageReply.mock.calls[0][0]
+    expect(call.data.msg_type).toBe('text')
+    expect(JSON.parse(call.data.content).text).toContain('队列已满')
+  })
+
   it('标准回复路径执行抛错时会调用 finishRunError 收敛状态', async () => {
     mockDbGet.mockReturnValue(makeAgent())
     mockExecuteWithRetry.mockRejectedValueOnce(new Error('worker boom'))
