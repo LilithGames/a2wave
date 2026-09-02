@@ -26,6 +26,32 @@ history), `audit` (`pnpm audit`, critical level).
 `provider-cli-lock.json`, test configuration, DB migrations) until a maintainer adds
 the **`ci-reviewed` label** — the counterweight to merge-on-green.
 
+### Actions are pinned to commit SHAs
+
+Every `uses:` that points outside this repository — `actions/*` included — is
+pinned to a **full 40-character commit SHA** with a trailing `# vX.Y.Z` comment:
+
+```yaml
+- uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+```
+
+A tag is mutable and its owner can repoint it at any time, so `@v6` means
+"whatever that account publishes next" in jobs that hold `NPM_TOKEN` and the GHCR
+push token — the exact position the 2025 `tj-actions/changed-files` compromise
+turned into leaked secrets across thousands of repositories. A SHA is the commit
+we reviewed and nothing else.
+
+Bumping one by hand means resolving the SHA yourself:
+
+```bash
+gh api repos/<owner>/<repo>/tags --jq '.[] | "\(.name) \(.commit.sha)"'
+```
+
+Normally you should not have to: Dependabot's `github-actions` ecosystem
+([`.github/dependabot.yml`](../../.github/dependabot.yml)) rewrites both the SHA
+and the version comment weekly, and covers the composite action in
+`.github/actions/setup` through its own `directories` entry.
+
 PR runs of the same ref cancel superseded runs; pushes to main never cancel.
 Merge-latency baseline lives in `scripts/ci/merge-latency.mjs` (run quarterly).
 
