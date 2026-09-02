@@ -12,6 +12,7 @@ import {
   publishChannelEnum,
   qqOfficialConfigSchema,
   scheduleConfigSchema,
+  singleScheduleConfigSchema,
   slackConfigSchema,
   updateAgentInput,
 } from '../schemas/agent.js'
@@ -319,6 +320,34 @@ describe('schedule config schema compatibility', () => {
     expect(parsed).toHaveLength(2)
     if (!Array.isArray(parsed)) throw new Error('expected multiple schedule configs')
     expect(parsed[0]).toMatchObject({ id: 'sch_morning' })
+  })
+
+  // `new Cron(expr, { timezone })` throws synchronously on an unknown IANA name, and
+  // that throw used to escape all the way out of schedule restoration. Reject the
+  // typo at the schema boundary so it can never reach the scheduler.
+  it('rejects an unknown IANA timezone', () => {
+    const result = singleScheduleConfigSchema.safeParse({
+      cron: '0 9 * * *',
+      intent: 'daily report',
+      timezone: 'Asia/Shangai',
+    })
+
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('expected the typo timezone to be rejected')
+    expect(result.error.issues[0]?.message).toMatch(/time ?zone/i)
+  })
+
+  it('accepts valid IANA timezones and UTC', () => {
+    for (const timezone of ['Asia/Shanghai', 'UTC', 'America/New_York', 'Europe/London']) {
+      expect(
+        singleScheduleConfigSchema.safeParse({ cron: '0 9 * * *', intent: 'x', timezone }).success,
+      ).toBe(true)
+    }
+  })
+
+  it('defaults the timezone when omitted', () => {
+    const parsed = singleScheduleConfigSchema.parse({ cron: '0 9 * * *', intent: 'x' })
+    expect(parsed.timezone).toBe('Asia/Shanghai')
   })
 })
 

@@ -27,7 +27,12 @@ import { hasAdmissionCapacity, tryAcquireSlot } from '../engine/task-queue.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import { logBackgroundAudit } from './audit.js'
 import { executeChatRun } from './execute-chat-run.js'
-import { GitTriggerCliError, listOpenRequests } from './git-trigger-cli.js'
+import {
+  fetchForgeAccount,
+  fetchLatestCommentAuthor,
+  GitTriggerCliError,
+  listOpenRequests,
+} from './git-trigger-cli.js'
 import {
   diffRepoState,
   type GitTriggerFiredEvent,
@@ -81,6 +86,15 @@ class RunBudget {
 }
 
 /** Key for the in-memory timer map: an agent may run glab and gh independently. */
+/**
+ * How long a resolved forge account is trusted without re-probing.
+ *
+ * Long, because the answer only changes when an operator re-authenticates the
+ * CLI — a config change already invalidates it outright. Short enough that a
+ * token rotated under an unchanged config is picked up the same day.
+ */
+const FORGE_ACCOUNT_TTL_MS = 60 * 60 * 1000
+
 function jobKey(agentId: string, provider: GitTriggerProvider): string {
   return `${agentId}:${provider}`
 }
@@ -231,6 +245,12 @@ class GitTriggerManager {
    * poll begun under a replaced config cannot act on it.
    */
   private owners = new Map<string, object>()
+  /**
+   * Forge login per `channel|host`, for the self-authored-comment guard. Keyed
+   * per channel rather than globally so `stop()` — which every config change
+   * runs — is a complete invalidation for the channel being replaced.
+   */
+  private forgeAccounts = new Map<string, { account?: string; at: number }>()
 
   start(agentId: string, provider: GitTriggerProvider, rawConfig: unknown): void {
     this.stop(agentId, provider)
@@ -291,6 +311,12 @@ class GitTriggerManager {
     // process lifetime and makes a re-published channel resume mid-rotation
     // instead of at the configured first repository.
     this.repoOffsets.delete(key)
+    // A replaced config may point at a different host, and the operator may have
+    // re-authenticated the CLI as somebody else; re-resolve rather than filter
+    // against a name from the previous configuration.
+    for (const cacheKey of [...this.forgeAccounts.keys()]) {
+      if (cacheKey.startsWith(`${key}|`)) this.forgeAccounts.delete(cacheKey)
+    }
     const timer = this.jobs.get(key)
     if (!timer) return
     clearInterval(timer)
@@ -311,6 +337,7 @@ class GitTriggerManager {
     }
     this.repoOffsets.clear()
     this.owners.clear()
+    this.forgeAccounts.clear()
   }
 
   getActiveJobKeys(): string[] {
@@ -573,17 +600,32 @@ class GitTriggerManager {
         // the per-tick budget depends on how many runs actually landed, so these
         // cannot be started concurrently without over-committing the queue.
         const unhandled: GitTriggerFiredEvent[] = []
+        let dispatched = 0
         for (const fired of result.fired) {
+          if (await this.isSelfAuthored(agentId, provider, repo, fired)) {
+            // Deliberately NOT rolled back. The comment is real and the
+            // fingerprint must advance past it, or the channel re-detects its
+            // own comment on every subsequent tick — the same forever-loop this
+            // guard exists to break, just one layer down.
+            logger.info(
+              { agentId, provider, repo: repoKey, number: fired.request.number },
+              'git-trigger: newest comment is the channel’s own, not triggering a run',
+            )
+            continue
+          }
           if ((await this.triggerRun(agent, provider, config, repo, fired)) === 'rejected') {
             unhandled.push(fired)
+            continue
           }
+          dispatched++
         }
         const nextState = rollbackUnhandled(result.nextState, previous, unhandled)
 
         // Only dispatched runs are charged; a refusal writes nothing, so it
-        // costs nothing. See `RunBudget` for why that distinction is a type
-        // rather than a convention.
-        budget.spend(result.fired.length - unhandled.length)
+        // costs nothing, and neither does a suppressed self-comment. See
+        // `RunBudget` for why that distinction is a type rather than a
+        // convention.
+        budget.spend(dispatched)
 
         await writeState(agentId, provider, repoKey, nextState, null)
 
@@ -603,6 +645,74 @@ class GitTriggerManager {
         )
       }
     }
+  }
+
+  /**
+   * Whether this event is the channel reacting to its own comment.
+   *
+   * A review Agent subscribed to `commented` answers with `glab mr note` / `gh
+   * pr comment`, which raises the very counter the event is diffed from — so
+   * without this the next tick fires `commented` again, and the one after that,
+   * bounded only by the interval floor and the per-tick run cap. Discord and
+   * Telegram already drop bot-authored messages; this is the git channels'
+   * equivalent.
+   *
+   * Restricted to `commented` on purpose. `updated` has the same shape of loop
+   * (an Agent that pushes a fixup commit re-triggers on the head SHA), but
+   * neither listing carries the head commit's *forge login* — only a git author
+   * string that need not match an account — and resolving it would mean a call
+   * per changed request, exactly the N+1 sweep this channel is built to avoid.
+   * Documented as a caveat in docs/agent/git-trigger-channels.md instead.
+   *
+   * **Fails open**: an unresolvable account or author fires the Run. A missed
+   * review is a worse outcome than a duplicate one, and the run cap still holds.
+   */
+  private async isSelfAuthored(
+    agentId: string,
+    provider: GitTriggerProvider,
+    repo: GitTriggerRepo,
+    fired: GitTriggerFiredEvent,
+  ): Promise<boolean> {
+    if (fired.event !== 'commented') return false
+
+    const account = await this.forgeAccount(agentId, provider, repo.host)
+    if (!account) return false
+
+    // Under a wide scope the entry names a namespace, so the follow-up must ask
+    // the repository the request actually lives in.
+    const project = fired.request.project || repo.project
+    const author =
+      fired.request.lastCommentAuthor ??
+      (await fetchLatestCommentAuthor(provider, project, fired.request.number, repo.host))
+    if (!author) return false
+
+    // Both forges treat account names case-insensitively.
+    return author.toLowerCase() === account.toLowerCase()
+  }
+
+  /**
+   * The forge login this channel's token speaks as, memoised.
+   *
+   * Resolved at most once per channel per host per TTL rather than once per
+   * event: it is a property of the credential, not of the request, and the whole
+   * point of this channel is to stay at one forge call per repository per tick.
+   * `stop()` drops the entry, so a config change re-resolves immediately; the TTL
+   * covers a forge token rotated underneath an unchanged config.
+   */
+  private async forgeAccount(
+    agentId: string,
+    provider: GitTriggerProvider,
+    host?: string,
+  ): Promise<string | undefined> {
+    const key = `${jobKey(agentId, provider)}|${host ?? ''}`
+    const cached = this.forgeAccounts.get(key)
+    if (cached && Date.now() - cached.at < FORGE_ACCOUNT_TTL_MS) return cached.account
+
+    const account = await fetchForgeAccount(provider, host)
+    // Cached even when undefined, so a CLI that cannot answer is not re-probed
+    // once per event for the whole TTL.
+    this.forgeAccounts.set(key, { account, at: Date.now() })
+    return account
   }
 
   /** Re-reads the Agent to confirm the channel should still be polling. */

@@ -76,6 +76,16 @@ export interface ObservedRequest {
   updatedAt?: string
   isDraft: boolean
   /**
+   * Who wrote the newest comment, when the listing carried it.
+   *
+   * Only GitHub's GraphQL listing does — it can return the latest node of each
+   * discussion collection in the same call. GitLab's merge request listing has
+   * no such field, so this stays undefined there and the caller resolves it with
+   * a bounded follow-up. Deliberately *not* part of the fingerprint: it names
+   * who moved the comment count, not whether it moved.
+   */
+  lastCommentAuthor?: string
+  /**
    * The repository this request actually belongs to.
    *
    * Only set by a listing that spans repositories (the `group` and `all`
