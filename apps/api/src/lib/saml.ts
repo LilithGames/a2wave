@@ -135,6 +135,25 @@ export const SAML_REQUEST_EXPIRATION_MS = 8 * 60 * 60 * 1000
 const SAML_REQUEST_SWEEP_INTERVAL_MS = 60 * 60 * 1000
 
 /**
+ * How long a *consumed* id stays readable inside the process that consumed it.
+ *
+ * `getAsync` deletes the row it returns (see below), but node-saml reads the
+ * same id twice during one `validatePostResponseAsync`: once for the Response's
+ * `InResponseTo`, and again for the assertion's `SubjectConfirmationData`. The
+ * second read has to succeed or every legitimate login fails as
+ * `SubjectInResponseTo is not valid`, so the consumed value is held in memory
+ * for the rest of that validation and dropped by `removeAsync`, which node-saml
+ * calls on success and on failure alike.
+ *
+ * This window is only the backstop for the one branch that returns without
+ * removing. A validation is CPU-bound XML work measured in milliseconds, so
+ * thirty seconds is several orders of magnitude of headroom while keeping the
+ * blast radius of that branch small — and it is per-process, so it never widens
+ * the cross-replica window, which the row deletion closes outright.
+ */
+export const SAML_REQUEST_IN_FLIGHT_MS = 30 * 1000
+
+/**
  * node-saml `CacheProvider` backed by the `saml_requests` table.
  *
  * `validateInResponseTo: always` is only as good as the store behind it. The
@@ -149,54 +168,85 @@ const SAML_REQUEST_SWEEP_INTERVAL_MS = 60 * 60 * 1000
  * lived. Expiry is enforced on **read** as well as by the sweeper, so a sweeper
  * that is late (or a replica whose timer has not started) can never widen the
  * window an id stays replayable.
+ *
+ * The read also **consumes**. node-saml validates the whole assertion before it
+ * calls `removeAsync`, so a `SELECT`-then-`DELETE` pair leaves a real window: the
+ * same captured SAMLResponse POSTed at two replicas (or twice in quick
+ * succession at one) has both of them read the row, both validate, and both mint
+ * a session. A single `DELETE ... RETURNING` makes exactly one of them win,
+ * which is what "single use" has to mean when the store is shared. `removeAsync`
+ * then usually finds nothing left to delete, and tolerates that.
+ *
+ * The per-provider `inFlight` map exists only because node-saml reads one id
+ * twice per validation — see SAML_REQUEST_IN_FLIGHT_MS.
  */
 export function createSamlRequestCacheProvider(): CacheProvider {
+  /** Ids this process consumed, kept until removeAsync or the in-flight window. */
+  const inFlight = new Map<string, { value: string; consumedAt: number }>()
+
+  const pruneInFlight = (now: number) => {
+    for (const [id, entry] of inFlight) {
+      if (entry.consumedAt <= now - SAML_REQUEST_IN_FLIGHT_MS) inFlight.delete(id)
+    }
+  }
+
   return {
     async saveAsync(key: string, value: string) {
       const createdAt = new Date()
       // node-saml reads null as "this id is already in use" and refuses to
-      // reissue, so the pre-existing row must win rather than be overwritten.
-      const existing = (
-        await db.select().from(samlRequests).where(eq(samlRequests.id, key)).limit(1)
-      )[0]
-      if (existing) return null
-
+      // reissue, so a pre-existing row must win rather than be overwritten.
+      // `onConflictDoNothing` is the whole check: a preceding SELECT would only
+      // add a round trip and still lose the race it was meant to describe.
       const inserted = await db
         .insert(samlRequests)
         .values({ id: key, value, createdAt })
         .onConflictDoNothing()
         .returning({ id: samlRequests.id })
-      // Lost the insert race against another replica: same answer as above.
       if (inserted.length === 0) return null
 
       return { value, createdAt: createdAt.getTime() }
     },
 
     async getAsync(key: string) {
-      const row = (
-        await db
-          .select()
-          .from(samlRequests)
-          .where(
-            and(
-              eq(samlRequests.id, key),
-              gte(samlRequests.createdAt, new Date(Date.now() - SAML_REQUEST_EXPIRATION_MS)),
-            ),
-          )
-          .limit(1)
-      )[0]
-      return row?.value ?? null
+      const now = Date.now()
+      pruneInFlight(now)
+
+      // Second read of the same validation (SubjectConfirmation), still ours.
+      const held = inFlight.get(key)
+      if (held) return held.value
+
+      // Claim and expire in one statement. `.returning()` rather than a row
+      // count: the two drivers disagree on `changes`/`rowCount` (see
+      // apps/api/AGENTS.md).
+      const consumed = await db
+        .delete(samlRequests)
+        .where(
+          and(
+            eq(samlRequests.id, key),
+            gte(samlRequests.createdAt, new Date(now - SAML_REQUEST_EXPIRATION_MS)),
+          ),
+        )
+        .returning({ value: samlRequests.value })
+      const value = consumed[0]?.value
+      if (value === undefined) return null
+
+      inFlight.set(key, { value, consumedAt: now })
+      return value
     },
 
     async removeAsync(key: string | null) {
       if (key === null) return null
-      // `.returning()` rather than a row count: the two drivers disagree on
-      // `changes`/`rowCount` (see apps/api/AGENTS.md).
+      // Normally a no-op on the table: `getAsync` already took the row. Still
+      // issued, because node-saml also calls this on paths that never read
+      // (an InResponseTo mismatch), where it is the only thing that clears the
+      // row. Answering with the key when we held it keeps the InMemory
+      // provider's "returns the key it forgot" contract.
+      const held = inFlight.delete(key)
       const removed = await db
         .delete(samlRequests)
         .where(eq(samlRequests.id, key))
         .returning({ id: samlRequests.id })
-      return removed[0]?.id ?? null
+      return removed[0]?.id ?? (held ? key : null)
     },
   }
 }
