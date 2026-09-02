@@ -133,9 +133,19 @@ deliberately does not share `agents.maxConcurrency`.
 
 ## Channel-specific notes
 
-- **Internal Admin API** (`/api/internal/admin/*`) is localhost-only, used by the
-  platform-admin MCP, and **not filtered by owner** — it deliberately sees
-  everything.
+- **Internal API** (`/api/internal/*`) requires **both** a loopback peer **and** a
+  process-scoped credential generated per API process in
+  `apps/api/src/lib/internal-admin-auth.ts` — the loopback socket alone proves
+  nothing, because a same-host reverse proxy (`TRUSTED_PROXY`) makes every
+  internet request arrive from 127.0.0.1. For the same reason the gate denies a
+  loopback peer that carries `X-Forwarded-For` when `TRUSTED_PROXY` is on. Two
+  credentials exist: `A2WAVE_INTERNAL_TOKEN` (header `x-a2wave-internal-token`),
+  injected into the agent-router MCP, opens the non-admin routes; the stronger
+  `A2WAVE_INTERNAL_ADMIN_TOKEN` (header `x-a2wave-internal-admin-token`),
+  injected only into the platform-admin MCP for an active admin requester, is
+  required by `/api/internal/admin/*` and also accepted elsewhere.
+- **Internal Admin API** (`/api/internal/admin/*`) is **not filtered by owner** —
+  it deliberately sees everything, which is why it takes the admin credential.
 - **OAuth channel** attachment upload/consumption is isolated per user as
   `oauth:<issuer>:<sub>`.
 - **Feishu connection status** (`/api/agents/feishu-connections`) reflects only the
