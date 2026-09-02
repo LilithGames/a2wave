@@ -7,9 +7,12 @@ import { createRecordedA2ACancelFn, createRecordedA2AExecuteFn } from '../a2a/ru
 import { SqliteTaskStore } from '../a2a/sqlite-task-store.js'
 import { db } from '../db/client.js'
 import { agents } from '../db/schema.js'
+import { env } from '../env.js'
 import {
   INTERNAL_ADMIN_TOKEN_HEADER,
+  INTERNAL_TOKEN_HEADER,
   verifyInternalAdminToken,
+  verifyInternalToken,
 } from '../lib/internal-admin-auth.js'
 import {
   getStreamingCard,
@@ -23,7 +26,7 @@ const app = new Hono()
 const globalTaskStore = new SqliteTaskStore()
 void globalTaskStore.cleanup().catch(() => {})
 
-// --- Localhost-only middleware ---
+// --- Localhost + process-credential middleware ---
 const LOCALHOST_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
 app.use('*', async (c, next) => {
@@ -31,17 +34,27 @@ app.use('*', async (c, next) => {
     ?.incoming?.socket?.remoteAddress
   // Fail CLOSED: allow ONLY when we positively resolve a loopback address.
   // An absent/unknown address is not "trusted local" — it means the request did
-  // not arrive over the expected 127.0.0.1 socket, so deny. Admin endpoints also
-  // require a process-scoped credential and return purpose-built redacted DTOs;
-  // their platform-admin MCP caller connects over a real loopback socket.
+  // not arrive over the expected 127.0.0.1 socket, so deny.
   if (!incoming || !LOCALHOST_IPS.has(incoming)) {
     return c.json({ error: 'Forbidden: internal API is localhost-only' }, 403)
   }
-  if (
-    /\/admin(?:\/|$)/.test(c.req.path) &&
-    !verifyInternalAdminToken(c.req.header(INTERNAL_ADMIN_TOKEN_HEADER))
-  ) {
+  // A same-host reverse proxy (a supported deployment, see TRUSTED_PROXY) makes
+  // EVERY internet request arrive from loopback. When the deployment declares one,
+  // a forwarded request is by definition not a local caller.
+  if (env.TRUSTED_PROXY && c.req.header('x-forwarded-for')) {
+    return c.json({ error: 'Forbidden: internal API is localhost-only' }, 403)
+  }
+  // The loopback socket alone proves nothing about the caller, so every internal
+  // route — not just /admin — requires a process-scoped credential. Otherwise
+  // POST /api/internal/a2a/:agentId is an anonymous Agent invoke (Iron Rule 5).
+  const hasAdminCredential = verifyInternalAdminToken(c.req.header(INTERNAL_ADMIN_TOKEN_HEADER))
+  // Admin endpoints return purpose-built redacted DTOs and need the STRONGER
+  // credential specifically; the agent-router token must not reach them.
+  if (/\/admin(?:\/|$)/.test(c.req.path) && !hasAdminCredential) {
     return c.json({ error: 'Forbidden: invalid internal admin credential' }, 403)
+  }
+  if (!hasAdminCredential && !verifyInternalToken(c.req.header(INTERNAL_TOKEN_HEADER))) {
+    return c.json({ error: 'Forbidden: invalid internal credential' }, 403)
   }
   await next()
 })
@@ -89,7 +102,7 @@ app.get('/a2a/:agentId/card', async (c) => {
   return c.json(serializeAgentCard(card, requestedVersion?.startsWith('1.') ? '1.0' : '0.3'))
 })
 
-// --- POST /a2a/:agentId — invoke A2A (no auth) ---
+// --- POST /a2a/:agentId — invoke A2A (loopback + internal process credential) ---
 app.post('/a2a/:agentId', async (c) => {
   const { agentId } = c.req.param()
   const agent = (await db.select().from(agents).where(eq(agents.id, agentId)).limit(1))[0]

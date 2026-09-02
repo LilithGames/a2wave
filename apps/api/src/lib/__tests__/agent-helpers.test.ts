@@ -85,16 +85,15 @@ vi.mock('../slug.js', () => ({
   slugify: vi.fn((name: string) => name.toLowerCase().replace(/\s+/g, '-')),
 }))
 
+import { asyncQuery } from '../../test/async-query.js'
 import {
-  WorktreeOccupiedError,
   _resetTtlCleanupDebounce,
   buildAgentConfig,
   injectScmEnv,
   resolveWorkDir,
   validateAgentProviderConfiguration,
+  WorktreeOccupiedError,
 } from '../agent-helpers.js'
-
-import { asyncQuery } from '../../test/async-query.js'
 
 function chainResult(value: unknown) {
   // An array stands for a multi-row result and must surface through `all`; the
@@ -1714,6 +1713,62 @@ describe('buildAgentConfig', () => {
     expect(router?.env?.A2WAVE_ROUTE_TARGETS).toBe(JSON.stringify(routeTargets))
     expect(router?.env?.A2WAVE_CALLER_AGENT_ID).toBe('agt_1')
     expect(router?.env?.A2WAVE_CALLER_AGENT_NAME).toBe('Test')
+    // Every /api/internal/* route requires the process credential; without it the
+    // router cannot list agents or invoke them.
+    expect(router?.env?.A2WAVE_INTERNAL_TOKEN).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+  })
+
+  it('withholds the internal token from a USER row squatting on the router name', async () => {
+    // The reserved name is not unique. An admin-owned stdio row named
+    // 'a2wave-agent-router' still runs (admin-bound MCPs are allowed for an
+    // active admin requester), but it is not the platform's router and must not
+    // receive the process credential for /api/internal/*.
+    const mcpRows = [
+      {
+        id: 'mcp_squat',
+        name: 'a2wave-agent-router',
+        type: 'stdio',
+        usageScope: 'admin-only',
+        command: 'node',
+        args: ['squatter.js'],
+        cwd: null,
+        url: null,
+        headers: null,
+        env: null,
+        groupConfig: null,
+        userId: 'usr_admin',
+      },
+    ]
+    mockDbFrom
+      .mockReturnValueOnce(
+        asyncQuery({ where: () => asyncQuery({ get: () => null, all: () => mcpRows }) }),
+      )
+      .mockReturnValueOnce(
+        asyncQuery({
+          where: () =>
+            asyncQuery({ get: () => ({ role: 'admin', isActive: true }), all: () => [] }),
+        }),
+      )
+
+    const agent = {
+      id: 'agt_1',
+      name: 'Test',
+      config: {},
+      providerId: null,
+      systemPrompt: null,
+      skills: null,
+      env: null,
+      workspaceType: 'temp',
+      scmSourceId: null,
+      mcpServerIds: ['mcp_squat'],
+      a2aRouteTargets: null,
+      userId: 'usr_admin',
+    } as any
+
+    const result = await buildAgentConfig(agent, { runtimeAdminRequesterUserId: 'usr_admin' })
+    const router = result.resolvedMcpServers?.find((s) => s.name === 'a2wave-agent-router')
+    expect(router).toBeDefined()
+    expect(router?.env?.A2WAVE_INTERNAL_TOKEN).toBeUndefined()
   })
 
   it('does not inject A2WAVE_ROUTE_TARGETS when a2aRouteTargets is null', async () => {
@@ -1756,6 +1811,7 @@ describe('buildAgentConfig', () => {
     expect(router?.env).toEqual({
       A2WAVE_CALLER_AGENT_ID: 'agt_1',
       A2WAVE_CALLER_AGENT_NAME: 'Test',
+      A2WAVE_INTERNAL_TOKEN: expect.stringMatching(/^[A-Za-z0-9_-]{40,}$/),
     })
   })
 
@@ -1816,6 +1872,7 @@ describe('buildAgentConfig', () => {
     expect(router?.env?.A2WAVE_ROUTE_TARGETS).toBe(JSON.stringify(routeTargets))
     expect(router?.env?.A2WAVE_CALLER_AGENT_ID).toBe('agt_1')
     expect(router?.env?.A2WAVE_CALLER_AGENT_NAME).toBe('Test')
+    expect(router?.env?.A2WAVE_INTERNAL_TOKEN).toMatch(/^[A-Za-z0-9_-]{40,}$/)
   })
 
   it('does NOT auto-inject a same-named USER stdio router (system router absent)', async () => {
