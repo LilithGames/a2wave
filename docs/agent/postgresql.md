@@ -314,13 +314,18 @@ database in an unknown state — a rollout that half-fails and then refuses to
 self-heal, against a database that was actually fine.
 
 `runPostgresMigrations` therefore checks a dedicated client out of the pool,
-takes `pg_advisory_lock(<fixed key>)` on it, runs the migrator, and unlocks +
-releases in `finally`. Two details are load-bearing:
+takes `pg_advisory_lock(<fixed key>)` on it, runs the migrator **on that same
+client** (`drizzle(client)`), and unlocks + releases in `finally`. Three details
+are load-bearing:
 
 - **Session scope, one connection.** `pg_advisory_lock` is held by the session,
   so the lock and the migration have to be issued on a connection this code owns
   for the duration. Locking through the shared `db` handle would route the two
   statements to arbitrary pooled connections and protect nothing.
+- **The DDL rides the locked client, not the pool.** `DATABASE_POOL_MAX` accepts
+  `1`, and at that size the lock holder *is* the pool: a migrator issuing its DDL
+  through `db` would queue for a connection that only comes back when the
+  migration ends. Boot deadlocks silently — no error, no timeout.
 - **Not the `xact` variant.** `pg_advisory_xact_lock` releases at commit, and the
   migrator opens and commits its own transactions — the lock would drop
   mid-migration.
