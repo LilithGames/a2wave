@@ -14,6 +14,7 @@
 
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
 import { BUILTIN_PROVIDER_MANIFESTS } from './provider-catalog.js'
 
@@ -74,6 +75,16 @@ interface ManagedMcpMarker {
  * executed in by this container.
  */
 const managedMcpConfigRefs = new Map<string, number>()
+
+/**
+ * Lock key serialising every reference change and file operation on one config
+ * path. Both the sync and the cleanup are read-modify-write sequences spanning
+ * several awaits, so without this a sibling run's fresh config could be written
+ * inside another run's cleanup window and then deleted by it.
+ */
+function mcpConfigLockKey(filePath: string): string {
+  return `mcp-config:${filePath}`
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -213,6 +224,14 @@ export async function syncMcpToWorkspaceAtPathAsync(
   options: SyncMcpOptions = {},
 ): Promise<void> {
   const filePath = join(workDir, relativePath)
+  await withKeyedLock(mcpConfigLockKey(filePath), () => writeMcpConfig(filePath, servers, options))
+}
+
+async function writeMcpConfig(
+  filePath: string,
+  servers: ResolvedMcpServer[],
+  options: SyncMcpOptions,
+): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
   const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
 
@@ -278,6 +297,10 @@ export async function cleanupManagedMcpConfigAsync(
   relativePath: string,
 ): Promise<void> {
   const filePath = join(workDir, relativePath)
+  await withKeyedLock(mcpConfigLockKey(filePath), () => releaseMcpConfig(filePath))
+}
+
+async function releaseMcpConfig(filePath: string): Promise<void> {
   const remainingRefs = (managedMcpConfigRefs.get(filePath) ?? 0) - 1
   if (remainingRefs > 0) {
     managedMcpConfigRefs.set(filePath, remainingRefs)
