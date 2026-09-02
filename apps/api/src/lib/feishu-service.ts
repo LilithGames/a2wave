@@ -2028,6 +2028,16 @@ class FeishuConnectionManager {
       await db.delete(runs).where(eq(runs.id, runId))
       await removePending()
       logger.warn({ agentId }, 'Feishu: agent queue full, dropping message')
+      // The "Get" reaction is already on the message, so silence would read as
+      // "received, working on it" and the user would wait forever. Every other
+      // channel (Slack / Discord / Telegram / QQ) answers here; Feishu must too.
+      await sendFeishuUserNotification(
+        client,
+        data.sender,
+        message,
+        config,
+        'Agent 队列已满，请稍后再试。',
+      )
       return
     }
 
