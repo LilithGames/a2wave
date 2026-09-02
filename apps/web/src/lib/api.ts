@@ -25,17 +25,25 @@ export function isAuthRedirectExempt(pathname: string): boolean {
 }
 
 /**
+ * The single /login URL builder: the 401 handler below and AuthGuard's
+ * `<Navigate>` race each other on the same page load, so both have to carry the
+ * same returnTo. LoginPage validates the value through `safeReturnTo()`.
+ */
+export function buildLoginRedirect(pathname: string, search = ''): string {
+  return `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`
+}
+
+/**
  * A 401 sends the browser to /login carrying the page it was on. The plain
  * `/login` navigation this replaces was a full-page load, so it won out over the
  * `<Navigate to="/login?returnTo=…">` AuthGuard renders concurrently — and a
  * shared deep link (a chat page, a run) landed on the dashboard after signing in.
- * LoginPage validates the value through `safeReturnTo()`.
  */
 function redirectToLogin(): void {
   const { pathname, search } = window.location
   if (isAuthRedirectExempt(pathname)) return
 
-  window.location.href = `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`
+  window.location.href = buildLoginRedirect(pathname, search)
 }
 
 /**

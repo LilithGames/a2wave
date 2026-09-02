@@ -1,6 +1,7 @@
-import { useAuthStatus, useCurrentUser } from '@/hooks/use-auth'
 import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
+import { useAuthStatus, useCurrentUser } from '@/hooks/use-auth'
+import { buildLoginRedirect } from '@/lib/api'
 
 export function AuthGuard({ children }: { children: ReactNode }) {
   const { data: status, isLoading: statusLoading } = useAuthStatus()
@@ -23,9 +24,9 @@ export function AuthGuard({ children }: { children: ReactNode }) {
   if (isError || !user) {
     // Carry the target so a shared link survives the login round-trip. This is the
     // normal way someone reaches the chat page: follow a colleague's link, sign in,
-    // and land on the page they were sent — not on the dashboard.
-    const target = `${location.pathname}${location.search}`
-    return <Navigate to={`/login?returnTo=${encodeURIComponent(target)}`} replace />
+    // and land on the page they were sent — not on the dashboard. Built by the same
+    // helper the 401 handler uses, since either navigation may be the one that wins.
+    return <Navigate to={buildLoginRedirect(location.pathname, location.search)} replace />
   }
 
   return <>{children}</>

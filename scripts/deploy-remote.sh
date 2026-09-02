@@ -136,21 +136,10 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # ── SSH host key policy ───────────────────────────────────────────────────────
-# accept-new trusts a host we have never seen and then pins it, so a later key
-# change aborts the deploy instead of being accepted silently — which is what
-# StrictHostKeyChecking=no did on every single connection, password and all.
-# Either knob below closes the first-connection window as well:
-#   DEPLOY_KNOWN_HOSTS_FILE  known_hosts file to verify the host against
-#   DEPLOY_HOST_KEY          a known_hosts line ("<host> ssh-ed25519 AAAA…")
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
-if [[ -n "${DEPLOY_HOST_KEY:-}" ]]; then
-  PINNED_KNOWN_HOSTS="$(mktemp "${TMPDIR:-/tmp}/a2wave-known-hosts.XXXXXX")"
-  trap 'rm -f "${PINNED_KNOWN_HOSTS}"' EXIT
-  printf '%s\n' "${DEPLOY_HOST_KEY}" > "${PINNED_KNOWN_HOSTS}"
-  SSH_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${PINNED_KNOWN_HOSTS}" -o LogLevel=ERROR)
-elif [[ -n "${DEPLOY_KNOWN_HOSTS_FILE:-}" ]]; then
-  SSH_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${DEPLOY_KNOWN_HOSTS_FILE}" -o LogLevel=ERROR)
-fi
+# Shared with codex-login-remote.sh; see scripts/deploy/lib/ssh-opts.sh.
+# shellcheck source=scripts/deploy/lib/ssh-opts.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy/lib/ssh-opts.sh"
+a2wave_init_ssh_opts
 
 # Secrets never go into a command line: `ps auxww` is readable by every local
 # user on both ends. The sudo password is the first line of the remote shell's

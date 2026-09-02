@@ -10,9 +10,13 @@ import type { Logger as LarkLogger } from '@larksuiteoapi/node-sdk'
 import { logger } from './logger.js'
 
 /**
- * 把飞书/axios 错误压成可记日志的精简对象。
- * axios error 自带 request/response/socket 的循环引用，直接喂给 logger 会序列化出几千行。
- * 这里只取排障真正需要的字段：飞书业务码 code/msg、HTTP status、log_id（用于飞书侧排障）、网络层 code。
+ * Flattens a Feishu/axios error into a small, loggable object.
+ *
+ * An axios error carries circular references through request/response/socket,
+ * so handing one straight to the logger serialises thousands of lines. Only the
+ * fields that actually help diagnose a failure are kept: the Feishu business
+ * code/msg, the HTTP status, the log_id (what Feishu support asks for) and the
+ * network-layer code.
  */
 export function summarizeFeishuError(err: unknown): Record<string, unknown> {
   const e = err as {
@@ -27,9 +31,9 @@ export function summarizeFeishuError(err: unknown): Record<string, unknown> {
   const resp = e?.response
   const body = resp?.data
   const summary: Record<string, unknown> = {}
-  if (e?.code) summary.netCode = e.code // 网络层，如 ECONNRESET / ERR_BAD_REQUEST
+  if (e?.code) summary.netCode = e.code // network layer, e.g. ECONNRESET / ERR_BAD_REQUEST
   if (resp?.status) summary.status = resp.status
-  if (body?.code != null) summary.feishuCode = body.code // 飞书业务码，如 41050
+  if (body?.code != null) summary.feishuCode = body.code // Feishu business code, e.g. 41050
   if (body?.msg) summary.feishuMsg = body.msg
   const logId = body?.error?.log_id ?? resp?.headers?.['x-tt-logid']
   if (logId) summary.logId = logId

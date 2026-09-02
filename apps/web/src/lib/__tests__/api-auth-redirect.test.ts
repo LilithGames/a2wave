@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, isAuthRedirectExempt } from '../api'
+import { api, buildLoginRedirect, isAuthRedirectExempt } from '../api'
 
 describe('isAuthRedirectExempt', () => {
   it.each(['/login', '/setup', '/share-login'])('exempts the public route %s', (path) => {
@@ -94,4 +94,21 @@ describe('401 redirect', () => {
       expect(location.href).toBe(href)
     },
   )
+})
+
+// One construction, two call sites: the 401 handler here and AuthGuard's
+// `<Navigate>`. When they were written separately, a difference between them
+// meant a shared deep link landed somewhere other than where it was sent.
+describe('buildLoginRedirect', () => {
+  it('encodes the pathname and query into returnTo', () => {
+    expect(buildLoginRedirect('/agents/agt_1', '?tab=runs')).toBe(
+      `/login?returnTo=${encodeURIComponent('/agents/agt_1?tab=runs')}`,
+    )
+  })
+
+  it('omits an absent query string rather than encoding a bare "?"', () => {
+    expect(buildLoginRedirect('/runs/run_1')).toBe(
+      `/login?returnTo=${encodeURIComponent('/runs/run_1')}`,
+    )
+  })
 })
