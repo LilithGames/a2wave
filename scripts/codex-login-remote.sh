@@ -74,19 +74,12 @@ if ! command -v sshpass &>/dev/null; then
   exit 1
 fi
 
-# Host key policy and secret handling mirror deploy-remote.sh: accept-new pins the
-# key on first contact instead of trusting a new one on every connection, and no
-# password is ever placed in an argv (`ps auxww` is readable by any local user).
-# DEPLOY_HOST_KEY / DEPLOY_KNOWN_HOSTS_FILE pin the key up front.
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
-if [[ -n "${DEPLOY_HOST_KEY:-}" ]]; then
-  PINNED_KNOWN_HOSTS="$(mktemp "${TMPDIR:-/tmp}/a2wave-known-hosts.XXXXXX")"
-  trap 'rm -f "${PINNED_KNOWN_HOSTS}"' EXIT
-  printf '%s\n' "${DEPLOY_HOST_KEY}" > "${PINNED_KNOWN_HOSTS}"
-  SSH_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${PINNED_KNOWN_HOSTS}" -o LogLevel=ERROR)
-elif [[ -n "${DEPLOY_KNOWN_HOSTS_FILE:-}" ]]; then
-  SSH_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${DEPLOY_KNOWN_HOSTS_FILE}" -o LogLevel=ERROR)
-fi
+# Host key policy is shared with deploy-remote.sh (scripts/deploy/lib/ssh-opts.sh)
+# so both scripts reach a host under the same rules. Secret handling matches too:
+# no password is ever placed in an argv (`ps auxww` is readable by any local user).
+# shellcheck source=scripts/deploy/lib/ssh-opts.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy/lib/ssh-opts.sh"
+a2wave_init_ssh_opts
 
 REMOTE_PRELUDE='IFS= read -r A2WAVE_SUDO_PASS'
 SUDO='printf "%s\n" "$A2WAVE_SUDO_PASS" | sudo -S -p ""'
