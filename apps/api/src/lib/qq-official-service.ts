@@ -35,10 +35,16 @@ const CONNECT_TIMEOUT_MS = 15_000
 const RECONNECT_BASE_DELAY_MS = 1_000
 const RECONNECT_MAX_DELAY_MS = 60_000
 /**
- * Consecutive failed handshakes after which a shard stops retrying. A shard
- * that cannot Identify is usually mis-configured (revoked secret, unpublished
- * bot, wrong intents) rather than briefly unlucky, and the retry loop is what
- * turns that into an endless hot loop against QQ's session-start budget.
+ * Consecutive failed handshakes after which the connection is *reported* as
+ * failed. A shard that cannot Identify this many times running is usually
+ * mis-configured (revoked secret, unpublished bot, wrong intents) rather than
+ * briefly unlucky, and that is worth surfacing on the channel's status.
+ *
+ * It does **not** stop the retry loop: an outage longer than the backoff window
+ * would otherwise park the channel offline until someone re-saved the config.
+ * The backoff is already clamped to `RECONNECT_MAX_DELAY_MS`, so re-probing
+ * past this point costs one Identify a minute rather than the hot loop the
+ * budget exists to prevent, and READY/RESUMED clears the failed status itself.
  */
 export const MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES = 10
 const SESSION_START_WINDOW_MS = 5_000
@@ -705,25 +711,41 @@ export class QQOfficialConnectionManager {
       }
       if (connection.stopping || this.connections.get(agentId) !== connection) return
       shard.consecutiveFailures += 1
-      if (shard.consecutiveFailures >= MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES) {
+      const budgetSpent = shard.consecutiveFailures >= MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES
+      if (budgetSpent) {
         connection.failureReason =
           shard.lastError ?? `shard ${shard.id} closed with code ${code} and never became ready`
-        logger.error(
-          {
-            agentId,
-            shardId: shard.id,
-            code,
-            attempts: shard.consecutiveFailures,
-            reason: connection.failureReason,
-          },
-          'QQ Gateway reconnect budget exhausted; connection marked failed until the config is re-saved',
-        )
-        return
       }
-      const delayMs = computeQQReconnectDelay(shard.consecutiveFailures)
+      const details = {
+        agentId,
+        shardId: shard.id,
+        code,
+        attempt: shard.consecutiveFailures,
+        ...(budgetSpent ? { reason: connection.failureReason } : {}),
+      }
+      if (shard.consecutiveFailures === MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES) {
+        // Crossing the threshold is the newsworthy moment and gets one error.
+        // Every retry after it is the same known outage, so it is warned about
+        // at the 60s cap rather than re-raised — an hour offline would
+        // otherwise be an hour of error-level log.
+        logger.error(
+          details,
+          'QQ Gateway reconnect budget exhausted; connection reported as failed while it keeps re-probing',
+        )
+      }
+      // Reconnecting never stops. Parking the shard here left the channel dead
+      // for any outage longer than the backoff window — nothing re-probed, so
+      // it stayed down until someone re-saved the config. The delay is already
+      // clamped to 60s, so a permanently broken config costs one Identify a
+      // minute, and READY/RESUMED clears `failureReason` on its own.
+      const delayMs = computeQQReconnectDelay(
+        Math.min(shard.consecutiveFailures, MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES),
+      )
       logger.warn(
-        { agentId, shardId: shard.id, code, attempt: shard.consecutiveFailures, delayMs },
-        'QQ Gateway disconnected; scheduling reconnect',
+        { ...details, delayMs },
+        budgetSpent
+          ? 'QQ Gateway still down past the reconnect budget; re-probing at the capped delay'
+          : 'QQ Gateway disconnected; scheduling reconnect',
       )
       shard.reconnect = setTimeout(() => this.connectShard(agentId, connection, shard), delayMs)
     })
