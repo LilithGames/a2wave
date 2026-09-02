@@ -164,6 +164,19 @@ revisiting when this area is next touched:
   disagrees with the lease in exactly the windows that matter — an Evaluation
   writes no `runs` row yet owns an `eval-<taskId>` worktree, and a Run's lease
   outlives its terminal status until cleanup.
+- **Sync itself is a source-side mutation and consults the lease the same way.**
+  A run that executes *in* `localPath` — every P4 Agent, and any Git Agent whose
+  per-Agent worktree could not be created — would have its uncommitted edits
+  rewritten by the `p4 sync` / `git checkout -f -B` of an `autoSync` tick or a
+  manual `POST /:id/sync`. Neither the heartbeat (this instance is alive) nor
+  `busyCheckouts` (other syncs only) can see that run. Occupancy is read off
+  `runs.workDir`, the same marker the workspace-delete route trusts: only a
+  worktree records it, so an **active** lease whose run recorded none is by
+  definition in the shared checkout, and an Evaluation — which records no
+  workspace at all — always counts. Reserved leases are still queued and own no
+  directory. A deferred sync returns the row to `idle` with
+  `lastSyncError = "Sync deferred: checkout in use by <type> <id>"`; it never
+  stamps `lastSyncAt`, because nothing synced.
 - Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
   Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and

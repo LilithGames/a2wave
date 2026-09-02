@@ -13,6 +13,7 @@ const {
   mockRunCodegraphIndex,
   mockWriteBackgroundAudit,
   mockIsolateManagedScmStorage,
+  mockFindSharedCheckoutScmWorkload,
 } = vi.hoisted(() => {
   const setResult = { run: vi.fn() }
   const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
@@ -45,6 +46,7 @@ const {
     mockExecuteGitSync: vi.fn(),
     mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
     mockWriteBackgroundAudit: vi.fn().mockResolvedValue(undefined),
+    mockFindSharedCheckoutScmWorkload: vi.fn().mockResolvedValue(null),
     mockIsolateManagedScmStorage: vi.fn().mockResolvedValue({
       isolated: [],
       blocked: [],
@@ -70,6 +72,9 @@ vi.mock('../webhook-notifier.js', () => ({ notifyScmSyncError: mockNotifyScmSync
 vi.mock('../audit.js', () => ({ writeBackgroundAudit: mockWriteBackgroundAudit }))
 vi.mock('../scm-storage-reclaim.js', () => ({
   isolateManagedScmStorage: mockIsolateManagedScmStorage,
+}))
+vi.mock('../scm-workload-lifecycle.js', () => ({
+  findSharedCheckoutScmWorkload: mockFindSharedCheckoutScmWorkload,
 }))
 vi.mock('../scm-path-plan.js', () => ({
   selectScmPathPeers: vi.fn().mockResolvedValue([]),
@@ -569,6 +574,7 @@ describe('syncScmSource', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     lastSeededSource = undefined
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue(null)
     // Ensure no checkout lock leaked from a prior test wedges this one.
     releaseCheckout('s1')
     mockExistsSync.mockReturnValue(true)
@@ -654,6 +660,54 @@ describe('syncScmSource', () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain('reclaim root')
     expect(mockExecuteGitSync).not.toHaveBeenCalled()
+  })
+
+  // A run executes IN the shared checkout (always for P4, and for a git Agent
+  // whose worktree creation degraded to localPath). `p4 sync` / `git checkout
+  // -f -B` under a live CLI destroys its uncommitted edits, and neither the
+  // heartbeat nor `busyCheckouts` can see a run — only the workload lease can.
+  it('defers a sync while a workload lease pins the shared checkout', async () => {
+    const source = {
+      id: 's1',
+      name: 'in use',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    const { setFn } = mockDbUpdate()
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue({ type: 'run', id: 'run_9' })
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('run run_9')
+    expect(mockExecuteGitSync).not.toHaveBeenCalled()
+    // The row must not be stranded at 'syncing', and the reason must be visible.
+    expect(setFn).toHaveBeenCalledWith(
+      expect.objectContaining({ lastSyncError: expect.stringContaining('run_9') }),
+    )
+    expect(isCheckoutBusy('s1')).toBe(false)
+  })
+
+  it('syncs normally when no lease pins the shared checkout', async () => {
+    const source = {
+      id: 's1',
+      name: 'free',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+    mockExecuteGitSync.mockResolvedValue({ ok: true, message: 'Synced', filesUpdated: 0 })
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(true)
+    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(expect.anything(), 's1', '/repo')
   })
 
   it('aborts and waits for a cancellable automatic initial sync', async () => {

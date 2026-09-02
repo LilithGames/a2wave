@@ -3,6 +3,7 @@ import {
   activateScmWorkload,
   findDurableAgentScmWorkload,
   findDurableScmSourceWorkload,
+  findSharedCheckoutScmWorkload,
   releaseRecoveredScmWorkload,
   releaseReservedScmWorkload,
   releaseScmWorkload,
@@ -426,6 +427,70 @@ describe('SCM workload lifecycle', () => {
     const { tx } = mutationTx([[]])
 
     await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toBeNull()
+  })
+})
+
+describe('findSharedCheckoutScmWorkload', () => {
+  const SHARED = '/srv/scm/sources/src_1'
+
+  function executor(leases: Row[], runsById: Record<string, Row[]> = {}) {
+    const select = vi.fn()
+    select.mockReturnValueOnce(query(leases))
+    for (const rows of Object.values(runsById)) select.mockReturnValueOnce(query(rows))
+    return { select } as never
+  }
+
+  it('returns null when no lease pins the source', async () => {
+    await expect(findSharedCheckoutScmWorkload(executor([]), 'src_1', SHARED)).resolves.toBeNull()
+  })
+
+  it('ignores a reserved lease that has not started executing', async () => {
+    const leases = [{ type: 'run', id: 'run_1', phase: 'reserved' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases), 'src_1', SHARED),
+    ).resolves.toBeNull()
+  })
+
+  it('ignores a run executing in its own per-agent worktree', async () => {
+    const leases = [{ type: 'run', id: 'run_1', phase: 'active' }]
+    const runs = { run_1: [{ workDir: '/srv/scm/workspaces/src_1/agent-abc' }] }
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases, runs), 'src_1', SHARED),
+    ).resolves.toBeNull()
+  })
+
+  it('reports a run executing in the shared checkout', async () => {
+    const leases = [{ type: 'run', id: 'run_1', phase: 'active' }]
+    const runs = { run_1: [{ workDir: SHARED }] }
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases, runs), 'src_1', SHARED),
+    ).resolves.toEqual({ type: 'run', id: 'run_1' })
+  })
+
+  // P4 Agents and git worktree-creation fallbacks both execute in `localPath`,
+  // and neither records runs.workDir — an unrecorded workDir is exactly the
+  // shared-checkout case, so it must be treated as occupancy.
+  it('reports an active run that recorded no workDir', async () => {
+    const leases = [{ type: 'run', id: 'run_1', phase: 'active' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(
+        executor(leases, { run_1: [{ workDir: null }] }),
+        'src_1',
+        SHARED,
+      ),
+    ).resolves.toEqual({ type: 'run', id: 'run_1' })
+  })
+
+  it('reports an active evaluation, which records no workspace of its own', async () => {
+    const leases = [{ type: 'evaluation', id: 'evt_1', phase: 'active' }]
+
+    await expect(findSharedCheckoutScmWorkload(executor(leases), 'src_1', SHARED)).resolves.toEqual(
+      { type: 'evaluation', id: 'evt_1' },
+    )
   })
 })
 

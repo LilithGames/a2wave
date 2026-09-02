@@ -1,11 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import type { db } from '../db/client.js'
-import { agents, scmWorkloadLeases } from '../db/schema.js'
+import { agents, runs, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { retryUntilSuccess } from './retry-until-success.js'
 import { withScmPathMutation } from './scm-path-plan.js'
+import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 
 export type ScmWorkloadType = 'run' | 'evaluation'
 
@@ -372,6 +373,64 @@ export async function findDurableScmSourceWorkload(
       .limit(1)
   )[0]
   return lease ?? null
+}
+
+/**
+ * Leases scanned per source. Concurrent workloads on one source are bounded by
+ * queue concurrency; the cap only keeps a pathological table from being walked.
+ */
+const SHARED_CHECKOUT_LEASE_SCAN_LIMIT = 100
+
+/**
+ * Work executing in a source's **shared checkout** (`localPath`) right now.
+ *
+ * Sync rewrites that directory — `p4 sync`, or `git checkout -f -B` — so running
+ * one while a CLI has it as cwd destroys the agent's uncommitted edits. The
+ * in-process `busyCheckouts` set does not see this: a run is not a sync, and it
+ * may well be owned by another replica.
+ *
+ * Which workloads actually sit in the shared checkout is read off
+ * `runs.workDir`, the same occupancy marker the workspace-delete route trusts.
+ * Only a per-Agent or explicit **worktree** records it (see `resolveWorkDir`),
+ * so a null value is exactly the shared-checkout case: a P4 Agent, or a git
+ * Agent whose worktree creation degraded to `localPath`. An Evaluation records
+ * no workspace at all and is therefore always treated as occupancy — deferring
+ * a sync tick is far cheaper than losing a run's work.
+ *
+ * Reserved leases are skipped: that work is still queued and owns no directory.
+ */
+export async function findSharedCheckoutScmWorkload(
+  executor: Pick<typeof db, 'select'>,
+  scmSourceId: string,
+  sharedLocalPath: string,
+): Promise<{ type: ScmWorkloadType; id: string } | null> {
+  const leases = await executor
+    .select({
+      type: scmWorkloadLeases.workloadType,
+      id: scmWorkloadLeases.workloadId,
+      phase: scmWorkloadLeases.phase,
+    })
+    .from(scmWorkloadLeases)
+    .where(eq(scmWorkloadLeases.scmSourceId, scmSourceId))
+    .limit(SHARED_CHECKOUT_LEASE_SCAN_LIMIT)
+
+  for (const lease of leases) {
+    if (lease.phase !== 'active') continue
+    if (lease.type !== 'run') return { type: lease.type, id: lease.id }
+
+    const run = (
+      await executor
+        .select({ workDir: runs.workDir })
+        .from(runs)
+        .where(eq(runs.id, lease.id))
+        .limit(1)
+    )[0]
+    const workDir = run?.workDir ?? null
+    if (!workDir || filesystemPathsOverlap(workDir, sharedLocalPath)) {
+      return { type: lease.type, id: lease.id }
+    }
+  }
+  return null
 }
 
 /** Durable authority used by Agent binding changes and source deletion. */
