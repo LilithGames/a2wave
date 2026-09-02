@@ -174,9 +174,13 @@ revisiting when this area is next touched:
   worktree records it, so an **active** lease whose run recorded none is by
   definition in the shared checkout, and an Evaluation — which records no
   workspace at all — always counts. Reserved leases are still queued and own no
-  directory. A deferred sync returns the row to `idle` with
-  `lastSyncError = "Sync deferred: checkout in use by <type> <id>"`; it never
-  stamps `lastSyncAt`, because nothing synced.
+  directory. A deferred sync returns the row to
+  plain `idle` and writes **neither** `lastSyncError` nor `lastSyncAt`: nothing
+  synced, and nothing failed either — stamping the deferral into
+  `lastSyncError` shows a persistent error notice in the web form and the CLI
+  for the whole duration of the run, is re-stamped by every auto-sync tick, and
+  destroys the genuine previous error. The reason belongs in the return value
+  and an info log.
 - Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
   Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and

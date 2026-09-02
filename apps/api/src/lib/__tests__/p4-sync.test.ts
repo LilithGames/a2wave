@@ -682,13 +682,39 @@ describe('syncScmSource', () => {
     const result = await syncScmSource('s1')
 
     expect(result.ok).toBe(false)
+    expect(result.alreadyRunning).toBe(true)
     expect(result.message).toContain('run run_9')
     expect(mockExecuteGitSync).not.toHaveBeenCalled()
-    // The row must not be stranded at 'syncing', and the reason must be visible.
-    expect(setFn).toHaveBeenCalledWith(
-      expect.objectContaining({ lastSyncError: expect.stringContaining('run_9') }),
-    )
+    // The row must not be stranded at 'syncing' — but the source is healthy, so
+    // the deferral goes back to plain 'idle'.
+    expect(setFn).toHaveBeenCalledWith(expect.objectContaining({ syncStatus: 'idle' }))
     expect(isCheckoutBusy('s1')).toBe(false)
+  })
+
+  // A deferral is not a failure of the source. Writing it into `lastSyncError`
+  // made the web form and the CLI show a persistent error banner for the whole
+  // duration of the run, re-stamped on every auto-sync tick, and it overwrote
+  // the genuine previous error. The reason lives in the return value and the
+  // log instead.
+  it('leaves lastSyncError and lastSyncAt untouched when a sync is deferred', async () => {
+    const source = {
+      id: 's1',
+      name: 'in use',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    const { setFn } = mockDbUpdate()
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue({ type: 'run', id: 'run_9' })
+
+    await syncScmSource('s1')
+
+    for (const [value] of setFn.mock.calls as [Record<string, unknown>][]) {
+      expect(value).not.toHaveProperty('lastSyncError')
+      expect(value).not.toHaveProperty('lastSyncAt')
+    }
   })
 
   it('syncs normally when no lease pins the shared checkout', async () => {

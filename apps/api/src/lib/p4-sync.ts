@@ -497,14 +497,20 @@ async function releasePreAcquiredSync(sourceId: string, message: string): Promis
  *
  * Terminal status is mandatory — an early return that leaves the row at
  * `syncing` wedges every later CAS until restart — but the source is healthy
- * and its data is untouched, so it goes back to `idle` with the reason in
- * `lastSyncError`. `lastSyncAt` is deliberately not stamped: nothing synced.
+ * and its data is untouched, so it goes back to plain `idle`.
+ *
+ * Neither `lastSyncError` nor `lastSyncAt` is written. A deferral is not a
+ * failure of the source: stamping the reason into `lastSyncError` made the web
+ * source form and the CLI render a persistent error notice for as long as the
+ * run held the checkout, re-stamped by every auto-sync tick, and it destroyed
+ * the genuine previous error. The reason reaches the caller in the return value
+ * and the operator through the info log at the call site.
  */
-async function deferSync(sourceId: string, message: string): Promise<void> {
+async function deferSync(sourceId: string): Promise<void> {
   await runExclusive(async () => {
     await db
       .update(scmSources)
-      .set({ syncStatus: 'idle', lastSyncError: message, updatedAt: new Date() })
+      .set({ syncStatus: 'idle', updatedAt: new Date() })
       .where(eq(scmSources.id, sourceId))
   })
 }
@@ -686,8 +692,11 @@ async function runSyncUnderCheckoutLock(
   if (occupant) {
     const message = `Sync deferred: checkout in use by ${occupant.type} ${occupant.id}`
     releaseCheckout(sourceId)
-    await deferSync(sourceId, message)
-    logger.info({ sourceId, occupant }, 'Deferring SCM sync: checkout in use by a running workload')
+    await deferSync(sourceId)
+    logger.info(
+      { sourceId, workloadType: occupant.type, workloadId: occupant.id },
+      'Deferring SCM sync: checkout in use by a running workload',
+    )
     return { ok: false, message, alreadyRunning: true }
   }
 
