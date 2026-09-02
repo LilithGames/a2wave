@@ -9,10 +9,19 @@
  *
  * 安全基线：断言必须签名（wantAssertionsSigned）、audience 必须等于 SP entityId、
  * InResponseTo 强制校验（validateInResponseTo=always，防未经请求的响应注入 / 重放）。
- * InResponseTo 状态用 node-saml 自带 InMemoryCacheProvider —— 单容器部署，内存即可。
  * idpCert 接受完整 PEM 或去掉头尾行的 base64 体（node-saml 原生支持两种格式）。
+ *
+ * InResponseTo state is durable, not in-process: issued request ids live in the
+ * `saml_requests` table (createSamlRequestCacheProvider), because the IdP posts
+ * the assertion back through the load balancer and it may land on any replica —
+ * or on the same one after a restart. node-saml's default InMemoryCacheProvider
+ * fails those logins with SAML_RESPONSE_UNSOLICITED.
  */
-import { type Profile, SAML, ValidateInResponseTo } from '@node-saml/node-saml'
+import { type CacheProvider, type Profile, SAML, ValidateInResponseTo } from '@node-saml/node-saml'
+import { and, eq, gte, lt } from 'drizzle-orm'
+import { db } from '../db/client.js'
+import { samlRequests } from '../db/schema.js'
+import { logger } from './logger.js'
 import { getSamlEnv } from './saml-config.js'
 import { getSsoCallbackOrigin } from './server-url.js'
 import type { SsoIdentity } from './sso-login.js'
@@ -113,6 +122,117 @@ export function extractSamlIdentity(profile: Profile, fallbackIssuer: string): S
   return identity
 }
 
+/**
+ * How long an issued AuthnRequest id stays acceptable.
+ *
+ * Mirrors node-saml's own `requestIdExpirationPeriodMs` default (8h) so the
+ * durable cache expires ids on exactly the schedule the library documents;
+ * shortening it here would silently fail logins the library considers valid.
+ */
+export const SAML_REQUEST_EXPIRATION_MS = 8 * 60 * 60 * 1000
+
+/** Hourly, matching the other lapsed-row sweepers. Cheap: one indexed DELETE. */
+const SAML_REQUEST_SWEEP_INTERVAL_MS = 60 * 60 * 1000
+
+/**
+ * node-saml `CacheProvider` backed by the `saml_requests` table.
+ *
+ * `validateInResponseTo: always` is only as good as the store behind it. The
+ * default `InMemoryCacheProvider` keeps issued request ids in the heap of the
+ * process that built the redirect, while the IdP form-POSTs the assertion to
+ * `/api/auth/saml/acs` through the load balancer. Any replica but that one — or
+ * that same one after a restart or a deploy — finds no matching id and rejects a
+ * perfectly good login as `SAML_RESPONSE_UNSOLICITED`, an error whose shape
+ * points the administrator at their IdP configuration rather than at us.
+ *
+ * A table is the whole fix: the state is already per-flow, tiny, and short
+ * lived. Expiry is enforced on **read** as well as by the sweeper, so a sweeper
+ * that is late (or a replica whose timer has not started) can never widen the
+ * window an id stays replayable.
+ */
+export function createSamlRequestCacheProvider(): CacheProvider {
+  return {
+    async saveAsync(key: string, value: string) {
+      const createdAt = new Date()
+      // node-saml reads null as "this id is already in use" and refuses to
+      // reissue, so the pre-existing row must win rather than be overwritten.
+      const existing = (
+        await db.select().from(samlRequests).where(eq(samlRequests.id, key)).limit(1)
+      )[0]
+      if (existing) return null
+
+      const inserted = await db
+        .insert(samlRequests)
+        .values({ id: key, value, createdAt })
+        .onConflictDoNothing()
+        .returning({ id: samlRequests.id })
+      // Lost the insert race against another replica: same answer as above.
+      if (inserted.length === 0) return null
+
+      return { value, createdAt: createdAt.getTime() }
+    },
+
+    async getAsync(key: string) {
+      const row = (
+        await db
+          .select()
+          .from(samlRequests)
+          .where(
+            and(
+              eq(samlRequests.id, key),
+              gte(samlRequests.createdAt, new Date(Date.now() - SAML_REQUEST_EXPIRATION_MS)),
+            ),
+          )
+          .limit(1)
+      )[0]
+      return row?.value ?? null
+    },
+
+    async removeAsync(key: string | null) {
+      if (key === null) return null
+      // `.returning()` rather than a row count: the two drivers disagree on
+      // `changes`/`rowCount` (see apps/api/AGENTS.md).
+      const removed = await db
+        .delete(samlRequests)
+        .where(eq(samlRequests.id, key))
+        .returning({ id: samlRequests.id })
+      return removed[0]?.id ?? null
+    },
+  }
+}
+
+/** Delete request ids past the expiration window. Returns how many went. */
+export async function sweepExpiredSamlRequests(now: Date): Promise<number> {
+  const deleted = await db
+    .delete(samlRequests)
+    .where(lt(samlRequests.createdAt, new Date(now.getTime() - SAML_REQUEST_EXPIRATION_MS)))
+    .returning({ id: samlRequests.id })
+  return deleted.length
+}
+
+let sweepTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Start the sweeper once, lazily, the first time a SAML instance is built.
+ *
+ * Deliberately not wired into server startup: a deployment with no SAML
+ * configured never issues a request id, so there is nothing to sweep and no
+ * reason to hold a timer. Consumed rows are deleted by `removeAsync` on the
+ * success path; this only clears the abandoned ones.
+ */
+function ensureSamlRequestSweeper(): void {
+  if (sweepTimer) return
+  sweepTimer = setInterval(() => {
+    void sweepExpiredSamlRequests(new Date())
+      .then((deleted) => {
+        if (deleted > 0) logger.info({ deleted }, 'saml: swept expired request ids')
+      })
+      // A failed sweep must not kill the timer — the next tick is the recovery.
+      .catch((error) => logger.error({ error }, 'saml: request id sweep failed'))
+  }, SAML_REQUEST_SWEEP_INTERVAL_MS)
+  sweepTimer.unref?.()
+}
+
 let samlCache: { key: string; instance: SAML } | null = null
 
 /**
@@ -144,9 +264,16 @@ export async function getSaml(): Promise<SAML> {
     // 两者至少其一有效签名由 node-saml 保证。
     wantAssertionsSigned: true,
     wantAuthnResponseSigned: false,
-    // InResponseTo 强制校验，请求 ID 存 node-saml 默认 InMemoryCacheProvider（单容器足够）
+    // InResponseTo is enforced, and the issued request ids live in the
+    // `saml_requests` table rather than node-saml's in-memory default. The ACS
+    // POST arrives on whichever replica the load balancer picks, so process
+    // memory would fail every login that does not come back to the issuer — see
+    // createSamlRequestCacheProvider.
     validateInResponseTo: ValidateInResponseTo.always,
+    requestIdExpirationPeriodMs: SAML_REQUEST_EXPIRATION_MS,
+    cacheProvider: createSamlRequestCacheProvider(),
   })
+  ensureSamlRequestSweeper()
   samlCache = { key, instance }
   return instance
 }

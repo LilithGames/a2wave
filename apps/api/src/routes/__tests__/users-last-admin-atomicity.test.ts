@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 /**
  * Regression guard for the last-admin TOCTOU.
@@ -39,6 +39,21 @@ vi.mock('../../db/schema.js', () => ({
     createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
+  // Provenance columns nulled by DELETE /users/:id before it removes the row.
+  auditLogs: { userId: 'audit_logs.user_id' },
+  runs: { userId: 'runs.user_id' },
+  artifacts: { userId: 'artifacts.user_id' },
+  artifactShares: { createdBy: 'artifact_shares.created_by' },
+  evaluationTasks: { userId: 'evaluation_tasks.user_id' },
+  // Ownership tables consulted by DELETE /users/:id before it removes the row;
+  // each is counted with `eq(table.userId, id)`, so only `userId` is read.
+  agents: { userId: 'agents.user_id', scheduleRunAsUserId: 'agents.schedule_run_as_user_id' },
+  mcpServers: { userId: 'mcp_servers.user_id' },
+  skills: { userId: 'skills.user_id' },
+  skillGroups: { userId: 'skill_groups.user_id' },
+  kbDocuments: { userId: 'kb_documents.user_id' },
+  scmSources: { userId: 'scm_sources.user_id' },
+  evaluationSets: { userId: 'evaluation_sets.user_id' },
 }))
 
 vi.mock('../../lib/audit.js', () => ({ logAudit: vi.fn() }))

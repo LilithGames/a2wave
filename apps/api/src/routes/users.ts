@@ -1,9 +1,23 @@
-import { and, count, desc, eq, sql } from 'drizzle-orm'
+import { and, type Column, count, desc, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { isPostgresRuntime } from '../db/dialect-runtime.js'
-import { users } from '../db/schema.js'
+import {
+  agents,
+  artifactShares,
+  artifacts,
+  auditLogs,
+  evaluationSets,
+  evaluationTasks,
+  kbDocuments,
+  mcpServers,
+  runs,
+  scmSources,
+  skillGroups,
+  skills,
+  users,
+} from '../db/schema.js'
 import { withTransaction } from '../db/transaction.js'
 import { logAudit } from '../lib/audit.js'
 import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
@@ -82,14 +96,60 @@ app.delete('/:id', async (c) => {
   // demotion it cannot be undone by an operator who is still signed in.
   const isLastAdminDeletion = user.role === 'admin' && user.isActive
 
-  const deleted = await withTransaction((tx) =>
-    tx
+  // Owned resources block the delete instead of being cascaded or orphaned.
+  // Thirteen tables reference users.id; the six provenance columns among them
+  // (audit_logs, runs, artifacts, artifact_shares, evaluation_tasks,
+  // agents.schedule_run_as_user_id) are ON DELETE SET NULL, so history survives
+  // the account. The seven below are *ownership*: an Agent, MCP Server, Skill,
+  // Skill group, KB document, SCM source or Evaluation set with no owner is not
+  // a tidy record, it is a resource nobody can administer — and cascading them
+  // away would silently destroy work the administrator never asked to remove.
+  // So we report what stands in the way and let a human transfer or delete it.
+  const ownedResources = await countOwnedResources(id)
+  if (Object.keys(ownedResources).length > 0) {
+    return c.json({ error: 'USER_HAS_OWNED_RESOURCES', ownedResources }, 409)
+  }
+
+  const deleted = await withTransaction(async (tx) => {
+    // Sever the columns that record *who acted* rather than *who owns*, in the
+    // same transaction. Without this the bare DELETE below fails with
+    // `FOREIGN KEY constraint failed` (SQLite connects with
+    // `PRAGMA foreign_keys = ON`; PostgreSQL always enforces) for anyone who has
+    // ever logged in — a login writes an `audit_logs` row — and the route
+    // answered 500.
+    //
+    // Nulling rather than deleting: an audit entry, run, artifact, share link or
+    // evaluation task must outlive the account that produced it. Iron Rule 5
+    // makes "who did this" permanently answerable, and the username captured in
+    // `audit_logs.details` at write time keeps that true once the id is gone. A
+    // scheduled Agent likewise just loses its run-as identity.
+    //
+    // Why here and not `ON DELETE SET NULL`: changing an existing foreign key in
+    // SQLite needs a full table rebuild, and drizzle's generated rebuild
+    // (`DROP TABLE runs` + rename) executes inside the migrator's transaction,
+    // where `PRAGMA foreign_keys=OFF` is a no-op. On a populated database that
+    // either aborts the upgrade on a NO ACTION child or silently empties every
+    // CASCADE child of `agents`/`runs`/`artifacts` — both reproduced here, see
+    // the header of `drizzle/0100_awesome_marrow.sql`. Six UPDATEs cost no
+    // migration and behave identically on both dialects. They roll back with the
+    // delete, so a blocked last-admin deletion leaves every reference intact.
+    await tx.update(auditLogs).set({ userId: null }).where(eq(auditLogs.userId, id))
+    await tx.update(runs).set({ userId: null }).where(eq(runs.userId, id))
+    await tx.update(artifacts).set({ userId: null }).where(eq(artifacts.userId, id))
+    await tx.update(artifactShares).set({ createdBy: null }).where(eq(artifactShares.createdBy, id))
+    await tx.update(evaluationTasks).set({ userId: null }).where(eq(evaluationTasks.userId, id))
+    await tx
+      .update(agents)
+      .set({ scheduleRunAsUserId: null })
+      .where(eq(agents.scheduleRunAsUserId, id))
+
+    return await tx
       .delete(users)
       .where(
         isLastAdminDeletion ? and(eq(users.id, id), anotherActiveAdminRemains()) : eq(users.id, id),
       )
-      .returning({ id: users.id }),
-  )
+      .returning({ id: users.id })
+  })
 
   if (deleted.length === 0) {
     return c.json({ error: 'LAST_ADMIN_CANNOT_DELETE' }, 400)
@@ -104,6 +164,37 @@ app.delete('/:id', async (c) => {
 
   return c.json({ data: { id } })
 })
+
+/**
+ * Tables whose `user_id` means "owns this", keyed by the name reported to the
+ * administrator. Deliberately not a cascade: see the call site.
+ *
+ * Built on call rather than at module scope so importing this route never
+ * touches a table object it does not need — several suites mock `db/schema.js`
+ * with `users` alone, and a module-level read would fail them on import.
+ */
+function ownedResourceTables() {
+  return [
+    ['agents', agents],
+    ['mcpServers', mcpServers],
+    ['skills', skills],
+    ['skillGroups', skillGroups],
+    ['kbDocuments', kbDocuments],
+    ['scmSources', scmSources],
+    ['evaluationSets', evaluationSets],
+  ] as const satisfies ReadonlyArray<readonly [string, { userId: Column }]>
+}
+
+/** Non-zero owned-resource counts for a user; an empty object means nothing blocks deletion. */
+async function countOwnedResources(userId: string): Promise<Record<string, number>> {
+  const owned: Record<string, number> = {}
+  for (const [name, table] of ownedResourceTables()) {
+    const row = (await db.select({ count: count() }).from(table).where(eq(table.userId, userId)))[0]
+    const n = row?.count ?? 0
+    if (n > 0) owned[name] = n
+  }
+  return owned
+}
 
 /**
  * "Another administrator who can still sign in would remain after this write."

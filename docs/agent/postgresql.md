@@ -304,6 +304,35 @@ schema as migration 0.**
 `pnpm db:migrate` reads `DATABASE_URL` and applies the matching lineage
 automatically. Both directories ship in the Docker image.
 
+### Startup migrations are serialised by an advisory lock
+
+Every replica runs the migrator at boot, and drizzle's PostgreSQL migrator takes
+no lock of its own. Without coordination a three-replica rollout replays the same
+DDL three times over: the losers fail on `relation ... already exists` and
+`process.exit(1)` with a message telling the operator never to retry against a
+database in an unknown state — a rollout that half-fails and then refuses to
+self-heal, against a database that was actually fine.
+
+`runPostgresMigrations` therefore checks a dedicated client out of the pool,
+takes `pg_advisory_lock(<fixed key>)` on it, runs the migrator, and unlocks +
+releases in `finally`. Two details are load-bearing:
+
+- **Session scope, one connection.** `pg_advisory_lock` is held by the session,
+  so the lock and the migration have to be issued on a connection this code owns
+  for the duration. Locking through the shared `db` handle would route the two
+  statements to arbitrary pooled connections and protect nothing.
+- **Not the `xact` variant.** `pg_advisory_xact_lock` releases at commit, and the
+  migrator opens and commits its own transactions — the lock would drop
+  mid-migration.
+
+Operationally: a replica that is waiting logs
+`Waiting for the PostgreSQL migration advisory lock...` and blocks there, so a
+boot that appears to hang during a rollout is usually just the second replica
+waiting for the first to finish migrating. The key is visible in `pg_locks` as a
+`advisory` lock. It does **not** make the release in the warning above rolling —
+the two reasons given there are about mixed-version behaviour, not concurrent
+DDL.
+
 Adding a schema change means regenerating **both**:
 
 ```bash

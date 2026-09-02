@@ -22,6 +22,21 @@ vi.mock('../../db/schema.js', () => ({
     role: 'users.role',
     tokenVersion: 'users.tokenVersion',
   },
+  // Provenance columns nulled by DELETE /users/:id before it removes the row.
+  auditLogs: { userId: 'audit_logs.user_id' },
+  runs: { userId: 'runs.user_id' },
+  artifacts: { userId: 'artifacts.user_id' },
+  artifactShares: { createdBy: 'artifact_shares.created_by' },
+  evaluationTasks: { userId: 'evaluation_tasks.user_id' },
+  // Ownership tables consulted by DELETE /users/:id before it removes the row;
+  // each is counted with `eq(table.userId, id)`, so only `userId` is read.
+  agents: { userId: 'agents.user_id', scheduleRunAsUserId: 'agents.schedule_run_as_user_id' },
+  mcpServers: { userId: 'mcp_servers.user_id' },
+  skills: { userId: 'skills.user_id' },
+  skillGroups: { userId: 'skill_groups.user_id' },
+  kbDocuments: { userId: 'kb_documents.user_id' },
+  scmSources: { userId: 'scm_sources.user_id' },
+  evaluationSets: { userId: 'evaluation_sets.user_id' },
 }))
 
 const logAuditMock = vi.fn()
@@ -187,6 +202,10 @@ describe('DELETE /users/:id', () => {
     // outcome through `.returning()` rows (an empty result means the guard blocked it),
     // so the mock has to yield the deleted row rather than the generic empty chain.
     queueSelects({ get: { id: 'usr_x', username: 'bob', role: 'user', isActive: true } })
+    // The delete first nulls the provenance columns (audit_logs, runs, artifacts,
+    // artifact_shares, evaluation_tasks, agents.schedule_run_as_user_id) so the
+    // foreign keys do not block it.
+    queueUpdate()
     queueDelete([{ id: 'usr_x' }])
     const res = await buildApp().request('/users/usr_x', { method: 'DELETE' })
     expect(res.status).toBe(200)

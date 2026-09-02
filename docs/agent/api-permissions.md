@@ -63,6 +63,22 @@ ACL.
   yourself, demote the only active admin, or disable the last one. Disabling a
   user revokes outstanding tokens and closes password login, SSO, and OAuth
   gateway invocation together.
+- **`DELETE /users/:id` refuses while the user still owns resources** — 409
+  `USER_HAS_OWNED_RESOURCES`, with per-resource counts (`agents`, `mcpServers`,
+  `skills`, `skillGroups`, `kbDocuments`, `scmSources`, `evaluationSets`) so the
+  administrator can transfer or delete them first. Cascading them away would
+  destroy work nobody asked to lose, and orphaning them would leave resources no
+  one can administer. Provenance references are the opposite case and are severed
+  instead: the deleting transaction nulls `audit_logs.user_id`, `runs.user_id`,
+  `artifacts.user_id`, `artifact_shares.created_by`, `evaluation_tasks.user_id`
+  and `agents.schedule_run_as_user_id` before removing the row, so history
+  outlives the account — the audit entry keeps its `details.username`, so "who
+  did this" stays answerable. That happens in the route rather than as
+  `ON DELETE SET NULL` because altering an existing SQLite foreign key needs a
+  table rebuild, and drizzle's generated rebuild runs inside the migrator's
+  transaction where `PRAGMA foreign_keys=OFF` is a no-op — see the header of
+  `apps/api/drizzle/0100_awesome_marrow.sql`. Disabling remains the right move
+  for a departing employee; deletion is for accounts created by mistake.
 - **SCM edits during a sync return 409** — changing `localPath`/`config` mid-sync
   would release the running sync's lock.
 - **Workspace arbitration is durable and cross-replica, not in-process.** A

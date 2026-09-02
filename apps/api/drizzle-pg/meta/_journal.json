@@ -148,6 +148,13 @@
       "when": 1787317599792,
       "tag": "0020_goofy_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788342036370,
+      "tag": "0021_organic_wolverine",
+      "breakpoints": true
     }
   ]
 }
