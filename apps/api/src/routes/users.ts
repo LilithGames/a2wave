@@ -18,7 +18,7 @@ import {
   skills,
   users,
 } from '../db/schema.js'
-import { withTransaction } from '../db/transaction.js'
+import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { logAudit } from '../lib/audit.js'
 import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { hashPassword, validatePassword } from '../lib/auth.js'
@@ -96,21 +96,25 @@ app.delete('/:id', async (c) => {
   // demotion it cannot be undone by an operator who is still signed in.
   const isLastAdminDeletion = user.role === 'admin' && user.isActive
 
-  // Owned resources block the delete instead of being cascaded or orphaned.
-  // Thirteen tables reference users.id; the six provenance columns among them
-  // (audit_logs, runs, artifacts, artifact_shares, evaluation_tasks,
-  // agents.schedule_run_as_user_id) are ON DELETE SET NULL, so history survives
-  // the account. The seven below are *ownership*: an Agent, MCP Server, Skill,
-  // Skill group, KB document, SCM source or Evaluation set with no owner is not
-  // a tidy record, it is a resource nobody can administer — and cascading them
-  // away would silently destroy work the administrator never asked to remove.
-  // So we report what stands in the way and let a human transfer or delete it.
-  const ownedResources = await countOwnedResources(id)
-  if (Object.keys(ownedResources).length > 0) {
-    return c.json({ error: 'USER_HAS_OWNED_RESOURCES', ownedResources }, 409)
-  }
+  const outcome = await withTransaction(async (tx) => {
+    // Owned resources block the delete instead of being cascaded or orphaned.
+    // Thirteen tables reference users.id; the six provenance columns among them
+    // (audit_logs, runs, artifacts, artifact_shares, evaluation_tasks,
+    // agents.schedule_run_as_user_id) are severed by the UPDATEs below, so
+    // history survives the account. The seven counted here are *ownership*: an
+    // Agent, MCP Server, Skill, Skill group, KB document, SCM source or
+    // Evaluation set with no owner is not a tidy record, it is a resource
+    // nobody can administer — and cascading them away would silently destroy
+    // work the administrator never asked to remove. So we report what stands in
+    // the way and let a human transfer or delete it.
+    //
+    // Counted *inside* the transaction so the 409 and the DELETE decide on the
+    // same state. Counting outside reads a snapshot the delete never sees: an
+    // Agent created in the gap is either destroyed by a delete cleared against
+    // stale counts, or reported as blocking one that would have been fine.
+    const ownedResources = await countOwnedResources(tx, id)
+    if (Object.keys(ownedResources).length > 0) return { ownedResources }
 
-  const deleted = await withTransaction(async (tx) => {
     // Sever the columns that record *who acted* rather than *who owns*, in the
     // same transaction. Without this the bare DELETE below fails with
     // `FOREIGN KEY constraint failed` (SQLite connects with
@@ -143,15 +147,23 @@ app.delete('/:id', async (c) => {
       .set({ scheduleRunAsUserId: null })
       .where(eq(agents.scheduleRunAsUserId, id))
 
-    return await tx
+    const deleted = await tx
       .delete(users)
       .where(
         isLastAdminDeletion ? and(eq(users.id, id), anotherActiveAdminRemains()) : eq(users.id, id),
       )
       .returning({ id: users.id })
+    return { deleted }
   })
 
-  if (deleted.length === 0) {
+  if ('ownedResources' in outcome) {
+    return c.json(
+      { error: 'USER_HAS_OWNED_RESOURCES', ownedResources: outcome.ownedResources },
+      409,
+    )
+  }
+
+  if (outcome.deleted.length === 0) {
     return c.json({ error: 'LAST_ADMIN_CANNOT_DELETE' }, 400)
   }
 
@@ -185,11 +197,20 @@ function ownedResourceTables() {
   ] as const satisfies ReadonlyArray<readonly [string, { userId: Column }]>
 }
 
-/** Non-zero owned-resource counts for a user; an empty object means nothing blocks deletion. */
-async function countOwnedResources(userId: string): Promise<Record<string, number>> {
+/**
+ * Non-zero owned-resource counts for a user; an empty object means nothing blocks deletion.
+ *
+ * Takes the handle rather than reaching for `db`: on PostgreSQL the shared handle
+ * would run these counts on a different pooled connection, i.e. outside the
+ * caller's transaction — exactly the inconsistency the call site is guarding against.
+ */
+async function countOwnedResources(
+  tx: TransactionHandle,
+  userId: string,
+): Promise<Record<string, number>> {
   const owned: Record<string, number> = {}
   for (const [name, table] of ownedResourceTables()) {
-    const row = (await db.select({ count: count() }).from(table).where(eq(table.userId, userId)))[0]
+    const row = (await tx.select({ count: count() }).from(table).where(eq(table.userId, userId)))[0]
     const n = row?.count ?? 0
     if (n > 0) owned[name] = n
   }
