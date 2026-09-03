@@ -1,5 +1,14 @@
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -477,5 +486,143 @@ describe('syncMcpToWorkspaceAtPathAsync — repository-tracked config files', ()
     expect(await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [secretServer])).toBe(true)
 
     expect(readConfig().mcpServers.api.headers.Authorization).toBe('Bearer tracked-secret-token')
+  })
+})
+
+/**
+ * Whether the filesystem backing the temp directory folds case — the macOS and
+ * Windows default, and the reason an exact `git ls-files` query is not enough:
+ * git matches pathnames case-sensitively, the filesystem does not.
+ *
+ * Probed rather than inferred from `process.platform`: a case-sensitive APFS
+ * volume and a case-insensitive Linux mount both exist.
+ */
+function detectCaseInsensitiveFs(): boolean {
+  const probe = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-case-probe-'))
+  try {
+    writeFileSync(path.join(probe, 'a'), '')
+    statSync(path.join(probe, 'A'))
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(probe, { recursive: true, force: true })
+  }
+}
+
+const CASE_INSENSITIVE_FS = detectCaseInsensitiveFs()
+
+/**
+ * The refusal has to be decided against the file the write actually lands on,
+ * not the pathname string it was asked about. Case folding and symlinks both
+ * make "the repository does not track `.mcp.json`" true while the write still
+ * modifies a tracked file — and each one reproduces the original leak in full.
+ */
+describe('syncMcpToWorkspaceAtPathAsync — target identity, not pathname', () => {
+  let repo: string
+  let outside: string
+
+  async function runGit(...args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd: repo })
+    return stdout
+  }
+
+  async function trackFile(relative: string, contents: string): Promise<void> {
+    mkdirSync(path.dirname(path.join(repo, relative)), { recursive: true })
+    writeFileSync(path.join(repo, relative), contents)
+    await runGit('add', '--', relative)
+    await runGit('commit', '-m', `track ${relative}`)
+  }
+
+  const secretServer: ResolvedMcpServer = {
+    name: 'api',
+    type: 'http',
+    url: 'https://mcp.example.com',
+    headers: { Authorization: 'Bearer resolved-secret-token' },
+  }
+
+  beforeEach(async () => {
+    repo = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-identity-test-'))
+    outside = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-outside-test-'))
+    await runGit('init', '-b', 'main')
+    await runGit('config', 'user.email', 'test@test.com')
+    await runGit('config', 'user.name', 'Test')
+    writeFileSync(path.join(repo, 'README.md'), '# repo')
+    await runGit('add', '.')
+    await runGit('commit', '-m', 'init')
+  })
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  })
+
+  it.skipIf(!CASE_INSENSITIVE_FS)(
+    'refuses when the tracked pathname differs only in case (case-insensitive filesystem only)',
+    async () => {
+      const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+      await trackFile('.MCP.JSON', committed)
+
+      await expect(
+        syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer]),
+      ).rejects.toThrow(/git rm --cached/)
+
+      // Same inode: a write to `.mcp.json` would have landed as a modification
+      // to the tracked `.MCP.JSON`.
+      expect(readFileSync(path.join(repo, '.MCP.JSON'), 'utf-8')).toBe(committed)
+      expect(await runGit('status', '--short')).toBe('')
+      await runGit('add', '-A')
+      expect(await runGit('diff', '--cached')).toBe('')
+    },
+  )
+
+  it('refuses when an untracked symlink points at a tracked file', async () => {
+    const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+    await trackFile('config/team-mcp.json', committed)
+    symlinkSync(path.join('config', 'team-mcp.json'), path.join(repo, '.mcp.json'))
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).rejects.toThrow(
+      /git rm --cached/,
+    )
+
+    expect(readFileSync(path.join(repo, 'config/team-mcp.json'), 'utf-8')).toBe(committed)
+    expect(await runGit('status', '--short', '--', 'config')).toBe('')
+  })
+
+  it('refuses when a parent directory is a symlink into a tracked directory', async () => {
+    const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+    await trackFile('shared/mcp.json', committed)
+    symlinkSync('shared', path.join(repo, '.cursor'))
+
+    await expect(
+      syncMcpToWorkspaceAtPathAsync(repo, '.cursor/mcp.json', [secretServer]),
+    ).rejects.toThrow(/git rm --cached/)
+
+    expect(readFileSync(path.join(repo, 'shared/mcp.json'), 'utf-8')).toBe(committed)
+    expect(await runGit('status', '--short', '--', 'shared')).toBe('')
+  })
+
+  it('refuses when the resolved target escapes the work tree entirely', async () => {
+    const foreign = path.join(outside, 'team-mcp.json')
+    writeFileSync(foreign, '{}')
+    symlinkSync(foreign, path.join(repo, '.mcp.json'))
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).rejects.toThrow(
+      /outside/i,
+    )
+
+    expect(readFileSync(foreign, 'utf-8')).toBe('{}')
+  })
+
+  it('still writes when a symlink resolves to an untracked file in the work tree', async () => {
+    mkdirSync(path.join(repo, 'config'))
+    writeFileSync(path.join(repo, 'config/local-mcp.json'), '{}')
+    symlinkSync(path.join('config', 'local-mcp.json'), path.join(repo, '.mcp.json'))
+
+    expect(await syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).toBe(true)
+
+    expect(readFileSync(path.join(repo, 'config/local-mcp.json'), 'utf-8')).toContain(
+      'resolved-secret-token',
+    )
   })
 })
