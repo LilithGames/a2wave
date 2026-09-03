@@ -68,6 +68,30 @@ stopped sharing a working directory because a run of Agent B re-mounting
   predates any sync is user-authored and only loses the managed entries whose
   fingerprint still matches. Sibling runs sharing the worktree hold references,
   so the last one out removes the file.
+- **That reference count is per process, so the marker also carries the writing
+  instance id.** With PostgreSQL, a shared workspace volume and
+  `maxConcurrency > 1`, the same Agent can execute on two replicas at once
+  against this one worktree — admission is a *count* under the global advisory
+  lock, not an exclusion, and `resolveWorkDir` deliberately performs no
+  occupancy check. Each replica's count then describes only its own runs, so
+  "last one out" on replica A says nothing about replica B. Cleanup therefore
+  releases nothing unless it owns the marker: an absent stamp (written before
+  stamping existed) or this instance's own id — which also covers a previous
+  life of the same container, so a single replica always reclaims its own
+  credentials — proceeds; a peer's stamp is left strictly alone, config and
+  marker both, since removing the marker would leave a credential file no later
+  cleanup is allowed to touch.
+- **Known limitation, deliberately not closed here.** The check is a
+  read-modify-write on a plain file, not a durable mark under the SCM mutation
+  lock, so a peer's sync landing inside this cleanup's own critical section can
+  still be deleted, and a lost race in the other direction leaves the config
+  behind until the next run in that worktree re-syncs and releases it. Both
+  degrade to "a file the next run overwrites" rather than to a credential that
+  survives indefinitely on a single-replica deployment. Full arbitration would
+  mean giving the MCP config the same reservation machinery as workspace
+  removal (see [scm-storage-invariants.md](./scm-storage-invariants.md)); that
+  cost is only justified if this file ever needs a stronger guarantee than
+  "eventually removed".
 - Both the sync and the release run under a **keyed lock on the absolute config
   path** (`withKeyedLock`, lib/keyed-mutex.ts). Each is a read-modify-write
   spanning several awaits, so unserialised a sibling's fresh config could land

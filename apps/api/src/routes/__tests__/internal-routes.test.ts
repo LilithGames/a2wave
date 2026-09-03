@@ -49,7 +49,13 @@ vi.mock('../internal-admin.js', () => ({
   default: new Hono().get('/probe', (c) => c.json({ ok: true })),
 }))
 
-const mockEnv = vi.hoisted(() => ({ TRUSTED_PROXY: false }))
+// AUTH_SECRET is here because the internal process credentials are derived from
+// it (lib/internal-admin-auth.ts), so every replica of a deployment agrees on
+// them.
+const mockEnv = vi.hoisted(() => ({
+  TRUSTED_PROXY: false,
+  AUTH_SECRET: 'test-auth-secret-for-internal-routes',
+}))
 vi.mock('../../env.js', () => ({ env: mockEnv }))
 
 import {
