@@ -193,6 +193,11 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * Legacy configurations without capabilities fall back to Cursor's default path so existing
    * Agents keep their behavior. Only a2wave-managed entries are synchronized and merged safely
    * with existing user configuration.
+   *
+   * Throws (and so fails the run) when the repository **tracks** the target
+   * config file — see `TrackedMcpConfigError`. Writing there would stage the
+   * resolved credentials for the agent's next commit, and no workspace-file
+   * engine offers an out-of-tree config to fall back to.
    */
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
     const target = this.resolveMcpWorkspaceTarget(request)
@@ -211,7 +216,7 @@ export abstract class BaseAgentEngine implements AgentEngine {
     this.mcpSyncOutcomes.set(
       request,
       sync.then(
-        () => true,
+        (tookReference) => tookReference,
         () => false,
       ),
     )
@@ -238,7 +243,8 @@ export abstract class BaseAgentEngine implements AgentEngine {
     // A sync still in flight is awaited first: its write is what created the
     // reference this call has to release.
     //
-    // A run whose own sync *failed* holds no reference. Releasing one anyway
+    // A run whose own sync failed — or which deliberately wrote nothing into a
+    // repository-tracked config — holds no reference. Releasing one anyway
     // would decrement a concurrent same-worktree run's refcount to zero and
     // delete the config out from under it, so that path is a no-op.
     if (!(await outcome)) return
@@ -249,7 +255,10 @@ export abstract class BaseAgentEngine implements AgentEngine {
 
   /**
    * Per-request workspace MCP sync, resolving true once the write completed and
-   * took its reference to the managed config file, false if it failed.
+   * took its reference to the managed config file. False when it failed, and
+   * also when the writer deliberately wrote nothing — a repository-tracked
+   * config with no managed entries to inject is left untouched, so there is no
+   * reference to release.
    * Weak so a request object that never reaches cleanup cannot leak.
    */
   private readonly mcpSyncOutcomes = new WeakMap<ExecuteRequest, Promise<boolean>>()

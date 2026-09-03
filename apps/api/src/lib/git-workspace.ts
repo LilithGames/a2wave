@@ -218,6 +218,11 @@ const PLATFORM_EXCLUDE_HEADER = '# a2wave: platform-written workspace paths'
  * Idempotent: a pattern already present (by the platform or by a user) is never
  * appended twice, so repeated runs leave the file byte-identical.
  *
+ * **This covers untracked files only** — that is all any git ignore rule can do.
+ * A repository that tracks its own `.mcp.json` is protected the other way
+ * round: `isPathTrackedByGit` (engine/mcp-sync.ts) makes the credential write
+ * refuse before it can land as a modification to a tracked file.
+ *
  * Known limitation: a per-Agent `mcpConfigPath` override that matches no
  * Provider preset is not derivable here, the same gap `platformWorkspacePaths()`
  * documents for `skillsDir`.
