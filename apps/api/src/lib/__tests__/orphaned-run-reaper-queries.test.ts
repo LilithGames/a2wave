@@ -198,6 +198,29 @@ describe('claimRunForReap', () => {
     expect(run?.ownerInstanceId).toBe('instance-c')
   })
 
+  it('refuses a row that carries no owner at all', async () => {
+    // The half of the fence this pass does NOT share with the SCM lease
+    // sweeper, which settles unowned pending/queued rows on purpose. Here a
+    // NULL owner means no liveness verdict was ever made about the row, and
+    // age alone must never settle it.
+    await seedRun({ ownerInstanceId: null })
+
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(false)
+    const [run] = await db.select().from(runs)
+    expect(run?.status).toBe('running')
+  })
+
+  it('refuses a queued row even under the expected owner', async () => {
+    // 'running' is the only status ownership describes; an owner stamped on a
+    // queued row is a leftover from an earlier turn of a reused conversation
+    // row, and reaping it would drop a message a live instance still holds.
+    await seedRun({ status: 'queued' })
+
+    expect(await claimRunForReap('run_1', 'instance-b')).toBe(false)
+    const [run] = await db.select().from(runs)
+    expect(run?.status).toBe('queued')
+  })
+
   it('leaves steps of other runs untouched', async () => {
     await seedRun()
     await db.insert(runSteps).values({

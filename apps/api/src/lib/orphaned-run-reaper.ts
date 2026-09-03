@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { runSteps, runs } from '../db/schema.js'
+import { runs } from '../db/schema.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import {
@@ -10,10 +10,10 @@ import {
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
+import { claimReapableRun } from './reap-run-claim.js'
 import { canRequeueInterruptedRun } from './resume-chat-id.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { syncReapedRunExternalState } from './scm-lease-sweeper.js'
-import { withScmPathMutation } from './scm-path-plan.js'
 
 /**
  * Fail runs abandoned by a crashed instance, for workloads that hold no lease.
@@ -139,29 +139,13 @@ export async function claimRunForReap(
   runId: string,
   expectedOwnerInstanceId: string,
 ): Promise<boolean> {
-  const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
-  return withScmPathMutation(async (tx) => {
-    const claimed = await tx
-      .update(runs)
-      .set({ status: 'failed', result: { error: reason }, updatedAt: new Date() })
-      .where(
-        and(
-          eq(runs.id, runId),
-          inArray(runs.status, [...REAPABLE_RUN_STATUSES]),
-          // The owner fence. Status alone is an ABA check: a peer that
-          // requeued and re-promoted this run leaves it 'running' again, under
-          // itself, and settling it would kill live work. A mismatch is simply
-          // "another replica settled it first".
-          eq(runs.ownerInstanceId, expectedOwnerInstanceId),
-        ),
-      )
-      .returning({ id: runs.id })
-    if (claimed.length === 0) return false
-    await tx
-      .update(runSteps)
-      .set({ status: 'failed', output: { error: reason } })
-      .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
-    return true
+  return claimReapableRun(runId, expectedOwnerInstanceId, {
+    statuses: REAPABLE_RUN_STATUSES,
+    // Strict equality, unlike the SCM lease sweeper: this pass only settles
+    // `running` rows, and ownership is stamped for exactly that status. A row
+    // with no owner was never judged against a liveness verdict, so a mismatch
+    // — including an absence — is simply "not this pass's to settle".
+    allowUnownedRows: false,
   })
 }
 
