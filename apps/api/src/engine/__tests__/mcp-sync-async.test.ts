@@ -21,6 +21,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   }
 })
 
+import { processInstanceId } from '../../lib/process-instance.js'
 import type { ResolvedMcpServer } from '../mcp-sync.js'
 import { cleanupManagedMcpConfigAsync, syncMcpToWorkspaceAtPathAsync } from '../mcp-sync.js'
 
@@ -306,5 +307,63 @@ describe('cleanupManagedMcpConfigAsync', () => {
     // B held the only remaining reference; releasing it clears the workspace.
     await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
     expect(existsSync(configPath())).toBe(false)
+  })
+})
+
+describe('cleanupManagedMcpConfigAsync — cross-replica ownership', () => {
+  const configPath = () => path.join(tmp, RELATIVE)
+  const markerPath = () => `${path.join(tmp, RELATIVE)}.a2wave-managed`
+
+  /** Rewrite the marker the way a peer replica's own sync would. */
+  function markerWrittenByPeer(instanceId: string) {
+    const marker = readMarker()
+    writeFileSync(markerPath(), JSON.stringify({ ...marker, ownerInstanceId: instanceId }))
+  }
+
+  it('stamps the writing instance on the marker', async () => {
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+
+    expect(readMarker().ownerInstanceId).toBe(processInstanceId)
+  })
+
+  it('never removes a config the peer replica re-synced', async () => {
+    // Two API replicas share one workspace volume, and a per-Agent worktree is
+    // reused by every run of that Agent, so this replica's refcount can read
+    // "last one out" while the peer's run still executes against the file the
+    // peer wrote.
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    markerWrittenByPeer('peer-replica')
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(existsSync(configPath())).toBe(true)
+    expect(readConfig().mcpServers).toHaveProperty('managed')
+    // The peer's marker must survive too: dropping it would leave a credential
+    // file that no later cleanup is allowed to touch.
+    expect(existsSync(markerPath())).toBe(true)
+    expect(readMarker().ownerInstanceId).toBe('peer-replica')
+  })
+
+  it('lets the next run on this replica reclaim a config a lost race left behind', async () => {
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    markerWrittenByPeer('peer-replica')
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(existsSync(configPath())).toBe(false)
+    expect(existsSync(markerPath())).toBe(false)
+  })
+
+  it('still cleans up a marker written before instance stamping existed', async () => {
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('managed')])
+    const { ownerInstanceId: _dropped, ...legacyMarker } = readMarker()
+    writeFileSync(markerPath(), JSON.stringify(legacyMarker))
+
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+
+    expect(existsSync(configPath())).toBe(false)
+    expect(existsSync(markerPath())).toBe(false)
   })
 })

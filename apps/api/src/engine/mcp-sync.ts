@@ -16,6 +16,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
+import { processInstanceId } from '../lib/process-instance.js'
 import { BUILTIN_PROVIDER_MANIFESTS } from './provider-catalog.js'
 
 export interface ResolvedMcpServer {
@@ -62,6 +63,22 @@ interface ManagedMcpMarker {
    * user-authored and is only ever stripped of managed entries.
    */
   createdByPlatform?: boolean
+  /**
+   * The API instance whose sync last wrote this file — the durable half of the
+   * refcount below.
+   *
+   * With PostgreSQL and a shared workspace volume, an Agent with
+   * `maxConcurrency > 1` can execute on two replicas at once against the SAME
+   * per-Agent worktree (`agent-<idSuffix>`, no occupancy check by design), and
+   * neither replica's in-process refcount can see the other's runs. Cleanup
+   * therefore also has to own the marker: a foreign stamp means the live
+   * config on disk belongs to the peer, and this run releases nothing.
+   *
+   * Absent on markers written before stamping existed, and equal to this
+   * instance id when a previous life of this container wrote it; both count as
+   * ours, so a single-replica deployment always reclaims its own credentials.
+   */
+  ownerInstanceId?: string
 }
 
 /**
@@ -71,8 +88,12 @@ interface ManagedMcpMarker {
  * docs/agent/worktree-isolation.md), so a sibling's run-end cleanup must not
  * pull the config out from under a run still executing. Every sync takes a
  * reference and every cleanup releases one; the file is deleted only when the
- * last one goes. In-process state is enough because a worktree is only ever
- * executed in by this container.
+ * last one goes.
+ *
+ * This map only ever sees THIS process's runs. The cross-replica half of the
+ * same question — a peer replica executing the same Agent in the same shared
+ * worktree — is answered by the marker's `ownerInstanceId`, which the release
+ * path checks after the count reaches zero.
  */
 const managedMcpConfigRefs = new Map<string, number>()
 
@@ -135,12 +156,29 @@ async function readManagedMarkerAsync(markerPath: string): Promise<ManagedMcpMar
   const { exists, record } = await readJsonRecordAsync(markerPath)
   if (!exists) return null
   const createdByPlatform = record.createdByPlatform === true
-  if (!isRecord(record.managedServers)) return { managedServers: {}, createdByPlatform }
+  const ownerInstanceId =
+    typeof record.ownerInstanceId === 'string' ? record.ownerInstanceId : undefined
+  if (!isRecord(record.managedServers)) {
+    return { managedServers: {}, createdByPlatform, ownerInstanceId }
+  }
   const managedServers: Record<string, string> = {}
   for (const [name, fingerprint] of Object.entries(record.managedServers)) {
     if (typeof fingerprint === 'string') managedServers[name] = fingerprint
   }
-  return { managedServers, createdByPlatform }
+  return { managedServers, createdByPlatform, ownerInstanceId }
+}
+
+/**
+ * Whether this process may act on the file the marker describes.
+ *
+ * A missing stamp is a marker from before stamping existed, and this instance's
+ * own id covers both this process and a previous life of the same container —
+ * either way no peer's live config is at stake. A peer's stamp is refused: the
+ * worst case then is a credential file left for the next run in this worktree
+ * to overwrite, instead of a config pulled out from under a running Agent CLI.
+ */
+function ownsManagedMarker(marker: ManagedMcpMarker): boolean {
+  return marker.ownerInstanceId === undefined || marker.ownerInstanceId === processInstanceId
 }
 
 async function writeManagedMarkerAsync(
@@ -266,6 +304,7 @@ async function writeMcpConfig(
   const nextManagedMarker: ManagedMcpMarker = {
     managedServers: {},
     createdByPlatform: !fileExistedBeforeSync || previousMarker?.createdByPlatform === true,
+    ownerInstanceId: processInstanceId,
   }
   for (const [requestedName, serverConfig] of Object.entries(managedServers)) {
     const resolvedName = resolveNonConflictingMcpName(requestedName, existingServers)
@@ -323,6 +362,16 @@ async function releaseMcpConfig(filePath: string): Promise<void> {
     const marker = await readManagedMarkerAsync(markerPath)
     // No marker: the file predates any a2wave sync and is never touched.
     if (!marker) return
+    // A peer replica re-synced this shared worktree after us: the config and
+    // marker on disk are its live run's, and only its own cleanup may remove
+    // them.
+    if (!ownsManagedMarker(marker)) {
+      logger.debug(
+        { filePath, ownerInstanceId: marker.ownerInstanceId },
+        'Skipping managed MCP config cleanup: another instance owns the marker',
+      )
+      return
+    }
     const { record: config } = await readJsonRecordAsync(filePath)
     const serversRaw = config.mcpServers
     const servers = isRecord(serversRaw) ? { ...serversRaw } : {}
