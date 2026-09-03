@@ -62,6 +62,35 @@ stopped sharing a working directory because a run of Agent B re-mounting
   my changes" published the MCP owner's credentials. `--git-path` resolves to the
   **common** repository's exclude file, which is intended: the shared checkout is
   a run's fallback workspace and needs the same cover.
+- **An ignore rule only ever covers UNTRACKED files, so a repository that
+  *tracks* its own `.mcp.json` gets no cover from the exclude at all.** Teams
+  legitimately commit one to share non-secret MCP definitions; the platform's
+  write then lands as a modification to a tracked file, `git add -A` stages it,
+  and the credentials reach the remote anyway. `isPathTrackedByGit`
+  (engine/mcp-sync.ts, a `git ls-files` probe) is asked before every credential
+  write, and the write **refuses** — `TrackedMcpConfigError`, which fails the run
+  from the prepare phase and names the file plus the `git rm --cached` that fixes
+  it.
+- **Failing is the only honest option here.** None of the workspace-file engines
+  — Claude Code, Cursor, Qoder, Trae, Kimi — exposes a flag pointing at an MCP
+  config outside the working tree, so there is no runtime-injection path to fall
+  back to the way Codex (`-c mcp_servers=…`) and OpenCode
+  (`OPENCODE_CONFIG_CONTENT`) already have. The alternatives are writing the
+  secret (the leak) or silently dropping the Agent's MCP servers (an Agent that
+  behaves differently with no explanation). If one of those CLIs ever gains an
+  out-of-tree flag, that engine should switch to it and stop needing this refusal
+  — and, if all of them do, the exclude and marker machinery becomes dead.
+- The refusal is scoped to a write that would actually carry credentials: a
+  tracked config with **no** managed entries to inject is left byte-identical and
+  takes no reference, so the sync resolves `false` and run-end cleanup releases
+  nothing. That is what `syncMcpToWorkspaceAtPathAsync`'s boolean result means —
+  "this call took a reference the cleanup must release" — and why decrementing on
+  a skipped write would delete a concurrent same-worktree run's config.
+- The probe treats "not a git repository" and a missing `git` binary as
+  untracked (P4 workspaces, a multi-repo workspace root: nothing there can be
+  committed by accident) and lets any other git failure propagate, since
+  inferring "untracked" from an unexplained error is exactly the write it exists
+  to prevent.
 - The MCP config is also **deleted at run end** (`cleanupManagedMcpConfigAsync`,
   from the engine's `finally`), so credentials do not sit in a persistent
   worktree between runs. The sidecar marker decides what may go: a file that

@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -23,7 +25,13 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { processInstanceId } from '../../lib/process-instance.js'
 import type { ResolvedMcpServer } from '../mcp-sync.js'
-import { cleanupManagedMcpConfigAsync, syncMcpToWorkspaceAtPathAsync } from '../mcp-sync.js'
+import {
+  cleanupManagedMcpConfigAsync,
+  isPathTrackedByGit,
+  syncMcpToWorkspaceAtPathAsync,
+} from '../mcp-sync.js'
+
+const execFileAsync = promisify(execFile)
 
 const RELATIVE = '.cursor/mcp.json'
 let tmp: string
@@ -365,5 +373,109 @@ describe('cleanupManagedMcpConfigAsync — cross-replica ownership', () => {
 
     expect(existsSync(configPath())).toBe(false)
     expect(existsSync(markerPath())).toBe(false)
+  })
+})
+
+describe('syncMcpToWorkspaceAtPathAsync — repository-tracked config files', () => {
+  /**
+   * `.git/info/exclude` (see `ensurePlatformPathsExcluded`) only ever applies to
+   * UNTRACKED files. A repository that legitimately commits its own MCP config
+   * — teams share non-secret server definitions that way — gets no cover from
+   * it: the platform's write lands as a modification to a tracked file, so
+   * `git add -A` stages the resolved bearer tokens and stdio API keys and the
+   * next "commit and push my changes" ships the MCP owner's credentials.
+   */
+  let repo: string
+
+  async function runGit(...args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd: repo })
+    return stdout
+  }
+
+  async function trackFile(relative: string, contents: string): Promise<void> {
+    mkdirSync(path.dirname(path.join(repo, relative)), { recursive: true })
+    writeFileSync(path.join(repo, relative), contents)
+    await runGit('add', '--', relative)
+    await runGit('commit', '-m', `track ${relative}`)
+  }
+
+  const secretServer: ResolvedMcpServer = {
+    name: 'api',
+    type: 'http',
+    url: 'https://mcp.example.com',
+    headers: { Authorization: 'Bearer tracked-secret-token' },
+  }
+
+  beforeEach(async () => {
+    repo = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-tracked-test-'))
+    await runGit('init', '-b', 'main')
+    await runGit('config', 'user.email', 'test@test.com')
+    await runGit('config', 'user.name', 'Test')
+    writeFileSync(path.join(repo, 'README.md'), '# repo')
+    await runGit('add', '.')
+    await runGit('commit', '-m', 'init')
+  })
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  for (const relative of ['.mcp.json', '.cursor/mcp.json']) {
+    it(`refuses to write credentials into a tracked ${relative}`, async () => {
+      const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+      await trackFile(relative, committed)
+
+      await expect(syncMcpToWorkspaceAtPathAsync(repo, relative, [secretServer])).rejects.toThrow(
+        relative,
+      )
+
+      // The committed content is untouched and nothing is staged for commit.
+      expect(readFileSync(path.join(repo, relative), 'utf-8')).toBe(committed)
+      expect(await runGit('status', '--porcelain')).toBe('')
+      await runGit('add', '-A')
+      expect(await runGit('diff', '--cached')).toBe('')
+      expect(existsSync(path.join(repo, `${relative}.a2wave-managed`))).toBe(false)
+    })
+  }
+
+  it('names the tracked file and how to untrack it in the error', async () => {
+    await trackFile('.mcp.json', '{}')
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).rejects.toThrow(
+      /git rm --cached/,
+    )
+  })
+
+  it('leaves a tracked config alone rather than failing when there is nothing to inject', async () => {
+    const committed = '{"mcpServers":{}}'
+    await trackFile('.mcp.json', committed)
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [])).resolves.toBe(false)
+
+    expect(readFileSync(path.join(repo, '.mcp.json'), 'utf-8')).toBe(committed)
+    expect(await runGit('status', '--porcelain')).toBe('')
+  })
+
+  it('still writes and takes a reference when the repository does not track the file', async () => {
+    expect(await syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).toBe(true)
+
+    expect(readFileSync(path.join(repo, '.mcp.json'), 'utf-8')).toContain('tracked-secret-token')
+  })
+
+  it('reports tracked, untracked and non-repository paths', async () => {
+    await trackFile('.mcp.json', '{}')
+    writeFileSync(path.join(repo, 'untracked.json'), '{}')
+
+    expect(await isPathTrackedByGit(repo, '.mcp.json')).toBe(true)
+    expect(await isPathTrackedByGit(repo, 'untracked.json')).toBe(false)
+    expect(await isPathTrackedByGit(repo, 'never-existed.json')).toBe(false)
+    // `tmp` is a bare temp directory, not a checkout.
+    expect(await isPathTrackedByGit(tmp, '.mcp.json')).toBe(false)
+  })
+
+  it('writes as usual outside a git repository', async () => {
+    expect(await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [secretServer])).toBe(true)
+
+    expect(readConfig().mcpServers.api.headers.Authorization).toBe('Bearer tracked-secret-token')
   })
 })

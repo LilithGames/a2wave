@@ -947,6 +947,22 @@ describe('git-workspace', () => {
       expect(occurrences).toHaveLength(1)
     })
 
+    it('does not cover a path the repository already tracks', async () => {
+      // Ignore rules apply to untracked files only, which is why writers of
+      // credential-bearing files consult `isPathTrackedByGit` before writing.
+      await writeFile(join(REPO_DIR, '.mcp.json'), '{"mcpServers":{}}')
+      await execFileAsync('git', ['add', '--', '.mcp.json'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'track mcp config'], { cwd: REPO_DIR })
+
+      const result = await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+      await writeFile(join(result.path, '.mcp.json'), '{"mcpServers":{"x":{}}}')
+
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: result.path,
+      })
+      expect(stdout).toContain('.mcp.json')
+    })
+
     it('preserves exclude rules the user already wrote', async () => {
       await mkdir(join(REPO_DIR, '.git', 'info'), { recursive: true })
       await writeFile(excludeFile(), '# user rules\nscratch/\n')

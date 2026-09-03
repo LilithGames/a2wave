@@ -12,8 +12,10 @@
  * - marker 记录"上次由 a2wave 写入的条目名与指纹"，用于下次安全清理旧托管条目。
  */
 
+import { execFile } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { promisify } from 'node:util'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
 import { processInstanceId } from '../lib/process-instance.js'
@@ -39,6 +41,51 @@ export interface ResolvedMcpServer {
 }
 
 const MCP_MANAGED_MARKER_SUFFIX = '.a2wave-managed'
+
+const execFileAsync = promisify(execFile)
+const GIT_LS_FILES_TIMEOUT_MS = 30_000
+
+/**
+ * Whether the repository containing `workDir` already **tracks** `relativePath`.
+ *
+ * `ensurePlatformPathsExcluded` (lib/git-workspace.ts) keeps the platform's
+ * workspace files out of `git status` by appending them to `info/exclude` — but
+ * a git ignore rule applies to **untracked** files only. A repository that
+ * legitimately commits its own `.mcp.json` (teams share non-secret MCP server
+ * definitions that way) therefore gets no cover from it at all: this writer's
+ * output lands as a modification to a tracked file, `git add -A` stages the
+ * resolved Authorization headers and stdio API keys, and "commit and push my
+ * changes" ships the MCP owner's credentials to the remote. So the write asks
+ * first, and refuses.
+ *
+ * Deliberately local to this module rather than imported from `git-workspace`:
+ * that module reaches `codegraph-index` (via `platformWorkspacePaths`) and so
+ * the database client, which every engine module would then load.
+ *
+ * A directory that is no git repository at all — a P4 workspace, a multi-repo
+ * workspace root — answers `false`: nothing there can be committed by accident.
+ * Any other git failure propagates, because inferring "untracked" from an
+ * unexplained error is exactly the write this probe exists to prevent.
+ *
+ * `LC_ALL=C` pins the stderr wording the "not a repository" test matches;
+ * `GIT_TERMINAL_PROMPT=0` keeps a misconfigured repository from hanging the run.
+ */
+export async function isPathTrackedByGit(workDir: string, relativePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('git', ['ls-files', '-z', '--', relativePath], {
+      cwd: workDir,
+      timeout: GIT_LS_FILES_TIMEOUT_MS,
+      env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
+    })
+    return stdout.length > 0
+  } catch (err) {
+    const failure = err as NodeJS.ErrnoException & { stderr?: string }
+    // No git binary on PATH, or the directory itself is gone.
+    if (failure.code === 'ENOENT') return false
+    if (/not a git repository/i.test(failure.stderr ?? '')) return false
+    throw err
+  }
+}
 
 /**
  * Workspace paths this writer owns: every Provider's MCP config file plus the
@@ -248,6 +295,37 @@ function buildManagedMcpServers(
 }
 
 /**
+ * Raised instead of writing resolved MCP credentials into a config file the
+ * repository already tracks.
+ *
+ * The workspace `info/exclude` entry (`ensurePlatformPathsExcluded`) only ever
+ * covers untracked files, so a repository that commits its own `.mcp.json` —
+ * teams share non-secret server definitions that way — would take the platform's
+ * write as a modification to a tracked file: `git add -A` stages the bearer
+ * tokens and stdio API keys, and the next "commit and push my changes" ships
+ * them to the remote.
+ *
+ * Failing the run is deliberate. None of the workspace-file engines (Claude
+ * Code, Cursor, Qoder, Trae, Kimi) exposes a flag pointing at an MCP config
+ * outside the working tree, so the only alternatives are writing the secret
+ * (the leak) or dropping the Agent's MCP servers silently (an Agent that
+ * behaves differently with no explanation). The operator gets a named file and
+ * the one command that fixes it instead.
+ */
+export class TrackedMcpConfigError extends Error {
+  constructor(readonly relativePath: string) {
+    super(
+      `Refusing to write MCP credentials into "${relativePath}": the repository tracks this file, ` +
+        'so a "git add -A" by the agent would stage the resolved Authorization headers and stdio ' +
+        `API keys. Untrack it in the repository ("git rm --cached ${relativePath}", commit, and add ` +
+        "it to .gitignore), or point the Provider's MCP config path at a file the repository " +
+        'does not track.',
+    )
+    this.name = 'TrackedMcpConfigError'
+  }
+}
+
+/**
  * 将 MCP 服务器配置异步同步到工作区指定路径（不阻塞事件循环）。
  *
  * 写入规则（与 skill-sync 一致）：
@@ -264,22 +342,48 @@ function buildManagedMcpServers(
  * @param relativePath 相对 workDir 的文件路径，如 ".cursor/mcp.json" 或 ".mcp.json"
  * @param servers MCP 服务器列表
  * @param options `dialect` 选择远程传输字段写法（Kimi 用 `transport`）
+ * @returns `true` when the write landed and took a reference on the managed
+ *   config that run-end cleanup must release; `false` when nothing was written.
+ * @throws {TrackedMcpConfigError} when the repository tracks the target file and
+ *   there are managed entries to inject.
  */
 export async function syncMcpToWorkspaceAtPathAsync(
   workDir: string,
   relativePath: string,
   servers: ResolvedMcpServer[],
   options: SyncMcpOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const filePath = join(workDir, relativePath)
-  await withKeyedLock(mcpConfigLockKey(filePath), () => writeMcpConfig(filePath, servers, options))
+  return withKeyedLock(mcpConfigLockKey(filePath), () =>
+    writeMcpConfig(workDir, relativePath, servers, options),
+  )
 }
 
 async function writeMcpConfig(
-  filePath: string,
+  workDir: string,
+  relativePath: string,
   servers: ResolvedMcpServer[],
   options: SyncMcpOptions,
-): Promise<void> {
+): Promise<boolean> {
+  const filePath = join(workDir, relativePath)
+  const managedServers = buildManagedMcpServers(servers, options.dialect)
+
+  // Asked before anything is created or written: a tracked target must come out
+  // of this function byte-identical, marker included.
+  if (await isPathTrackedByGit(workDir, relativePath)) {
+    // Nothing to inject means nothing to leak — leave the committed file alone
+    // and take no reference, rather than failing a run over a file the platform
+    // has no business rewriting.
+    if (Object.keys(managedServers).length === 0) {
+      logger.debug(
+        { filePath },
+        'Skipping MCP sync: the repository tracks this config and there is nothing to inject',
+      )
+      return false
+    }
+    throw new TrackedMcpConfigError(relativePath)
+  }
+
   await mkdir(dirname(filePath), { recursive: true })
   const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
 
@@ -300,7 +404,6 @@ async function writeMcpConfig(
     }
   }
 
-  const managedServers = buildManagedMcpServers(servers, options.dialect)
   const nextManagedMarker: ManagedMcpMarker = {
     managedServers: {},
     createdByPlatform: !fileExistedBeforeSync || previousMarker?.createdByPlatform === true,
@@ -320,6 +423,7 @@ async function writeMcpConfig(
   await writeFile(filePath, JSON.stringify(nextConfig, null, 2))
   await writeManagedMarkerAsync(markerPath, nextManagedMarker)
   managedMcpConfigRefs.set(filePath, (managedMcpConfigRefs.get(filePath) ?? 0) + 1)
+  return true
 }
 
 /**
