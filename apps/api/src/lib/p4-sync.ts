@@ -688,7 +688,7 @@ async function runSyncUnderCheckoutLock(
   // so an auto-sync tick or a manual sync would run `p4 sync` / `git checkout
   // -f -B` underneath a live CLI and silently discard its uncommitted edits.
   // Deferring costs one tick; the alternative costs the agent's work.
-  const occupant = await findSharedCheckoutScmWorkload(db, sourceId, source.localPath)
+  const occupant = await findSharedCheckoutScmWorkload(db, sourceId, source.localPath, source.type)
   if (occupant) {
     const message = `Sync deferred: checkout in use by ${occupant.type} ${occupant.id}`
     releaseCheckout(sourceId)

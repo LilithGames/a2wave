@@ -717,6 +717,33 @@ describe('syncScmSource', () => {
     }
   })
 
+  // The occupancy rule differs by source type: a git evaluation owns an
+  // `eval-<taskId>` worktree, a p4 one cannot. The gate needs the type to tell
+  // them apart, so the sync must pass it through.
+  it('passes the source type to the shared-checkout occupancy gate', async () => {
+    const source = {
+      id: 's1',
+      name: 'p4 source',
+      type: 'p4',
+      config: { type: 'p4', port: 'perforce:1666', user: 'u', client: 'c' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+
+    // The p4 execution path is not mocked here; only the gate call is asserted,
+    // so whatever the unmocked `p4` invocation settles to is irrelevant.
+    await syncScmSource('s1').catch(() => undefined)
+
+    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(
+      expect.anything(),
+      's1',
+      '/repo',
+      'p4',
+    )
+  })
+
   it('syncs normally when no lease pins the shared checkout', async () => {
     const source = {
       id: 's1',
@@ -733,7 +760,12 @@ describe('syncScmSource', () => {
     const result = await syncScmSource('s1')
 
     expect(result.ok).toBe(true)
-    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(expect.anything(), 's1', '/repo')
+    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(
+      expect.anything(),
+      's1',
+      '/repo',
+      'git',
+    )
   })
 
   it('aborts and waits for a cancellable automatic initial sync', async () => {

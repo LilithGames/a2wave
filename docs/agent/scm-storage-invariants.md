@@ -172,9 +172,14 @@ revisiting when this area is next touched:
   `busyCheckouts` (other syncs only) can see that run. Occupancy is read off
   `runs.workDir`, the same marker the workspace-delete route trusts: only a
   worktree records it, so an **active** lease whose run recorded none is by
-  definition in the shared checkout, and an Evaluation — which records no
-  workspace at all — always counts. Reserved leases are still queued and own no
-  directory. A deferred sync returns the row to
+  definition in the shared checkout. An Evaluation records no workspace at all,
+  so its source type decides: a **git** Evaluation owns an `eval-<taskId>`
+  worktree resolved through the explicit-worktree path, which throws rather than
+  degrading to `localPath`, and therefore never counts; a **p4** Evaluation has
+  no isolation mechanism and always counts. Reserved leases are still queued and
+  own no directory, so the phase filter belongs in the SQL predicate — a scan
+  capped at some row count can miss an active lease behind a long tail and let
+  the sync proceed under a live Agent CLI. A deferred sync returns the row to
   plain `idle` and writes **neither** `lastSyncError` nor `lastSyncAt`: nothing
   synced, and nothing failed either — stamping the deferral into
   `lastSyncError` shows a persistent error notice in the web form and the CLI
