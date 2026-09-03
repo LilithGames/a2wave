@@ -17,6 +17,7 @@
  * or on the same one after a restart. node-saml's default InMemoryCacheProvider
  * fails those logins with SAML_RESPONSE_UNSOLICITED.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { type CacheProvider, type Profile, SAML, ValidateInResponseTo } from '@node-saml/node-saml'
 import { and, eq, gte, lt } from 'drizzle-orm'
 import { db } from '../db/client.js'
@@ -136,23 +137,36 @@ export const SAML_REQUEST_EXPIRATION_MS = 8 * 60 * 60 * 1000
 const SAML_REQUEST_SWEEP_INTERVAL_MS = 60 * 60 * 1000
 
 /**
- * How long a *consumed* id stays readable inside the process that consumed it.
+ * The ids one in-progress validation has already consumed, keyed by request id.
  *
  * `getAsync` deletes the row it returns (see below), but node-saml reads the
  * same id twice during one `validatePostResponseAsync`: once for the Response's
  * `InResponseTo`, and again for the assertion's `SubjectConfirmationData`. The
  * second read has to succeed or every legitimate login fails as
- * `SubjectInResponseTo is not valid`, so the consumed value is held in memory
- * for the rest of that validation and dropped by `removeAsync`, which node-saml
- * calls on success and on failure alike.
+ * `SubjectInResponseTo is not valid`.
  *
- * This window is only the backstop for the one branch that returns without
- * removing. A validation is CPU-bound XML work measured in milliseconds, so
- * thirty seconds is several orders of magnitude of headroom while keeping the
- * blast radius of that branch small — and it is per-process, so it never widens
- * the cross-replica window, which the row deletion closes outright.
+ * The scope is therefore the **validation**, not the id: `runInSamlValidation`
+ * establishes one store per `validatePostResponseAsync` call, and only reads
+ * running inside that call can see what it took. A store keyed by id and shared
+ * by the whole process would answer any later read of the same id — so a
+ * concurrent or replayed ACS POST of one captured SAMLResponse landing on this
+ * replica would validate a second time, reopening exactly the single-use window
+ * the consuming DELETE exists to close. No time bound is needed or wanted: the
+ * store dies with the call, and outside a call there is nothing to reuse, which
+ * leaves the DB consume as the only possible answer.
  */
-export const SAML_REQUEST_IN_FLIGHT_MS = 30 * 1000
+const samlValidationScope = new AsyncLocalStorage<Map<string, string>>()
+
+/**
+ * Run one SAML assertion validation, scoping whatever it consumes to itself.
+ *
+ * Every call into `validatePostResponseAsync` must go through here (see
+ * `validateSamlPostResponse`); a validation run outside a scope still works,
+ * it just loses the second read and fails the login.
+ */
+export function runInSamlValidation<T>(validate: () => Promise<T>): Promise<T> {
+  return samlValidationScope.run(new Map(), validate)
+}
 
 /**
  * node-saml `CacheProvider` backed by the `saml_requests` table.
@@ -178,19 +192,10 @@ export const SAML_REQUEST_IN_FLIGHT_MS = 30 * 1000
  * which is what "single use" has to mean when the store is shared. `removeAsync`
  * then usually finds nothing left to delete, and tolerates that.
  *
- * The per-provider `inFlight` map exists only because node-saml reads one id
- * twice per validation — see SAML_REQUEST_IN_FLIGHT_MS.
+ * The provider itself holds no state: the one value a validation must read
+ * twice lives in that validation's own `samlValidationScope` store.
  */
 export function createSamlRequestCacheProvider(): CacheProvider {
-  /** Ids this process consumed, kept until removeAsync or the in-flight window. */
-  const inFlight = new Map<string, { value: string; consumedAt: number }>()
-
-  const pruneInFlight = (now: number) => {
-    for (const [id, entry] of inFlight) {
-      if (entry.consumedAt <= now - SAML_REQUEST_IN_FLIGHT_MS) inFlight.delete(id)
-    }
-  }
-
   return {
     async saveAsync(key: string, value: string) {
       const createdAt = new Date()
@@ -218,11 +223,14 @@ export function createSamlRequestCacheProvider(): CacheProvider {
 
     async getAsync(key: string) {
       const now = Date.now()
-      pruneInFlight(now)
 
       // Second read of the same validation (SubjectConfirmation), still ours.
-      const held = inFlight.get(key)
-      if (held) return held.value
+      // `getStore()` is the binding: another validation — concurrent or a replay
+      // of the same captured response — has a different store and lands on the
+      // consuming DELETE below, which by then finds nothing.
+      const validation = samlValidationScope.getStore()
+      const held = validation?.get(key)
+      if (held !== undefined) return held
 
       // Claim and expire in one statement. `.returning()` rather than a row
       // count: the two drivers disagree on `changes`/`rowCount` (see
@@ -246,7 +254,7 @@ export function createSamlRequestCacheProvider(): CacheProvider {
       const value = consumed[0]?.value
       if (value === undefined) return null
 
-      inFlight.set(key, { value, consumedAt: now })
+      validation?.set(key, value)
       return value
     },
 
@@ -257,7 +265,7 @@ export function createSamlRequestCacheProvider(): CacheProvider {
       // (an InResponseTo mismatch), where it is the only thing that clears the
       // row. Answering with the key when we held it keeps the InMemory
       // provider's "returns the key it forgot" contract.
-      const held = inFlight.delete(key)
+      const held = samlValidationScope.getStore()?.delete(key) ?? false
       const removed = await runExclusive(async () =>
         db.delete(samlRequests).where(eq(samlRequests.id, key)).returning({ id: samlRequests.id }),
       )
@@ -346,6 +354,22 @@ export async function getSaml(): Promise<SAML> {
   ensureSamlRequestSweeper()
   samlCache = { key, instance }
   return instance
+}
+
+/**
+ * 验证 ACS 收到的 SAMLResponse —— 路由层唯一的断言校验入口。
+ *
+ * The wrapper is the point: `runInSamlValidation` gives this one call its own
+ * scope, so the id it consumes is readable by its own second read and by nothing
+ * else. Calling `validatePostResponseAsync` directly would skip that and either
+ * fail the login (no scope) or, with a process-wide cache, hand a replay the
+ * value again — see `samlValidationScope`.
+ */
+export async function validateSamlPostResponse(
+  samlResponse: string,
+): Promise<{ profile: Profile | null; loggedOut: boolean }> {
+  const saml = await getSaml()
+  return runInSamlValidation(() => saml.validatePostResponseAsync({ SAMLResponse: samlResponse }))
 }
 
 /** 重置实例缓存 — 仅测试用。 */
