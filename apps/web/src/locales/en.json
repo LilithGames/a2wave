@@ -527,6 +527,7 @@
     "SCM_INITIAL_SYNC_REQUIRED": "This SCM source has not completed initial sync and cannot be used by an Agent",
     "INVALID_CREDENTIALS": "Invalid username or password",
     "ACCOUNT_DISABLED": "Account is disabled",
+    "USER_HAS_OWNED_RESOURCES": "This account still owns Agents or other resources. Transfer or delete them first, then delete the account.",
     "USER_NOT_FOUND": "User not found",
     "WRONG_PASSWORD": "Current password is incorrect",
     "PASSWORD_MISMATCH": "Passwords do not match",
