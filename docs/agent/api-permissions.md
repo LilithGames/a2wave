@@ -156,8 +156,8 @@ deliberately does not share `agents.maxConcurrency`.
 
 ## Channel-specific notes
 
-- **Internal API** (`/api/internal/*`) requires **both** a loopback peer **and** a
-  process-scoped credential generated per API process in
+- **Internal API** (`/api/internal/*`) requires **both** a loopback peer **and** an
+  internal credential derived from `AUTH_SECRET` in
   `apps/api/src/lib/internal-admin-auth.ts` — the loopback socket alone proves
   nothing, because a same-host reverse proxy (`TRUSTED_PROXY`) makes every
   internet request arrive from 127.0.0.1. For the same reason the gate denies a
@@ -167,6 +167,15 @@ deliberately does not share `agents.maxConcurrency`.
   `A2WAVE_INTERNAL_ADMIN_TOKEN` (header `x-a2wave-internal-admin-token`),
   injected only into the platform-admin MCP for an active admin requester, is
   required by `/api/internal/admin/*` and also accepted elsewhere.
+  Both are **derived from `AUTH_SECRET`** (HKDF-SHA256, distinct `info` strings),
+  not randomly generated per process. They reach their MCP through the workspace
+  MCP config file, which every replica shares under PostgreSQL, so a per-process
+  random value would make the later replica's sync overwrite the file and the
+  first replica's MCP present a token its own API rejects with 403. A derived
+  value is identical on every replica while keeping the original properties: it
+  is never written to `process.env`, the database or the logs, and it is handed
+  only to the SYSTEM builtin MCP rows (`userId IS NULL`). Distinct `info` strings
+  keep the router credential from being replayable against the admin surface.
 - **Internal Admin API** (`/api/internal/admin/*`) is **not filtered by owner** —
   it deliberately sees everything, which is why it takes the admin credential.
 - **OAuth channel** attachment upload/consumption is isolated per user as

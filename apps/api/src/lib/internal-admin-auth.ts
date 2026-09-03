@@ -1,4 +1,5 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { hkdfSync, timingSafeEqual } from 'node:crypto'
+import { env } from '../env.js'
 
 export const INTERNAL_ADMIN_TOKEN_ENV = 'A2WAVE_INTERNAL_ADMIN_TOKEN'
 export const INTERNAL_ADMIN_TOKEN_HEADER = 'x-a2wave-internal-admin-token'
@@ -7,16 +8,33 @@ export const INTERNAL_ADMIN_TOKEN_HEADER = 'x-a2wave-internal-admin-token'
 export const INTERNAL_TOKEN_ENV = 'A2WAVE_INTERNAL_TOKEN'
 export const INTERNAL_TOKEN_HEADER = 'x-a2wave-internal-token'
 
-// Generated once per API process. It is intentionally not written to
-// process.env, SQLite or logs; only the seeded platform-admin MCP receives it.
-const internalAdminToken = randomBytes(32).toString('base64url')
+/**
+ * Both credentials are DERIVED from `AUTH_SECRET`, not randomly generated per
+ * process.
+ *
+ * They reach their MCP process through the workspace MCP config file, which
+ * sits on storage every API replica shares. A per-process random secret is
+ * therefore wrong by construction here: the later replica's sync overwrites the
+ * shared file with its own value, and the MCP the FIRST replica spawned then
+ * presents a token that replica rejects — a 403 from its own localhost API.
+ * Every replica of one deployment already shares `AUTH_SECRET` (it signs the
+ * sessions), so a derived token is identical everywhere and accepted
+ * everywhere.
+ *
+ * The derivation keeps the properties the random value had: the secret is never
+ * written to `process.env`, the database or the logs, and it is handed only to
+ * the seeded SYSTEM builtin MCP rows. Distinct `info` strings keep the two
+ * credentials independent, so the weaker router token cannot be replayed
+ * against the platform-admin surface even though both come from one root.
+ */
+const HKDF_SALT = 'a2wave-internal-auth-v1'
+const TOKEN_BYTES = 32
 
-// A SECOND, weaker process credential for the rest of the internal surface.
-// The agent-router MCP runs for every Agent, so handing it the admin token would
-// give any Agent's router process the platform-admin data plane; a separate
-// secret keeps that privilege boundary intact while both stay process-scoped and
-// live only here.
-const internalToken = randomBytes(32).toString('base64url')
+function deriveToken(info: string): string {
+  return Buffer.from(
+    hkdfSync('sha256', env.AUTH_SECRET, Buffer.from(HKDF_SALT), Buffer.from(info), TOKEN_BYTES),
+  ).toString('base64url')
+}
 
 function matchesSecret(secret: string, candidate: string | undefined): boolean {
   if (!candidate) return false
@@ -26,17 +44,17 @@ function matchesSecret(secret: string, candidate: string | undefined): boolean {
 }
 
 export function getInternalAdminToken(): string {
-  return internalAdminToken
+  return deriveToken('internal-admin-token')
 }
 
 export function verifyInternalAdminToken(candidate: string | undefined): boolean {
-  return matchesSecret(internalAdminToken, candidate)
+  return matchesSecret(getInternalAdminToken(), candidate)
 }
 
 export function getInternalToken(): string {
-  return internalToken
+  return deriveToken('internal-token')
 }
 
 export function verifyInternalToken(candidate: string | undefined): boolean {
-  return matchesSecret(internalToken, candidate)
+  return matchesSecret(getInternalToken(), candidate)
 }
