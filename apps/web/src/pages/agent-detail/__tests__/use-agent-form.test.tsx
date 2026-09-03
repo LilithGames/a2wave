@@ -362,11 +362,16 @@ describe('useAgentForm — initialization (edit mode)', () => {
     const { result } = renderForm()
     await waitFor(() => expect(result.current.remoteEntries).toHaveLength(1))
     expect(result.current.remoteEntries[0].callerProvenance).toBe(false)
+    expect(result.current.remoteEntries[0].referencedContext).toBe(false)
     expect(result.current.hasSelectionChanges).toBe(false)
 
     act(() => {
       result.current.setRemoteEntries((entries) =>
-        entries.map((entry) => ({ ...entry, callerProvenance: true })),
+        entries.map((entry) => ({
+          ...entry,
+          callerProvenance: true,
+          referencedContext: true,
+        })),
       )
     })
     await waitFor(() => expect(result.current.hasSelectionChanges).toBe(true))
@@ -379,6 +384,7 @@ describe('useAgentForm — initialization (edit mode)', () => {
         type: 'remote',
         name: 'Direct',
         callerProvenance: true,
+        referencedContext: true,
       }),
     ])
   })

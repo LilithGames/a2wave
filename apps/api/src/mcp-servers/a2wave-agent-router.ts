@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   AgentCard,
+  type AgentExtension,
   type Artifact,
   CancelTaskRequest,
   GetTaskRequest,
@@ -28,20 +29,26 @@ import { z } from 'zod'
 import {
   A2WAVE_CALLER_AGENT_ID_HEADER,
   A2WAVE_CALLER_AGENT_NAME_B64_HEADER,
-  X_A2WAVE_CHANNEL_B64_HEADER,
   encodeCallerAgentNameHeader,
+  X_A2WAVE_CHANNEL_B64_HEADER,
 } from '../a2a/caller.js'
 import {
   type A2ACallerProvenance,
   A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
   buildOutboundA2AProvenance,
 } from '../a2a/provenance.js'
-import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
-import { UnsafeUrlError, assertSafeHttpUrl } from '../lib/url-safety-core.js'
 import {
-  type RouterInvocationRegistry,
+  A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+  A2WAVE_REFERENCED_CONTEXT_MAX_CHARS,
+  buildOutboundA2AReferencedContext,
+} from '../a2a/referenced-context.js'
+import type { ReferencedPromptContext } from '../engine/types.js'
+import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
+import { assertSafeHttpUrl, UnsafeUrlError } from '../lib/url-safety-core.js'
+import {
   createRouterInvocationRegistry,
   installRouterShutdownHooks,
+  type RouterInvocationRegistry,
 } from './agent-router-lifecycle.js'
 
 // Internal enterprise networks are the primary deployment target, so ordinary
@@ -252,6 +259,8 @@ export interface RouteTarget {
   protocolVersion?: '1.0' | '0.3'
   /** Explicit direct-v1 opt-in for the display-only caller provenance extension. */
   callerProvenance?: boolean
+  /** Explicit direct-v1 declaration that the endpoint accepts quoted context. */
+  referencedContext?: boolean
 }
 
 export function parseRouteTargets(env?: string): RouteTarget[] | null {
@@ -367,17 +376,30 @@ function buildDirectAgentCard(target: RemoteRouteTarget): AgentCard {
     version: 'unknown',
     // Direct configuration has no remote Agent Card from which to negotiate
     // optional capabilities. Protocol selection alone must not imply extension
-    // support, so provenance requires its own explicit operator opt-in.
+    // support, so every optional extension requires an explicit operator opt-in.
     capabilities: {
       streaming: false,
       extensions:
-        target.protocolVersion === '1.0' && target.callerProvenance === true
+        target.protocolVersion === '1.0'
           ? [
-              {
-                uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
-                description: 'Configured direct a2wave v1 provenance support.',
-                required: false,
-              },
+              ...(target.callerProvenance === true
+                ? [
+                    {
+                      uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+                      description: 'Configured direct a2wave v1 provenance support.',
+                      required: false,
+                    },
+                  ]
+                : []),
+              ...(target.referencedContext === true
+                ? [
+                    {
+                      uri: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+                      description: 'Configured direct a2wave v1 referenced-context support.',
+                      required: false,
+                    },
+                  ]
+                : []),
             ]
           : [],
     },
@@ -447,25 +469,61 @@ async function createRemoteClient(target: RemoteRouteTarget): Promise<RemoteClie
 
 function buildStandardSendRequest(
   message: string,
-  provenance?: A2ACallerProvenance,
-  historyLength?: number,
+  options: {
+    provenance?: A2ACallerProvenance
+    referencedContext?: ReferencedPromptContext
+    historyLength?: number
+  } = {},
 ) {
+  const extensions = [
+    ...(options.provenance ? [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI] : []),
+    ...(options.referencedContext ? [A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI] : []),
+  ]
+  const metadata = {
+    ...(options.provenance ? { [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI]: options.provenance } : {}),
+    ...(options.referencedContext
+      ? { [A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI]: options.referencedContext }
+      : {}),
+  }
   return SendMessageRequest.fromJSON({
-    ...(historyLength !== undefined && {
-      configuration: { historyLength, returnImmediately: true },
+    ...(options.historyLength !== undefined && {
+      configuration: { historyLength: options.historyLength, returnImmediately: true },
     }),
     message: {
       messageId: randomUUID(),
       role: 'ROLE_USER',
       parts: [{ text: message, mediaType: 'text/plain' }],
-      ...(provenance
+      ...(extensions.length > 0
         ? {
-            extensions: [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI],
-            metadata: { [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI]: provenance },
+            extensions,
+            metadata,
           }
         : {}),
     },
   })
+}
+
+function fitReferencedContextToRemoteLimit(
+  context: ReferencedPromptContext,
+  extension: AgentExtension,
+): ReferencedPromptContext {
+  const advertisedLimit = extension.params?.maxTextChars
+  if (advertisedLimit === undefined) return context
+  if (
+    typeof advertisedLimit !== 'number' ||
+    !Number.isSafeInteger(advertisedLimit) ||
+    advertisedLimit <= 0
+  ) {
+    throw new Error('Remote Agent advertises an invalid referenced-context text limit')
+  }
+
+  const effectiveLimit = Math.min(advertisedLimit, A2WAVE_REFERENCED_CONTEXT_MAX_CHARS)
+  if (context.text.length <= effectiveLimit) return context
+  return {
+    ...context,
+    text: context.text.slice(0, effectiveLimit),
+    truncated: true,
+  }
 }
 
 function textFromPart(part: unknown): string | null {
@@ -1853,7 +1911,21 @@ async function createInternalClient(agentId: string): Promise<RemoteClientContex
     version: '1.0.0',
     // Internal calls use polling so the first request returns the durable Task
     // id before a long execution can outlive its HTTP connection.
-    capabilities: { streaming: false, extensions: [] },
+    capabilities: {
+      streaming: false,
+      extensions: [
+        {
+          uri: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+          description: 'Internal a2wave caller provenance support.',
+          required: false,
+        },
+        {
+          uri: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+          description: 'Internal a2wave referenced-context support.',
+          required: false,
+        },
+      ],
+    },
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
     skills: [],
@@ -1958,6 +2030,7 @@ function formatStandardInvocationResult(
 async function invokeStandardRemoteAgent(
   target: RemoteRouteTarget,
   message: string,
+  referencedContext: ReferencedPromptContext | undefined,
   signal?: AbortSignal,
 ) {
   const { client, card } = await createRemoteClient(target)
@@ -1968,14 +2041,30 @@ async function invokeStandardRemoteAgent(
       (extension) => extension.uri === A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
     )
   const provenance = supportsProvenance ? buildOutboundA2AProvenance() : undefined
-  const request = buildStandardSendRequest(
-    message,
+  const referencedContextExtension =
+    client.protocolVersion === '1.0'
+      ? card.capabilities?.extensions.find(
+          (extension) => extension.uri === A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+        )
+      : undefined
+  if (referencedContext && !referencedContextExtension) {
+    throw new Error('Remote Agent does not advertise referenced-context support')
+  }
+  const outboundReferencedContext =
+    referencedContext && referencedContextExtension
+      ? fitReferencedContextToRemoteLimit(referencedContext, referencedContextExtension)
+      : undefined
+  const extensions = [
+    ...(provenance ? [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI] : []),
+    ...(outboundReferencedContext ? [A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI] : []),
+  ]
+  const request = buildStandardSendRequest(message, {
     provenance,
-    card.capabilities?.streaming ? undefined : 0,
-  )
-  const serviceParameters = provenance
-    ? ServiceParameters.create(withA2AExtensions(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI))
-    : undefined
+    referencedContext: outboundReferencedContext,
+    historyLength: card.capabilities?.streaming ? undefined : 0,
+  })
+  const serviceParameters =
+    extensions.length > 0 ? ServiceParameters.create(withA2AExtensions(...extensions)) : undefined
   const result = await executeStandardInvocation(client, card, request, {
     signal,
     serviceParameters,
@@ -1986,10 +2075,29 @@ async function invokeStandardRemoteAgent(
 }
 
 export async function invokeAgentHandler(
-  { agentId, message }: { agentId: string; message: string },
+  {
+    agentId,
+    message,
+    includeReferencedContext = false,
+  }: { agentId: string; message: string; includeReferencedContext?: boolean },
   targets: RouteTarget[] | null = routeTargets,
   options: { signal?: AbortSignal } = {},
 ) {
+  const referencedContext = includeReferencedContext
+    ? buildOutboundA2AReferencedContext()
+    : undefined
+  if (includeReferencedContext && !referencedContext) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'The referenced context is unavailable or invalid for this run.',
+        },
+      ],
+      isError: true,
+    }
+  }
+
   if (agentId.startsWith('remote:')) {
     const remoteName = agentId.slice('remote:'.length)
     const target = targets?.find((t) => t.type === 'remote' && t.name === remoteName)
@@ -2007,7 +2115,7 @@ export async function invokeAgentHandler(
 
     if (target.connectionMode === 'agent_card' || target.protocolVersion === '1.0') {
       try {
-        return await invokeStandardRemoteAgent(target, message, options.signal)
+        return await invokeStandardRemoteAgent(target, message, referencedContext, options.signal)
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err)
         return {
@@ -2019,6 +2127,18 @@ export async function invokeAgentHandler(
           ],
           isError: true,
         }
+      }
+    }
+
+    if (referencedContext) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Remote agent "${remoteName}" uses A2A 0.3, which does not support referenced-context forwarding`,
+          },
+        ],
+        isError: true,
       }
     }
 
@@ -2089,12 +2209,25 @@ export async function invokeAgentHandler(
   }
 
   const { client, card } = await createInternalClient(agentId)
+  const provenance = buildOutboundA2AProvenance()
+  const extensions = [
+    ...(provenance ? [A2WAVE_CALLER_PROVENANCE_EXTENSION_URI] : []),
+    ...(referencedContext ? [A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI] : []),
+  ]
   const result = await executeStandardInvocation(
     client,
     card,
-    buildStandardSendRequest(message, undefined, card.capabilities?.streaming ? undefined : 0),
+    buildStandardSendRequest(message, {
+      provenance,
+      referencedContext,
+      historyLength: card.capabilities?.streaming ? undefined : 0,
+    }),
     {
       signal: options.signal,
+      serviceParameters:
+        extensions.length > 0
+          ? ServiceParameters.create(withA2AExtensions(...extensions))
+          : undefined,
       targetLabel: agentId,
     },
   )
@@ -2102,14 +2235,26 @@ export async function invokeAgentHandler(
 }
 
 export async function invokeAgentsParallelHandler(
-  { invocations }: { invocations: Array<{ agentId: string; message: string }> },
+  {
+    invocations,
+  }: {
+    invocations: Array<{
+      agentId: string
+      message: string
+      includeReferencedContext?: boolean
+    }>
+  },
   targets: RouteTarget[] | null = routeTargets,
   options: { signal?: AbortSignal } = {},
 ) {
   const results = await Promise.all(
-    invocations.map(async ({ agentId, message }) => {
+    invocations.map(async ({ agentId, message, includeReferencedContext }) => {
       try {
-        const result = await invokeAgentHandler({ agentId, message }, targets, options)
+        const result = await invokeAgentHandler(
+          { agentId, message, includeReferencedContext },
+          targets,
+          options,
+        )
         const text = result.content?.[0]?.text ?? ''
         const isError = 'isError' in result ? result.isError : false
         return { agentId, success: !isError, text }
@@ -2130,11 +2275,20 @@ export function createRouterInvocationHandlers(
   registry: RouterInvocationRegistry,
 ) {
   return {
-    invokeAgent(args: { agentId: string; message: string }, extra: { signal?: AbortSignal }) {
+    invokeAgent(
+      args: { agentId: string; message: string; includeReferencedContext?: boolean },
+      extra: { signal?: AbortSignal },
+    ) {
       return registry.run(extra.signal, (signal) => invokeAgentHandler(args, targets, { signal }))
     },
     invokeAgentsParallel(
-      args: { invocations: Array<{ agentId: string; message: string }> },
+      args: {
+        invocations: Array<{
+          agentId: string
+          message: string
+          includeReferencedContext?: boolean
+        }>
+      },
       extra: { signal?: AbortSignal },
     ) {
       return registry.run(extra.signal, (signal) =>
@@ -2181,8 +2335,16 @@ export async function startServer(): Promise<void> {
       message: z
         .string()
         .describe('Natural-language message for the Agent, describing the task to complete'),
+      includeReferencedContext: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Forward the current quoted external context through a negotiated A2A v1 extension. Use only when the target needs the quoted message or alert body.',
+        ),
     },
-    ({ agentId, message }, extra) => invocationHandlers.invokeAgent({ agentId, message }, extra),
+    ({ agentId, message, includeReferencedContext }, extra) =>
+      invocationHandlers.invokeAgent({ agentId, message, includeReferencedContext }, extra),
   )
 
   server.tool(
@@ -2194,6 +2356,11 @@ export async function startServer(): Promise<void> {
           z.object({
             agentId: z.string().describe('ID of the Agent to call'),
             message: z.string().describe('Message to send to that Agent'),
+            includeReferencedContext: z
+              .boolean()
+              .optional()
+              .default(false)
+              .describe('Forward the current quoted external context to this Agent.'),
           }),
         )
         .min(1)

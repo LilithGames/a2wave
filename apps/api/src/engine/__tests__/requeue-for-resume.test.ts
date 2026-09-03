@@ -189,6 +189,73 @@ describe('taskQueueDb.requeueForResume — the resume mark is part of the transi
     })
   })
 
+  it('restores a Feishu rerun reply context from its interrupted step', async () => {
+    const feishuContext = {
+      receive_id_type: 'chat_id',
+      receive_id: 'oc_alerts',
+      channel: {
+        channel_type: 'feishu',
+        channel_info: { chat_id: 'oc_alerts' },
+      },
+      referenced_message: {
+        message_id: 'om_alert',
+        message_type: 'interactive',
+        text: 'Payment dependency timed out.',
+        truncated: false,
+      },
+    }
+    await seedRun({ triggerSource: 'feishu', triggerSessionId: null })
+    await db.insert(runSteps).values({
+      id: 'stp_feishu',
+      runId: 'run_1',
+      order: 1,
+      input: { message: 'Explain this alert', context: feishuContext },
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+
+    expect((await loadRun())?.executionMetadata).toMatchObject({
+      liveChatId: 'sess_live',
+      resumePending: 'INSTANCE_STOPPED_DURING_EXEC',
+      nativeChatContext: feishuContext,
+    })
+  })
+
+  it('restores A2A referenced context from its interrupted step', async () => {
+    const a2aContext = {
+      channel: {
+        channel_type: 'a2a',
+        channel_info: { caller_agent: { agent_id: 'agt_caller' } },
+      },
+      referenced_message: {
+        source: 'feishu',
+        message_id: 'om_alert',
+        message_type: 'interactive',
+        text: 'Payment dependency timed out.',
+        truncated: false,
+      },
+    }
+    await seedRun({ triggerSource: 'a2a', triggerSessionId: 'task_remote_1' })
+    await db.insert(runSteps).values({
+      id: 'stp_a2a',
+      runId: 'run_1',
+      order: 1,
+      input: { message: 'Explain this alert', context: a2aContext },
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+
+    expect((await loadRun())?.executionMetadata).toMatchObject({
+      liveChatId: 'sess_live',
+      resumePending: 'INSTANCE_STOPPED_DURING_EXEC',
+      nativeChatContext: a2aContext,
+    })
+  })
+
   it('leaves metadata alone when no interruption code is supplied', async () => {
     await seedRun()
     await taskQueueDb.requeueForResume('run_1')

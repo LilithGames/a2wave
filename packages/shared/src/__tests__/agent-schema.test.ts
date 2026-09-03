@@ -46,11 +46,13 @@ describe('A2A route target compatibility', () => {
         connectionMode: 'direct',
         protocolVersion: '1.0',
         callerProvenance: true,
+        referencedContext: true,
       }),
     ).toMatchObject({
       connectionMode: 'direct',
       protocolVersion: '1.0',
       callerProvenance: true,
+      referencedContext: true,
     })
   })
 
@@ -79,6 +81,16 @@ describe('A2A route target compatibility', () => {
         connectionMode: 'direct',
         protocolVersion: '1.0',
         callerProvenance: 'yes',
+      }).success,
+    ).toBe(false)
+    expect(
+      a2aRouteTargetSchema.safeParse({
+        type: 'remote',
+        name: 'future-agent',
+        url: 'https://example.com/a2a',
+        connectionMode: 'direct',
+        protocolVersion: '1.0',
+        referencedContext: 'yes',
       }).success,
     ).toBe(false)
   })
@@ -383,8 +395,9 @@ describe('native chat channel schemas', () => {
 })
 
 describe('feishuConfigSchema topic settings', () => {
-  it('默认关闭根消息注入并 @ 当前触发者', () => {
+  it('disables regular-group reference and topic-root injection by default', () => {
     const parsed = feishuConfigSchema.parse({ appId: 'cli_x', appSecret: 's' })
+    expect(parsed.groupInjectReferencedMessage).toBe(false)
     expect(parsed.topicInjectRootMessage).toBe(false)
     expect(parsed.topicReplyMentionTarget).toBe('trigger_sender')
   })
@@ -420,7 +433,7 @@ describe('feishuConfigSchema topic settings', () => {
     expect(parsed.topicInjectRootMessage).toBe(true)
   })
 
-  it('agentSchema 解析后 feishuConfig 保留 topicInjectRootMessage', () => {
+  it('preserves referenced-message injection settings through agentSchema', () => {
     const parsed = agentSchema.parse({
       id: 'agt_test',
       name: 'Agent A',
@@ -432,10 +445,12 @@ describe('feishuConfigSchema topic settings', () => {
       feishuConfig: {
         appId: 'cli_x',
         appSecret: 's',
+        groupInjectReferencedMessage: true,
         topicInjectRootMessage: true,
         topicReplyMentionTarget: 'topic_creator',
       },
     })
+    expect(parsed.feishuConfig?.groupInjectReferencedMessage).toBe(true)
     expect(parsed.feishuConfig?.topicInjectRootMessage).toBe(true)
     expect(parsed.feishuConfig?.topicReplyMentionTarget).toBe('topic_creator')
   })

@@ -15,6 +15,7 @@ import {
   materializeForRun,
   refsToSources,
 } from './attachment-materializer.js'
+import { getPersistedReferencedPromptContext } from './feishu-referenced-message.js'
 import { gitTriggerRunSkipReason } from './git-trigger-run-preflight.js'
 import { WorktreeBranchLockedError, WorktreeDirtyError } from './git-workspace.js'
 import { createId } from './id.js'
@@ -352,6 +353,10 @@ export async function executeChatRun(
     // single place that decides whether the task is continued or redone.
     prompt: promptToSend,
     context: effectiveContext,
+    referencedPromptContext:
+      run.triggerSource === 'feishu' || run.triggerSource === 'a2a'
+        ? getPersistedReferencedPromptContext(effectiveContext, run.triggerSource)
+        : undefined,
     model: (await agentConfig).model || undefined,
     workDir: resolvedWorkDir,
     chatId: queuedChatId,

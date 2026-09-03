@@ -4,6 +4,7 @@ export type NormalizedFeishuConfig = FeishuConfig & {
   groupTriggerOnAt: boolean
   groupTriggerOnNewMessage: boolean
   groupReplyMode: 'quote' | 'new' | 'none'
+  groupInjectReferencedMessage: boolean
   topicTriggerOnAt: boolean
   topicTriggerOnNewTopic: boolean
   topicTriggerOnNewComment: boolean
@@ -30,6 +31,7 @@ export function normalizeFeishuConfig(raw: Record<string, unknown>): NormalizedF
     groupTriggerOnAt: raw.groupTriggerOnAt ?? legacyTriggerOnAt,
     groupTriggerOnNewMessage: raw.groupTriggerOnNewMessage ?? raw.triggerOnNewMessage ?? false,
     groupReplyMode: raw.groupReplyMode ?? legacyReplyMode,
+    groupInjectReferencedMessage: raw.groupInjectReferencedMessage === true,
     topicTriggerOnAt: raw.topicTriggerOnAt ?? legacyTriggerOnAt,
     topicTriggerOnNewTopic: raw.topicTriggerOnNewTopic ?? false,
     topicTriggerOnNewComment: raw.topicTriggerOnNewComment ?? false,

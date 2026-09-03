@@ -8,7 +8,7 @@ vi.mock('../../env.js', () => ({
   },
 }))
 
-import { REDACT_PATHS, buildRedactPaths } from '../logger.js'
+import { buildRedactPaths, REDACT_PATHS } from '../logger.js'
 
 describe('logger redaction', () => {
   it('covers the known secret-bearing keys at top level', async () => {
@@ -27,6 +27,7 @@ describe('logger redaction', () => {
       'privateKeyEnc',
       'A2WAVE_GATEWAY_TOKEN',
       'A2WAVE_CHANNEL_B64',
+      'A2WAVE_REFERENCED_CONTEXT_B64',
     ]) {
       expect(REDACT_PATHS).toContain(key)
     }

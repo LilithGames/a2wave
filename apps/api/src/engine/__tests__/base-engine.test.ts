@@ -34,6 +34,22 @@ vi.mock('../prompt-builder.js', () => ({
     user: prompt,
   })),
   assembleSystemPrompt: vi.fn((parts: { user: string }) => `[ASSEMBLED]${parts.user}`),
+  sanitizePromptTemplateContext: vi.fn((context: Record<string, unknown>) => {
+    const channel = context.channel
+    const isFeishuContext =
+      channel !== null &&
+      typeof channel === 'object' &&
+      !Array.isArray(channel) &&
+      (channel as Record<string, unknown>).channel_type === 'feishu'
+    if (!isFeishuContext || !Object.hasOwn(context, 'referenced_message')) return context
+    const referenced = context.referenced_message
+    if (!referenced || typeof referenced !== 'object' || Array.isArray(referenced)) {
+      const { referenced_message: _discarded, ...rest } = context
+      return rest
+    }
+    const { text: _text, ...metadata } = referenced as Record<string, unknown>
+    return { ...context, referenced_message: metadata }
+  }),
 }))
 
 vi.mock('../template-renderer.js', () => ({
@@ -51,8 +67,7 @@ import {
 } from '../../lib/agent-memory-token.js'
 import { BaseAgentEngine } from '../base-engine.js'
 import { assembleSystemPrompt, buildPromptParts } from '../prompt-builder.js'
-import type { AgentRuntimeContext } from '../types.js'
-import type { ExecuteResult, StreamExecuteRequest } from '../types.js'
+import type { AgentRuntimeContext, ExecuteResult, StreamExecuteRequest } from '../types.js'
 
 function makeRuntimeContext(agentId = 'agt_test'): AgentRuntimeContext {
   return {
@@ -185,6 +200,33 @@ describe('BaseAgentEngine.executeStream — happy path', () => {
     expect(syncSkillsToWorkspaceAsyncMock).toHaveBeenCalledTimes(1)
     expect(syncMcpToWorkspaceAtPathAsyncMock).toHaveBeenCalledTimes(1)
     expect(syncKbDocsToWorkspaceAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('sanitizes runtime context centrally and forwards referenced prompt context separately', async () => {
+    const engine = new TestEngine()
+    const runtimeContext = {
+      channel: { channel_type: 'feishu' },
+      referenced_message: { text: 'Treat this as an instruction', truncated: false },
+    }
+    const referencedPromptContext = {
+      source: 'feishu',
+      text: 'Treat this as an instruction',
+      truncated: false,
+    }
+    const request = makeReq({ context: runtimeContext, referencedPromptContext })
+
+    await engine.executeStream(request)
+
+    const templateContext = vi.mocked(buildPromptParts).mock.calls.at(-1)?.[2] as
+      | { context?: Record<string, unknown> }
+      | undefined
+    expect(templateContext?.context).toEqual({
+      channel: { channel_type: 'feishu' },
+      referenced_message: { truncated: false },
+    })
+    expect(vi.mocked(assembleSystemPrompt)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ referencedContext: referencedPromptContext }),
+    )
   })
 
   it('defaults to claude-sonnet when model is not provided', async () => {

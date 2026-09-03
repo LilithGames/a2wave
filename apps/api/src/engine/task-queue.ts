@@ -38,6 +38,8 @@ export interface RunRow {
   id: string
   triggerSource: string | null
   triggerSessionId: string | null
+  /** Whether the run carries a persisted, sendable chat target for restart-safe promotion. */
+  hasNativeChatContext?: boolean
 }
 
 /**
@@ -446,15 +448,17 @@ export async function recoverOnStartup(
         stats.pendingOrphaned++
       }
 
-      // Feishu queued runs lose their in-memory closure (reply target,
-      // streaming card registration, quote context) on restart. The DB-backed
-      // feishu_pending_messages row is replayed separately after Feishu
-      // connections come back. Fail the stale queued rows here so scheduleNext
-      // does NOT promote them via the generic executeChatRun path (which would
-      // run without Feishu context and then block replay).
+      // Native Feishu event runs lose their in-memory closure (reply target,
+      // streaming card registration, quote context) on restart. Their
+      // DB-backed pending-message row is replayed after Feishu connections
+      // return. API-created reruns intentionally carry no triggerSessionId and
+      // are restart-safe only when their channel context was persisted in
+      // executionMetadata. Pre-upgrade reruns without that context must fail
+      // closed instead of being promoted with no reply target.
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        if (run.triggerSource === 'feishu') {
+        const isRestartSafeFeishuRerun = !run.triggerSessionId && run.hasNativeChatContext === true
+        if (run.triggerSource === 'feishu' && !isRestartSafeFeishuRerun) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++
         }

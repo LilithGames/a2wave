@@ -1,4 +1,4 @@
-import { and, asc, count, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
+import { and, asc, count, desc, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
 import { type TransactionHandle, withTransaction } from '../db/transaction.js'
@@ -26,11 +26,42 @@ const VALID_RUN_STATUSES = [
 ] as const
 type RunStatus = (typeof VALID_RUN_STATUSES)[number]
 
+const FEISHU_RECEIVE_ID_TYPES = new Set(['open_id', 'user_id', 'union_id', 'email', 'chat_id'])
+
 class RunQueueFullError extends Error {}
 
 function parseRunStatus(s: string): RunStatus | null {
   if (VALID_RUN_STATUSES.includes(s as RunStatus)) return s as RunStatus
   return null
+}
+
+function hasSendableNativeChatContext(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const context = value as Record<string, unknown>
+  return (
+    typeof context.receive_id_type === 'string' &&
+    FEISHU_RECEIVE_ID_TYPES.has(context.receive_id_type) &&
+    typeof context.receive_id === 'string' &&
+    context.receive_id.trim().length > 0
+  )
+}
+
+function hasRecoverableA2AReferencedContext(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const context = value as Record<string, unknown>
+  const channel = context.channel
+  const referencedMessage = context.referenced_message
+  return (
+    channel !== null &&
+    typeof channel === 'object' &&
+    !Array.isArray(channel) &&
+    (channel as Record<string, unknown>).channel_type === 'a2a' &&
+    referencedMessage !== null &&
+    typeof referencedMessage === 'object' &&
+    !Array.isArray(referencedMessage) &&
+    typeof (referencedMessage as Record<string, unknown>).text === 'string' &&
+    ((referencedMessage as Record<string, unknown>).text as string).trim().length > 0
+  )
 }
 
 /**
@@ -141,12 +172,45 @@ export const taskQueueDb: TaskQueueDb = {
       const current = interruptionCode
         ? (
             await tx
-              .select({ executionMetadata: runs.executionMetadata })
+              .select({
+                executionMetadata: runs.executionMetadata,
+                triggerSource: runs.triggerSource,
+                triggerSessionId: runs.triggerSessionId,
+              })
               .from(runs)
               .where(eq(runs.id, runId))
               .limit(1)
           )[0]
         : undefined
+      const currentMetadata = current?.executionMetadata as
+        | Record<string, unknown>
+        | null
+        | undefined
+      let restoredNativeChatContext: Record<string, unknown> | undefined
+      const shouldRestoreFeishuContext =
+        current?.triggerSource === 'feishu' &&
+        current.triggerSessionId == null &&
+        !hasSendableNativeChatContext(currentMetadata?.nativeChatContext)
+      const shouldRestoreA2AContext =
+        current?.triggerSource === 'a2a' &&
+        !hasRecoverableA2AReferencedContext(currentMetadata?.nativeChatContext)
+      if (shouldRestoreFeishuContext || shouldRestoreA2AContext) {
+        const latestStep = (
+          await tx
+            .select({ input: runSteps.input })
+            .from(runSteps)
+            .where(eq(runSteps.runId, runId))
+            .orderBy(desc(runSteps.order))
+            .limit(1)
+        )[0]
+        const stepContext = (latestStep?.input as { context?: unknown } | null | undefined)?.context
+        const canRestoreStepContext = shouldRestoreFeishuContext
+          ? hasSendableNativeChatContext(stepContext)
+          : hasRecoverableA2AReferencedContext(stepContext)
+        if (canRestoreStepContext) {
+          restoredNativeChatContext = stepContext as Record<string, unknown>
+        }
+      }
       const requeued = await tx
         .update(runs)
         .set({
@@ -164,7 +228,10 @@ export const taskQueueDb: TaskQueueDb = {
           ...(interruptionCode
             ? {
                 executionMetadata: {
-                  ...((current?.executionMetadata as Record<string, unknown> | null) ?? {}),
+                  ...(currentMetadata ?? {}),
+                  ...(restoredNativeChatContext
+                    ? { nativeChatContext: restoredNativeChatContext }
+                    : {}),
                   resumePending: interruptionCode,
                 } as never,
               }
@@ -421,14 +488,19 @@ export const taskQueueDb: TaskQueueDb = {
         id: runs.id,
         triggerSource: runs.triggerSource,
         triggerSessionId: runs.triggerSessionId,
+        executionMetadata: runs.executionMetadata,
       })
       .from(runs)
       .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, runStatus)))
-    return rows.map((r) => ({
-      id: r.id,
-      triggerSource: r.triggerSource ?? null,
-      triggerSessionId: r.triggerSessionId ?? null,
-    }))
+    return rows.map((r) => {
+      const nativeChatContext = r.executionMetadata?.nativeChatContext
+      return {
+        id: r.id,
+        triggerSource: r.triggerSource ?? null,
+        triggerSessionId: r.triggerSessionId ?? null,
+        hasNativeChatContext: hasSendableNativeChatContext(nativeChatContext),
+      }
+    })
   },
 
   async getOrphanedPendingRuns(agentId: string, cutoffMs: number): Promise<RunRow[]> {

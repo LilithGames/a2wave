@@ -29,7 +29,11 @@ import {
   syncMcpToWorkspaceAtPathAsync,
 } from './mcp-sync.js'
 import { isModelError, selectFallbackModel } from './model-fallback.js'
-import { assembleSystemPrompt, buildPromptParts } from './prompt-builder.js'
+import {
+  assembleSystemPrompt,
+  buildPromptParts,
+  sanitizePromptTemplateContext,
+} from './prompt-builder.js'
 import { artifactsDirForTask, prepareRuntimeContext } from './runtime-context.js'
 import { type SkillFile, syncSkillsToWorkspaceAsync } from './skill-sync.js'
 import { engineTypeToAgentProviderLabel, type TemplateContext } from './template-renderer.js'
@@ -236,13 +240,14 @@ export abstract class BaseAgentEngine implements AgentEngine {
 
     const templateContext: TemplateContext = {
       message: prompt,
-      context: request.context ?? {},
+      context: sanitizePromptTemplateContext(request.context ?? {}),
       env: agentConfig?.agentEnv as Record<string, string> | undefined,
       model,
       agent_provider: engineTypeToAgentProviderLabel(agentConfig?.engineType),
     }
 
     const parts = buildPromptParts(prompt, agentConfig, templateContext)
+    parts.referencedContext = request.referencedPromptContext
     if (request.runtimeContext?.artifacts.dir) {
       parts.artifactsDir = request.runtimeContext.artifacts.dir
     } else if (request.workDir) {
