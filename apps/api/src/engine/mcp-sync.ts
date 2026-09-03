@@ -13,8 +13,9 @@
  */
 
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import type { Stats } from 'node:fs'
+import { mkdir, readFile, readlink, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
@@ -46,7 +47,97 @@ const execFileAsync = promisify(execFile)
 const GIT_LS_FILES_TIMEOUT_MS = 30_000
 
 /**
- * Whether the repository containing `workDir` already **tracks** `relativePath`.
+ * Runs one git command for the trackedness probe.
+ *
+ * `null` means "there is no repository to ask" — no git binary on PATH, a
+ * missing directory, or a plain non-checkout (a P4 workspace, a multi-repo
+ * workspace root): nothing there can be committed by accident. Any other git
+ * failure propagates, because inferring "untracked" from an unexplained error is
+ * exactly the write this probe exists to prevent.
+ *
+ * `LC_ALL=C` pins the stderr wording the "not a repository" test matches;
+ * `GIT_TERMINAL_PROMPT=0` keeps a misconfigured repository from hanging the run.
+ */
+async function runGitProbe(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      timeout: GIT_LS_FILES_TIMEOUT_MS,
+      env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
+    })
+    return stdout
+  } catch (err) {
+    const failure = err as NodeJS.ErrnoException & { stderr?: string }
+    // No git binary on PATH, or the directory itself is gone.
+    if (failure.code === 'ENOENT') return null
+    if (/not a git repository/i.test(failure.stderr ?? '')) return null
+    throw err
+  }
+}
+
+/** Bounds the symlink walk in `resolveWriteTarget`; git's own limit is smaller. */
+const MAX_LINK_HOPS = 64
+
+/**
+ * The absolute path a write to `target` would actually touch.
+ *
+ * `realpath` answers directly for a file that exists, and resolves a symlinked
+ * **parent directory** just as well as a symlinked file. A target that does not
+ * exist yet (the common case — the sync creates the config) makes `realpath`
+ * fail with ENOENT, so the deepest existing ancestor is resolved instead and the
+ * missing tail rejoined onto it. A **dangling** symlink is followed by hand:
+ * `realpath` refuses it, but the write would still land wherever it points.
+ */
+async function resolveWriteTarget(target: string): Promise<string> {
+  const missingTail: string[] = []
+  let current = target
+  for (let hops = 0; hops < MAX_LINK_HOPS; hops++) {
+    try {
+      return join(await realpath(current), ...missingTail)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+    try {
+      const link = await readlink(current)
+      current = isAbsolute(link) ? link : join(dirname(current), link)
+      continue
+    } catch {
+      // Not a symlink — just absent. Climb to the parent and keep the name.
+    }
+    const parent = dirname(current)
+    if (parent === current) break
+    missingTail.unshift(basename(current))
+    current = parent
+  }
+  return join(current, ...missingTail)
+}
+
+async function statOrNull(path: string): Promise<Stats | null> {
+  try {
+    return await stat(path)
+  } catch {
+    return null
+  }
+}
+
+/** Escapes git pathspec glob metacharacters in a literal directory prefix. */
+function escapeGlobPathspec(literal: string): string {
+  return literal.replace(/[\\*?[\]]/g, (char) => `\\${char}`)
+}
+
+export interface McpConfigTargetProbe {
+  /** Absolute path the write would actually touch, after symlink resolution. */
+  resolvedPath: string
+  /**
+   * Work-tree-relative pathname git tracks for that target, or `null` when the
+   * write cannot land on a tracked file.
+   */
+  trackedPath: string | null
+}
+
+/**
+ * Whether the repository containing `workDir` already **tracks** the file a
+ * write to `relativePath` would land on.
  *
  * `ensurePlatformPathsExcluded` (lib/git-workspace.ts) keeps the platform's
  * workspace files out of `git status` by appending them to `info/exclude` — but
@@ -58,33 +149,88 @@ const GIT_LS_FILES_TIMEOUT_MS = 30_000
  * changes" ships the MCP owner's credentials to the remote. So the write asks
  * first, and refuses.
  *
+ * **The question is about the file, not the pathname.** git matches an index
+ * entry as an exact, case-sensitive byte string; the write goes wherever the
+ * *filesystem* resolves the same name. Three ways those identities diverge, and
+ * what covers each:
+ *
+ * - a **symlink**, at the file or at any parent directory component →
+ *   `resolveWriteTarget`, before anything is asked of git, so the question is
+ *   put about the path the bytes land on;
+ * - **case folding** on macOS/Windows (`.MCP.JSON` tracked, `.mcp.json` written,
+ *   one inode) → the tracked entries of the containing directory are compared to
+ *   the target by **`dev`+`ino` identity**, which is exact on every platform and
+ *   needs no guess about the filesystem's case sensitivity;
+ * - the target **not existing yet**, where there is no inode to compare → a
+ *   case-insensitive basename match is treated as tracked. Conservative by
+ *   design: refusing a write is recoverable, publishing a credential is not.
+ *
+ * Resolution can also move the target into a different directory of the same
+ * repository, so git is asked relative to the **work tree root**
+ * (`rev-parse --show-toplevel`), not to `workDir`. A target that resolves
+ * outside the work tree entirely is refused outright
+ * (`McpConfigOutsideWorkTreeError`): this writer follows a config path into the
+ * workspace, never out of it.
+ *
  * Deliberately local to this module rather than imported from `git-workspace`:
  * that module reaches `codegraph-index` (via `platformWorkspacePaths`) and so
  * the database client, which every engine module would then load.
- *
- * A directory that is no git repository at all — a P4 workspace, a multi-repo
- * workspace root — answers `false`: nothing there can be committed by accident.
- * Any other git failure propagates, because inferring "untracked" from an
- * unexplained error is exactly the write this probe exists to prevent.
- *
- * `LC_ALL=C` pins the stderr wording the "not a repository" test matches;
- * `GIT_TERMINAL_PROMPT=0` keeps a misconfigured repository from hanging the run.
  */
-export async function isPathTrackedByGit(workDir: string, relativePath: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFileAsync('git', ['ls-files', '-z', '--', relativePath], {
-      cwd: workDir,
-      timeout: GIT_LS_FILES_TIMEOUT_MS,
-      env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
-    })
-    return stdout.length > 0
-  } catch (err) {
-    const failure = err as NodeJS.ErrnoException & { stderr?: string }
-    // No git binary on PATH, or the directory itself is gone.
-    if (failure.code === 'ENOENT') return false
-    if (/not a git repository/i.test(failure.stderr ?? '')) return false
-    throw err
+export async function probeMcpConfigTarget(
+  workDir: string,
+  relativePath: string,
+): Promise<McpConfigTargetProbe> {
+  const target = join(workDir, relativePath)
+  const topLevel = await runGitProbe(['rev-parse', '--show-toplevel'], workDir)
+  // Not a checkout: nothing here can be committed by accident, and there is no
+  // work tree to escape from either.
+  if (topLevel === null) return { resolvedPath: target, trackedPath: null }
+
+  const workTree = await realpath(topLevel.trim())
+  const resolvedPath = await resolveWriteTarget(target)
+  if (resolvedPath !== workTree && !resolvedPath.startsWith(`${workTree}${sep}`)) {
+    throw new McpConfigOutsideWorkTreeError(relativePath, resolvedPath)
   }
+
+  const relativeToWorkTree = relative(workTree, resolvedPath)
+  const parent = dirname(relativeToWorkTree)
+  const prefix = parent === '.' ? '' : `${parent}/`
+  // `:(glob)` keeps `*` from crossing `/`, so this lists the tracked entries of
+  // the containing directory only — a repository-wide `ls-files` for a
+  // root-level `.mcp.json` would be needlessly expensive.
+  const listing = await runGitProbe(
+    ['ls-files', '-z', '--', `:(glob)${escapeGlobPathspec(prefix)}*`],
+    workTree,
+  )
+  if (listing === null) return { resolvedPath, trackedPath: null }
+
+  const targetName = basename(relativeToWorkTree).toLowerCase()
+  let targetStat: Stats | null | undefined
+  for (const entry of listing.split('\0')) {
+    if (entry.length === 0) continue
+    // Exact pathname: tracked whatever the filesystem does, including a tracked
+    // entry whose file is currently deleted from the working tree.
+    if (entry === relativeToWorkTree) return { resolvedPath, trackedPath: entry }
+    if (basename(entry).toLowerCase() !== targetName) continue
+    if (targetStat === undefined) targetStat = await statOrNull(resolvedPath)
+    const candidateStat = await statOrNull(join(workTree, entry))
+    if (targetStat && candidateStat) {
+      // Both on disk: same inode means the same file under two spellings, and
+      // different inodes mean the filesystem keeps them apart.
+      if (targetStat.dev === candidateStat.dev && targetStat.ino === candidateStat.ino) {
+        return { resolvedPath, trackedPath: entry }
+      }
+      continue
+    }
+    // One of them is absent, so identity cannot be proven either way.
+    return { resolvedPath, trackedPath: entry }
+  }
+  return { resolvedPath, trackedPath: null }
+}
+
+/** Boolean face of {@link probeMcpConfigTarget}. */
+export async function isPathTrackedByGit(workDir: string, relativePath: string): Promise<boolean> {
+  return (await probeMcpConfigTarget(workDir, relativePath)).trackedPath !== null
 }
 
 /**
@@ -313,15 +459,49 @@ function buildManagedMcpServers(
  * the one command that fixes it instead.
  */
 export class TrackedMcpConfigError extends Error {
-  constructor(readonly relativePath: string) {
+  /**
+   * @param relativePath the configured path, as the Provider spells it
+   * @param trackedPath the work-tree-relative pathname git actually tracks — the
+   *   same string for a plain tracked file, and a different one when a symlink
+   *   or a case-folding filesystem sends the write somewhere else. The
+   *   `git rm --cached` has to name *that* file to be actionable.
+   */
+  constructor(
+    readonly relativePath: string,
+    readonly trackedPath: string = relativePath,
+  ) {
     super(
-      `Refusing to write MCP credentials into "${relativePath}": the repository tracks this file, ` +
-        'so a "git add -A" by the agent would stage the resolved Authorization headers and stdio ' +
-        `API keys. Untrack it in the repository ("git rm --cached ${relativePath}", commit, and add ` +
-        "it to .gitignore), or point the Provider's MCP config path at a file the repository " +
-        'does not track.',
+      `Refusing to write MCP credentials into "${relativePath}": the repository tracks the file ` +
+        `it resolves to ("${trackedPath}"), so a "git add -A" by the agent would stage the ` +
+        'resolved Authorization headers and stdio API keys. Untrack it in the repository ' +
+        `("git rm --cached ${trackedPath}", commit, and add it to .gitignore), or point the ` +
+        "Provider's MCP config path at a file the repository does not track.",
     )
     this.name = 'TrackedMcpConfigError'
+  }
+}
+
+/**
+ * Raised when the configured MCP config path resolves — through a symlink at the
+ * file or at a parent directory — to somewhere outside the workspace's git work
+ * tree.
+ *
+ * Following it would write plaintext bearer tokens and stdio API keys to a
+ * location the run does not own and run-end cleanup reasons about incorrectly,
+ * and the trackedness question cannot even be asked there. Refusing names the
+ * destination instead.
+ */
+export class McpConfigOutsideWorkTreeError extends Error {
+  constructor(
+    readonly relativePath: string,
+    readonly resolvedPath: string,
+  ) {
+    super(
+      `Refusing to write MCP credentials for "${relativePath}": it resolves to "${resolvedPath}", ` +
+        'which is outside the workspace git work tree. Replace the symlink, or point the ' +
+        "Provider's MCP config path at a file inside the workspace.",
+    )
+    this.name = 'McpConfigOutsideWorkTreeError'
   }
 }
 
@@ -369,19 +549,22 @@ async function writeMcpConfig(
   const managedServers = buildManagedMcpServers(servers, options.dialect)
 
   // Asked before anything is created or written: a tracked target must come out
-  // of this function byte-identical, marker included.
-  if (await isPathTrackedByGit(workDir, relativePath)) {
+  // of this function byte-identical, marker included. The probe answers about
+  // the file the write would land on, not the pathname it was asked about, and
+  // throws outright when that file is outside the work tree.
+  const { trackedPath } = await probeMcpConfigTarget(workDir, relativePath)
+  if (trackedPath !== null) {
     // Nothing to inject means nothing to leak — leave the committed file alone
     // and take no reference, rather than failing a run over a file the platform
     // has no business rewriting.
     if (Object.keys(managedServers).length === 0) {
       logger.debug(
-        { filePath },
+        { filePath, trackedPath },
         'Skipping MCP sync: the repository tracks this config and there is nothing to inject',
       )
       return false
     }
-    throw new TrackedMcpConfigError(relativePath)
+    throw new TrackedMcpConfigError(relativePath, trackedPath)
   }
 
   await mkdir(dirname(filePath), { recursive: true })

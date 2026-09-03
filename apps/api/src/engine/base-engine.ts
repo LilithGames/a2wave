@@ -194,10 +194,13 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * Agents keep their behavior. Only a2wave-managed entries are synchronized and merged safely
    * with existing user configuration.
    *
-   * Throws (and so fails the run) when the repository **tracks** the target
-   * config file — see `TrackedMcpConfigError`. Writing there would stage the
-   * resolved credentials for the agent's next commit, and no workspace-file
-   * engine offers an out-of-tree config to fall back to.
+   * Throws (and so fails the run) when the repository **tracks** the file the
+   * write would land on — see `TrackedMcpConfigError`, and note that
+   * trackedness is decided after symlink and case-fold resolution, not on the
+   * configured pathname. Writing there would stage the resolved credentials for
+   * the agent's next commit, and no workspace-file engine offers an out-of-tree
+   * config to fall back to. A path resolving outside the work tree entirely is
+   * refused the same way (`McpConfigOutsideWorkTreeError`).
    */
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
     const target = this.resolveMcpWorkspaceTarget(request)

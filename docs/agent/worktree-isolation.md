@@ -71,6 +71,33 @@ stopped sharing a working directory because a run of Agent B re-mounting
   write, and the write **refuses** — `TrackedMcpConfigError`, which fails the run
   from the prepare phase and names the file plus the `git rm --cached` that fixes
   it.
+- **Trackedness is a question about the FILE, not about the pathname.** git
+  matches an index entry as an exact, case-sensitive byte string; the write goes
+  wherever the *filesystem* resolves the same name, and the two identities
+  diverge in ways that each reproduce the leak in full. `probeMcpConfigTarget`
+  therefore resolves first and asks second:
+  - **symlinks**, at the file or at any parent directory component (untracked
+    `.mcp.json` → tracked `config/team-mcp.json`), are resolved by `realpath`
+    before git is consulted — including a target that does not exist yet (the
+    deepest existing ancestor is resolved and the missing tail rejoined) and a
+    dangling link (followed by hand, since the write would follow it too);
+  - resolution can move the target into another directory of the same
+    repository, so git is asked **relative to the work tree root**
+    (`rev-parse --show-toplevel`), not relative to `workDir`;
+  - **case folding** (macOS/Windows default: `.MCP.JSON` tracked, `.mcp.json`
+    written, one inode) is settled by comparing **`dev`+`ino` identity** between
+    the resolved target and each tracked entry of its containing directory —
+    exact on every platform, and it never has to guess whether the filesystem
+    folds case. Only when there is no inode to compare (the target does not
+    exist yet) does a case-insensitive basename match decide, and it decides
+    **tracked**: refusing a write is recoverable, publishing a credential is
+    not.
+  - The directory listing uses a `:(glob)<dir>/*` pathspec so a root-level
+    `.mcp.json` does not walk the whole index.
+- **A path resolving outside the work tree is refused, not followed** —
+  `McpConfigOutsideWorkTreeError`. This writer follows a config path into the
+  workspace, never out of it: outside, the trackedness question cannot even be
+  asked, and run-end cleanup reasons about a file the run does not own.
 - **Failing is the only honest option here.** None of the workspace-file engines
   — Claude Code, Cursor, Qoder, Trae, Kimi — exposes a flag pointing at an MCP
   config outside the working tree, so there is no runtime-injection path to fall
