@@ -54,6 +54,7 @@ vi.mock('../logger.js', () => ({
 
 import { db } from '../../db/client.js'
 import { samlRequests } from '../../db/schema.sqlite.js'
+import { withTransaction } from '../../db/transaction.js'
 import {
   createSamlRequestCacheProvider,
   SAML_REQUEST_EXPIRATION_MS,
@@ -155,6 +156,89 @@ describe('SAML request cache provider', () => {
     // Expiry is enforced on read, not only by the sweeper: a login window that
     // stayed open overnight must not be honoured just because the sweep is late.
     expect(await cache.getAsync('_req-old')).toBeNull()
+  })
+
+  /**
+   * Serialisation against a stranger's transaction.
+   *
+   * better-sqlite3 gives the whole process one connection, so a plain
+   * `db.insert(...)` issued while another request sits inside `BEGIN` silently
+   * joins that transaction and disappears with its `ROLLBACK` — after this
+   * request already told the IdP the AuthnRequest was recorded. The writes here
+   * therefore go through `runExclusive`, which waits for the open transaction
+   * instead of joining it (see apps/api/src/db/transaction.ts).
+   */
+  describe('serialises its writes against an unrelated transaction', () => {
+    /** Hold a transaction open, run `duringTx` outside it, then roll back. */
+    const rollingBackTransaction = async (duringTx: () => Promise<unknown>) => {
+      let openTransaction = () => {}
+      let releaseTransaction = () => {}
+      const opened = new Promise<void>((resolve) => {
+        openTransaction = resolve
+      })
+      const gate = new Promise<void>((resolve) => {
+        releaseTransaction = resolve
+      })
+
+      const rolledBack = withTransaction(async () => {
+        openTransaction()
+        await gate
+        throw new Error('unrelated transaction rolled back')
+      }).catch(() => undefined)
+
+      await opened
+      // Started, not awaited: a serialised write parks on the transaction lock,
+      // while an unserialised one would land inside the open BEGIN right here.
+      const pending = duringTx()
+      await new Promise((resolve) => setImmediate(resolve))
+      releaseTransaction()
+      await rolledBack
+      return await pending
+    }
+
+    it('keeps a saveAsync that completed while the transaction was open', async () => {
+      const saved = await rollingBackTransaction(() => cache.saveAsync('_req-tx', '_req-tx'))
+
+      // saveAsync reported success, so the AuthnRequest is already on its way to
+      // the IdP. Losing the row here fails the callback as SAML_RESPONSE_UNSOLICITED.
+      expect(saved).not.toBeNull()
+      expect(await db.select().from(samlRequests)).toHaveLength(1)
+      expect(await createSamlRequestCacheProvider().getAsync('_req-tx')).toBe('_req-tx')
+    })
+
+    it('keeps the consuming delete of getAsync, so the id cannot be replayed', async () => {
+      await cache.saveAsync('_req-tx-consume', '_req-tx-consume')
+
+      const consumer = createSamlRequestCacheProvider()
+      const value = await rollingBackTransaction(() => consumer.getAsync('_req-tx-consume'))
+
+      expect(value).toBe('_req-tx-consume')
+      // The consume is the single-use guarantee; resurrecting the row makes the
+      // captured SAMLResponse replayable at another replica.
+      expect(await db.select().from(samlRequests)).toHaveLength(0)
+      expect(await createSamlRequestCacheProvider().getAsync('_req-tx-consume')).toBeNull()
+    })
+
+    it('keeps the removeAsync delete', async () => {
+      await cache.saveAsync('_req-tx-remove', '_req-tx-remove')
+
+      const remover = createSamlRequestCacheProvider()
+      expect(await rollingBackTransaction(() => remover.removeAsync('_req-tx-remove'))).toBe(
+        '_req-tx-remove',
+      )
+      expect(await db.select().from(samlRequests)).toHaveLength(0)
+    })
+
+    it('keeps the sweeper delete', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      await cache.saveAsync('_req-tx-sweep', '_req-tx-sweep')
+      const sweepAt = new Date(Date.now() + SAML_REQUEST_EXPIRATION_MS + 1000)
+      vi.useRealTimers()
+
+      expect(await rollingBackTransaction(() => sweepExpiredSamlRequests(sweepAt))).toBe(1)
+      expect(await db.select().from(samlRequests)).toHaveLength(0)
+    })
   })
 
   it('sweeps rows older than the expiration window and keeps fresh ones', async () => {

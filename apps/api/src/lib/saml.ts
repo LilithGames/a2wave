@@ -21,6 +21,7 @@ import { type CacheProvider, type Profile, SAML, ValidateInResponseTo } from '@n
 import { and, eq, gte, lt } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { samlRequests } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
 import { logger } from './logger.js'
 import { getSamlEnv } from './saml-config.js'
 import { getSsoCallbackOrigin } from './server-url.js'
@@ -197,11 +198,19 @@ export function createSamlRequestCacheProvider(): CacheProvider {
       // reissue, so a pre-existing row must win rather than be overwritten.
       // `onConflictDoNothing` is the whole check: a preceding SELECT would only
       // add a round trip and still lose the race it was meant to describe.
-      const inserted = await db
-        .insert(samlRequests)
-        .values({ id: key, value, createdAt })
-        .onConflictDoNothing()
-        .returning({ id: samlRequests.id })
+      //
+      // `runExclusive` because this is a bare write racing whatever transaction
+      // another request holds: on SQLite's one shared connection a plain insert
+      // issued mid-`BEGIN` joins that transaction and is erased by its ROLLBACK
+      // — here, after the AuthnRequest has already gone to the IdP, leaving a
+      // callback that can only fail as SAML_RESPONSE_UNSOLICITED.
+      const inserted = await runExclusive(async () =>
+        db
+          .insert(samlRequests)
+          .values({ id: key, value, createdAt })
+          .onConflictDoNothing()
+          .returning({ id: samlRequests.id }),
+      )
       if (inserted.length === 0) return null
 
       return { value, createdAt: createdAt.getTime() }
@@ -218,15 +227,22 @@ export function createSamlRequestCacheProvider(): CacheProvider {
       // Claim and expire in one statement. `.returning()` rather than a row
       // count: the two drivers disagree on `changes`/`rowCount` (see
       // apps/api/AGENTS.md).
-      const consumed = await db
-        .delete(samlRequests)
-        .where(
-          and(
-            eq(samlRequests.id, key),
-            gte(samlRequests.createdAt, new Date(now - SAML_REQUEST_EXPIRATION_MS)),
-          ),
-        )
-        .returning({ value: samlRequests.value })
+      //
+      // `runExclusive` for the same reason as saveAsync,
+      // and it matters more here: a consume erased by a stranger's ROLLBACK
+      // resurrects the id, so the captured SAMLResponse becomes replayable —
+      // exactly the single-use property this consuming delete exists for.
+      const consumed = await runExclusive(async () =>
+        db
+          .delete(samlRequests)
+          .where(
+            and(
+              eq(samlRequests.id, key),
+              gte(samlRequests.createdAt, new Date(now - SAML_REQUEST_EXPIRATION_MS)),
+            ),
+          )
+          .returning({ value: samlRequests.value }),
+      )
       const value = consumed[0]?.value
       if (value === undefined) return null
 
@@ -242,10 +258,9 @@ export function createSamlRequestCacheProvider(): CacheProvider {
       // row. Answering with the key when we held it keeps the InMemory
       // provider's "returns the key it forgot" contract.
       const held = inFlight.delete(key)
-      const removed = await db
-        .delete(samlRequests)
-        .where(eq(samlRequests.id, key))
-        .returning({ id: samlRequests.id })
+      const removed = await runExclusive(async () =>
+        db.delete(samlRequests).where(eq(samlRequests.id, key)).returning({ id: samlRequests.id }),
+      )
       return removed[0]?.id ?? (held ? key : null)
     },
   }
@@ -253,10 +268,15 @@ export function createSamlRequestCacheProvider(): CacheProvider {
 
 /** Delete request ids past the expiration window. Returns how many went. */
 export async function sweepExpiredSamlRequests(now: Date): Promise<number> {
-  const deleted = await db
-    .delete(samlRequests)
-    .where(lt(samlRequests.createdAt, new Date(now.getTime() - SAML_REQUEST_EXPIRATION_MS)))
-    .returning({ id: samlRequests.id })
+  // Bare write on a timer, so the transaction it lands in is arbitrary: without
+  // `runExclusive` a rolled-back stranger silently resurrects every row this
+  // reported as swept, and the count returned to the log would be a lie.
+  const deleted = await runExclusive(async () =>
+    db
+      .delete(samlRequests)
+      .where(lt(samlRequests.createdAt, new Date(now.getTime() - SAML_REQUEST_EXPIRATION_MS)))
+      .returning({ id: samlRequests.id }),
+  )
   return deleted.length
 }
 
