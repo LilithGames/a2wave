@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { db } from '../db/client.js'
 import { agents, runs, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
@@ -376,12 +376,6 @@ export async function findDurableScmSourceWorkload(
 }
 
 /**
- * Leases scanned per source. Concurrent workloads on one source are bounded by
- * queue concurrency; the cap only keeps a pathological table from being walked.
- */
-const SHARED_CHECKOUT_LEASE_SCAN_LIMIT = 100
-
-/**
  * Work executing in a source's **shared checkout** (`localPath`) right now.
  *
  * Sync rewrites that directory — `p4 sync`, or `git checkout -f -B` — so running
@@ -393,41 +387,64 @@ const SHARED_CHECKOUT_LEASE_SCAN_LIMIT = 100
  * `runs.workDir`, the same occupancy marker the workspace-delete route trusts.
  * Only a per-Agent or explicit **worktree** records it (see `resolveWorkDir`),
  * so a null value is exactly the shared-checkout case: a P4 Agent, or a git
- * Agent whose worktree creation degraded to `localPath`. An Evaluation records
- * no workspace at all and is therefore always treated as occupancy — deferring
- * a sync tick is far cheaper than losing a run's work.
+ * Agent whose worktree creation degraded to `localPath`.
  *
- * Reserved leases are skipped: that work is still queued and owns no directory.
+ * An Evaluation records no workspace at all, so `sourceType` decides it:
+ *
+ * - **git** — the task owns an `eval-<taskId>` worktree.
+ *   `prepareEvaluationWorkspace` resolves it through the *explicit* worktree
+ *   path of `resolveWorkDir`, which throws rather than degrading to
+ *   `localPath`, so a running git Evaluation is provably not in the shared
+ *   checkout. Counting it there deferred every auto-sync tick for the whole
+ *   replay — which can be many minutes — for no safety gain.
+ * - **p4** — there is no isolation mechanism at all (a client spec binds one
+ *   server-side `Root`), so the task is in the shared checkout by construction.
+ *
+ * Phase filtering happens in SQL. Reserved work is queued and owns no
+ * directory, and an unfiltered scan had to be capped to keep a long tail of
+ * rows from being walked — which is exactly how an active lease past the cap
+ * went unseen and let a sync run under a live Agent CLI. Active leases are
+ * bounded by total queue concurrency, so the filtered query needs no cap, and
+ * their run rows are fetched in one batched select rather than one per lease.
  */
 export async function findSharedCheckoutScmWorkload(
   executor: Pick<typeof db, 'select'>,
   scmSourceId: string,
   sharedLocalPath: string,
+  sourceType: 'git' | 'p4',
 ): Promise<{ type: ScmWorkloadType; id: string } | null> {
   const leases = await executor
     .select({
       type: scmWorkloadLeases.workloadType,
       id: scmWorkloadLeases.workloadId,
-      phase: scmWorkloadLeases.phase,
     })
     .from(scmWorkloadLeases)
-    .where(eq(scmWorkloadLeases.scmSourceId, scmSourceId))
-    .limit(SHARED_CHECKOUT_LEASE_SCAN_LIMIT)
+    .where(
+      and(eq(scmWorkloadLeases.scmSourceId, scmSourceId), eq(scmWorkloadLeases.phase, 'active')),
+    )
 
+  const runLeaseIds: string[] = []
   for (const lease of leases) {
-    if (lease.phase !== 'active') continue
-    if (lease.type !== 'run') return { type: lease.type, id: lease.id }
+    if (lease.type !== 'run') {
+      if (sourceType !== 'git') return { type: lease.type, id: lease.id }
+      continue
+    }
+    runLeaseIds.push(lease.id)
+  }
+  if (runLeaseIds.length === 0) return null
 
-    const run = (
-      await executor
-        .select({ workDir: runs.workDir })
-        .from(runs)
-        .where(eq(runs.id, lease.id))
-        .limit(1)
-    )[0]
-    const workDir = run?.workDir ?? null
+  const runRows = await executor
+    .select({ id: runs.id, workDir: runs.workDir })
+    .from(runs)
+    .where(inArray(runs.id, runLeaseIds))
+  const workDirByRunId = new Map(runRows.map((row) => [row.id, row.workDir]))
+
+  for (const id of runLeaseIds) {
+    // A missing row is treated the same as a null workDir: the lease says the
+    // workload was admitted, and nothing here proves it picked a worktree.
+    const workDir = workDirByRunId.get(id) ?? null
     if (!workDir || filesystemPathsOverlap(workDir, sharedLocalPath)) {
-      return { type: lease.type, id: lease.id }
+      return { type: 'run', id }
     }
   }
   return null
