@@ -231,4 +231,55 @@ describe('DELETE /users/:id with rows referencing the user', () => {
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe('LAST_ADMIN_CANNOT_DELETE')
   })
+
+  it('leaves every reference intact when the last-admin delete is refused', async () => {
+    // The refusal used to commit its own preparation: the six provenance UPDATEs
+    // ran first, the guarded DELETE then matched no row, and the callback
+    // *returned* — so the transaction committed. The account survived with its
+    // audit provenance, run attribution and scheduled run-as identity already
+    // nulled, for an operation the API reported as refused.
+    await seedUser('usr_solo', 'admin')
+    await db.update(users).set({ role: 'user' }).where(eq(users.id, CURRENT_USER))
+    await db.insert(auditLogs).values({
+      id: 'aud_solo',
+      userId: 'usr_solo',
+      action: 'auth.login',
+      resource: 'user',
+      details: { username: 'usr_solo' },
+      createdAt: new Date(),
+    })
+    await db.insert(agents).values({
+      id: 'agt_sched',
+      name: 'Scheduled as the solo admin, owned by someone else',
+      userId: CURRENT_USER,
+      scheduleRunAsUserId: 'usr_solo',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    await db.insert(runs).values({
+      id: 'run_solo',
+      initiatorAgentId: 'agt_sched',
+      intent: 'ship it',
+      userId: 'usr_solo',
+      status: 'completed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    const res = await deleteUser('usr_solo')
+
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('LAST_ADMIN_CANNOT_DELETE')
+
+    expect((await db.select().from(users).where(eq(users.id, 'usr_solo'))).length).toBe(1)
+    expect((await db.select().from(auditLogs).where(eq(auditLogs.id, 'aud_solo')))[0]?.userId).toBe(
+      'usr_solo',
+    )
+    expect((await db.select().from(runs).where(eq(runs.id, 'run_solo')))[0]?.userId).toBe(
+      'usr_solo',
+    )
+    expect(
+      (await db.select().from(agents).where(eq(agents.id, 'agt_sched')))[0]?.scheduleRunAsUserId,
+    ).toBe('usr_solo')
+  })
 })
