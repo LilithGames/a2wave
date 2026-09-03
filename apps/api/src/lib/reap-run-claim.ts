@@ -10,6 +10,8 @@
  * Kept in its own module rather than on either sweeper so neither has to import
  * the other's dependency graph to claim a run.
  */
+
+import type { RunStatus } from '@a2wave/shared'
 import { and, eq, inArray, isNull, or } from 'drizzle-orm'
 import { runSteps, runs } from '../db/schema.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
@@ -17,7 +19,7 @@ import { withScmPathMutation } from './scm-path-plan.js'
 
 export interface ReapRunClaimScope {
   /** Statuses this pass may take over; anything else is already settled. */
-  statuses: readonly string[]
+  statuses: readonly RunStatus[]
   /**
    * Whether a row carrying no `ownerInstanceId` may still be claimed.
    *
