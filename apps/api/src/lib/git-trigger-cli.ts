@@ -193,12 +193,48 @@ export async function probeGitTriggerCli(
     }
   }
 
+  // Only reported when the report can name the account *unambiguously*; see
+  // `resolveAccount`. Callers treat a missing account as "ask the API", never as
+  // "there is no account".
+  const account = resolveAccount(combined, scoped, host?.trim())
+
   return {
     ...base,
     installed: true,
     authenticated: true,
-    ...(parseAccount(scoped) ? { account: parseAccount(scoped) } : {}),
+    ...(account ? { account } : {}),
   }
+}
+
+/**
+ * The login the report names, or undefined when it cannot name exactly one.
+ *
+ * With a host to scope by, the block for that host *is* the answer: it describes
+ * the credential the channel will use. With no host, the report still covers
+ * every configured host at once, and block order is the CLI's business — reading
+ * the first "Logged in to" line off a `gh` logged into both an enterprise host
+ * and github.com names whichever came first, which need not be the host the
+ * token targets. Reporting that wrong login is worse than reporting none: the
+ * self-comment guard then compares the Agent's own replies against a stranger's
+ * name and suppresses nothing, while `fetchForgeAccount`'s `api user` fallback —
+ * which answers for the host actually in play — is skipped precisely because an
+ * account was found.
+ *
+ * A single-host report is unambiguous, so the common case still costs no API
+ * call.
+ */
+function resolveAccount(combined: string, scoped: string, host?: string): string | undefined {
+  if (host) return parseAccount(scoped)
+  return loggedInHosts(combined).length > 1 ? undefined : parseAccount(combined)
+}
+
+/** Distinct hosts the report says it is logged in to, lowercased. */
+function loggedInHosts(output: string): string[] {
+  const hosts = new Set<string>()
+  for (const match of output.matchAll(/Logged in to (\S+) (?:as|account) [^\s(]+/gi)) {
+    hosts.add(match[1].toLowerCase())
+  }
+  return [...hosts]
 }
 
 /**
