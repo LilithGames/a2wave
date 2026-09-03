@@ -46,6 +46,30 @@ export const GH_AUTH_STATUS_AUTHENTICATED = `github.com
   - Token scopes: 'admin:public_key', 'gist', 'read:org', 'repo'
 `
 
+/**
+ * `gh auth status` — gh 2.97.0, logged into an enterprise host *and* github.com.
+ *
+ * The trap: the report is one document covering every host, so reading the
+ * first "Logged in to" line names whichever host `gh` happened to print first —
+ * not the host the channel's token actually targets. Answering the self-comment
+ * guard with the wrong login makes it compare against a stranger and never
+ * suppress anything.
+ */
+export const GH_AUTH_STATUS_TWO_HOSTS = `ghe.corp.example.com
+  ✓ Logged in to ghe.corp.example.com account enterprise-user (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: ghp_************************************
+  - Token scopes: 'read:org', 'repo'
+
+github.com
+  ✓ Logged in to github.com account a2wave-bot (keyring)
+  - Active account: true
+  - Git operations protocol: ssh
+  - Token: gho_************************************
+  - Token scopes: 'gist', 'read:org', 'repo'
+`
+
 /** `gh auth status` with no credential at all. */
 export const GH_AUTH_STATUS_LOGGED_OUT = 'You are not logged into any GitHub hosts.'
 

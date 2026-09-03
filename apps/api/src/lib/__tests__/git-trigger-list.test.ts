@@ -27,6 +27,7 @@ import {
 } from '../git-trigger-cli.js'
 import {
   GH_AUTH_STATUS_AUTHENTICATED,
+  GH_AUTH_STATUS_TWO_HOSTS,
   GH_GRAPHQL_NOT_FOUND,
   GH_GRAPHQL_PR_NODE,
   GH_GRAPHQL_PR_NODE_REVIEW_LAST,
@@ -303,6 +304,30 @@ describe('fetchForgeAccount', () => {
       .mockResolvedValueOnce(probeResult({ stdout: '{"username":"a2wave-bot","id":7}' }))
 
     expect(await fetchForgeAccount('glab', 'gitlab.example.com')).toBe('a2wave-bot')
+  })
+
+  it('asks the user API when the report covers more than one host', async () => {
+    // `gh auth status` prints every configured host in one document, and the
+    // block order is the CLI's business, not ours. With no host to scope by,
+    // reading the first "Logged in to" line names the enterprise account while
+    // the token in play speaks as somebody else — and the guard then compares
+    // its own comments against a stranger's name and suppresses nothing. The
+    // `user` endpoint answers for the host the token actually targets.
+    runStatusProbe
+      .mockResolvedValueOnce(probeResult({ stdout: GH_AUTH_STATUS_TWO_HOSTS, stderr: '' }))
+      .mockResolvedValueOnce(probeResult({ stdout: '{"login":"a2wave-bot","id":7}' }))
+
+    expect(await fetchForgeAccount('gh')).toBe('a2wave-bot')
+    expect(runStatusProbe).toHaveBeenCalledTimes(2)
+  })
+
+  it('still reads the report for free when the channel names the host', async () => {
+    // A host scope resolves the ambiguity: the block for that host is the one
+    // the token will be used against, so the API round trip stays unspent.
+    runStatusProbe.mockResolvedValue(probeResult({ stdout: GH_AUTH_STATUS_TWO_HOSTS, stderr: '' }))
+
+    expect(await fetchForgeAccount('gh', 'ghe.corp.example.com')).toBe('enterprise-user')
+    expect(runStatusProbe).toHaveBeenCalledTimes(1)
   })
 
   it('returns undefined rather than throwing when the CLI is unusable', async () => {

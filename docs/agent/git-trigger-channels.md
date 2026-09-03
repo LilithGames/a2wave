@@ -29,6 +29,13 @@ equivalent.
   already parsed for the config UI, so the common case costs **no** API call.
   `glab api user` / `gh api user` is the fallback for CLI versions whose report
   prints only "Token found".
+- The report is only trusted to name the account when it can name **exactly
+  one**. A configured host scopes the report to that host's block, which is the
+  credential the poll will use. With no host configured and more than one host
+  logged in, the parsed name is discarded and the `user` endpoint is asked
+  instead: block order is the CLI's business, so the first "Logged in to" line
+  need not describe the host the token targets, and a wrong login is worse than
+  none — the guard would compare the Agent's own replies against a stranger.
 - That login is memoised per `channel|host`. A config change (`stop()`) drops it;
   a one-hour TTL covers a token rotated under an unchanged config.
 - The newest comment's author comes from the listing on GitHub — the GraphQL

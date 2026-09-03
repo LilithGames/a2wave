@@ -13,7 +13,7 @@
  * a call-order-agnostic mock cannot express.
  */
 import type { GitTriggerRepoState } from '@a2wave/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { asyncQuery } from '../../test/async-query.js'
 
 interface StateRow {
@@ -169,6 +169,7 @@ vi.mock('../git-trigger-cli.js', async (importOriginal) => {
 })
 
 import { gitTriggerManager } from '../git-trigger-manager.js'
+import { logger } from '../logger.js'
 
 function pr(number: number, overrides: Record<string, unknown> = {}) {
   return {
@@ -473,6 +474,86 @@ describe('self-authored comment suppression', () => {
 
     expect(runRows).toHaveLength(2)
     expect(fetchForgeAccount).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * A forge lookup that fails is a *transient* verdict, not an answer.
+ *
+ * `glab auth status` times out after 10s on a slow self-hosted forge, and a
+ * negative answer cached for the full hour disables the guard above for that
+ * whole hour — every one of the Agent's own replies re-triggering a Run on every
+ * tick, which is precisely the loop the guard exists to break.
+ */
+describe('forge account lookup failure', () => {
+  /** Waits for the seed/interval tick to finish under fake timers. */
+  async function settle(ticks: number) {
+    await vi.waitFor(() => {
+      expect(listOpenRequests).toHaveBeenCalledTimes(ticks)
+      expect(gitTriggerManager.isPolling('agt_1', 'glab')).toBe(false)
+    })
+  }
+
+  /** Two ticks, each carrying one further comment written by the channel itself. */
+  function startTwoCommentTicks() {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: { requests: { '1': { number: 1, sha: 'sha1', comments: 1 } } },
+      lastError: null,
+    })
+    listOpenRequests
+      .mockResolvedValueOnce({ requests: [pr(1, { comments: 2 })], complete: true })
+      .mockResolvedValue({ requests: [pr(1, { comments: 3 })], complete: true })
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    gitTriggerManager.start(
+      'agt_1',
+      'glab',
+      config({ events: ['commented'], intervalSeconds: 120 }),
+    )
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    gitTriggerManager.stop('agt_1', 'glab')
+    vi.useRealTimers()
+  })
+
+  it('retries the lookup on the next tick rather than holding the failure for the TTL', async () => {
+    fetchForgeAccount.mockResolvedValueOnce(undefined).mockResolvedValue('a2wave-bot')
+    startTwoCommentTicks()
+
+    await settle(1)
+    // Fails open: an unresolvable account must never silence the channel.
+    expect(runRows).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await settle(2)
+
+    // The retry answered, so the Agent's own second comment is recognised.
+    expect(fetchForgeAccount).toHaveBeenCalledTimes(2)
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('warns once per channel while the lookup keeps failing', async () => {
+    // Once, not once per tick: a forge that stays unreachable would otherwise
+    // print this line every interval for as long as the channel is published.
+    fetchForgeAccount.mockResolvedValue(undefined)
+    startTwoCommentTicks()
+
+    await settle(1)
+    await vi.advanceTimersByTimeAsync(120_000)
+    await settle(2)
+
+    expect(fetchForgeAccount).toHaveBeenCalledTimes(2)
+    const warnings = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(([, message]) => String(message).includes('forge account'))
+    expect(warnings).toHaveLength(1)
   })
 })
 

@@ -95,6 +95,22 @@ class RunBudget {
  */
 const FORGE_ACCOUNT_TTL_MS = 60 * 60 * 1000
 
+/**
+ * How long a *failed* lookup is remembered before it is tried again.
+ *
+ * A failure is a transient verdict, not an answer: `auth status` times out on a
+ * slow self-hosted forge, and the CLI can be momentarily unreachable. Holding
+ * that for the full hour would leave the self-authored-comment guard inert for
+ * the hour — so every reply the Agent posts re-triggers it on every tick, which
+ * is the exact loop the guard exists to break.
+ *
+ * Not zero, because within a tick the lookup must still be answered once rather
+ * than once per event: each probe can burn the CLI's status timeout, and the run
+ * cap allows several events per tick. One minute is under every interval that
+ * matters while bounding the damage to a tick or two.
+ */
+const FORGE_ACCOUNT_NEGATIVE_TTL_MS = 60 * 1000
+
 function jobKey(agentId: string, provider: GitTriggerProvider): string {
   return `${agentId}:${provider}`
 }
@@ -251,6 +267,15 @@ class GitTriggerManager {
    * runs — is a complete invalidation for the channel being replaced.
    */
   private forgeAccounts = new Map<string, { account?: string; at: number }>()
+  /**
+   * `channel|host` keys already reported as unresolvable.
+   *
+   * The lookup is retried every minute while it fails, and a forge that stays
+   * unreachable would otherwise log the same line on every tick for as long as
+   * the channel is published. Cleared on the first success, so a second outage
+   * is reported again.
+   */
+  private forgeAccountWarned = new Set<string>()
 
   start(agentId: string, provider: GitTriggerProvider, rawConfig: unknown): void {
     this.stop(agentId, provider)
@@ -317,6 +342,9 @@ class GitTriggerManager {
     for (const cacheKey of [...this.forgeAccounts.keys()]) {
       if (cacheKey.startsWith(`${key}|`)) this.forgeAccounts.delete(cacheKey)
     }
+    for (const cacheKey of [...this.forgeAccountWarned]) {
+      if (cacheKey.startsWith(`${key}|`)) this.forgeAccountWarned.delete(cacheKey)
+    }
     const timer = this.jobs.get(key)
     if (!timer) return
     clearInterval(timer)
@@ -338,6 +366,7 @@ class GitTriggerManager {
     this.repoOffsets.clear()
     this.owners.clear()
     this.forgeAccounts.clear()
+    this.forgeAccountWarned.clear()
   }
 
   getActiveJobKeys(): string[] {
@@ -714,12 +743,27 @@ class GitTriggerManager {
   ): Promise<string | undefined> {
     const key = `${jobKey(agentId, provider)}|${host ?? ''}`
     const cached = this.forgeAccounts.get(key)
-    if (cached && Date.now() - cached.at < FORGE_ACCOUNT_TTL_MS) return cached.account
+    if (cached) {
+      const ttl = cached.account ? FORGE_ACCOUNT_TTL_MS : FORGE_ACCOUNT_NEGATIVE_TTL_MS
+      if (Date.now() - cached.at < ttl) return cached.account
+    }
 
     const account = await fetchForgeAccount(provider, host)
-    // Cached even when undefined, so a CLI that cannot answer is not re-probed
-    // once per event for the whole TTL.
+    // A failure is cached too — briefly — so a CLI that cannot answer is probed
+    // once per tick rather than once per event, without the negative verdict
+    // outliving the outage that produced it.
     this.forgeAccounts.set(key, { account, at: Date.now() })
+
+    if (account) {
+      // Re-arm the warning, so a forge that breaks again is reported again.
+      this.forgeAccountWarned.delete(key)
+    } else if (!this.forgeAccountWarned.has(key)) {
+      this.forgeAccountWarned.add(key)
+      logger.warn(
+        { agentId, provider, host },
+        'git-trigger: could not resolve the forge account; the channel cannot recognise its own comments until it does',
+      )
+    }
     return account
   }
 
