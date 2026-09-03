@@ -186,6 +186,26 @@ revisiting when this area is next touched:
   for the whole duration of the run, is re-stamped by every auto-sync tick, and
   destroys the genuine previous error. The reason belongs in the return value
   and an info log.
+- **The sync's `syncing` status IS its durable claim, and it is committed in the
+  same SCM-mutation critical section that reads occupancy.** Reading the lease
+  table outside that section is a check-then-act with no counter-party: a lease
+  that activates after the read and before `p4 sync` / `git checkout -f -B`
+  starts is observed by neither side, which is precisely the data loss the gate
+  exists to prevent. Lease **activation** takes the same lock and refuses on a
+  committed claim, so the lock's total order forces exactly one loser however
+  the two interleave — the sync defers on an active lease, or the activation
+  fails with a lease conflict. This is the same claim-before-action shape as the
+  workload lease and the removal reservation; an in-process mutex would not do,
+  because the peer that must observe it is another process.
+  - The activation-side refusal is scoped to workloads that would sit in the
+    shared checkout, mirroring the sync-side gate exactly — refusing more than
+    the sync defers for would fail Git worktree work that was never at risk.
+    Because a Run that has not resolved its `workDir` yet reads as
+    shared-checkout on *both* sides, such a Run does lose to an in-flight sync
+    even when it would have got its own worktree. Failing admission is the safe
+    direction; it surfaces as an ordinary retryable admission conflict.
+  - A sync declined inside that section drops its own claim before the section
+    commits, so the row never advertises a sync that was already refused.
 - Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
   Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and
