@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { db } from '../db/client.js'
-import { agents, runs, scmWorkloadLeases } from '../db/schema.js'
+import { agents, runs, scmSources, scmWorkloadLeases } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
 import { logger } from './logger.js'
@@ -190,6 +190,76 @@ export interface OwnedScmWorkload extends ScmWorkloadIdentity {
   ownerInstanceId: string
 }
 
+/** The shared checkout a sync is about to rewrite, as the claim describes it. */
+interface SharedCheckoutClaim {
+  localPath: string
+  sourceType: 'git' | 'p4'
+}
+
+/**
+ * A committed sync claim on a source, or null.
+ *
+ * `syncStatus = 'syncing'` IS the claim: the sync commits it under the SCM
+ * mutation lock in the same critical section it reads occupancy in, so a reader
+ * holding that lock either sees this row or is itself seen by the sync's lease
+ * scan. Nothing weaker works — an in-process mutex is invisible to the peer
+ * replica that would have to observe it.
+ */
+async function findScmSourceSyncClaim(
+  executor: Pick<typeof db, 'select'>,
+  scmSourceId: string,
+): Promise<SharedCheckoutClaim | null> {
+  const source = (
+    await executor
+      .select({
+        localPath: scmSources.localPath,
+        type: scmSources.type,
+        syncStatus: scmSources.syncStatus,
+      })
+      .from(scmSources)
+      .where(eq(scmSources.id, scmSourceId))
+      .limit(1)
+  )[0]
+  if (!source || source.syncStatus !== 'syncing') return null
+  return { localPath: source.localPath, sourceType: source.type }
+}
+
+/**
+ * An Evaluation records no workspace, so its source type decides: a git task
+ * owns an `eval-<taskId>` worktree resolved through the explicit-worktree path,
+ * while a p4 task has no isolation mechanism at all.
+ */
+function evaluationOccupiesSharedCheckout(sourceType: 'git' | 'p4'): boolean {
+  return sourceType !== 'git'
+}
+
+/**
+ * A Run's occupancy is read off `runs.workDir`: only a worktree records one, so
+ * a null value is exactly the shared-checkout case — and also the not-yet-
+ * resolved case, which must be treated identically because nothing here proves
+ * the run will end up picking a worktree.
+ */
+function runOccupiesSharedCheckout(workDir: string | null, sharedLocalPath: string): boolean {
+  return !workDir || filesystemPathsOverlap(workDir, sharedLocalPath)
+}
+
+/** Whether this one workload would sit in the source's shared checkout. */
+async function workloadOccupiesSharedCheckout(
+  executor: Pick<typeof db, 'select'>,
+  identity: ScmWorkloadIdentity,
+  claim: SharedCheckoutClaim,
+): Promise<boolean> {
+  if (identity.type !== 'run') return evaluationOccupiesSharedCheckout(claim.sourceType)
+  const run = (
+    await executor
+      .select({ workDir: runs.workDir })
+      .from(runs)
+      .where(eq(runs.id, identity.workloadId))
+      .limit(1)
+  )[0]
+  return runOccupiesSharedCheckout(run?.workDir ?? null, claim.localPath)
+}
+
 /** Activate an existing reservation inside a caller-owned SCM mutation transaction. */
 export async function activateScmWorkloadInMutation(
   tx: TransactionHandle,
@@ -206,6 +276,28 @@ export async function activateScmWorkloadInMutation(
       )
     }
     return true
+  }
+  // The other half of the sync/activation arbitration. The sync commits its
+  // `syncing` claim and reads the active leases in ONE SCM-mutation critical
+  // section; this read runs in the caller's section of that same lock, so the
+  // lock's total order forces exactly one loser. Whoever takes the lock second
+  // sees the other's mark: the sync defers on an active lease, or — here — the
+  // workload refuses to take a checkout that is being rewritten underneath it.
+  //
+  // Scoped to workloads that actually sit in the shared checkout, mirroring the
+  // sync-side gate exactly: refusing more than the sync defers for would fail
+  // git worktree work that was never at risk. The cost of that mirror is that a
+  // Run which has not resolved its `workDir` yet reads as shared-checkout on
+  // both sides, so it loses to an in-flight sync even if it would have got its
+  // own worktree. Failing admission is the safe direction, and the caller
+  // surfaces it as an ordinary retryable admission conflict.
+  if (lease.scmSourceId) {
+    const claim = await findScmSourceSyncClaim(tx, lease.scmSourceId)
+    if (claim && (await workloadOccupiesSharedCheckout(tx, input, claim))) {
+      throw new ScmWorkloadLeaseConflictError(
+        `SCM source "${lease.scmSourceId}" is syncing; workload "${lease.id}" cannot take its shared checkout`,
+      )
+    }
   }
   await tx
     .update(scmWorkloadLeases)
@@ -426,7 +518,7 @@ export async function findSharedCheckoutScmWorkload(
   const runLeaseIds: string[] = []
   for (const lease of leases) {
     if (lease.type !== 'run') {
-      if (sourceType !== 'git') return { type: lease.type, id: lease.id }
+      if (evaluationOccupiesSharedCheckout(sourceType)) return { type: lease.type, id: lease.id }
       continue
     }
     runLeaseIds.push(lease.id)
@@ -443,7 +535,7 @@ export async function findSharedCheckoutScmWorkload(
     // A missing row is treated the same as a null workDir: the lease says the
     // workload was admitted, and nothing here proves it picked a worktree.
     const workDir = workDirByRunId.get(id) ?? null
-    if (!workDir || filesystemPathsOverlap(workDir, sharedLocalPath)) {
+    if (runOccupiesSharedCheckout(workDir, sharedLocalPath)) {
       return { type: 'run', id }
     }
   }

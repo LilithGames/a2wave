@@ -42,6 +42,10 @@ function query(rows: Row[]) {
 function mutationTx(selectResults: Row[][]) {
   const select = vi.fn()
   for (const rows of selectResults) select.mockReturnValueOnce(query(rows).builder)
+  // Anything the case did not seed reads as "no row". Activation now also
+  // looks the source up to see whether a sync claim is committed on it, and a
+  // case that says nothing about the source means there is none.
+  select.mockReturnValue(query([]).builder)
 
   const inserted: Row[] = []
   const updated: Row[] = []
@@ -441,6 +445,130 @@ describe('SCM workload lifecycle', () => {
     const { tx } = mutationTx([[]])
 
     await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toBeNull()
+  })
+})
+
+describe('activation versus a committed sync claim', () => {
+  const reserved = {
+    id: 'run:run_1',
+    workloadType: 'run',
+    workloadId: 'run_1',
+    agentId: 'agt_1',
+    scmSourceId: 'scm_1',
+    phase: 'reserved',
+    ownerInstanceId: null,
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  // The window this closes: sync reads occupancy and finds nothing, then a
+  // lease activates, then `p4 sync` / `git checkout -f -B` rewrites the
+  // checkout under the live CLI. Sync now commits its `syncing` claim in the
+  // same SCM-mutation critical section it reads occupancy in, so the two sides
+  // are ordered by that lock: whichever takes it second loses. This is that
+  // second case — activation observing the claim.
+  it('refuses to activate a shared-checkout workload while the source holds a sync claim', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'syncing' }],
+      [{ workDir: null }],
+    ])
+
+    await expect(
+      activateScmWorkload(
+        { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+        { withMutation: (fn) => withMutation(fn, activation.tx) },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadLeaseConflictError)
+    expect(activation.updated).toEqual([])
+  })
+
+  it('activates normally when the source is idle', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'idle' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toEqual([
+      expect.objectContaining({ phase: 'active', ownerInstanceId: 'instance-a' }),
+    ])
+  })
+
+  // Symmetry with the sync-side gate: it only defers for workloads that sit in
+  // the shared checkout, so activation may only refuse for exactly those. A run
+  // that already recorded a per-Agent worktree is not one of them.
+  it('activates a run that recorded a worktree outside the shared checkout', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'git', syncStatus: 'syncing' }],
+      [{ workDir: '/srv/scm/workspaces/scm_1/agt_1' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toHaveLength(1)
+  })
+
+  it('activates a git evaluation during a sync, which owns an eval-<taskId> worktree', async () => {
+    const activation = mutationTx([
+      [
+        {
+          ...reserved,
+          id: 'evaluation:evt_1',
+          workloadType: 'evaluation',
+          workloadId: 'evt_1',
+        },
+      ],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'git', syncStatus: 'syncing' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'evaluation', workloadId: 'evt_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toHaveLength(1)
+  })
+
+  it('refuses a p4 evaluation during a sync, whose checkout is shared by construction', async () => {
+    const activation = mutationTx([
+      [
+        {
+          ...reserved,
+          id: 'evaluation:evt_1',
+          workloadType: 'evaluation',
+          workloadId: 'evt_1',
+        },
+      ],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'syncing' }],
+    ])
+
+    await expect(
+      activateScmWorkload(
+        { type: 'evaluation', workloadId: 'evt_1', ownerInstanceId: 'instance-a' },
+        { withMutation: (fn) => withMutation(fn, activation.tx) },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadLeaseConflictError)
+    expect(activation.updated).toEqual([])
+  })
+
+  // Re-activation by the owner is the process re-entering its own lease; the
+  // checkout is already claimed by it, so a sync claim is not its problem.
+  it('stays idempotent for an already-active lease of the same owner', async () => {
+    const activation = mutationTx([
+      [{ ...reserved, phase: 'active', ownerInstanceId: 'instance-a' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toEqual([])
   })
 })
 
