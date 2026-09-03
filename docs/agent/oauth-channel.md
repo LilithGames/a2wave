@@ -534,10 +534,15 @@ carrying the expiry predicate: exactly one caller wins the row.
 
 The consequence to know when reading that code: node-saml reads one id **twice**
 per validation (the Response's `InResponseTo`, then the assertion's
-`SubjectConfirmationData`). The consumed value is held in a per-provider,
-in-process map for `SAML_REQUEST_IN_FLIGHT_MS` (30s) and dropped by `removeAsync`
-so the second read still succeeds. That map is per process, so it never reopens
-the cross-replica window the row deletion closes.
+`SubjectConfirmationData`). The consumed value is therefore held in an
+`AsyncLocalStorage` store whose lifetime is **one validation** —
+`runInSamlValidation`, which `validateSamlPostResponse` (the ACS route's only
+validation entry point) wraps the call in. Bind it to the id instead — a map at
+provider or process scope — and any later read of that id is answered too, so a
+concurrent or replayed ACS POST of one captured SAMLResponse validates a second
+time on that replica, reopening the single-use window the consuming DELETE
+exists to close. Outside a validation there is nothing to reuse and the DB
+consume is the only answer, which is why the store needs no expiry of its own.
 
 Two wording traps when writing user-facing copy:
 

@@ -19,6 +19,12 @@
  * leaves a captured SAMLResponse replayable: POST it at two replicas at once and
  * both read the row, both validate, both mint a session. Consumption has to
  * happen in the read itself.
+ *
+ * The one read node-saml makes that must *not* consume is the second one inside
+ * the same validation (`SubjectConfirmationData`). That value is therefore held
+ * in an `AsyncLocalStorage` scope whose lifetime is one `validateSamlPostResponse`
+ * call — bound to the validation, never to the id. Anything arriving in another
+ * scope, concurrently or as a replay, sees only the (already deleted) row.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -52,14 +58,29 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
+// `validateSamlPostResponse` builds a real node-saml instance; pin the callback
+// origin and keep `getSamlEnv` on its env fallback instead of the mocked DB.
+vi.mock('../server-url.js', () => ({
+  getServerUrl: () => 'https://a2wave.test',
+  getSsoCallbackOrigin: () => 'https://a2wave.test',
+}))
+
+vi.mock('../sso-settings.js', () => ({
+  readSsoDbConfig: () => null,
+  readOidcClientSecret: () => undefined,
+}))
+
 import { db } from '../../db/client.js'
 import { samlRequests } from '../../db/schema.sqlite.js'
 import { withTransaction } from '../../db/transaction.js'
 import {
   createSamlRequestCacheProvider,
+  getSaml,
+  resetSamlForTests,
+  runInSamlValidation,
   SAML_REQUEST_EXPIRATION_MS,
-  SAML_REQUEST_IN_FLIGHT_MS,
   sweepExpiredSamlRequests,
+  validateSamlPostResponse,
 } from '../saml.js'
 
 const cache = createSamlRequestCacheProvider()
@@ -70,6 +91,9 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  resetSamlForTests()
 })
 
 describe('SAML request cache provider', () => {
@@ -80,10 +104,12 @@ describe('SAML request cache provider', () => {
     expect(saved?.value).toBe('_req-1')
     expect(typeof saved?.createdAt).toBe('number')
 
-    // The ACS POST may land on any replica; this read stands in for that one.
-    expect(await cache.getAsync('_req-1')).toBe('_req-1')
-
-    expect(await cache.removeAsync('_req-1')).toBe('_req-1')
+    // The ACS POST may land on any replica; this stands in for the validation
+    // that runs there — read, then the removeAsync node-saml always ends on.
+    await runInSamlValidation(async () => {
+      expect(await cache.getAsync('_req-1')).toBe('_req-1')
+      expect(await cache.removeAsync('_req-1')).toBe('_req-1')
+    })
     expect(await cache.getAsync('_req-1')).toBeNull()
   })
 
@@ -121,24 +147,94 @@ describe('SAML request cache provider', () => {
     // Consuming the row must not make the second read fail the login.
     await cache.saveAsync('_req-twice', '_req-twice')
 
-    expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
-    expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
+    await runInSamlValidation(async () => {
+      expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
+      expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
 
-    // node-saml removes at the end of that validation; the id is dead after.
-    expect(await cache.removeAsync('_req-twice')).toBe('_req-twice')
-    expect(await cache.getAsync('_req-twice')).toBeNull()
+      // node-saml removes at the end of that validation; the id is dead after.
+      expect(await cache.removeAsync('_req-twice')).toBe('_req-twice')
+      expect(await cache.getAsync('_req-twice')).toBeNull()
+    })
   })
 
-  it('forgets a consumed id once the in-flight window lapses', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    await cache.saveAsync('_req-inflight', '_req-inflight')
-    expect(await cache.getAsync('_req-inflight')).toBe('_req-inflight')
+  it('refuses a replayed validation the id a previous one already consumed', async () => {
+    await cache.saveAsync('_req-replay', '_req-replay')
 
-    // Backstop for the one node-saml branch that returns without removeAsync:
-    // the consumed id must not stay readable on this replica indefinitely.
-    vi.setSystemTime(new Date(Date.now() + SAML_REQUEST_IN_FLIGHT_MS + 1000))
-    expect(await cache.getAsync('_req-inflight')).toBeNull()
+    // node-saml has one branch that returns without calling removeAsync, so the
+    // consumed value can outlive the validation that took it. It must not
+    // outlive it far enough to serve the *next* validation: that is a captured
+    // SAMLResponse POSTed twice, and the second one has to be refused.
+    expect(await runInSamlValidation(() => cache.getAsync('_req-replay'))).toBe('_req-replay')
+    expect(await runInSamlValidation(() => cache.getAsync('_req-replay'))).toBeNull()
+  })
+
+  it('refuses a concurrent validation racing the same captured response', async () => {
+    await cache.saveAsync('_req-overlap', '_req-overlap')
+
+    let firstHasRead = () => {}
+    const read = new Promise<void>((resolve) => {
+      firstHasRead = resolve
+    })
+    let releaseFirst = () => {}
+    const finish = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+
+    // Two ACS POSTs of one captured response, overlapping on this replica: the
+    // first is still validating when the second reads.
+    const first = runInSamlValidation(async () => {
+      const value = await cache.getAsync('_req-overlap')
+      firstHasRead()
+      await finish
+      return value
+    })
+
+    await read
+    expect(await runInSamlValidation(() => cache.getAsync('_req-overlap'))).toBeNull()
+
+    releaseFirst()
+    expect(await first).toBe('_req-overlap')
+  })
+
+  it('does not reuse a consumed value outside any validation', async () => {
+    await cache.saveAsync('_req-unscoped', '_req-unscoped')
+
+    // No validation in progress means nothing may be held: the consuming DELETE
+    // is then the only answer the cache can give.
+    expect(await cache.getAsync('_req-unscoped')).toBe('_req-unscoped')
+    expect(await cache.getAsync('_req-unscoped')).toBeNull()
+    expect(await cache.removeAsync('_req-unscoped')).toBeNull()
+  })
+
+  it('runs a real validatePostResponseAsync inside its own scope', async () => {
+    vi.stubEnv('A2WAVE_SAML_IDP_ENTRY_POINT', 'https://idp.test/sso/saml')
+    vi.stubEnv(
+      'A2WAVE_SAML_IDP_CERT',
+      Buffer.from('fake-idp-cert-material-for-tests').toString('base64'),
+    )
+    vi.stubEnv('A2WAVE_SAML_SP_ENTITY_ID', '')
+
+    const saml = await getSaml()
+    await cache.saveAsync('_req-entry', '_req-entry')
+
+    const reads: Array<string | null> = []
+    // Stands in for node-saml's own pair of reads (the Response's InResponseTo,
+    // then the assertion's SubjectConfirmationData) without needing a signed
+    // assertion; what is under test is the scope the entry point establishes
+    // around them, which is real.
+    vi.spyOn(saml, 'validatePostResponseAsync').mockImplementation(async () => {
+      reads.push(await cache.getAsync('_req-entry'))
+      reads.push(await cache.getAsync('_req-entry'))
+      return { profile: null, loggedOut: false }
+    })
+
+    await validateSamlPostResponse('ignored-by-the-stub')
+    expect(reads).toEqual(['_req-entry', '_req-entry'])
+
+    // Replaying the captured response is a second validation, and a second
+    // scope: it gets nothing.
+    await validateSamlPostResponse('ignored-by-the-stub')
+    expect(reads.slice(2)).toEqual([null, null])
   })
 
   it('returns null for an unknown id, so an unsolicited assertion is refused', async () => {

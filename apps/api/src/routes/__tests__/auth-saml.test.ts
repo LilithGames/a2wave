@@ -72,6 +72,10 @@ vi.mock('../../lib/saml.js', async (importOriginal) => ({
     validatePostResponseAsync: (...args: unknown[]) => mockValidatePostResponse(...args),
     generateServiceProviderMetadata: (...args: unknown[]) => mockGenerateMetadata(...args),
   }),
+  // ACS 走的入口：真实实现会把这次校验包进自己的 AsyncLocalStorage 作用域
+  // （见 lib/saml.ts 的 samlValidationScope），替身只需保持同样的调用形状。
+  validateSamlPostResponse: (samlResponse: string) =>
+    mockValidatePostResponse({ SAMLResponse: samlResponse }),
   // 与 lib/saml.ts 的真实行为同形：nameID → sub，issuer 缺省回落 entryPoint
   extractSamlIdentity: (
     profile: { nameID?: string; email?: string; issuer?: string },
