@@ -59,10 +59,22 @@ const lockClientQuery = vi.fn(async (text: string) => {
 const lockClientRelease = vi.fn(() => {
   callOrder.push('release')
 })
+/** One stable object, so a test can assert the migrator was bound to *this* client. */
+const lockClient = { query: lockClientQuery, release: lockClientRelease }
 const poolConnect = vi.fn(async () => {
   callOrder.push('connect')
-  return { query: lockClientQuery, release: lockClientRelease }
+  return lockClient
 })
+
+/**
+ * `drizzle(client)` is stubbed rather than exercised for real: the point under
+ * test is *which connection* the migrator runs on, and a sentinel makes that
+ * directly assertable without standing up a driver against a fake client.
+ */
+const drizzleMock = vi.fn((client: unknown) => ({ __boundTo: client }))
+vi.mock('drizzle-orm/node-postgres', () => ({
+  drizzle: (client: unknown) => drizzleMock(client),
+}))
 
 // The PostgreSQL client exposes no raw sqlite handle; touching it would throw.
 vi.mock('../client.js', () => ({
@@ -93,6 +105,7 @@ beforeEach(() => {
   poolConnect.mockClear()
   lockClientQuery.mockClear()
   lockClientRelease.mockClear()
+  drizzleMock.mockClear()
   exitMock.mockClear()
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     exitMock(code)
@@ -158,6 +171,19 @@ describe('runMigrations on PostgreSQL', () => {
     await runMigrations()
 
     expect(callOrder).toEqual(['connect', 'lock', 'pg-migrate', 'unlock', 'release'])
+  })
+
+  it('runs the migrator on the locked client, not on the shared pool', async () => {
+    // With DATABASE_POOL_MAX=1 (env.ts allows it) the lock client *is* the pool,
+    // so a migrator issuing its DDL through `db` would wait forever for a second
+    // connection that the lock holder is never going to give back: boot hangs
+    // with no error, no timeout and no migration. Lock and DDL share one session.
+    await runMigrations()
+
+    expect(drizzleMock).toHaveBeenCalledTimes(1)
+    expect(drizzleMock.mock.calls[0]?.[0]).toBe(lockClient)
+    const [handle] = pgMigrateMock.mock.calls[0] as unknown as [{ __boundTo?: unknown }]
+    expect(handle.__boundTo).toBe(lockClient)
   })
 
   it('takes the lock on the same connection it later unlocks', async () => {

@@ -50,7 +50,21 @@ vi.mock('../../db/client.js', async () => {
     }
   }
 
-  return { db: drizzle(sqlite), isPostgres: false, sqliteDatabase: sqlite }
+  // Every statement is logged with the connection's transaction state at the
+  // moment it ran, which is the only way to see *where* a query sits relative
+  // to BEGIN/COMMIT on a driver that hands the same handle to both.
+  const queryLog: Array<{ sql: string; inTransaction: boolean }> = []
+
+  return {
+    db: drizzle(sqlite, {
+      logger: {
+        logQuery: (sql: string) => queryLog.push({ sql, inTransaction: sqlite.inTransaction }),
+      },
+    }),
+    isPostgres: false,
+    sqliteDatabase: sqlite,
+    queryLog,
+  }
 })
 
 // The dispatching `db/schema.js` would hand back PostgreSQL tables under a
@@ -69,6 +83,11 @@ import {
   skills,
   users,
 } from '../../db/schema.sqlite.js'
+
+/** The recorder installed by the `db/client.js` mock above. */
+const { queryLog } = (await import('../../db/client.js')) as unknown as {
+  queryLog: Array<{ sql: string; inTransaction: boolean }>
+}
 
 const CURRENT_USER = 'usr_admin'
 
@@ -177,6 +196,29 @@ describe('DELETE /users/:id with rows referencing the user', () => {
     // Nothing was removed — the administrator must transfer or delete first.
     expect((await db.select().from(users).where(eq(users.id, 'usr_bob'))).length).toBe(1)
     expect((await db.select().from(agents).where(eq(agents.id, 'agt_bob'))).length).toBe(1)
+  })
+
+  it('counts the owned resources inside the deleting transaction', async () => {
+    // Counting outside the transaction decides on a snapshot the delete never
+    // sees: a resource created in between is either destroyed by a delete that
+    // was cleared against stale counts, or reported as blocking a delete that
+    // would have succeeded. The 409 and the DELETE have to read the same state.
+    await seedUser('usr_carol')
+    await db.insert(agents).values({
+      id: 'agt_carol',
+      name: "Carol's Agent",
+      userId: 'usr_carol',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    queryLog.length = 0
+    const res = await deleteUser('usr_carol')
+
+    expect(res.status).toBe(409)
+    const countQuery = queryLog.find((e) => /count\(\*\)/i.test(e.sql) && /"agents"/.test(e.sql))
+    expect(countQuery).toBeDefined()
+    expect(countQuery?.inTransaction).toBe(true)
   })
 
   it('still refuses to delete the last active admin', async () => {

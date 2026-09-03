@@ -13,6 +13,12 @@
  * Backing the cache with a table makes the state shared and survive restarts.
  * These tests exercise the node-saml `CacheProvider` contract directly:
  * save/get/remove round trip, single-use ids, and expiry.
+ *
+ * The single-use property is the security-carrying one. node-saml validates the
+ * assertion *before* it calls `removeAsync`, so a plain `SELECT` in `getAsync`
+ * leaves a captured SAMLResponse replayable: POST it at two replicas at once and
+ * both read the row, both validate, both mint a session. Consumption has to
+ * happen in the read itself.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -51,6 +57,7 @@ import { samlRequests } from '../../db/schema.sqlite.js'
 import {
   createSamlRequestCacheProvider,
   SAML_REQUEST_EXPIRATION_MS,
+  SAML_REQUEST_IN_FLIGHT_MS,
   sweepExpiredSamlRequests,
 } from '../saml.js'
 
@@ -94,6 +101,45 @@ describe('SAML request cache provider', () => {
     expect(await cache.saveAsync('_req-dup', '_req-dup')).toBeNull()
   })
 
+  it('lets only one replica consume an id, so a captured response cannot be replayed', async () => {
+    await cache.saveAsync('_req-race', '_req-race')
+
+    // node-saml calls removeAsync only *after* the assertion validates, so the
+    // read is the only place consumption can happen. Two replicas racing the
+    // same captured SAMLResponse are two providers reading the same row.
+    const replicaA = createSamlRequestCacheProvider()
+    const replicaB = createSamlRequestCacheProvider()
+
+    expect(await replicaA.getAsync('_req-race')).toBe('_req-race')
+    expect(await replicaB.getAsync('_req-race')).toBeNull()
+  })
+
+  it('serves the second read of one validation, which node-saml always makes', async () => {
+    // Within a single validatePostResponseAsync the id is read twice: once for
+    // the Response InResponseTo, once for the assertion's SubjectConfirmation.
+    // Consuming the row must not make the second read fail the login.
+    await cache.saveAsync('_req-twice', '_req-twice')
+
+    expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
+    expect(await cache.getAsync('_req-twice')).toBe('_req-twice')
+
+    // node-saml removes at the end of that validation; the id is dead after.
+    expect(await cache.removeAsync('_req-twice')).toBe('_req-twice')
+    expect(await cache.getAsync('_req-twice')).toBeNull()
+  })
+
+  it('forgets a consumed id once the in-flight window lapses', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    await cache.saveAsync('_req-inflight', '_req-inflight')
+    expect(await cache.getAsync('_req-inflight')).toBe('_req-inflight')
+
+    // Backstop for the one node-saml branch that returns without removeAsync:
+    // the consumed id must not stay readable on this replica indefinitely.
+    vi.setSystemTime(new Date(Date.now() + SAML_REQUEST_IN_FLIGHT_MS + 1000))
+    expect(await cache.getAsync('_req-inflight')).toBeNull()
+  })
+
   it('returns null for an unknown id, so an unsolicited assertion is refused', async () => {
     expect(await cache.getAsync('_never-issued')).toBeNull()
     expect(await cache.removeAsync('_never-issued')).toBeNull()
@@ -120,7 +166,8 @@ describe('SAML request cache provider', () => {
     await cache.saveAsync('_req-fresh', '_req-fresh')
 
     expect(await sweepExpiredSamlRequests(new Date())).toBe(1)
-    expect(await cache.getAsync('_req-fresh')).toBe('_req-fresh')
+    // Only the stale one went; asserted before the read, which consumes.
     expect((await db.select().from(samlRequests)).length).toBe(1)
+    expect(await cache.getAsync('_req-fresh')).toBe('_req-fresh')
   })
 })

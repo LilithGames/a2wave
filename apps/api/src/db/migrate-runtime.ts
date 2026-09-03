@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
+import type { PoolClient } from 'pg'
 import { env } from '../env.js'
 import { logger } from '../lib/logger.js'
 import { db, isPostgres, postgresPool, sqliteDatabase } from './client.js'
@@ -120,18 +121,25 @@ const MIGRATION_ADVISORY_LOCK_KEY = 0x6132_7776_6d69_6772n
  * opens and commits its own transactions, so an `xact` lock would be released at
  * the first commit, mid-migration.
  *
+ * The locked client is handed to `run` because the guarded work must go through
+ * it too, not merely be serialised by it. `DATABASE_POOL_MAX` accepts 1 (see
+ * env.ts), and at that size the lock holder *is* the pool: a migrator issuing
+ * DDL through the shared `db` would queue for a connection the lock holder only
+ * returns once the migration finishes. Boot then hangs forever, with no error
+ * and no timeout to explain it.
+ *
  * The unlock and the release both run in `finally`. A leaked session lock would
  * block every subsequent boot until PostgreSQL reaps the backend — the failure
  * path is exactly the one that must not strand it.
  */
-async function withMigrationLock<T>(run: () => Promise<T>): Promise<T> {
-  if (!postgresPool) return await run()
+async function withMigrationLock<T>(run: (client: PoolClient | null) => Promise<T>): Promise<T> {
+  if (!postgresPool) return await run(null)
 
   const client = await postgresPool.connect()
   try {
     logger.info('Waiting for the PostgreSQL migration advisory lock...')
     await client.query(`SELECT pg_advisory_lock(${MIGRATION_ADVISORY_LOCK_KEY})`)
-    return await run()
+    return await run(client)
   } finally {
     try {
       await client.query(`SELECT pg_advisory_unlock(${MIGRATION_ADVISORY_LOCK_KEY})`)
@@ -161,14 +169,21 @@ async function runPostgresMigrations(): Promise<void> {
   if (!migrationsFolder) return
 
   const { migrate: migratePg } = await import('drizzle-orm/node-postgres/migrator')
+  const { drizzle: drizzlePg } = await import('drizzle-orm/node-postgres')
 
   logger.info({ migrationsFolder }, 'Running PostgreSQL migrations...')
   try {
-    await withMigrationLock(async () => {
-      // `db` is statically typed as the SQLite handle (see db/client.ts); under a
-      // postgres:// URL the runtime object is the node-postgres one, which is what
-      // this branch has already established.
-      await migratePg(db as unknown as Parameters<typeof migratePg>[0], { migrationsFolder })
+    await withMigrationLock(async (client) => {
+      // Bind the migrator to the client holding the advisory lock: the DDL then
+      // runs in the very session that took the lock, and needs no second
+      // connection — which a pool sized 1 could not hand out anyway.
+      //
+      // Without a pool there is no lock either; `db` is statically typed as the
+      // SQLite handle (see db/client.ts), but under a postgres:// URL the
+      // runtime object is the node-postgres one, which is what this branch has
+      // already established.
+      const handle = client ? drizzlePg(client) : db
+      await migratePg(handle as unknown as Parameters<typeof migratePg>[0], { migrationsFolder })
     })
   } catch (err) {
     logger.error(

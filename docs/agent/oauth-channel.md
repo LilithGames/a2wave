@@ -519,13 +519,25 @@ wrong place.
 
 The ids therefore live in the `saml_requests` table
 (`createSamlRequestCacheProvider()` in `apps/api/src/lib/saml.ts`), so the state
-is shared across replicas and survives restarts. Rows are deleted when the ACS
-consumes them; abandoned ones expire after `SAML_REQUEST_EXPIRATION_MS` (8h,
-node-saml's own `requestIdExpirationPeriodMs` default). **Expiry is enforced on
-read as well as by the hourly sweeper** — a late or not-yet-started sweep must
-never widen the window in which an id is replayable. The sweeper starts lazily
-the first time a SAML instance is built, so a deployment with no SAML configured
-holds no timer.
+is shared across replicas and survives restarts. Abandoned ids expire after
+`SAML_REQUEST_EXPIRATION_MS` (8h, node-saml's own `requestIdExpirationPeriodMs`
+default). **Expiry is enforced on read as well as by the hourly sweeper** — a
+late or not-yet-started sweep must never widen the window in which an id is
+replayable. The sweeper starts lazily the first time a SAML instance is built, so
+a deployment with no SAML configured holds no timer.
+
+**The read is what consumes the id**, not `removeAsync`. node-saml validates the
+entire assertion before it removes anything, so a `SELECT`-then-`DELETE` pair
+would let one captured SAMLResponse POSTed at two replicas validate on both and
+mint two sessions. `getAsync` is therefore a single `DELETE ... RETURNING`
+carrying the expiry predicate: exactly one caller wins the row.
+
+The consequence to know when reading that code: node-saml reads one id **twice**
+per validation (the Response's `InResponseTo`, then the assertion's
+`SubjectConfirmationData`). The consumed value is held in a per-provider,
+in-process map for `SAML_REQUEST_IN_FLIGHT_MS` (30s) and dropped by `removeAsync`
+so the second read still succeeds. That map is per process, so it never reopens
+the cross-replica window the row deletion closes.
 
 Two wording traps when writing user-facing copy:
 
