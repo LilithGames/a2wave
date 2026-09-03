@@ -1,7 +1,26 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * Holds the `rm` that run-end cleanup issues, so a sibling run's sync can be
+ * driven into the window the cleanup is mid-flight. Null outside that one test,
+ * where every call passes straight through to the real fs.
+ */
+const rmGate = vi.hoisted(() => ({ current: null as Promise<void> | null }))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      if (rmGate.current) await rmGate.current
+      return actual.rm(...args)
+    },
+  }
+})
+
 import type { ResolvedMcpServer } from '../mcp-sync.js'
 import { cleanupManagedMcpConfigAsync, syncMcpToWorkspaceAtPathAsync } from '../mcp-sync.js'
 
@@ -195,6 +214,15 @@ describe('cleanupManagedMcpConfigAsync', () => {
   const configPath = () => path.join(tmp, RELATIVE)
   const markerPath = () => `${path.join(tmp, RELATIVE)}.a2wave-managed`
 
+  /** Resolves as soon as `name` is on disk, or after `budgetMs` if it never is. */
+  async function waitForServerEntry(name: string, budgetMs: number) {
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      if (existsSync(configPath()) && name in (readConfig().mcpServers ?? {})) return
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
+
   it('removes a config file the platform created, secrets and marker included', async () => {
     await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [
       {
@@ -249,5 +277,34 @@ describe('cleanupManagedMcpConfigAsync', () => {
 
   it('is a no-op when nothing was ever written', async () => {
     await expect(cleanupManagedMcpConfigAsync(tmp, RELATIVE)).resolves.toBeUndefined()
+  })
+
+  it('does not delete a config a sibling run wrote while the cleanup was in flight', async () => {
+    // Same-Agent runs share one worktree (maxConcurrency >= 2), so run B's sync
+    // can land while run A's cleanup sits between releasing the reference and
+    // touching the file. A must not resume with its stale snapshot and remove
+    // the config B is about to execute against.
+    await syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('from-a')])
+
+    let releaseRm = () => {}
+    rmGate.current = new Promise<void>((resolve) => {
+      releaseRm = resolve
+    })
+
+    const cleanupA = cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+    const syncB = syncMcpToWorkspaceAtPathAsync(tmp, RELATIVE, [stdio('from-b')])
+    // Serialised, B cannot write until A's cleanup completes, so this waits out
+    // its budget; unserialised, B's write lands inside A's window.
+    await waitForServerEntry('from-b', 200)
+    releaseRm()
+    rmGate.current = null
+    await Promise.all([cleanupA, syncB])
+
+    expect(existsSync(configPath())).toBe(true)
+    expect(readConfig().mcpServers).toHaveProperty('from-b')
+
+    // B held the only remaining reference; releasing it clears the workspace.
+    await cleanupManagedMcpConfigAsync(tmp, RELATIVE)
+    expect(existsSync(configPath())).toBe(false)
   })
 })
