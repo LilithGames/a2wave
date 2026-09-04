@@ -22,6 +22,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  */
 const rmGate = vi.hoisted(() => ({ current: null as Promise<void> | null }))
 
+/**
+ * Holds the FIRST write to an `info/exclude`, so a second sync can be driven
+ * into the window between one sync's read of that file and its write back.
+ */
+const excludeWriteGate = vi.hoisted(() => ({ current: null as Promise<void> | null }))
+
+/** Counts reads of an `info/exclude`, so the race can be sequenced on the real event. */
+const excludeReads = vi.hoisted(() => ({ count: 0 }))
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
   return {
@@ -29,6 +38,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     rm: async (...args: Parameters<typeof actual.rm>) => {
       if (rmGate.current) await rmGate.current
       return actual.rm(...args)
+    },
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      if (String(args[0]).endsWith('info/exclude')) excludeReads.count++
+      return actual.readFile(...args)
+    },
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      const gate = excludeWriteGate.current
+      if (gate && String(args[0]).endsWith('info/exclude')) {
+        excludeWriteGate.current = null
+        await gate
+      }
+      return actual.writeFile(...args)
     },
   }
 })
@@ -728,5 +749,150 @@ describe('syncMcpToWorkspaceAtPathAsync — multi-repo workspace root', () => {
     )
     await runGit('add', '-A')
     expect(await runGit('diff', '--cached')).toBe('')
+  })
+})
+
+/**
+ * Everything the exclusion guarantee still has to survive once the repository
+ * is not the simple case: a linked worktree (the layout a2wave itself runs
+ * every Agent in), two syncs racing for the same `info/exclude`, a symlink the
+ * cleanup has to follow, and a marker write that fails after the config is
+ * already on disk.
+ */
+describe('syncMcpToWorkspaceAtPathAsync — keeping the exclusion guarantee', () => {
+  let root: string
+  let repo: string
+
+  const secretServer: ResolvedMcpServer = {
+    name: 'api',
+    type: 'http',
+    url: 'https://mcp.example.com',
+    headers: { Authorization: 'Bearer exclusion-secret-token' },
+  }
+
+  async function git(cwd: string, ...args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd })
+    return stdout
+  }
+
+  beforeEach(async () => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-exclude-test-'))
+    repo = path.join(root, 'repo')
+    mkdirSync(repo)
+    await git(repo, 'init', '-b', 'main')
+    await git(repo, 'config', 'user.email', 'test@test.com')
+    await git(repo, 'config', 'user.name', 'Test')
+    writeFileSync(path.join(repo, 'README.md'), '# repo')
+    await git(repo, 'add', '.')
+    await git(repo, 'commit', '-m', 'init')
+  })
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  /**
+   * In a linked worktree `git rev-parse --git-path info/exclude` answers with an
+   * ABSOLUTE path into the main repository's `.git` — joining it onto the work
+   * tree builds a nonsense path, writes the rule where nothing reads it, and
+   * then refuses the run. Per-Agent worktrees are how a2wave executes, so this
+   * is the ordinary case, not the exotic one.
+   */
+  it('excludes through a linked worktree, whose git-path is absolute', async () => {
+    const worktree = path.join(root, 'agent-wt')
+    await git(repo, 'worktree', 'add', worktree)
+
+    expect(await syncMcpToWorkspaceAtPathAsync(worktree, '.mcp.json', [secretServer])).toBe(true)
+
+    expect(readFileSync(path.join(worktree, '.mcp.json'), 'utf-8')).toContain(
+      'exclusion-secret-token',
+    )
+    // No stray directory built from the absolute git-path.
+    expect(existsSync(path.join(worktree, 'private'))).toBe(false)
+    await git(worktree, 'add', '-A')
+    expect(await git(worktree, 'diff', '--cached')).toBe('')
+  })
+
+  /**
+   * `info/exclude` is one file per repository, and every config path in the
+   * workspace appends to it. Two syncs read the same "before" content and the
+   * later write drops the earlier rule, so a run that already verified its
+   * exclusion ends up unprotected.
+   */
+  it('keeps every rule when two config paths are synced concurrently', async () => {
+    // Sequenced on the reads themselves rather than on elapsed time: the racing
+    // build reaches every step in milliseconds, and only the serialised build —
+    // where B never gets to read — spends a bounded wait.
+    async function waitForExcludeReads(count: number, budgetMs: number): Promise<void> {
+      const deadline = Date.now() + budgetMs
+      while (excludeReads.count < count && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+    }
+
+    excludeReads.count = 0
+    let releaseExcludeWrite = () => {}
+    excludeWriteGate.current = new Promise<void>((resolve) => {
+      releaseExcludeWrite = resolve
+    })
+
+    // A reads the (empty) exclude file and stalls holding its content.
+    const syncA = syncMcpToWorkspaceAtPathAsync(repo, 'a/mcp.json', [secretServer])
+    await waitForExcludeReads(1, 5_000)
+    // B enters the same read-modify-write. Serialised, it waits for A; racing,
+    // it reads the same empty content and its write drops A's rule.
+    const syncB = syncMcpToWorkspaceAtPathAsync(repo, 'b/mcp.json', [secretServer])
+    await waitForExcludeReads(2, 1_000)
+    releaseExcludeWrite()
+    excludeWriteGate.current = null
+    await Promise.all([syncA, syncB])
+
+    const exclude = readFileSync(path.join(repo, '.git/info/exclude'), 'utf-8')
+    for (const rule of [
+      '/a/mcp.json',
+      '/a/mcp.json.a2wave-managed',
+      '/b/mcp.json',
+      '/b/mcp.json.a2wave-managed',
+    ]) {
+      expect(exclude).toContain(`${rule}\n`)
+    }
+    await git(repo, 'add', '-A')
+    expect(await git(repo, 'diff', '--cached')).toBe('')
+  })
+
+  /**
+   * `fs.rm` on a symlink unlinks the link, not the file behind it. The sync
+   * created the resolved target, so cleaning up the pathname it was asked about
+   * leaves the plaintext bearer token on disk for the life of the worktree —
+   * exactly what run-end cleanup exists to prevent.
+   */
+  it('removes the file the write created, not the symlink pointing at it', async () => {
+    mkdirSync(path.join(repo, 'config'))
+    symlinkSync(path.join('config', 'local-mcp.json'), path.join(repo, '.mcp.json'))
+
+    expect(await syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).toBe(true)
+    expect(readFileSync(path.join(repo, 'config/local-mcp.json'), 'utf-8')).toContain(
+      'exclusion-secret-token',
+    )
+
+    await cleanupManagedMcpConfigAsync(repo, '.mcp.json')
+
+    expect(existsSync(path.join(repo, 'config/local-mcp.json'))).toBe(false)
+    expect(existsSync(path.join(repo, 'config/local-mcp.json.a2wave-managed'))).toBe(false)
+  })
+
+  /**
+   * The marker is what run-end cleanup reads to know a file is deletable. If
+   * the config lands and the marker does not, the sync reports failure, the run
+   * never registers a cleanup — and the credentials stay on disk with nothing
+   * left that admits to owning them. Nothing written is the only safe outcome.
+   */
+  it('leaves no config behind when the marker cannot be written', async () => {
+    // A directory where the marker file goes: `writeFile` fails with EISDIR.
+    mkdirSync(path.join(repo, '.mcp.json.a2wave-managed'))
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).rejects.toThrow()
+
+    expect(existsSync(path.join(repo, '.mcp.json'))).toBe(false)
   })
 })

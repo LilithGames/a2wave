@@ -15,7 +15,7 @@
 import { execFile } from 'node:child_process'
 import type { Stats } from 'node:fs'
 import { mkdir, readFile, readlink, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
@@ -335,7 +335,7 @@ async function ensureWriteTargetExcluded(
   // Canonicalised at the parent only — the link's own name is the entry git
   // sees — so the comparison and `relative()` below share one spelling of the
   // path with the realpath'd work tree.
-  const literalTarget = join(await realpathOrSelf(dirname(literalPath)), basename(literalPath))
+  const literalTarget = await canonicalizeParent(literalPath)
   if (literalTarget === probe.resolvedPath) return
   await ensurePathExcluded(await gitWorkTreeFor(literalTarget), literalTarget, relativePath)
 }
@@ -355,6 +355,17 @@ async function ensurePathExcluded(
   throw new McpConfigNotExcludedError(relativePath, absolutePath)
 }
 
+/**
+ * `absolutePath` with its directories canonicalised but its own name left
+ * alone — the spelling git's realpath'd work tree can be `relative()`d against,
+ * for a path whose parents may not exist yet.
+ */
+async function canonicalizeParent(absolutePath: string): Promise<string> {
+  const parent = dirname(absolutePath)
+  const existing = await nearestExistingDir(parent)
+  return join(await realpathOrSelf(existing), relative(existing, parent), basename(absolutePath))
+}
+
 /** Work tree owning `absolutePath`, or `null` when no repository does. */
 async function gitWorkTreeFor(absolutePath: string): Promise<string | null> {
   const topLevel = await runGitProbe(
@@ -364,23 +375,41 @@ async function gitWorkTreeFor(absolutePath: string): Promise<string | null> {
   return topLevel === null ? null : await realpath(topLevel.trim())
 }
 
-/** Appends one anchored pattern to a repository's `info/exclude`, once. */
+/**
+ * Appends one anchored pattern to a repository's `info/exclude`, once.
+ *
+ * `--git-path` answers **relative to the cwd in the main checkout and absolute
+ * in a linked worktree**, whose exclude file lives in the main repository's
+ * `.git`. Joining an absolute answer onto the work tree would build a nonsense
+ * path, write the rule where no git reads it, and then refuse the run — in the
+ * layout a2wave executes every Agent in (docs/agent/worktree-isolation.md), so
+ * `resolve` is what handles both answers.
+ *
+ * One `info/exclude` serves the whole repository while every config path in the
+ * workspace appends to it, so the read-modify-write is serialised on the file:
+ * two syncs that both read the same "before" content would otherwise have the
+ * later write drop the earlier rule, leaving a run that already verified its
+ * exclusion unprotected. In-process only — the cross-replica half is bounded by
+ * the re-check in `ensurePathExcluded`, which refuses rather than writes.
+ */
 async function appendGitExclude(workTree: string, pattern: string): Promise<void> {
   const gitPath = await runGitProbe(['rev-parse', '--git-path', 'info/exclude'], workTree)
   if (gitPath === null) return
-  const excludePath = join(workTree, gitPath.trim())
-  let existing = ''
-  try {
-    existing = await readFile(excludePath, 'utf-8')
-  } catch {
-    // No exclude file yet (a `git init` template can omit it) — create it.
-  }
-  const present = new Set(existing.split('\n').map((line) => line.trim()))
-  if (present.has(pattern)) return
-  await mkdir(dirname(excludePath), { recursive: true })
-  const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
-  const header = present.has(PLATFORM_EXCLUDE_HEADER) ? '' : `${PLATFORM_EXCLUDE_HEADER}\n`
-  await writeFile(excludePath, `${existing}${prefix}${header}${pattern}\n`)
+  const excludePath = resolve(workTree, gitPath.trim())
+  await withKeyedLock(`git-exclude:${excludePath}`, async () => {
+    let existing = ''
+    try {
+      existing = await readFile(excludePath, 'utf-8')
+    } catch {
+      // No exclude file yet (a `git init` template can omit it) — create it.
+    }
+    const present = new Set(existing.split('\n').map((line) => line.trim()))
+    if (present.has(pattern)) return
+    await mkdir(dirname(excludePath), { recursive: true })
+    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
+    const header = present.has(PLATFORM_EXCLUDE_HEADER) ? '' : `${PLATFORM_EXCLUDE_HEADER}\n`
+    await writeFile(excludePath, `${existing}${prefix}${header}${pattern}\n`)
+  })
 }
 
 /**
@@ -399,7 +428,9 @@ async function appendGitExclude(workTree: string, pattern: string): Promise<void
  */
 async function detachHardLinkedTarget(targetPath: string): Promise<void> {
   const stats = await statOrNull(targetPath)
-  if (!stats || stats.nlink <= 1) return
+  // A directory's link count is >= 2 by construction and unlinking one is not
+  // this function's business; only a regular file can share an inode this way.
+  if (!stats?.isFile() || stats.nlink <= 1) return
   logger.warn(
     { targetPath, nlink: stats.nlink },
     'Replacing a hardlinked MCP config instead of writing through it: another pathname shares its inode',
@@ -831,7 +862,20 @@ async function writeMcpConfig(
   await detachHardLinkedTarget(resolvedPath)
   await detachHardLinkedTarget(markerProbe.resolvedPath)
   await writeFile(filePath, JSON.stringify(nextConfig, null, 2))
-  await writeManagedMarkerAsync(markerPath, nextManagedMarker)
+  try {
+    await writeManagedMarkerAsync(markerPath, nextManagedMarker)
+  } catch (err) {
+    // The marker is what run-end cleanup reads to know this file is deletable.
+    // Without it the sync reports failure, the run registers no cleanup, and the
+    // bearer tokens just written stay on disk with nothing left owning them —
+    // so the config goes back the way it was found.
+    if (fileExistedBeforeSync) {
+      await writeFile(filePath, JSON.stringify(existingConfig, null, 2))
+    } else {
+      await rm(resolvedPath, { force: true })
+    }
+    throw err
+  }
   managedMcpConfigRefs.set(filePath, (managedMcpConfigRefs.get(filePath) ?? 0) + 1)
   return true
 }
@@ -871,7 +915,12 @@ async function releaseMcpConfig(filePath: string): Promise<void> {
   }
   managedMcpConfigRefs.delete(filePath)
 
-  const markerPath = `${filePath}${MCP_MANAGED_MARKER_SUFFIX}`
+  // The sync wrote through whatever indirection the configured path carries, so
+  // cleanup has to follow it too: `rm` on a symlink unlinks the link and leaves
+  // the plaintext bearer token the sync created sitting behind it for the life
+  // of the worktree.
+  const targetPath = await resolveWriteTarget(filePath)
+  const markerPath = await resolveWriteTarget(`${filePath}${MCP_MANAGED_MARKER_SUFFIX}`)
   try {
     const marker = await readManagedMarkerAsync(markerPath)
     // No marker: the file predates any a2wave sync and is never touched.
@@ -886,7 +935,7 @@ async function releaseMcpConfig(filePath: string): Promise<void> {
       )
       return
     }
-    const { record: config } = await readJsonRecordAsync(filePath)
+    const { record: config } = await readJsonRecordAsync(targetPath)
     const serversRaw = config.mcpServers
     const servers = isRecord(serversRaw) ? { ...serversRaw } : {}
     for (const [name, fingerprint] of Object.entries(marker.managedServers)) {
@@ -897,9 +946,9 @@ async function releaseMcpConfig(filePath: string): Promise<void> {
     const onlyOurContent =
       Object.keys(servers).length === 0 && Object.keys(config).every((key) => key === 'mcpServers')
     if (marker.createdByPlatform && onlyOurContent) {
-      await rm(filePath, { force: true })
+      await rm(targetPath, { force: true })
     } else {
-      await writeFile(filePath, JSON.stringify({ ...config, mcpServers: servers }, null, 2))
+      await writeFile(targetPath, JSON.stringify({ ...config, mcpServers: servers }, null, 2))
     }
     await rm(markerPath, { force: true })
   } catch (err) {
