@@ -77,6 +77,8 @@ export type RemoteEntry = {
   protocolVersion?: '1.0' | '0.3'
   /** Explicit opt-in for sending display-only caller provenance to a direct v1 endpoint. */
   callerProvenance?: boolean
+  /** Explicit opt-in for forwarding quoted context to a direct v1 endpoint. */
+  referencedContext?: boolean
   description: string
   apiKey: string
   showApiKey: boolean

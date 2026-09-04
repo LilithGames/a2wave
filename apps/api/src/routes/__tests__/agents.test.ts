@@ -2459,6 +2459,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
           groupTriggerOnAt: false,
           groupTriggerOnNewMessage: true,
           groupReplyMode: 'none',
+          groupInjectReferencedMessage: true,
         },
       }),
     })
@@ -2468,6 +2469,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
     expect(saved.groupTriggerOnAt).toBe(false)
     expect(saved.groupTriggerOnNewMessage).toBe(true)
     expect(saved.groupReplyMode).toBe('none')
+    expect(saved.groupInjectReferencedMessage).toBe(true)
     // normalizeFeishuConfig 补齐的话题群默认值
     expect(saved.topicTriggerOnAt).toBe(true)
     expect(saved.topicTriggerOnNewTopic).toBe(false)

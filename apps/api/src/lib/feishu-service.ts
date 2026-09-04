@@ -55,6 +55,12 @@ import {
 } from './feishu-pending-store.js'
 import { textToPostContent } from './feishu-post-content.js'
 import {
+  resolveFeishuReferencedMessage,
+  summarizeFeishuContextForLog,
+  toFeishuReferencedMessageContext,
+  toFeishuReferencedPromptContext,
+} from './feishu-referenced-message.js'
+import {
   resolveFeishuFailureReplyMentionOpenId,
   resolveFeishuMentionRootId,
   supportsFeishuReplyMention,
@@ -899,6 +905,8 @@ export function buildFeishuContext(
       // The channel schema requires a non-empty chat_type; every non-p2p chat is
       // treated as a group elsewhere, so use that when the event omits it.
       chat_type: message.chat_type ?? 'group',
+      parent_id: message.parent_id,
+      root_id: message.root_id,
       thread_id: message.thread_id,
     },
     fetchedUserInfo:
@@ -2167,10 +2175,20 @@ class FeishuConnectionManager {
         // in: resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH.
         const env = agentConfig.agentEnv
         const resolvedWorkDir = await resolveWorkDir(currentAgent, undefined, runId, env)
-
         let rootText = ''
         let rootImagePaths: string[] = []
         let rootFilePaths: string[] = []
+        const referencedMessage = await resolveFeishuReferencedMessage(
+          config.groupInjectReferencedMessage,
+          message,
+          freshClient,
+          extractText,
+          (err, referencedMessageId) =>
+            logger.warn(
+              { err, agentId, referencedMessageId },
+              'Failed to fetch referenced Feishu message',
+            ),
+        )
         const contentRootId = resolveFeishuTopicRootId(
           config.topicInjectRootMessage,
           keepNativePrompt,
@@ -2351,7 +2369,6 @@ class FeishuConnectionManager {
         if (imageHint) {
           mainText = mainText ? `${mainText}\n\n---\n${imageHint}` : imageHint
         }
-
         const fullPrompt = keepNativePrompt
           ? replyText
           : mainText || (imagePaths.length > 0 ? '[图片]' : '') || intent
@@ -2364,7 +2381,6 @@ class FeishuConnectionManager {
             senderUserInfo = await fetchFeishuUserInfo(freshClient, senderOpenId, config.appId)
           }
         }
-
         // ── Build context, step, payload ──
         const { context: feishuContext, displayName: feishuDisplayName } = buildFeishuContext(
           sender,
@@ -2372,6 +2388,8 @@ class FeishuConnectionManager {
           senderUserInfo,
           config.appId,
         )
+        if (referencedMessage)
+          feishuContext.referenced_message = toFeishuReferencedMessageContext(referencedMessage)
         if (imagePaths.length > 0) {
           feishuContext.images = imagePaths
         }
@@ -2380,10 +2398,15 @@ class FeishuConnectionManager {
           feishuContext.files = allFilePaths
         }
         logger.info(
-          { agentId, messageId: message.message_id, feishuContext },
+          {
+            agentId,
+            messageId: message.message_id,
+            feishuContext: summarizeFeishuContextForLog(feishuContext),
+            imageCount: imagePaths.length,
+            fileCount: allFilePaths.length,
+          },
           'Feishu: context built',
         )
-
         // Strategy Z: feishu runs were reserved earlier (line ~1454) before user
         // info was fetched. Backfill triggerUserName here, post-fetch, so the
         // runs list can show the sender's name without a JOIN. Idempotent —
@@ -2408,15 +2431,14 @@ class FeishuConnectionManager {
           },
           message: { id: createId('msg'), runId, role: 'user', content: fullPrompt },
         })
-
         // 不在此创建 collector：runWithLifecycle 内部已 createPersistingLogCollector +
         // registerLogCollector，Web UI 通过该 collector 看到流式日志；feishu 本地无需另起一份。
-
         const taskId = buildTaskId('feishu/', runId, stepId)
         const payload: WorkerTaskPayload = {
           taskId,
           prompt: fullPrompt,
           context: feishuContext,
+          referencedPromptContext: toFeishuReferencedPromptContext(referencedMessage),
           model: agentConfig.model || undefined,
           workDir: resolvedWorkDir,
           chatId: previousChatId ?? undefined,

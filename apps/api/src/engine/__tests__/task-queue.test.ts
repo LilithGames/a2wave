@@ -732,8 +732,11 @@ describe('recoverOnStartup', () => {
     expect(onExecute).toHaveBeenCalledWith('run_q1', 'agt_1')
   })
 
-  it('在 scheduleNext 之前，把 triggerSource=feishu 的 queued run 标记为失败（等待 replay 重建）', async () => {
-    const oldestQueued = vi.fn().mockResolvedValue(undefined)
+  it('resets native Feishu event runs before scheduling but preserves API-created Feishu reruns', async () => {
+    const oldestQueued = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'run_feishu_rerun_q', initiatorAgentId: 'agt_1' })
+      .mockResolvedValueOnce(undefined)
     const db = createMockDb({
       countRunsByStatus: vi.fn().mockResolvedValue(0),
       getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
@@ -742,6 +745,18 @@ describe('recoverOnStartup', () => {
         status === 'queued'
           ? [
               { id: 'run_feishu_q', triggerSource: 'feishu', triggerSessionId: 'msg_1' },
+              {
+                id: 'run_feishu_rerun_q',
+                triggerSource: 'feishu',
+                triggerSessionId: null,
+                hasNativeChatContext: true,
+              },
+              {
+                id: 'run_legacy_feishu_rerun_q',
+                triggerSource: 'feishu',
+                triggerSessionId: null,
+                hasNativeChatContext: false,
+              },
               { id: 'run_api_q', triggerSource: 'api', triggerSessionId: null },
             ]
           : [],
@@ -755,9 +770,21 @@ describe('recoverOnStartup', () => {
       'run_feishu_q',
       FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY,
     )
-    // API queued run is NOT force-failed; scheduleNext is free to promote it
+    // API-created Feishu reruns have no native event replay row. Their context
+    // is persisted on the run, so generic startup scheduling must keep them.
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalledWith(
+      'run_feishu_rerun_q',
+      expect.anything(),
+    )
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledWith(
+      'run_legacy_feishu_rerun_q',
+      FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY,
+    )
+    // API queued runs are also left for generic startup scheduling.
     expect(db.failRunWithStructuredReason).not.toHaveBeenCalledWith('run_api_q', expect.anything())
-    expect(stats.feishuQueuedReset).toBe(1)
+    expect(stats.feishuQueuedReset).toBe(2)
+    expect(stats.queuedPromoted).toBe(1)
+    expect(onExecute).toHaveBeenCalledWith('run_feishu_rerun_q', 'agt_1')
   })
 
   it('无 running 也无 queued 时，返回全零统计', async () => {

@@ -7,12 +7,17 @@ import {
   type ExecutionEventBus,
   type RequestContext,
 } from '@a2a-js/sdk/server'
+import type { ReferencedPromptContext } from '../engine/types.js'
 import type { AttachmentSource } from '../lib/attachment-materializer.js'
 import {
   type A2ACallerProvenance,
   A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
   extractA2ACallerProvenance,
 } from './provenance.js'
+import {
+  A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+  extractA2AReferencedContext,
+} from './referenced-context.js'
 
 export interface A2waveExecutorConfig {
   agentConfig: Record<string, unknown>
@@ -36,6 +41,8 @@ export type ExecuteFn = (
     onUpdate?: (content: string) => void
     /** Remote caller assertion for display/audit only; never an authoritative identity. */
     provenance?: A2ACallerProvenance
+    /** Bounded quoted material that remains untrusted when rendered into the prompt. */
+    referencedContext?: ReferencedPromptContext
   },
 ) => Promise<{
   success: boolean
@@ -75,6 +82,10 @@ export class A2waveAgentExecutor implements AgentExecutor {
     const provenance = extractA2ACallerProvenance(ctx.userMessage, ctx.context)
     if (provenance) {
       ctx.context.addActivatedExtension(A2WAVE_CALLER_PROVENANCE_EXTENSION_URI)
+    }
+    const referencedContext = extractA2AReferencedContext(ctx.userMessage, ctx.context)
+    if (referencedContext) {
+      ctx.context.addActivatedExtension(A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI)
     }
     const existingHistory = ctx.task?.history ?? []
     const history = existingHistory.some(
@@ -126,6 +137,7 @@ export class A2waveAgentExecutor implements AgentExecutor {
         },
         {
           ...(provenance ? { provenance } : {}),
+          ...(referencedContext ? { referencedContext } : {}),
           onUpdate: (content: string) => {
             eventBus.publish(
               AgentEvent.statusUpdate({

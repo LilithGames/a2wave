@@ -196,7 +196,7 @@ Agents that are unpublished, stopped, or nonexistent uniformly return `exists: f
 
 First complete these three groups of settings in the [Feishu Open Platform](https://open.feishu.cn/) app console, then return to a2wave to fill in the App ID / App Secret:
 
-1. **Grant permissions**: go to **Development configuration → Permission management** and grant `im:message` (send and receive messages) and `im:message.group_at_msg` (receive @-mentions in groups). If you enable “Fetch sender user info” in a2wave, also grant `contact:contact.base:readonly`, `contact:user.base:readonly` (name) and `contact:user.email:readonly` (email); interactive cards additionally need `cardkit:card:write`. Permission changes only take effect after you publish a new version under **Version management & release** and it is approved.
+1. **Grant permissions**: go to **Development configuration → Permission management** and grant `im:message` (send, receive, and look up messages), `im:message.group_at_msg` (receive @-mentions in groups), and `im:message.group_msg` (receive all user messages in a group and look up a referenced group message). The group-message permission is required by both “Trigger on every new group message” and “Include the replied-to message content”; the latter needs no additional `im:message:readonly` permission because `im:message` already provides the base message-lookup permission. If you enable “Fetch sender user info” in a2wave, also grant `contact:contact.base:readonly`, `contact:user.base:readonly` (name) and `contact:user.email:readonly` (email); interactive cards additionally need `cardkit:card:write`. Permission changes only take effect after you publish a new version under **Version management & release** and it is approved.
 2. **Subscribe to events**: go to **Development configuration → Events & callbacks → Events**, choose **long connection** as the subscription mode (no public callback URL needed — a2wave connects out to Feishu), then add the `im.message.receive_v1` event.
 3. **Subscribe to callbacks** (only needed for interactive cards): on the same page under **Callbacks**, again choose **long connection** as the subscription mode and add the `card.action.trigger` callback. Skip this if you do not use interactive cards.
 
@@ -205,7 +205,7 @@ First complete these three groups of settings in the [Feishu Open Platform](http
 
 Once that is done, open the Feishu Bot card's **Configure** dialog on the Channels tab in a2wave and set the **App ID / App Secret** plus the trigger and reply policies:
 
-- **Group chat**: triggered on being @-mentioned (`groupTriggerOnAt`, on by default) / triggered on any new message (off by default); reply modes `quote / new / none`. Replies to ordinary group messages mention the trigger sender by default; selecting “Do not mention anyone” under “Mention on reply” turns that off for ordinary group replies as well.
+- **Group chat**: triggered on being @-mentioned (`groupTriggerOnAt`, on by default) / triggered on any new message (off by default); reply modes `quote / new / none`. Replies to ordinary group messages mention the trigger sender by default; selecting “Do not mention anyone” under “Mention on reply” turns that off for ordinary group replies as well. When “Include the replied-to message content” is enabled, replying to an existing group message and triggering the Agent fetches that message's readable text and adds it as quoted material before the current question. Plain text, inline cards, and template cards sent by a2wave with the single visible `content` variable are supported. Custom template cards whose variable visibility cannot be established and CardKit card references skip their bodies; failed lookups and unparseable bodies do not block the current run.
 - **Topic group**: triggered on @-mention / new topic / new comment; reply modes `topic_reply / none`. “Mention on reply” can target the trigger sender (default), the topic creator, or no one. The first two answer “whom to mention” and apply to topic replies only — an ordinary group message has no topic creator, so it always mentions the trigger sender. “Do not mention anyone” answers “mention at all?” and applies to every group reply, ordinary messages included. When the topic creator is selected, the platform reads the root message sender; if that lookup fails, it mentions no one rather than notifying a triggering bot by mistake. This applies only to plain-text and rich-text replies. By default a topic reply only sends the current message content, and continuous context within the same topic relies on the Agent's session history; to attach the topic's first message (text/images/files) on every reply, enable “Include the topic root message content” (`topicInjectRootMessage`) on the publish tab.
 - **Direct message (P2P)**: always triggers; reply mode is selectable.
 - **Reply content type**: `text / post / interactive / interactive_card / streaming_card`; optionally send artifacts as files, and choose whether to resolve the user's identity.
@@ -390,13 +390,21 @@ The extension is negotiated through the Agent Card. Routes using **Agent Card di
 > [!IMPORTANT]
 > Provenance names are for audit display, not authorization. The A2A call must still pass real API Key authentication, and a receiver must not grant access from a display name in the provenance extension.
 
+### Forward quoted alerts or messages
+
+When a run contains quoted external context, an Agent can pass it to a downstream Agent by setting `includeReferencedContext: true` on `invoke_agent` (or on one item in `invoke_agents_parallel`). This flag defaults to `false`, so ordinary A2A calls never disclose quoted content implicitly. The message remains separate from the task instruction and is rendered by the receiver as bounded, untrusted `<referenced_context>`.
+
+With **Agent Card discovery**, the router sends an opted-in reference only when the remote A2A 1.0 card advertises the a2wave referenced-context extension. If that declaration provides a smaller `maxTextChars`, the forwarded text is truncated to the remote limit and marked as truncated; an invalid declared limit produces a visible error. For a **Direct endpoint**, select A2A 1.0 and enable **Allow referenced context** only after confirming receiver support. A2A 0.3 cannot carry it. Missing local context or an incompatible peer produces a visible error instead of silently sending an incomplete request.
+
+The receiver persists the reference with the run and restores it for reruns and job retries. The text is limited to 12,000 characters. It is always treated as external data rather than trusted instructions. CardKit bodies that expose only a `card_id` are not resolved by this feature.
+
 ### Invoke a remote standard A2A service
 
 Open **A2A Route** on the Agent's Configuration tab and add a remote Agent:
 
 1. Enter a name used to identify the target during routing.
 2. Prefer **Agent Card discovery** and paste the remote service's Agent Card URL. The platform reads the card and automatically selects its advertised A2A 1.0 or 0.3 JSON-RPC interface.
-3. If the service has no reachable Agent Card, choose **Direct endpoint**, enter its JSON-RPC URL, and explicitly select `A2A 1.0` or `A2A 0.3`. For a compatible A2A 1.0 receiver, optionally enable **Send caller provenance**.
+3. If the service has no reachable Agent Card, choose **Direct endpoint**, enter its JSON-RPC URL, and explicitly select `A2A 1.0` or `A2A 0.3`. For a compatible A2A 1.0 receiver, optionally enable **Send caller provenance** and/or **Allow referenced context**.
 4. If the remote service requires a Bearer key, enter its API Key. After saving, the credential is shown only as a mask and is never included in the Agent Card or routing result.
 
 > [!NOTE]

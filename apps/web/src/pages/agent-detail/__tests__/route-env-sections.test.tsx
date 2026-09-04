@@ -17,9 +17,10 @@
  * - A2A routing has no on/off switch: it is enabled iff targets are configured,
  *   and the section reports that derived value upward.
  */
-import { renderWithProviders, screen, userEvent } from '@/test/render'
+
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen, userEvent } from '@/test/render'
 import { EnvSection } from '../env-section'
 import { RouteSection } from '../route-section'
 import type { EnvEntry, RemoteEntry } from '../types'
@@ -178,6 +179,13 @@ describe('RouteSection', () => {
     expect(checkbox).not.toBeChecked()
     await user.click(checkbox)
     expect(props.updateRemoteEntry).toHaveBeenCalledWith(entry.id, 'callerProvenance', true)
+
+    const referencedContext = screen.getByRole('checkbox', {
+      name: /Allow referenced context|允许传递引用上下文/,
+    })
+    expect(referencedContext).not.toBeChecked()
+    await user.click(referencedContext)
+    expect(props.updateRemoteEntry).toHaveBeenCalledWith(entry.id, 'referencedContext', true)
   })
 
   it('counts local and remote targets separately in the summary', () => {

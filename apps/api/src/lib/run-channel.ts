@@ -15,7 +15,7 @@ import { runChannelContextSchema } from '@a2wave/shared'
  * shape at the call site.
  */
 import type { Context } from 'hono'
-import { extractCallerAgentFromHeaders, X_A2WAVE_CHANNEL_B64_HEADER } from '../a2a/caller.js'
+import { X_A2WAVE_CHANNEL_B64_HEADER } from '../a2a/caller.js'
 import type { GatewayCaller, NormalizedAuthType } from '../middleware/gateway-auth.js'
 import { resolveClientIp } from './client-ip.js'
 import { logger } from './logger.js'
@@ -390,6 +390,8 @@ export interface BuildFeishuChannelOpts {
     message_id: string
     chat_id: string
     chat_type: string
+    parent_id?: string
+    root_id?: string
     thread_id?: string
   }
   fetchedUserInfo: {
@@ -412,6 +414,8 @@ export function buildFeishuChannel(opts: BuildFeishuChannelOpts): ChannelBuildRe
     chat_id: opts.message.chat_id,
     chat_type: opts.message.chat_type,
     message_id: opts.message.message_id,
+    ...(opts.message.parent_id ? { parent_id: opts.message.parent_id } : {}),
+    ...(opts.message.root_id ? { root_id: opts.message.root_id } : {}),
     ...(opts.message.thread_id ? { thread_id: opts.message.thread_id } : {}),
     sender_type: opts.sender.sender_type ?? 'user',
     // Drop sender_open_id entirely when empty (some bot/system events lack it);

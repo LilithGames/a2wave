@@ -192,7 +192,8 @@ e2e::log_contains() {
 e2e::log_json_field() {
   local pattern="$1" key="$2"
   # shellcheck disable=SC2016  # intentional literal awk pattern
-  sed $'s/\x1b\\[[0-9;]*m//g' "$E2E_LOG_FILE" | awk -v pat="$pattern" -v key="$key" '
+  awk -v pat="$pattern" -v key="$key" '
+    { gsub(/\033\[[0-9;]*m/, "") }
     index($0, pat) > 0 { in_block = 20; next }
     in_block > 0 {
       if (match($0, "\"?" key "\"?[[:space:]]*:[[:space:]]*[0-9]+")) {
@@ -204,5 +205,5 @@ e2e::log_json_field() {
       }
       in_block--
     }
-  '
+  ' "$E2E_LOG_FILE"
 }

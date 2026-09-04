@@ -32,6 +32,7 @@ const REDACT_BASE_KEYS = [
   'oidcClientSecretEnc',
   'A2WAVE_GATEWAY_TOKEN',
   'A2WAVE_CHANNEL_B64',
+  'A2WAVE_REFERENCED_CONTEXT_B64',
   'authorization',
   'cookie',
 ] as const

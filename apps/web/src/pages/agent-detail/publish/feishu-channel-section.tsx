@@ -38,6 +38,7 @@ export interface FeishuGroupSettings {
   triggerOnAt: boolean
   triggerOnNewMessage: boolean
   replyMode: FeishuReplyMode
+  injectReferencedMessage: boolean
 }
 
 /** Topic-group (话题群) trigger + reply settings. */
@@ -117,7 +118,11 @@ export function FeishuChannelSection({
   const [feishuSecretVisible, setFeishuSecretVisible] = useState(false)
 
   // Destructured aliases keep the moved JSX byte-identical to its previous form.
-  const { triggerOnAt: groupTriggerOnAt, triggerOnNewMessage: groupTriggerOnNewMessage } = group
+  const {
+    triggerOnAt: groupTriggerOnAt,
+    triggerOnNewMessage: groupTriggerOnNewMessage,
+    injectReferencedMessage: groupInjectReferencedMessage,
+  } = group
   const groupReplyMode = group.replyMode
   const {
     triggerOnAt: topicTriggerOnAt,
@@ -146,6 +151,8 @@ export function FeishuChannelSection({
   const setGroupTriggerOnAt = (v: boolean) => onGroupChange({ triggerOnAt: v })
   const setGroupTriggerOnNewMessage = (v: boolean) => onGroupChange({ triggerOnNewMessage: v })
   const setGroupReplyMode = (v: FeishuReplyMode) => onGroupChange({ replyMode: v })
+  const setGroupInjectReferencedMessage = (v: boolean) =>
+    onGroupChange({ injectReferencedMessage: v })
   const setTopicTriggerOnAt = (v: boolean) => onTopicChange({ triggerOnAt: v })
   const setTopicTriggerOnNewTopic = (v: boolean) => onTopicChange({ triggerOnNewTopic: v })
   const setTopicTriggerOnNewComment = (v: boolean) => onTopicChange({ triggerOnNewComment: v })
@@ -394,6 +401,18 @@ export function FeishuChannelSection({
             <Radio value="new">{t('agentPublish.feishuReplyNew')}</Radio>
             <Radio value="none">{t('agentPublish.feishuReplyNone')}</Radio>
           </Radio.Group>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <Checkbox
+            checked={groupInjectReferencedMessage}
+            onChange={(e) => setGroupInjectReferencedMessage(e.target.checked)}
+          >
+            {t('agentPublish.feishuGroupInjectReferencedMessage')}
+          </Checkbox>
+          <p className="pl-6 text-xs text-muted-foreground">
+            {t('agentPublish.feishuGroupInjectReferencedMessageHint')}
+          </p>
         </div>
       </div>
 

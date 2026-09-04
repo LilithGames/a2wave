@@ -190,7 +190,7 @@ curl ".../api/public/agents/metadata?agentIds=agt_1,agt_2"
 
 先在[飞书开放平台](https://open.feishu.cn/)的应用后台完成以下三组配置，再回 a2wave 填 App ID / App Secret：
 
-1. **开通权限**：进入 **开发配置 → 权限管理**，开通 `im:message`（收发消息）与 `im:message.group_at_msg`（接收群里被 @ 的消息）。若在 a2wave 中开启了「解析用户身份」，还需 `contact:contact.base:readonly`、`contact:user.base:readonly`（姓名）与 `contact:user.email:readonly`（邮箱）；使用交互卡片则需 `cardkit:card:write`。权限变更后必须到 **版本管理与发布** 重新发版并等待审核通过才会生效。
+1. **开通权限**：进入 **开发配置 → 权限管理**，开通 `im:message`（收发与查询消息）、`im:message.group_at_msg`（接收群里被 @ 的消息）与 `im:message.group_msg`（接收群内所有用户消息并查询被引用的群消息）。「群内新增消息」与「携带被回复消息内容」都依赖该群消息权限；后者无需额外申请 `im:message:readonly`，因为 `im:message` 已提供基础的消息查询权限。若在 a2wave 中开启了「解析用户身份」，还需 `contact:contact.base:readonly`、`contact:user.base:readonly`（姓名）与 `contact:user.email:readonly`（邮箱）；使用交互卡片则需 `cardkit:card:write`。权限变更后必须到 **版本管理与发布** 重新发版并等待审核通过才会生效。
 2. **订阅事件**：进入 **开发配置 → 事件与回调 → 事件配置**，订阅方式选择 **长连接**（无需公网回调地址，a2wave 主动连接飞书），然后添加事件 `im.message.receive_v1`（接收消息）。
 3. **订阅回调**（仅使用交互卡片时需要）：在同一页的 **回调配置** 中，订阅方式同样选择 **长连接**，并添加回调 `card.action.trigger`（卡片交互回调）。不使用交互卡片可跳过这一步。
 
@@ -199,7 +199,7 @@ curl ".../api/public/agents/metadata?agentIds=agt_1,agt_2"
 
 配置完成后，在 a2wave 的「渠道」页点「飞书机器人」卡片的「配置」，填写 **App ID / App Secret** 及触发与回复策略：
 
-- **群聊**：被 @ 触发（`groupTriggerOnAt`，默认开）/ 任意新消息触发（默认关）；回复模式 `quote / new / none`。普通群消息的回复默认 @ 触发者；若在「回复时提醒」中选择「不 @任何人」，普通群回复也不再 @ 人。
+- **群聊**：被 @ 触发（`groupTriggerOnAt`，默认开）/ 任意新消息触发（默认关）；回复模式 `quote / new / none`。普通群消息的回复默认 @ 触发者；若在「回复时提醒」中选择「不 @任何人」，普通群回复也不再 @ 人。开启「携带被回复消息内容」后，用户回复群内已有消息并触发 Agent 时，平台会读取该消息的可解析文本，作为引用资料附在本轮问题之前；支持普通文本、内联卡片，以及由 a2wave 发送且只包含 `content` 展示变量的模板卡片。无法判断变量可见性的自定义模板卡片与 CardKit 卡片引用会跳过正文，读取失败或正文不可解析也不会阻断本轮运行。
 - **话题群**：被 @ / 新话题 / 新评论触发；回复模式 `topic_reply / none`。「回复时提醒」可选择 @当前触发者（默认）、@话题发起人或不 @任何人。前两项决定「@ 谁」，仅对话题内回复生效——普通群消息没有话题发起人，始终 @ 触发者；「不 @任何人」决定「要不要 @」，对所有群回复（含普通群消息）生效。选择话题发起人时，平台会读取根消息发送者；读取失败则不 @，避免机器人转交场景下误提醒触发消息的机器人。此功能仅适用于纯文本和富文本回复。话题回复默认只发送本次消息内容，同一话题内的连续上下文依赖 Agent 会话历史；如需在每次回复中附带话题首条消息（文本/图片/文件），可在飞书配置弹窗开启「携带话题首条消息（根消息）内容」（`topicInjectRootMessage`）。
 - **单聊（P2P）**：永远触发，回复模式可选。
 - **回复内容类型**：`text / post / interactive / interactive_card / streaming_card`；可选把产物作为文件发送、是否解析用户身份。
@@ -384,13 +384,21 @@ A2A 1.0 的流式方法为 `SendStreamingMessage`，任务查询与取消分别�
 > [!IMPORTANT]
 > 来源名称用于审计展示，不是授权凭据。A2A 调用仍必须通过 API Key 完成实际鉴权；接收方不应根据来源扩展中的显示名授予权限。
 
+### 传递被引用的告警或消息
+
+当本次运行带有外部引用上下文时，Agent 可以在调用 `invoke_agent` 时设置 `includeReferencedContext: true`（或为 `invoke_agents_parallel` 中的某一项设置），把它显式传给下游 Agent。该参数默认是 `false`，普通 A2A 调用不会隐式泄露引用内容。引用消息与任务指令保持分离，接收方会把它作为有长度限制、不可信的 `<referenced_context>` 渲染。
+
+使用「Agent Card 发现」时，只有远端 A2A 1.0 Card 声明支持 a2wave 引用上下文扩展，路由器才会发送已选择传递的内容。如果该声明提供了更小的 `maxTextChars`，转发正文会按对端上限截断并标记为已截断；声明了无效上限时会明确报错。使用「直连端点」时，需要选择 A2A 1.0，并在确认接收方兼容后开启「允许传递引用上下文」。A2A 0.3 不支持该扩展。本地没有可用引用内容或对端不兼容时，调用会明确报错，不会静默发送缺少上下文的请求。
+
+接收方会把引用内容随 Run 持久化，并在重跑和任务自动重试时恢复；文本上限为 12,000 个字符，始终按外部数据而不是可信指令处理。仅提供 `card_id`、不含可读正文的 CardKit 消息不在此功能支持范围内。
+
 ### 调用远程标准 A2A 服务
 
 在 Agent 的「配置」页打开「A2A 路由」并添加远程 Agent：
 
 1. 填写一个用于路由识别的名称。
 2. 推荐选择「Agent Card 发现」，粘贴远程服务的 Agent Card URL。平台会读取 Card，并自动选择其中声明的 A2A 1.0 或 0.3 JSON-RPC 接口。
-3. 如果对方没有可访问的 Agent Card，选择「直连端点」，填写 JSON-RPC URL 并明确选择 `A2A 1.0` 或 `A2A 0.3`。接收方兼容 a2wave A2A 1.0 来源扩展时，可再开启「发送调用来源信息」。
+3. 如果对方没有可访问的 Agent Card，选择「直连端点」，填写 JSON-RPC URL 并明确选择 `A2A 1.0` 或 `A2A 0.3`。接收方兼容相应的 a2wave A2A 1.0 扩展时，可开启「发送调用来源信息」和/或「允许传递引用上下文」。
 4. 远端要求 Bearer Key 时填写 API Key。保存后凭据只以掩码显示，不会出现在 Agent Card 或路由结果中。
 
 > [!NOTE]

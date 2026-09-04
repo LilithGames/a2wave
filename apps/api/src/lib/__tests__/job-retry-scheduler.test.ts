@@ -132,6 +132,96 @@ describe('maybeScheduleJobRetry', () => {
     expect(executeChatRun).toHaveBeenCalled()
   })
 
+  it('persists and dispatches enriched Feishu context for an immediate retry', async () => {
+    const feishuContext = {
+      channel: {
+        channel_type: 'feishu',
+        channel_info: { chat_id: 'oc_alerts' },
+      },
+      referenced_message: { text: 'Payment dependency timed out.' },
+      receive_id_type: 'chat_id',
+      receive_id: 'oc_alerts',
+    }
+    loadRerunSource.mockResolvedValue({
+      agentId: 'agt_1',
+      originalContext: feishuContext,
+      rawAttachments: [],
+    })
+
+    await maybeScheduleJobRetry({
+      run: makeRun({ triggerSource: 'feishu' }),
+      status: 'failed',
+      error: 'connection reset',
+      maxJobRetries: 2,
+    })
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({ nativeChatContext: feishuContext }),
+      }),
+    )
+    expect(executeChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), feishuContext)
+  })
+
+  it('persists A2A referenced context for an immediate retry', async () => {
+    const a2aContext = {
+      channel: { channel_type: 'a2a' },
+      referenced_message: { source: 'feishu', text: 'Forwarded alert.' },
+    }
+    loadRerunSource.mockResolvedValue({
+      agentId: 'agt_1',
+      originalContext: a2aContext,
+      rawAttachments: [],
+    })
+
+    await maybeScheduleJobRetry({
+      run: makeRun({ triggerSource: 'a2a' }),
+      status: 'failed',
+      error: 'connection reset',
+      maxJobRetries: 2,
+    })
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({ nativeChatContext: a2aContext }),
+      }),
+    )
+    expect(executeChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), a2aContext)
+  })
+
+  it('persists Feishu context before an automatic retry waits in the queue', async () => {
+    const feishuContext = {
+      channel: {
+        channel_type: 'feishu',
+        channel_info: { chat_id: 'oc_alerts' },
+      },
+      referenced_message: { text: 'Payment dependency timed out.' },
+      receive_id_type: 'chat_id',
+      receive_id: 'oc_alerts',
+    }
+    loadRerunSource.mockResolvedValue({
+      agentId: 'agt_1',
+      originalContext: feishuContext,
+      rawAttachments: [],
+    })
+    tryAcquireSlot.mockResolvedValue('queued')
+
+    await maybeScheduleJobRetry({
+      run: makeRun({ triggerSource: 'feishu' }),
+      status: 'failed',
+      error: 'connection reset',
+      maxJobRetries: 2,
+    })
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({ nativeChatContext: feishuContext }),
+      }),
+    )
+    expect(registerPendingContext).toHaveBeenCalledWith(expect.any(String), feishuContext)
+    expect(executeChatRun).not.toHaveBeenCalled()
+  })
+
   it('stamps the retry chain so the replay does not loop forever', async () => {
     await maybeScheduleJobRetry({
       run: makeRun(),

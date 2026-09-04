@@ -34,6 +34,7 @@ const mockStreamingCardGetCardId = vi.hoisted(() => vi.fn().mockReturnValue('car
 const mockRegisterStreamingCard = vi.hoisted(() => vi.fn())
 const mockUnregisterStreamingCard = vi.hoisted(() => vi.fn())
 const mockTouchStreamingCard = vi.hoisted(() => vi.fn())
+const mockLoggerInfo = vi.hoisted(() => vi.fn())
 
 vi.mock('@larksuiteoapi/node-sdk', () => {
   type FakeHandler = (...args: any[]) => any
@@ -152,7 +153,7 @@ vi.mock('../id.js', () => ({
 }))
 
 vi.mock('../logger.js', () => ({
-  logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  logger: { warn: vi.fn(), error: vi.fn(), info: mockLoggerInfo },
 }))
 
 vi.mock('../agent-helpers.js', () => ({
@@ -616,6 +617,16 @@ describe('normalizeFeishuConfig', () => {
   it('旧格式无 replyMode → p2pReplyMode 默认 quote', () => {
     const result = normalizeFeishuConfig({ appId: 'cli_x', appSecret: 's' })
     expect(result.p2pReplyMode).toBe('quote')
+    expect(result.groupInjectReferencedMessage).toBe(false)
+  })
+
+  it('preserves an explicitly enabled regular-group referenced-message setting', () => {
+    const result = normalizeFeishuConfig({
+      appId: 'cli_x',
+      appSecret: 's',
+      groupInjectReferencedMessage: true,
+    })
+    expect(result.groupInjectReferencedMessage).toBe(true)
   })
 
   it('新格式显式 p2pReplyMode 不被 legacy 覆盖', () => {
@@ -2495,7 +2506,14 @@ describe('handleMessage via dispatcher', () => {
     mockDbGet.mockReturnValue(makeAgent())
     await dispatch(
       makeData(
-        { chat_type: 'p2p', message_id: 'om_x', chat_id: 'oc_y', thread_id: 'th_z' },
+        {
+          chat_type: 'p2p',
+          message_id: 'om_x',
+          chat_id: 'oc_y',
+          thread_id: 'th_z',
+          parent_id: 'om_parent',
+          root_id: 'om_root',
+        },
         { sender_type: 'user', sender_id: { open_id: 'ou_abc' } },
       ),
     )
@@ -2506,6 +2524,8 @@ describe('handleMessage via dispatcher', () => {
       chat_type: 'p2p',
       message_id: 'om_x',
       thread_id: 'th_z',
+      parent_id: 'om_parent',
+      root_id: 'om_root',
       sender_type: 'user',
       sender_open_id: 'ou_abc',
     })

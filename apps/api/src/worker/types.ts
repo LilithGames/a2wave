@@ -1,3 +1,5 @@
+import type { ReferencedPromptContext } from '../engine/types.js'
+
 /** Task payload sent to the worker/executor */
 export interface WorkerTaskPayload {
   taskId: string
@@ -6,8 +8,10 @@ export interface WorkerTaskPayload {
   workDir?: string
   chatId?: string
   agentConfig: import('../lib/agent-helpers.js').AgentConfig
-  /** 附加上下文（用于模板变量 {{context}}，渲染为 JSON 字符串） */
+  /** Complete runtime/audit context; the engine sanitizes its {{context}} template view. */
   context?: Record<string, unknown>
+  /** Quoted external material rendered separately from trusted Agent instructions. */
+  referencedPromptContext?: ReferencedPromptContext
   /** Agent 级别环境变量（从 Agent.env 展开） */
   agentEnv?: Record<string, string>
 }

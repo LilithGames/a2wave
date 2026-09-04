@@ -495,7 +495,7 @@ describe('PublishTab — 开场白字段 round-trip', () => {
     expect(sent.feishuConfig.welcomeOnGroupAddedEnabled).toBe(false)
   })
 
-  it('feishuConfig 里的话题根消息设置 load 后提交时原样透传', async () => {
+  it('round-trips referenced-message settings after loading Feishu config', async () => {
     const user = userEvent.setup()
     const onPublishConfirm = vi.fn().mockResolvedValue(undefined)
     const props = {
@@ -516,6 +516,7 @@ describe('PublishTab — 开场白字段 round-trip', () => {
           groupTriggerOnAt: true,
           groupTriggerOnNewMessage: false,
           groupReplyMode: 'quote' as const,
+          groupInjectReferencedMessage: true,
           topicTriggerOnAt: true,
           topicTriggerOnNewTopic: false,
           topicTriggerOnNewComment: false,
@@ -534,6 +535,7 @@ describe('PublishTab — 开场白字段 round-trip', () => {
 
     await waitFor(() => expect(onPublishConfirm).toHaveBeenCalled())
     const sent = onPublishConfirm.mock.calls[0][0]
+    expect(sent.feishuConfig.groupInjectReferencedMessage).toBe(true)
     expect(sent.feishuConfig.topicInjectRootMessage).toBe(true)
     expect(sent.feishuConfig.topicReplyMentionTarget).toBe('topic_creator')
   })
@@ -735,6 +737,30 @@ describe('PublishTab — 飞书话题提醒对象', () => {
     await openChannelConfig(user, 'feishu')
     return within(await screen.findByRole('dialog'))
   }
+
+  it('enables referenced-message content injection for ordinary groups', async () => {
+    const user = userEvent.setup()
+    const dialog = await openFeishuConfig(user, {
+      groupInjectReferencedMessage: true,
+      topicReplyMode: 'topic_reply',
+    })
+
+    expect(dialog.getByRole('checkbox', { name: '携带被回复消息内容' })).toBeChecked()
+    expect(dialog.getByText(/读取该消息的可解析文本/)).toBeInTheDocument()
+  })
+
+  it('includes the message lookup and group-message scopes for referenced-message lookup', async () => {
+    const user = userEvent.setup()
+    const dialog = await openFeishuConfig(user, {
+      groupInjectReferencedMessage: true,
+      topicReplyMode: 'topic_reply',
+    })
+
+    expect(dialog.getByText('im:message')).toBeInTheDocument()
+    expect(dialog.getByText('im:message.group_msg')).toBeInTheDocument()
+    expect(dialog.queryByText('im:message.group_msg:readonly')).not.toBeInTheDocument()
+    expect(dialog.queryByText('im:message:readonly')).not.toBeInTheDocument()
+  })
 
   it('话题回复开启时显示提醒对象单选组', async () => {
     const user = userEvent.setup()

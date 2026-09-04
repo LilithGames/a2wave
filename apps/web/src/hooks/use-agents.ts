@@ -240,6 +240,7 @@ export type FeishuPublishConfig = {
   groupTriggerOnAt: boolean
   groupTriggerOnNewMessage: boolean
   groupReplyMode: 'quote' | 'new' | 'none'
+  groupInjectReferencedMessage: boolean
   // 话题群
   topicTriggerOnAt: boolean
   topicTriggerOnNewTopic: boolean

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 vi.mock('../../engine/index.js', () => ({
   engineRegistry: {
@@ -103,6 +103,23 @@ describe('executeInWorker', () => {
         onUpdate,
         onLogEntry: expect.any(Function),
       }),
+    )
+  })
+
+  it('forwards referenced prompt context without replacing runtime context', async () => {
+    mockEngine.executeStream.mockResolvedValue({ success: true, output: 'ok', durationMs: 0 })
+    const runtimeContext = { referenced_message: { text: 'quoted alert' } }
+    const referencedPromptContext = {
+      source: 'feishu',
+      text: 'quoted alert',
+      truncated: false,
+    }
+    const payload = makePayload({ context: runtimeContext, referencedPromptContext })
+
+    await executeInWorker('task_1', payload)
+
+    expect(mockEngine.executeStream).toHaveBeenCalledWith(
+      expect.objectContaining({ context: runtimeContext, referencedPromptContext }),
     )
   })
 

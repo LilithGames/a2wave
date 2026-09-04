@@ -366,6 +366,7 @@ export function ConfigTab({
         connectionMode: 'agent_card',
         protocolVersion: '1.0',
         callerProvenance: false,
+        referencedContext: false,
         description: '',
         apiKey: '',
         showApiKey: false,

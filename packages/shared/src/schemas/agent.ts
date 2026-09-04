@@ -181,6 +181,9 @@ export const feishuConfigSchema = z
     groupTriggerOnAt: z.boolean().default(true),
     groupTriggerOnNewMessage: z.boolean().default(false),
     groupReplyMode: z.enum(['quote', 'new', 'none']).default('quote'),
+    // Optionally fetch the message quoted by an ordinary group reply and inject
+    // its normalized text into the current Agent turn.
+    groupInjectReferencedMessage: z.boolean().default(false),
     // Topic group settings
     topicTriggerOnAt: z.boolean().default(true),
     topicTriggerOnNewTopic: z.boolean().default(false),
@@ -355,6 +358,8 @@ export const a2aRouteTargetSchema = z.discriminatedUnion('type', [
     protocolVersion: z.enum(['1.0', '0.3']).optional(),
     /** Explicit opt-in for sending caller provenance to a direct A2A 1.0 endpoint. */
     callerProvenance: z.boolean().optional(),
+    /** Explicit declaration that a direct A2A 1.0 endpoint accepts referenced context. */
+    referencedContext: z.boolean().optional(),
     description: z.string().optional(),
     apiKey: z.string().optional(),
   }),

@@ -1466,7 +1466,8 @@ describe('POST /runs/:id/rerun', () => {
       .mockReturnValueOnce(makeSelectChain(feishuRun))
       .mockReturnValueOnce(makeSelectChain(feishuStep))
       .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
-    mockDb.insert.mockReturnValue(makeInsertChain({ id: 'run_new', intent: 'Fix the bug' }))
+    const insertChain = makeInsertChain({ id: 'run_new', intent: 'Fix the bug' })
+    mockDb.insert.mockReturnValue(insertChain)
 
     await app.request('/runs/run_1/rerun', { method: 'POST' })
 
@@ -1476,6 +1477,18 @@ describe('POST /runs/:id/rerun', () => {
       receive_id_type: 'chat_id',
       receive_id: 'chat_123',
     })
+    expect(insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({
+          nativeChatContext: {
+            chat_id: 'chat_123',
+            sender_id: 'user_1',
+            receive_id_type: 'chat_id',
+            receive_id: 'chat_123',
+          },
+        }),
+      }),
+    )
   })
 
   it('does not overwrite receive_id_type when already present in Feishu context', async () => {
@@ -1500,6 +1513,145 @@ describe('POST /runs/:id/rerun', () => {
       receive_id_type: 'open_id',
       receive_id: 'user_456',
     })
+  })
+
+  it('recovers Feishu context from execution metadata when no step was persisted', async () => {
+    const feishuRun = {
+      ...ORIGINAL_RUN,
+      status: 'cancelled',
+      triggerSource: 'feishu',
+      executionMetadata: {
+        nativeChatContext: {
+          chat_id: 'chat_current',
+          parent_id: 'om_alert',
+          referenced_message: { text: 'Current alert' },
+        },
+      },
+    }
+    const insertChain = makeInsertChain({ id: 'run_new', intent: 'Fix the bug' })
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(feishuRun))
+      .mockReturnValueOnce(makeSelectChain(undefined))
+      .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+    mockDb.insert.mockReturnValue(insertChain)
+
+    await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+    const expectedContext = {
+      chat_id: 'chat_current',
+      parent_id: 'om_alert',
+      referenced_message: { text: 'Current alert' },
+      receive_id_type: 'chat_id',
+      receive_id: 'chat_current',
+    }
+    expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), expectedContext)
+    expect(insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({ nativeChatContext: expectedContext }),
+      }),
+    )
+  })
+
+  it('persists A2A referenced context for a rerun', async () => {
+    const a2aContext = {
+      channel: { channel_type: 'a2a' },
+      referenced_message: { source: 'feishu', text: 'Forwarded alert' },
+    }
+    const a2aRun = {
+      ...ORIGINAL_RUN,
+      status: 'cancelled',
+      triggerSource: 'a2a',
+    }
+    const a2aStep = { ...FIRST_STEP, input: { message: 'Fix the bug', context: a2aContext } }
+    const insertChain = makeInsertChain({ id: 'run_new', intent: 'Fix the bug' })
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(a2aRun))
+      .mockReturnValueOnce(makeSelectChain(a2aStep))
+      .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+    mockDb.insert.mockReturnValue(insertChain)
+
+    await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+    expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), a2aContext)
+    expect(insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionMetadata: expect.objectContaining({ nativeChatContext: a2aContext }),
+      }),
+    )
+  })
+
+  it('prefers queued-turn native context over context from the previous step', async () => {
+    const queuedFeishuRun = {
+      ...ORIGINAL_RUN,
+      status: 'cancelled',
+      triggerSource: 'feishu',
+      intent: 'Current turn',
+      executionMetadata: {
+        queuedTurn: true,
+        nativeChatContext: {
+          chat_id: 'chat_current',
+          parent_id: 'om_current_alert',
+          referenced_message: { text: 'Current alert' },
+        },
+      },
+    }
+    const previousStep = {
+      ...FIRST_STEP,
+      input: {
+        message: 'Previous turn',
+        context: {
+          chat_id: 'chat_previous',
+          parent_id: 'om_previous_alert',
+          referenced_message: { text: 'Previous alert' },
+        },
+      },
+    }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(queuedFeishuRun))
+      .mockReturnValueOnce(makeSelectChain(previousStep))
+      .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+    mockDb.insert.mockReturnValue(makeInsertChain({ id: 'run_new', intent: 'Current turn' }))
+
+    await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+    expect(mockExecuteChatRun).toHaveBeenCalledWith(
+      'agt_1',
+      expect.any(String),
+      expect.objectContaining({
+        chat_id: 'chat_current',
+        parent_id: 'om_current_alert',
+        referenced_message: { text: 'Current alert' },
+      }),
+    )
+  })
+
+  it('does not reuse previous-step context when a queued turn has no persisted context', async () => {
+    const queuedRunWithoutContext = {
+      ...ORIGINAL_RUN,
+      status: 'cancelled',
+      triggerSource: 'feishu',
+      intent: 'Current turn',
+      executionMetadata: { queuedTurn: true },
+    }
+    const previousStep = {
+      ...FIRST_STEP,
+      input: {
+        message: 'Previous turn',
+        context: {
+          chat_id: 'chat_previous',
+          referenced_message: { text: 'Previous alert' },
+        },
+      },
+    }
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(queuedRunWithoutContext))
+      .mockReturnValueOnce(makeSelectChain(previousStep))
+      .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+    mockDb.insert.mockReturnValue(makeInsertChain({ id: 'run_new', intent: 'Current turn' }))
+
+    await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+    expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', expect.any(String), undefined)
   })
 
   it('passes undefined context when step has no context field', async () => {
