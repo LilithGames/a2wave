@@ -67,7 +67,17 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
+  requeueForResume(
+    runId: string,
+    interruptionCode?: string,
+    /**
+     * Fences the transition on the owner the caller judged dead. Omitted by
+     * startup recovery, which is the previous owner itself; the orphaned-run
+     * reaper passes it, because a peer may re-promote the row under its own id
+     * between the liveness verdict and this write.
+     */
+    expectedOwnerInstanceId?: string,
+  ): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -394,6 +404,31 @@ export async function recoverOnStartup(
     if (hooks.recoverInFlight !== false) {
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
+        // Feishu never resumes here, ahead of the resume check so no attempt is
+        // burned on a decision already made. A requeued row is promoted by the
+        // scheduleNext below through the generic executeChatRun path, and that
+        // path cannot rebuild a Feishu reply target: Feishu is not a native
+        // chat channel, so nothing restores `executionMetadata.nativeChatContext`,
+        // and run-lifecycle's reply-by-context fallback needs a `receive_id`
+        // the queued row does not carry. The resumed run would then finish in
+        // silence — and worse, by the time replayPendingFeishuMessages runs it
+        // is 'running' again, so the replay skips it ('prior-run-running') and
+        // the user never hears back at all.
+        //
+        // Failing it instead hands the message to the feishu_pending_messages
+        // replay, which rebuilds the full Feishu context (streaming card, quote
+        // target, reply mode) and does answer. The price is that the replay
+        // opens a fresh provider session — lookupPreviousChatId only resolves
+        // *completed* runs, so the interrupted run's liveChatId is invisible to
+        // it — and side effects can therefore be repeated. That trade is taken
+        // deliberately: a repeated turn is recoverable, a silent one is not.
+        // Lifting this requires the replay path to carry the interrupted run's
+        // liveChatId into the run it creates; until then, do not resume Feishu.
+        if (run.triggerSource === 'feishu') {
+          await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
+          stats.runningAborted++
+          continue
+        }
         // Requeue rather than abandon when the run recorded the session it was
         // already in: the next turn continues from there instead of replaying a
         // prompt whose side effects may already have landed.
@@ -451,7 +486,9 @@ export async function recoverOnStartup(
       // feishu_pending_messages row is replayed separately after Feishu
       // connections come back. Fail the stale queued rows here so scheduleNext
       // does NOT promote them via the generic executeChatRun path (which would
-      // run without Feishu context and then block replay).
+      // run without Feishu context and then block replay). The running loop
+      // above never adds to this set — a running Feishu row is failed outright
+      // rather than requeued, for exactly the same reason.
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
         if (run.triggerSource === 'feishu') {

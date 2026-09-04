@@ -12,8 +12,10 @@ vi.mock('../kb-sync.js', () => ({
 }))
 
 const syncMcpToWorkspaceAtPathAsyncMock = vi.fn()
+const cleanupManagedMcpConfigAsyncMock = vi.fn()
 vi.mock('../mcp-sync.js', () => ({
   syncMcpToWorkspaceAtPathAsync: (...a: unknown[]) => syncMcpToWorkspaceAtPathAsyncMock(...a),
+  cleanupManagedMcpConfigAsync: (...a: unknown[]) => cleanupManagedMcpConfigAsyncMock(...a),
 }))
 
 const syncSkillsToWorkspaceAsyncMock = vi.fn()
@@ -51,8 +53,7 @@ import {
 } from '../../lib/agent-memory-token.js'
 import { BaseAgentEngine } from '../base-engine.js'
 import { assembleSystemPrompt, buildPromptParts } from '../prompt-builder.js'
-import type { AgentRuntimeContext } from '../types.js'
-import type { ExecuteResult, StreamExecuteRequest } from '../types.js'
+import type { AgentRuntimeContext, ExecuteResult, StreamExecuteRequest } from '../types.js'
 
 function makeRuntimeContext(agentId = 'agt_test'): AgentRuntimeContext {
   return {
@@ -143,6 +144,10 @@ beforeEach(() => {
   clearAgentTokenStoreForTest()
   syncKbDocsToWorkspaceAsyncMock.mockReset()
   syncMcpToWorkspaceAtPathAsyncMock.mockReset()
+  // The real writer resolves with "this call took a reference on the managed
+  // config", which is what run-end cleanup releases.
+  syncMcpToWorkspaceAtPathAsyncMock.mockResolvedValue(true)
+  cleanupManagedMcpConfigAsyncMock.mockReset()
   syncSkillsToWorkspaceAsyncMock.mockReset()
   isModelErrorMock.mockReset()
   selectFallbackModelMock.mockReset()
@@ -451,6 +456,168 @@ describe('BaseAgentEngine.executeStream — prepare* gating', () => {
     )
     // Byte-identical call shape for every other provider.
     expect(syncMcpToWorkspaceAtPathAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json', [])
+  })
+
+  it('deletes the MCP config it wrote once the run finishes', async () => {
+    const engine = new TestEngine('claude')
+    await engine.executeStream(
+      makeReq({
+        agentConfig: { mcpConfigPath: '.mcp.json', resolvedMcpServers: [{ id: 'mcp_1' }] } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('deletes the MCP config even when the run fails', async () => {
+    const engine = new TestEngine('claude', async () => {
+      throw new Error('boom')
+    })
+    isModelErrorMock.mockReturnValue(false)
+    await engine.executeStream(
+      makeReq({
+        agentConfig: { mcpConfigPath: '.mcp.json', resolvedMcpServers: [] } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('cleans up the MCP config when a sibling prepare step fails', async () => {
+    // prepareMcpServers has already written plaintext credentials into the
+    // workspace by the time a sibling prepare step rejects; the config (and the
+    // in-process refcount) must not be left behind.
+    const engine = new TestEngine('claude')
+    syncSkillsToWorkspaceAsyncMock.mockRejectedValue(new Error('skill sync failed'))
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            skillsDir: '.claude/skills',
+            resolvedSkills: [],
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('skill sync failed')
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('cleans up a sync still in flight when a sibling prepare step fails', async () => {
+    // The sibling rejects while `prepareMcpServers` is mid-write, so the sync
+    // has taken no reference yet when the outer finally runs. Cleanup must wait
+    // for the write to land instead of walking away from the credentials it is
+    // about to put on disk.
+    const engine = new TestEngine('claude')
+    let landSync: () => void = () => {}
+    syncMcpToWorkspaceAtPathAsyncMock.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          landSync = () => resolve(true)
+        }),
+    )
+    syncSkillsToWorkspaceAsyncMock.mockRejectedValue(new Error('skill sync failed'))
+
+    const run = engine.executeStream(
+      makeReq({
+        agentConfig: {
+          skillsDir: '.claude/skills',
+          resolvedSkills: [],
+          mcpConfigPath: '.mcp.json',
+          resolvedMcpServers: [{ id: 'mcp_1' }],
+        } as never,
+      }),
+    )
+    const settled = expect(run).rejects.toThrow('skill sync failed')
+    // Give the sibling rejection time to reach the outer finally, then let the
+    // in-flight write complete.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    landSync()
+    await settled
+
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('does not release a refcount when its own MCP sync never completed', async () => {
+    // A never-incremented refcount must stay untouched: decrementing it would
+    // pull a concurrent same-worktree run's config out from under it.
+    const engine = new TestEngine('claude')
+    syncMcpToWorkspaceAtPathAsyncMock.mockRejectedValue(new Error('mcp sync failed'))
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('mcp sync failed')
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
+  })
+
+  it('fails the run when the workspace MCP config is tracked by the repository', async () => {
+    // The writer refuses rather than staging bearer tokens into a tracked file.
+    // The run must surface that, not lose its MCP servers silently.
+    const engine = new TestEngine('claude')
+    syncMcpToWorkspaceAtPathAsyncMock.mockRejectedValue(
+      new Error('Refusing to write MCP credentials into a repository-tracked ".mcp.json"'),
+    )
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('.mcp.json')
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
+  })
+
+  it('releases nothing when the sync took no reference on the config', async () => {
+    // A tracked config with no managed entries to inject is left untouched, so
+    // there is no reference for run-end cleanup to release — decrementing one
+    // would delete a concurrent same-worktree run's config.
+    const engine = new TestEngine('claude')
+    syncMcpToWorkspaceAtPathAsyncMock.mockResolvedValue(false)
+    await engine.executeStream(
+      makeReq({
+        agentConfig: { mcpConfigPath: '.mcp.json', resolvedMcpServers: [] } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
+  })
+
+  it('cleans up the MCP config when prompt enrichment fails', async () => {
+    const engine = new TestEngine('claude')
+    prepareRuntimeContextMock.mockImplementation(() => {
+      throw new Error('runtime context failed')
+    })
+    await expect(
+      engine.executeStream(
+        makeReq({
+          agentConfig: {
+            mcpConfigPath: '.mcp.json',
+            resolvedMcpServers: [{ id: 'mcp_1' }],
+          } as never,
+        }),
+      ),
+    ).rejects.toThrow('runtime context failed')
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledWith('/work', '.mcp.json')
+  })
+
+  it('does not clean up a config it never wrote', async () => {
+    const engine = new TestEngine('cursor')
+    await engine.executeStream(
+      makeReq({
+        agentConfig: {
+          mcpDelivery: { mode: 'runtime-injection' },
+          resolvedMcpServers: [{ id: 'mcp_1' }],
+        } as never,
+      }),
+    )
+    expect(cleanupManagedMcpConfigAsyncMock).not.toHaveBeenCalled()
   })
 
   it('skips KB sync when there are no docs', async () => {

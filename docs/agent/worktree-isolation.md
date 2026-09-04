@@ -54,6 +54,111 @@ stopped sharing a working directory because a run of Agent B re-mounting
   excludes them verbatim, and exempting a whole shared root would let
   `reset --hard` silently revert a repo-tracked `.claude/settings.json` the agent
   edited.
+- **Git must be told too.** Workspace creation *and* reuse append the same set,
+  anchored (`/.mcp.json`), to `git rev-parse --git-path info/exclude`,
+  idempotently. The dirty check treating these paths as invisible only bound the
+  platform; git still offered them to `git add -A`, and the MCP config holds
+  Authorization bearer tokens and stdio API keys verbatim — so "commit and push
+  my changes" published the MCP owner's credentials. `--git-path` resolves to the
+  **common** repository's exclude file, which is intended: the shared checkout is
+  a run's fallback workspace and needs the same cover.
+- **An ignore rule only ever covers UNTRACKED files, so a repository that
+  *tracks* its own `.mcp.json` gets no cover from the exclude at all.** Teams
+  legitimately commit one to share non-secret MCP definitions; the platform's
+  write then lands as a modification to a tracked file, `git add -A` stages it,
+  and the credentials reach the remote anyway. `isPathTrackedByGit`
+  (engine/mcp-sync.ts, a `git ls-files` probe) is asked before every credential
+  write, and the write **refuses** — `TrackedMcpConfigError`, which fails the run
+  from the prepare phase and names the file plus the `git rm --cached` that fixes
+  it.
+- **Trackedness is a question about the FILE, not about the pathname.** git
+  matches an index entry as an exact, case-sensitive byte string; the write goes
+  wherever the *filesystem* resolves the same name, and the two identities
+  diverge in ways that each reproduce the leak in full. `probeMcpConfigTarget`
+  therefore resolves first and asks second:
+  - **symlinks**, at the file or at any parent directory component (untracked
+    `.mcp.json` → tracked `config/team-mcp.json`), are resolved by `realpath`
+    before git is consulted — including a target that does not exist yet (the
+    deepest existing ancestor is resolved and the missing tail rejoined) and a
+    dangling link (followed by hand, since the write would follow it too);
+  - resolution can move the target into another directory of the same
+    repository, so git is asked **relative to the work tree root**
+    (`rev-parse --show-toplevel`), not relative to `workDir`;
+  - **case folding** (macOS/Windows default: `.MCP.JSON` tracked, `.mcp.json`
+    written, one inode) is settled by comparing **`dev`+`ino` identity** between
+    the resolved target and each tracked entry of its containing directory —
+    exact on every platform, and it never has to guess whether the filesystem
+    folds case. Only when there is no inode to compare (the target does not
+    exist yet) does a case-insensitive basename match decide, and it decides
+    **tracked**: refusing a write is recoverable, publishing a credential is
+    not.
+  - The directory listing uses a `:(glob)<dir>/*` pathspec so a root-level
+    `.mcp.json` does not walk the whole index.
+- **A path resolving outside the work tree is refused, not followed** —
+  `McpConfigOutsideWorkTreeError`. This writer follows a config path into the
+  workspace, never out of it: outside, the trackedness question cannot even be
+  asked, and run-end cleanup reasons about a file the run does not own.
+- **Failing is the only honest option here.** None of the workspace-file engines
+  — Claude Code, Cursor, Qoder, Trae, Kimi — exposes a flag pointing at an MCP
+  config outside the working tree, so there is no runtime-injection path to fall
+  back to the way Codex (`-c mcp_servers=…`) and OpenCode
+  (`OPENCODE_CONFIG_CONTENT`) already have. The alternatives are writing the
+  secret (the leak) or silently dropping the Agent's MCP servers (an Agent that
+  behaves differently with no explanation). If one of those CLIs ever gains an
+  out-of-tree flag, that engine should switch to it and stop needing this refusal
+  — and, if all of them do, the exclude and marker machinery becomes dead.
+- The refusal is scoped to a write that would actually carry credentials: a
+  tracked config with **no** managed entries to inject is left byte-identical and
+  takes no reference, so the sync resolves `false` and run-end cleanup releases
+  nothing. That is what `syncMcpToWorkspaceAtPathAsync`'s boolean result means —
+  "this call took a reference the cleanup must release" — and why decrementing on
+  a skipped write would delete a concurrent same-worktree run's config.
+- The probe treats "not a git repository" and a missing `git` binary as
+  untracked (P4 workspaces, a multi-repo workspace root: nothing there can be
+  committed by accident) and lets any other git failure propagate, since
+  inferring "untracked" from an unexplained error is exactly the write it exists
+  to prevent.
+- The MCP config is also **deleted at run end** (`cleanupManagedMcpConfigAsync`,
+  from the engine's `finally`), so credentials do not sit in a persistent
+  worktree between runs. The sidecar marker decides what may go: a file that
+  predates any sync is user-authored and only loses the managed entries whose
+  fingerprint still matches. Sibling runs sharing the worktree hold references,
+  so the last one out removes the file.
+- **That reference count is per process, so the marker also carries the writing
+  instance id.** With PostgreSQL, a shared workspace volume and
+  `maxConcurrency > 1`, the same Agent can execute on two replicas at once
+  against this one worktree — admission is a *count* under the global advisory
+  lock, not an exclusion, and `resolveWorkDir` deliberately performs no
+  occupancy check. Each replica's count then describes only its own runs, so
+  "last one out" on replica A says nothing about replica B. Cleanup therefore
+  releases nothing unless it owns the marker: an absent stamp (written before
+  stamping existed) or this instance's own id — which also covers a previous
+  life of the same container, so a single replica always reclaims its own
+  credentials — proceeds; a peer's stamp is left strictly alone, config and
+  marker both, since removing the marker would leave a credential file no later
+  cleanup is allowed to touch.
+- **Known limitation, deliberately not closed here.** The check is a
+  read-modify-write on a plain file, not a durable mark under the SCM mutation
+  lock, so a peer's sync landing inside this cleanup's own critical section can
+  still be deleted, and a lost race in the other direction leaves the config
+  behind until the next run in that worktree re-syncs and releases it. Both
+  degrade to "a file the next run overwrites" rather than to a credential that
+  survives indefinitely on a single-replica deployment. Full arbitration would
+  mean giving the MCP config the same reservation machinery as workspace
+  removal (see [scm-storage-invariants.md](./scm-storage-invariants.md)); that
+  cost is only justified if this file ever needs a stronger guarantee than
+  "eventually removed".
+- Both the sync and the release run under a **keyed lock on the absolute config
+  path** (`withKeyedLock`, lib/keyed-mutex.ts). Each is a read-modify-write
+  spanning several awaits, so unserialised a sibling's fresh config could land
+  inside another run's cleanup window and then be deleted by it; the reference
+  count is therefore also re-read inside the critical section.
+- Cleanup **waits for a sync still in flight**. A sibling prepare step rejecting
+  mid-write leaves the engine's `finally` looking at a reference that has not
+  been taken yet: walking away there would let the write land credentials in the
+  worktree with nothing left to release them, and every later run in that
+  worktree would then see a non-zero reference count and skip cleanup for the
+  lifetime of the process.
 - Workspace **removal** needs root names instead and derives them —
   `platformWorkspaceEntries()` = top segment of each path. It deletes the
   registered paths first and **logs by name** anything left in a shared root that

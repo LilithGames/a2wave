@@ -193,12 +193,48 @@ export async function probeGitTriggerCli(
     }
   }
 
+  // Only reported when the report can name the account *unambiguously*; see
+  // `resolveAccount`. Callers treat a missing account as "ask the API", never as
+  // "there is no account".
+  const account = resolveAccount(combined, scoped, host?.trim())
+
   return {
     ...base,
     installed: true,
     authenticated: true,
-    ...(parseAccount(scoped) ? { account: parseAccount(scoped) } : {}),
+    ...(account ? { account } : {}),
   }
+}
+
+/**
+ * The login the report names, or undefined when it cannot name exactly one.
+ *
+ * With a host to scope by, the block for that host *is* the answer: it describes
+ * the credential the channel will use. With no host, the report still covers
+ * every configured host at once, and block order is the CLI's business — reading
+ * the first "Logged in to" line off a `gh` logged into both an enterprise host
+ * and github.com names whichever came first, which need not be the host the
+ * token targets. Reporting that wrong login is worse than reporting none: the
+ * self-comment guard then compares the Agent's own replies against a stranger's
+ * name and suppresses nothing, while `fetchForgeAccount`'s `api user` fallback —
+ * which answers for the host actually in play — is skipped precisely because an
+ * account was found.
+ *
+ * A single-host report is unambiguous, so the common case still costs no API
+ * call.
+ */
+function resolveAccount(combined: string, scoped: string, host?: string): string | undefined {
+  if (host) return parseAccount(scoped)
+  return loggedInHosts(combined).length > 1 ? undefined : parseAccount(combined)
+}
+
+/** Distinct hosts the report says it is logged in to, lowercased. */
+function loggedInHosts(output: string): string[] {
+  const hosts = new Set<string>()
+  for (const match of output.matchAll(/Logged in to (\S+) (?:as|account) [^\s(]+/gi)) {
+    hosts.add(match[1].toLowerCase())
+  }
+  return [...hosts]
 }
 
 /**
@@ -299,8 +335,15 @@ function assertProbeUsable(
   }
 }
 
-/** Raw `glab`/`gh` REST passthrough returning parsed JSON. */
-async function callApi(
+/**
+ * Raw `glab`/`gh` REST passthrough returning parsed JSON of any shape.
+ *
+ * Split out from `callApi` so endpoints that legitimately return something other
+ * than a merge request listing — `user`, a request's `notes` — can reuse the
+ * spawn, banner-tolerant parse and auth classification without inheriting the
+ * listing's array-of-`iid` shape check, which would reject them outright.
+ */
+async function callApiRaw(
   provider: GitTriggerProvider,
   path: string,
   host?: string,
@@ -331,6 +374,21 @@ async function callApi(
       'failed',
     )
   }
+
+  return parsed
+}
+
+/**
+ * The merge/pull request listing passthrough: `callApiRaw` plus the shape checks
+ * that make a malformed response a loud failure rather than an empty listing.
+ */
+async function callApi(
+  provider: GitTriggerProvider,
+  path: string,
+  host?: string,
+): Promise<unknown[]> {
+  const binary = CLI_BINARY[provider]
+  const parsed = await callApiRaw(provider, path, host)
 
   /**
    * The listing endpoints return an array. Anything else is an error envelope
@@ -445,10 +503,36 @@ interface GitHubPullRequestNode {
   headRefOid?: string
   headRefName?: string
   baseRefName?: string
-  comments?: { totalCount?: number }
-  reviews?: { totalCount?: number }
-  reviewThreads?: { totalCount?: number }
+  comments?: { totalCount?: number; nodes?: GitHubAuthoredNode[] }
+  reviews?: { totalCount?: number; nodes?: GitHubAuthoredNode[] }
+  reviewThreads?: {
+    totalCount?: number
+    nodes?: { comments?: { nodes?: GitHubAuthoredNode[] } }[]
+  }
   author?: { login?: string }
+}
+
+/** The `createdAt` + `author` pair every GitHub discussion node carries. */
+interface GitHubAuthoredNode {
+  createdAt?: string
+  author?: { login?: string }
+}
+
+/**
+ * The login behind the newest of a set of discussion nodes.
+ *
+ * GitHub splits discussion across three collections and `commented` sums all
+ * three, so "who wrote the newest comment" cannot be read off any single one: a
+ * review posted after the last conversation comment is the newer event, and
+ * asking only `comments` would attribute it to whoever spoke before.
+ */
+function newestAuthor(nodes: (GitHubAuthoredNode | undefined)[]): string | undefined {
+  let newest: GitHubAuthoredNode | undefined
+  for (const node of nodes) {
+    if (!node?.author?.login) continue
+    if (!newest || (node.createdAt ?? '') > (newest.createdAt ?? '')) newest = node
+  }
+  return newest?.author?.login
 }
 
 /**
@@ -484,6 +568,15 @@ function normalizeGitLab(mr: GitLabMergeRequest, spansRepositories: boolean): Ob
 }
 
 function normalizeGitHub(pr: GitHubPullRequestNode): ObservedRequest {
+  // Free: the same GraphQL call already walks all three discussion collections
+  // for their counts, so asking for the newest node of each costs no extra
+  // request — which is what keeps the self-trigger guard within the one-call
+  // budget this channel is built around.
+  const lastCommentAuthor = newestAuthor([
+    pr.comments?.nodes?.at(-1),
+    pr.reviews?.nodes?.at(-1),
+    pr.reviewThreads?.nodes?.at(-1)?.comments?.nodes?.at(-1),
+  ])
   return {
     number: pr.number,
     sha: pr.headRefOid ?? '',
@@ -505,6 +598,7 @@ function normalizeGitHub(pr: GitHubPullRequestNode): ObservedRequest {
     ...(pr.baseRefName ? { targetBranch: pr.baseRefName } : {}),
     ...(pr.updatedAt ? { updatedAt: pr.updatedAt } : {}),
     isDraft: Boolean(pr.isDraft),
+    ...(lastCommentAuthor ? { lastCommentAuthor } : {}),
   }
 }
 
@@ -530,12 +624,20 @@ export function normalizeRequests(
  * One request returns everything the diff needs — head SHA, both branch names,
  * conversation/review counts, draft state and author — so the poll stays at one
  * call per repository per tick, the property the whole channel depends on.
+ *
+ * `last:1` on each discussion collection carries the newest comment's author in
+ * the same response, which is what lets the self-trigger guard tell the
+ * channel's own `gh pr comment` from a colleague's without a follow-up call.
+ * `totalCount` is unaffected by the slice, so the existing comment arithmetic is
+ * unchanged.
  */
 const GH_PR_QUERY = `query($owner:String!,$name:String!,$first:Int!){
   repository(owner:$owner,name:$name){
     pullRequests(states:OPEN,first:$first,orderBy:{field:UPDATED_AT,direction:DESC}){
       nodes{number title url updatedAt isDraft headRefOid headRefName baseRefName
-            comments{totalCount} reviews{totalCount} reviewThreads{totalCount}
+            comments(last:1){totalCount nodes{createdAt author{login}}}
+            reviews(last:1){totalCount nodes{createdAt author{login}}}
+            reviewThreads(last:1){totalCount nodes{comments(last:1){nodes{createdAt author{login}}}}}
             author{login}}}}}`
 
 /** Splits `owner/repo` for the GraphQL variables; rejects anything else. */
@@ -662,6 +764,96 @@ export async function fetchRequestState(
 }
 
 /**
+ * The forge login the CLI's own token speaks as, or undefined if unknowable.
+ *
+ * This is the channel's self-knowledge: an Agent that answers a merge request
+ * with `glab mr note` raises the comment count itself, and without a name to
+ * compare against, the next poll reads its own comment as somebody else's and
+ * runs again — forever.
+ *
+ * `auth status` is asked first because it is already parsed for the config UI
+ * and names the account without an API round trip. The `user` endpoint is the
+ * fallback for CLI versions whose report prints only "Token found".
+ *
+ * **Never throws, and undefined means "fail open".** A channel that goes silent
+ * because its auth probe broke is a worse failure than one that occasionally
+ * wakes for its own comment: the caller therefore fires on undefined.
+ */
+export async function fetchForgeAccount(
+  provider: GitTriggerProvider,
+  host?: string,
+): Promise<string | undefined> {
+  try {
+    const status = await probeGitTriggerCli(provider, host)
+    if (!status.authenticated) return undefined
+    if (status.account) return status.account
+
+    const body = (await callApiRaw(provider, 'user', host)) as {
+      login?: string
+      username?: string
+    } | null
+    // `gh` spells it `login`, `glab` spells it `username`; the endpoint path is
+    // the same, so only the field name has to be forked.
+    return body?.login || body?.username || undefined
+  } catch (err) {
+    logger.warn(
+      { err, provider, host },
+      'git-trigger: could not resolve the forge account; self-authored comments will not be filtered',
+    )
+    return undefined
+  }
+}
+
+/**
+ * Newest comment per page asked of the GitLab notes endpoint.
+ *
+ * One would be cheaper but is often a **system** note ("added 1 commit",
+ * "assigned to @x"), which never moved `user_notes_count` and so is never the
+ * comment that fired the event. A small window makes finding the newest real
+ * note reliable while staying a single call.
+ */
+const NOTES_PAGE_SIZE = 20
+
+/** GitLab merge request note as returned by `/merge_requests/:iid/notes`. */
+interface GitLabNote {
+  system?: boolean
+  author?: { username?: string }
+}
+
+/**
+ * Who wrote the newest comment on one merge/pull request.
+ *
+ * Only ever asked for a request whose comment count actually moved, and the
+ * per-tick run cap bounds that to `GIT_TRIGGER_MAX_RUNS_PER_TICK` calls — this
+ * is not a per-request sweep. GitHub needs no call at all: `listOpenRequests`
+ * already carried the author back in the listing.
+ *
+ * **Never throws, and undefined means "fail open"** — same reasoning as
+ * `fetchForgeAccount`.
+ */
+export async function fetchLatestCommentAuthor(
+  provider: GitTriggerProvider,
+  project: string,
+  number: number,
+  host?: string,
+): Promise<string | undefined> {
+  if (provider === 'gh') return undefined
+  try {
+    const path = `projects/${encodeURIComponent(project)}/merge_requests/${number}/notes?per_page=${NOTES_PAGE_SIZE}&order_by=created_at&sort=desc`
+    const notes = await callApiRaw('glab', path, host)
+    if (!Array.isArray(notes)) return undefined
+    const newest = (notes as GitLabNote[]).find((note) => !note.system && note.author?.username)
+    return newest?.author?.username
+  } catch (err) {
+    logger.warn(
+      { err, provider, project, number },
+      'git-trigger: could not resolve the newest comment author; treating the comment as somebody else’s',
+    )
+    return undefined
+  }
+}
+
+/**
  * Build the GitLab listing path for one watch entry and page.
  *
  * The three scopes are three collections, not three filters — GitLab exposes a
@@ -713,7 +905,7 @@ async function fetchGitLabPages(
   const payload: unknown[] = []
 
   for (let page = 1; page <= maxPages; page++) {
-    const batch = (await callApi('glab', buildGitLabListPath(entry, page), host)) as unknown[]
+    const batch = await callApi('glab', buildGitLabListPath(entry, page), host)
     payload.push(...batch)
     // A short page is the forge saying there is nothing after it. This is the
     // only proof of completeness available, since the page-count headers are not

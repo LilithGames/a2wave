@@ -1,8 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CliError } from '../../errors.js'
 
 const mockLoadConfig = vi.fn()
 vi.mock('../../config.js', () => ({
   loadConfig: () => mockLoadConfig(),
+  resolveCredential: (url: string) => {
+    // Mirrors the real resolver's one load-bearing rule: the legacy top-level
+    // token belongs to `config.url` and to no other instance.
+    const key = url.replace(/\/+$/, '')
+    const config = mockLoadConfig() as { url?: string; token?: string } | null
+    if (config?.token && config.url && config.url.replace(/\/+$/, '') === key) return config.token
+    throw new CliError(
+      config?.token ? `No stored credential for ${key}.` : 'Not logged in. Run: a2wave login',
+      {
+        type: 'auth',
+        subtype: config?.token ? 'no_credential_for_url' : 'not_logged_in',
+        hint: `a2wave login --url ${key}`,
+      },
+    )
+  },
 }))
 
 const mockExistsSync = vi.fn<(p: string) => boolean>()
@@ -207,5 +223,17 @@ describe('a2wave status', () => {
     const out = await runStatus({ url: 'http://from-flag' })
     expect(out).toContain('http://from-flag')
     expect(out).toContain('source: flag')
+  })
+
+  it('names the wrong-instance credential instead of claiming you are logged out', async () => {
+    // The stored login belongs to another instance, so the diagnostic must say
+    // so rather than sending the user through a login they already completed.
+    const jwt = makeJwt('HS256', { exp: Math.floor(Date.now() / 1000) + 3600 })
+    mockLoadConfig.mockReturnValue({ url: 'http://instance-a.test', token: jwt })
+    mockFetch.mockResolvedValueOnce(new Response('ok', { status: 200 }))
+    const out = await runStatus({ url: 'http://instance-b.test' })
+    expect(out).toContain('No stored credential for http://instance-b.test')
+    expect(out).toContain('a2wave login --url http://instance-b.test')
+    expect(out).not.toContain(jwt)
   })
 })

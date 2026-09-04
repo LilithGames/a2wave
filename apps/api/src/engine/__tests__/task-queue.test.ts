@@ -760,6 +760,98 @@ describe('recoverOnStartup', () => {
     expect(stats.feishuQueuedReset).toBe(1)
   })
 
+  it('fails a running Feishu run for replay instead of resuming it into a silent promotion', async () => {
+    // Stateful fake, wired end to end: getRunsByStatus reflects every write and
+    // getOldestQueuedRun serves whatever is queued, so this pass's own
+    // promotion is exercised rather than stubbed away.
+    //
+    // Resuming a Feishu run here is what must NOT happen. The requeued row is
+    // promoted a few lines later through the generic executeChatRun path, which
+    // cannot rebuild Feishu reply context: Feishu is not a native chat channel,
+    // so nothing restores executionMetadata.nativeChatContext, and the
+    // reply-by-context fallback needs a receive_id the row does not carry. By
+    // the time replayPendingFeishuMessages runs, the row is 'running' again and
+    // the replay skips it as 'prior-run-running' — the run completes and the
+    // user is never answered.
+    const run = {
+      id: 'run_feishu_running',
+      triggerSource: 'feishu',
+      triggerSessionId: 'msg_1',
+      status: 'running',
+      resumePending: undefined as string | undefined,
+    }
+    const row = () => ({
+      id: run.id,
+      triggerSource: run.triggerSource,
+      triggerSessionId: run.triggerSessionId,
+    })
+    const canResume = vi.fn().mockResolvedValue(true)
+    const db = createMockDb({
+      countRunsByStatus: vi.fn(async (_agentId, status) => (run.status === status ? 1 : 0)),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn(async () =>
+        run.status === 'queued' ? { id: run.id, initiatorAgentId: 'agt_1' } : undefined,
+      ),
+      getRunsByStatus: vi.fn(async (_agentId, status) => (run.status === status ? [row()] : [])),
+      requeueForResume: vi.fn(async (runId: string, interruptionCode?: string) => {
+        if (runId !== run.id) return false
+        run.status = 'queued'
+        run.resumePending = interruptionCode
+        return true
+      }),
+      failRunWithStructuredReason: vi.fn(async (runId: string) => {
+        if (runId === run.id) run.status = 'failed'
+      }),
+      updateRunStatus: vi.fn(async (runId: string, status: string) => {
+        if (runId === run.id) run.status = status
+      }),
+    })
+    const onExecute = vi.fn()
+
+    const stats = await recoverOnStartup(db, onExecute, () => ['agt_1'], { canResume })
+
+    expect(run.status).toBe('failed')
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledExactlyOnceWith(
+      run.id,
+      FAILURE_REASONS.SERVER_RESTART_DURING_EXEC,
+    )
+    // No resume was attempted at all: asking would burn one of the run's three
+    // attempts on a decision recovery has already made.
+    expect(canResume).not.toHaveBeenCalled()
+    expect(db.requeueForResume).not.toHaveBeenCalled()
+    // Nothing promoted it, so the pending-message replay still owns the answer.
+    expect(onExecute).not.toHaveBeenCalled()
+    expect(stats.runningAborted).toBe(1)
+    expect(stats.runningResumed).toBe(0)
+    expect(stats.queuedPromoted).toBe(0)
+  })
+
+  it('still resumes a running non-Feishu run rather than failing it', async () => {
+    // The companion of the test above: the Feishu carve-out is about a reply
+    // path only the replay can rebuild, so no other trigger source loses resume.
+    const run = { id: 'run_api_running', status: 'running' }
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_agentId, status) =>
+        run.status === status ? [{ id: run.id, triggerSource: 'api', triggerSessionId: null }] : [],
+      ),
+      requeueForResume: vi.fn(async () => {
+        run.status = 'queued'
+        return true
+      }),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: async () => true,
+    })
+
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
+    expect(stats.runningResumed).toBe(1)
+    expect(stats.runningAborted).toBe(0)
+  })
+
   it('无 running 也无 queued 时，返回全零统计', async () => {
     const db = createMockDb({
       countRunsByStatus: vi.fn().mockResolvedValue(0),

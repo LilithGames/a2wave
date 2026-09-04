@@ -16,6 +16,58 @@ fires unconditionally and spends tokens on every tick even when nothing changed.
   every pre-existing fingerprint and made the first poll after an upgrade fire
   `opened` + `closed` for every open request.
 
+## The channel does not answer itself
+
+A review Agent subscribed to `commented` replies with `glab mr note` / `gh pr
+comment` — which raises the very comment count `commented` is diffed from. Before
+this guard the next poll read that as a new comment and ran again, and again,
+braked only by the 30s interval floor and the 5-runs-per-tick cap. Discord and
+Telegram already drop bot-authored messages; these channels now have the
+equivalent.
+
+- The forge login the CLI's token speaks as is read off `auth status`, which is
+  already parsed for the config UI, so the common case costs **no** API call.
+  `glab api user` / `gh api user` is the fallback for CLI versions whose report
+  prints only "Token found".
+- The report is only trusted to name the account when it can name **exactly
+  one**. A configured host scopes the report to that host's block, which is the
+  credential the poll will use. With no host configured and more than one host
+  logged in, the parsed name is discarded and the `user` endpoint is asked
+  instead: block order is the CLI's business, so the first "Logged in to" line
+  need not describe the host the token targets, and a wrong login is worse than
+  none — the guard would compare the Agent's own replies against a stranger.
+- That login is memoised per `channel|host`. A config change (`stop()`) drops it;
+  a one-hour TTL covers a token rotated under an unchanged config.
+- The newest comment's author comes from the listing on GitHub — the GraphQL
+  query asks each discussion collection for `last:1`, still one call per
+  repository per tick. GitLab's merge request listing carries no such field, so
+  the author is fetched from `merge_requests/:iid/notes` **only for a request
+  whose comment count actually moved**, which the per-tick run cap bounds to five
+  calls. These are not list pages and are not charged to the page budget.
+- GitLab **system** notes ("added 1 commit") are skipped: they never move
+  `user_notes_count`, so they are never the comment that fired the event.
+- **Only a delta of exactly one comment can be suppressed.** The forges report
+  the *newest* author, not every author in the delta, so a delta of 2 — a
+  colleague commented and the Agent replied before the next poll — is fired even
+  though the newest comment is the Agent's own. Suppressing it would advance the
+  fingerprint past the colleague's comment and lose it for good; the cost of
+  firing is the Agent seeing its own comment echoed in the prompt, which is the
+  cheaper of the two failures. `diffRepoState` carries the size of the delta on
+  the fired event as `newComments` for exactly this check.
+- **Fails open.** An unresolvable account or author fires the Run. A missed review
+  is a worse failure than a duplicate one, and the run cap still applies.
+- Suppression still **advances the fingerprint**. Holding it back would re-detect
+  the Agent's own comment on the next tick — the same loop, one layer down.
+
+### Caveat: `updated` has no author filter
+
+An Agent that *pushes* (a fixup commit, a rebase) re-triggers itself the same
+way, and this is deliberately not covered: neither listing carries the head
+commit's forge **login**, only a git author string that need not correspond to an
+account. Resolving it would mean one call per changed request — the N+1 sweep
+this channel exists to avoid. An Agent that writes to a branch it also watches
+should therefore not subscribe to `updated` on that repository.
+
 ## CLIs are probed, never installed
 
 - Absent from `provider-cli-lock.json`.

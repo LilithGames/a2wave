@@ -76,6 +76,16 @@ export interface ObservedRequest {
   updatedAt?: string
   isDraft: boolean
   /**
+   * Who wrote the newest comment, when the listing carried it.
+   *
+   * Only GitHub's GraphQL listing does — it can return the latest node of each
+   * discussion collection in the same call. GitLab's merge request listing has
+   * no such field, so this stays undefined there and the caller resolves it with
+   * a bounded follow-up. Deliberately *not* part of the fingerprint: it names
+   * who moved the comment count, not whether it moved.
+   */
+  lastCommentAuthor?: string
+  /**
    * The repository this request actually belongs to.
    *
    * Only set by a listing that spans repositories (the `group` and `all`
@@ -90,6 +100,16 @@ export interface ObservedRequest {
 export interface GitTriggerFiredEvent {
   event: GitTriggerEvent
   request: ObservedRequest
+  /**
+   * How many comments a `commented` event's delta holds, undefined otherwise.
+   *
+   * The self-comment filter can only see the *newest* author, so the size of
+   * the delta is what tells it whether that author is the whole delta. A delta
+   * of 2 means a colleague commented and the Agent replied before the next
+   * poll; suppressing it would advance the fingerprint past the colleague's
+   * comment for good.
+   */
+  newComments?: number
 }
 
 export interface DiffResult {
@@ -329,7 +349,13 @@ export function diffRepoState(params: {
     }
 
     if (request.comments > prior.comments) {
-      if (wanted.has('commented')) candidates.push({ event: 'commented', request })
+      if (wanted.has('commented')) {
+        candidates.push({
+          event: 'commented',
+          request,
+          newComments: request.comments - prior.comments,
+        })
+      }
     }
   }
 

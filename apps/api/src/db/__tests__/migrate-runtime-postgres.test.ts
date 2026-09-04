@@ -46,12 +46,42 @@ vi.mock('../migration-gap-repair.js', () => ({
   repairSkippedMigrations: () => repairMock(),
 }))
 
+/**
+ * A fake pool whose `connect()` hands back one client that records every
+ * statement into `callOrder`. The advisory lock is a *session* lock, so the
+ * lock, the migration and the unlock must be observable as an ordered sequence
+ * on a connection this module owns for the duration.
+ */
+const lockClientQuery = vi.fn(async (text: string) => {
+  callOrder.push(text.includes('pg_advisory_unlock') ? 'unlock' : 'lock')
+  return { rows: [] }
+})
+const lockClientRelease = vi.fn(() => {
+  callOrder.push('release')
+})
+/** One stable object, so a test can assert the migrator was bound to *this* client. */
+const lockClient = { query: lockClientQuery, release: lockClientRelease }
+const poolConnect = vi.fn(async () => {
+  callOrder.push('connect')
+  return lockClient
+})
+
+/**
+ * `drizzle(client)` is stubbed rather than exercised for real: the point under
+ * test is *which connection* the migrator runs on, and a sentinel makes that
+ * directly assertable without standing up a driver against a fake client.
+ */
+const drizzleMock = vi.fn((client: unknown) => ({ __boundTo: client }))
+vi.mock('drizzle-orm/node-postgres', () => ({
+  drizzle: (client: unknown) => drizzleMock(client),
+}))
+
 // The PostgreSQL client exposes no raw sqlite handle; touching it would throw.
 vi.mock('../client.js', () => ({
   db: { __mockDb: true },
   sqliteDatabase: null,
   isPostgres: true,
-  postgresPool: { __mockPool: true },
+  postgresPool: { connect: () => poolConnect() },
 }))
 
 vi.mock('../../lib/logger.js', () => ({
@@ -62,6 +92,9 @@ import { runMigrations } from '../migrate-runtime.js'
 
 let tmp: string
 let cwdBackup: string
+// The migration failure path calls process.exit(1). Stubbed so the test can
+// observe it instead of tearing down the worker mid-assertion.
+const exitMock = vi.fn()
 
 beforeEach(() => {
   callOrder.length = 0
@@ -69,6 +102,14 @@ beforeEach(() => {
   sqliteMigrateMock.mockClear()
   backupMock.mockClear()
   repairMock.mockClear()
+  poolConnect.mockClear()
+  lockClientQuery.mockClear()
+  lockClientRelease.mockClear()
+  drizzleMock.mockClear()
+  exitMock.mockClear()
+  vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    exitMock(code)
+  }) as never)
 
   tmp = mkdtempSync(path.join(os.tmpdir(), 'migrate-pg-'))
   // runMigrations resolves the folder relative to cwd.
@@ -83,6 +124,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   process.chdir(cwdBackup)
   rmSync(tmp, { recursive: true, force: true })
 })
@@ -118,6 +160,66 @@ describe('runMigrations on PostgreSQL', () => {
     await runMigrations()
 
     expect(repairMock).not.toHaveBeenCalled()
+  })
+
+  it('holds a session advisory lock across the migration and releases it after', async () => {
+    // Three replicas rolling out together all run this at boot. drizzle's
+    // PostgreSQL migrator takes no lock of its own and a2wave elects no leader,
+    // so without this the losers replay the same DDL, hit "relation already
+    // exists", and exit(1) with a message telling the operator never to retry —
+    // i.e. a rollout that half-fails and refuses to self-heal.
+    await runMigrations()
+
+    expect(callOrder).toEqual(['connect', 'lock', 'pg-migrate', 'unlock', 'release'])
+  })
+
+  it('runs the migrator on the locked client, not on the shared pool', async () => {
+    // With DATABASE_POOL_MAX=1 (env.ts allows it) the lock client *is* the pool,
+    // so a migrator issuing its DDL through `db` would wait forever for a second
+    // connection that the lock holder is never going to give back: boot hangs
+    // with no error, no timeout and no migration. Lock and DDL share one session.
+    await runMigrations()
+
+    expect(drizzleMock).toHaveBeenCalledTimes(1)
+    expect(drizzleMock.mock.calls[0]?.[0]).toBe(lockClient)
+    const [handle] = pgMigrateMock.mock.calls[0] as unknown as [{ __boundTo?: unknown }]
+    expect(handle.__boundTo).toBe(lockClient)
+  })
+
+  it('takes the lock on the same connection it later unlocks', async () => {
+    await runMigrations()
+
+    const [lock] = lockClientQuery.mock.calls[0] as unknown as [string]
+    const [unlock] = lockClientQuery.mock.calls[1] as unknown as [string]
+    // Session-scoped, so both must ride the one dedicated client — a lock taken
+    // on a pooled connection and released on another does nothing at all.
+    expect(lock).toContain('pg_advisory_lock')
+    expect(unlock).toContain('pg_advisory_unlock')
+    expect(poolConnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses one fixed lock key, so every replica contends on the same lock', async () => {
+    await runMigrations()
+
+    const [lock] = lockClientQuery.mock.calls[0] as unknown as [string]
+    const [unlock] = lockClientQuery.mock.calls[1] as unknown as [string]
+    const keyOf = (sql: string) => sql.match(/\((-?\d+)\)/)?.[1]
+    expect(keyOf(lock)).toBeDefined()
+    expect(keyOf(unlock)).toBe(keyOf(lock))
+  })
+
+  it('releases the lock when the migration fails', async () => {
+    // The failure path is the one that matters: a lock leaked by a crashed
+    // migration would block every future boot until the session is reaped.
+    pgMigrateMock.mockImplementationOnce(async () => {
+      callOrder.push('pg-migrate')
+      throw new Error('relation "users" already exists')
+    })
+
+    await runMigrations()
+
+    expect(callOrder).toEqual(['connect', 'lock', 'pg-migrate', 'unlock', 'release'])
+    expect(exitMock).toHaveBeenCalledWith(1)
   })
 
   it('awaits the migrator before returning', async () => {

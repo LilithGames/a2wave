@@ -13,7 +13,7 @@
  * a call-order-agnostic mock cannot express.
  */
 import type { GitTriggerRepoState } from '@a2wave/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { asyncQuery } from '../../test/async-query.js'
 
 interface StateRow {
@@ -156,15 +156,20 @@ vi.mock('../../engine/task-queue.js', () => ({
 }))
 
 const listOpenRequests = vi.fn()
+const fetchForgeAccount = vi.fn()
+const fetchLatestCommentAuthor = vi.fn()
 vi.mock('../git-trigger-cli.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git-trigger-cli.js')>()
   return {
     ...actual,
     listOpenRequests: (...args: unknown[]) => listOpenRequests(...args),
+    fetchForgeAccount: (...args: unknown[]) => fetchForgeAccount(...args),
+    fetchLatestCommentAuthor: (...args: unknown[]) => fetchLatestCommentAuthor(...args),
   }
 })
 
 import { gitTriggerManager } from '../git-trigger-manager.js'
+import { logger } from '../logger.js'
 
 function pr(number: number, overrides: Record<string, unknown> = {}) {
   return {
@@ -213,6 +218,10 @@ beforeEach(() => {
   effects.length = 0
   tryAcquireSlot.mockReturnValue('acquired')
   hasAdmissionCapacity.mockResolvedValue(true)
+  // Default: the channel cannot name its own forge account, so the self-trigger
+  // guard is inert and every pre-existing case behaves exactly as before.
+  fetchForgeAccount.mockResolvedValue(undefined)
+  fetchLatestCommentAuthor.mockResolvedValue(undefined)
   agentRow = {
     id: 'agt_1',
     userId: 'usr_1',
@@ -325,6 +334,226 @@ describe('dispatch and persistence ordering', () => {
 
     // The event must remain detectable on the next tick.
     expect([...stateRows.values()][0].state.requests['1'].sha).toBe('old')
+  })
+})
+
+/**
+ * The self-trigger loop.
+ *
+ * An Agent subscribed to `commented` that answers with `glab mr note` / `gh pr
+ * comment` raises the comment count itself, so the next tick sees a `commented`
+ * transition it caused and runs again — and again, throttled only by the 30s
+ * interval floor and the 5-runs-per-tick cap. Discord and Telegram already drop
+ * bot-authored messages; these channels had no equivalent.
+ */
+describe('self-authored comment suppression', () => {
+  /** A repo already at baseline with request #1 holding one comment. */
+  function seedOneComment() {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: { requests: { '1': { number: 1, sha: 'sha1', comments: 1 } } },
+      lastError: null,
+    })
+  }
+
+  it('ignores a comment the channel wrote itself, and still advances the fingerprint', async () => {
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 2 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(0)
+    // Advancing matters as much as not firing: leaving the count at 1 would
+    // re-detect the Agent's own comment on every subsequent tick forever.
+    expect([...stateRows.values()][0].state.requests['1'].comments).toBe(2)
+  })
+
+  it('fires when the delta holds a colleague comment under the channel’s own', async () => {
+    // A colleague comments, the Agent replies before the next poll: delta 2 with
+    // the bot newest. Suppressing here would advance the fingerprint past the
+    // colleague's comment and lose it forever. Seeing its own comment echoed in
+    // the prompt is the cheaper failure.
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 3 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('still fires for a comment written by a colleague', async () => {
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue('alice')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 2 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('fails open and fires when the forge account cannot be resolved', async () => {
+    // A broken `auth status` must never silence a channel: a missed review is a
+    // worse failure than a duplicate one, and the loop still has the run cap.
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue(undefined)
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 2 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('fails open and fires when the comment author cannot be resolved', async () => {
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue(undefined)
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { comments: 2 })], complete: true })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('prefers the author the listing already carried over a follow-up call', async () => {
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({
+      requests: [pr(1, { comments: 2, lastCommentAuthor: 'A2Wave-Bot' })],
+      complete: true,
+    })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(fetchLatestCommentAuthor).not.toHaveBeenCalled()
+    // Forge account names are case-insensitive on both forges.
+    expect(runRows).toHaveLength(0)
+  })
+
+  it('leaves non-comment events alone, spending no author lookup', async () => {
+    // `updated` fires on a head-SHA change, whose author is not available from
+    // either listing; the guard deliberately does not reach for it.
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({ requests: [pr(1, { sha: 'moved' })], complete: true })
+
+    await pollOnce(config({ events: ['updated'] }))
+
+    expect(runRows).toHaveLength(1)
+    expect(fetchLatestCommentAuthor).not.toHaveBeenCalled()
+  })
+
+  it('resolves the forge account once per tick rather than once per event', async () => {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: {
+        requests: {
+          '1': { number: 1, sha: 'sha1', comments: 1 },
+          '2': { number: 2, sha: 'sha2', comments: 1 },
+        },
+      },
+      lastError: null,
+    })
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    fetchLatestCommentAuthor.mockResolvedValue('alice')
+    listOpenRequests.mockResolvedValue({
+      requests: [pr(1, { comments: 2 }), pr(2, { comments: 2 })],
+      complete: true,
+    })
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(2)
+    expect(fetchForgeAccount).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * A forge lookup that fails is a *transient* verdict, not an answer.
+ *
+ * `glab auth status` times out after 10s on a slow self-hosted forge, and a
+ * negative answer cached for the full hour disables the guard above for that
+ * whole hour — every one of the Agent's own replies re-triggering a Run on every
+ * tick, which is precisely the loop the guard exists to break.
+ */
+describe('forge account lookup failure', () => {
+  /** Waits for the seed/interval tick to finish under fake timers. */
+  async function settle(ticks: number) {
+    await vi.waitFor(() => {
+      expect(listOpenRequests).toHaveBeenCalledTimes(ticks)
+      expect(gitTriggerManager.isPolling('agt_1', 'glab')).toBe(false)
+    })
+  }
+
+  /** Two ticks, each carrying one further comment written by the channel itself. */
+  function startTwoCommentTicks() {
+    stateRows.set('agt_1|glab|group/repo', {
+      agentId: 'agt_1',
+      channel: 'glab',
+      repoKey: 'group/repo',
+      state: { requests: { '1': { number: 1, sha: 'sha1', comments: 1 } } },
+      lastError: null,
+    })
+    listOpenRequests
+      .mockResolvedValueOnce({ requests: [pr(1, { comments: 2 })], complete: true })
+      .mockResolvedValue({ requests: [pr(1, { comments: 3 })], complete: true })
+    fetchLatestCommentAuthor.mockResolvedValue('a2wave-bot')
+    gitTriggerManager.start(
+      'agt_1',
+      'glab',
+      config({ events: ['commented'], intervalSeconds: 120 }),
+    )
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    gitTriggerManager.stop('agt_1', 'glab')
+    vi.useRealTimers()
+  })
+
+  it('retries the lookup on the next tick rather than holding the failure for the TTL', async () => {
+    fetchForgeAccount.mockResolvedValueOnce(undefined).mockResolvedValue('a2wave-bot')
+    startTwoCommentTicks()
+
+    await settle(1)
+    // Fails open: an unresolvable account must never silence the channel.
+    expect(runRows).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await settle(2)
+
+    // The retry answered, so the Agent's own second comment is recognised.
+    expect(fetchForgeAccount).toHaveBeenCalledTimes(2)
+    expect(runRows).toHaveLength(1)
+  })
+
+  it('warns once per channel while the lookup keeps failing', async () => {
+    // Once, not once per tick: a forge that stays unreachable would otherwise
+    // print this line every interval for as long as the channel is published.
+    fetchForgeAccount.mockResolvedValue(undefined)
+    startTwoCommentTicks()
+
+    await settle(1)
+    await vi.advanceTimersByTimeAsync(120_000)
+    await settle(2)
+
+    expect(fetchForgeAccount).toHaveBeenCalledTimes(2)
+    const warnings = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(([, message]) => String(message).includes('forge account'))
+    expect(warnings).toHaveLength(1)
   })
 })
 

@@ -19,11 +19,21 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
-import { GitTriggerCliError, listOpenRequests } from '../git-trigger-cli.js'
 import {
+  fetchForgeAccount,
+  fetchLatestCommentAuthor,
+  GitTriggerCliError,
+  listOpenRequests,
+} from '../git-trigger-cli.js'
+import {
+  GH_AUTH_STATUS_AUTHENTICATED,
+  GH_AUTH_STATUS_TWO_HOSTS,
   GH_GRAPHQL_NOT_FOUND,
+  GH_GRAPHQL_PR_NODE,
+  GH_GRAPHQL_PR_NODE_REVIEW_LAST,
   GLAB_API_404,
   GLAB_API_UNAUTHENTICATED,
+  GLAB_MR_NOTES_SYSTEM_FIRST,
   ghGraphqlEnvelope,
 } from './fixtures/git-trigger-cli-output.js'
 
@@ -263,5 +273,115 @@ describe('listOpenRequests — wide scopes', () => {
       expect.objectContaining({ number: 7, sha: 'abc', sourceBranch: 'feat' }),
     ])
     expect(result.complete).toBe(true)
+  })
+})
+
+/**
+ * Author resolution for the self-trigger guard.
+ *
+ * A review Agent subscribed to `commented` posts its review with `gh pr comment`
+ * / `glab mr note`, which raises the comment count and — before this guard —
+ * fired `commented` again on the very next tick, forever. The channel needs to
+ * know which forge account its own token speaks as, and who wrote the newest
+ * comment, to tell its own voice apart from a colleague's.
+ */
+describe('fetchForgeAccount', () => {
+  it('reads the account straight off the auth report, spending no API call', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({ stdout: GH_AUTH_STATUS_AUTHENTICATED, stderr: '' }),
+    )
+
+    expect(await fetchForgeAccount('gh')).toBe('octocat')
+    expect(runStatusProbe).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the user API when the report names no account', async () => {
+    runStatusProbe
+      // `Token found` alone satisfies the authenticated check but carries no name.
+      .mockResolvedValueOnce(
+        probeResult({ stdout: 'gitlab.example.com\n  ✓ Token found: ****\n', stderr: '' }),
+      )
+      .mockResolvedValueOnce(probeResult({ stdout: '{"username":"a2wave-bot","id":7}' }))
+
+    expect(await fetchForgeAccount('glab', 'gitlab.example.com')).toBe('a2wave-bot')
+  })
+
+  it('asks the user API when the report covers more than one host', async () => {
+    // `gh auth status` prints every configured host in one document, and the
+    // block order is the CLI's business, not ours. With no host to scope by,
+    // reading the first "Logged in to" line names the enterprise account while
+    // the token in play speaks as somebody else — and the guard then compares
+    // its own comments against a stranger's name and suppresses nothing. The
+    // `user` endpoint answers for the host the token actually targets.
+    runStatusProbe
+      .mockResolvedValueOnce(probeResult({ stdout: GH_AUTH_STATUS_TWO_HOSTS, stderr: '' }))
+      .mockResolvedValueOnce(probeResult({ stdout: '{"login":"a2wave-bot","id":7}' }))
+
+    expect(await fetchForgeAccount('gh')).toBe('a2wave-bot')
+    expect(runStatusProbe).toHaveBeenCalledTimes(2)
+  })
+
+  it('still reads the report for free when the channel names the host', async () => {
+    // A host scope resolves the ambiguity: the block for that host is the one
+    // the token will be used against, so the API round trip stays unspent.
+    runStatusProbe.mockResolvedValue(probeResult({ stdout: GH_AUTH_STATUS_TWO_HOSTS, stderr: '' }))
+
+    expect(await fetchForgeAccount('gh', 'ghe.corp.example.com')).toBe('enterprise-user')
+    expect(runStatusProbe).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns undefined rather than throwing when the CLI is unusable', async () => {
+    runStatusProbe.mockResolvedValue(probeResult({ notFound: true }))
+
+    await expect(fetchForgeAccount('gh')).resolves.toBeUndefined()
+  })
+})
+
+describe('fetchLatestCommentAuthor', () => {
+  it('skips GitLab system notes, which never moved the user note counter', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({ stdout: JSON.stringify(GLAB_MR_NOTES_SYSTEM_FIRST) }),
+    )
+
+    expect(await fetchLatestCommentAuthor('glab', 'group/repo', 42)).toBe('a2wave-bot')
+  })
+
+  it('asks the notes endpoint for the newest entries only', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({ stdout: JSON.stringify(GLAB_MR_NOTES_SYSTEM_FIRST) }),
+    )
+
+    await fetchLatestCommentAuthor('glab', 'group/repo', 42)
+
+    const [, argv] = runStatusProbe.mock.calls[0] as [string, string[]]
+    expect(argv[1]).toContain('group%2Frepo/merge_requests/42/notes')
+    expect(argv[1]).toContain('sort=desc')
+  })
+
+  it('fails open to undefined when the notes call errors', async () => {
+    runStatusProbe.mockResolvedValue(probeResult(GLAB_API_404))
+
+    await expect(fetchLatestCommentAuthor('glab', 'group/repo', 42)).resolves.toBeUndefined()
+  })
+
+  it('spends no call on GitHub, whose listing already carries the author', async () => {
+    expect(await fetchLatestCommentAuthor('gh', 'cli/cli', 14082)).toBeUndefined()
+    expect(runStatusProbe).not.toHaveBeenCalled()
+  })
+})
+
+describe('listOpenRequests — newest comment author on GitHub', () => {
+  it('records the newest comment author across conversation, reviews and threads', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({
+        stdout: ghGraphqlEnvelope([GH_GRAPHQL_PR_NODE, GH_GRAPHQL_PR_NODE_REVIEW_LAST]),
+      }),
+    )
+
+    const { requests } = await listOpenRequests('gh', 'cli/cli')
+
+    expect(requests[0].lastCommentAuthor).toBe('hubot')
+    // The review is newer than the conversation comment, so it wins.
+    expect(requests[1].lastCommentAuthor).toBe('a2wave-bot')
   })
 })

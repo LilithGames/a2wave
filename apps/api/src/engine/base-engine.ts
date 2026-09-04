@@ -24,6 +24,7 @@ import { buildMemoryContext, buildRecallInstruction } from '../lib/memory-contex
 import { removeMemoryOverride } from '../lib/memory-storage.js'
 import { type KbDocFile, syncKbDocsToWorkspaceAsync } from './kb-sync.js'
 import {
+  cleanupManagedMcpConfigAsync,
   type McpConfigDialect,
   type ResolvedMcpServer,
   syncMcpToWorkspaceAtPathAsync,
@@ -79,26 +80,42 @@ export abstract class BaseAgentEngine implements AgentEngine {
     const preparedRequest = this.withScopedMemoryToken(
       this.withDefaultWorkDir(request, defaultWorkDir),
     )
-    const memoryContextPromise = this.fetchMemoryContext(preparedRequest)
-    await Promise.all([
-      this.prepareSkills(preparedRequest),
-      this.prepareMcpServers(preparedRequest),
-      this.prepareKbDocs(preparedRequest),
-      memoryContextPromise,
-    ])
-    this.prepareMemoryOverride(preparedRequest)
-    const runtimeContext = prepareRuntimeContext(preparedRequest, {
-      defaultWorkDir,
-    })
-    const runtimeRequest: StreamExecuteRequest = { ...preparedRequest, runtimeContext }
-    const memoryContext = await memoryContextPromise
-    const enriched = this.enrichPrompt(runtimeRequest, model, memoryContext) as StreamExecuteRequest
-
+    // The prepare phase is INSIDE the try because `prepareMcpServers` writes
+    // live credentials in plaintext into a workspace that outlives the run
+    // (per-Agent worktrees are persistent). A sibling prepare step rejecting
+    // after that write — or `prepareRuntimeContext` / `enrichPrompt` throwing —
+    // would otherwise leave the secrets and the in-process refcount behind.
+    // Fallback attempts all reuse the same file, hence the single outer finally.
     try {
-      const result = await this.executeStreamWithModel(enriched, model)
-      return { ...result, durationMs: Date.now() - start }
-    } catch (err) {
-      return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+      // Preparation sits OUTSIDE the fallback try on purpose: only a failure of
+      // the model call itself is a fallback candidate. A prepare failure means
+      // no attempt was ever made, so retrying another model would just repeat
+      // the same broken preparation — it propagates straight to the caller.
+      const memoryContextPromise = this.fetchMemoryContext(preparedRequest)
+      await Promise.all([
+        this.prepareSkills(preparedRequest),
+        this.prepareMcpServers(preparedRequest),
+        this.prepareKbDocs(preparedRequest),
+        memoryContextPromise,
+      ])
+      this.prepareMemoryOverride(preparedRequest)
+      const runtimeContext = prepareRuntimeContext(preparedRequest, { defaultWorkDir })
+      const runtimeRequest: StreamExecuteRequest = { ...preparedRequest, runtimeContext }
+      const memoryContext = await memoryContextPromise
+      const enriched = this.enrichPrompt(
+        runtimeRequest,
+        model,
+        memoryContext,
+      ) as StreamExecuteRequest
+
+      try {
+        const result = await this.executeStreamWithModel(enriched, model)
+        return { ...result, durationMs: Date.now() - start }
+      } catch (err) {
+        return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+      }
+    } finally {
+      await this.cleanupMcpServers(preparedRequest)
     }
   }
 
@@ -176,31 +193,96 @@ export abstract class BaseAgentEngine implements AgentEngine {
    * Legacy configurations without capabilities fall back to Cursor's default path so existing
    * Agents keep their behavior. Only a2wave-managed entries are synchronized and merged safely
    * with existing user configuration.
+   *
+   * Throws (and so fails the run) when the repository **tracks** the file the
+   * write would land on — see `TrackedMcpConfigError`, and note that
+   * trackedness is decided after symlink and case-fold resolution, not on the
+   * configured pathname. Writing there would stage the resolved credentials for
+   * the agent's next commit, and no workspace-file engine offers an out-of-tree
+   * config to fall back to. A path resolving outside the work tree entirely is
+   * refused the same way (`McpConfigOutsideWorkTreeError`).
    */
   protected async prepareMcpServers(request: ExecuteRequest): Promise<void> {
+    const target = this.resolveMcpWorkspaceTarget(request)
+    if (!target) return
+    const { workDir, mcpConfigPath, servers } = target
+    // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
+    // that don't override it keep the original 3-arg call unchanged.
+    const dialect = this.mcpDialect
+    const sync = (async () =>
+      dialect
+        ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers, { dialect })
+        : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, servers))()
+    // Recorded *before* the await: a sibling prepare step rejecting mid-write
+    // must not let run-end cleanup walk away from a sync that is still landing
+    // plaintext credentials in the workspace. See `cleanupMcpServers`.
+    this.mcpSyncOutcomes.set(
+      request,
+      sync.then(
+        (tookReference) => tookReference,
+        () => false,
+      ),
+    )
+    await sync
+    logger.debug(
+      { taskId: request.taskId, count: servers.length, mcpConfigPath },
+      'Synced MCP servers to workspace',
+    )
+  }
+
+  /**
+   * Remove the workspace MCP config this run's sync wrote.
+   *
+   * Resolved through the same target function as the write, so a config can
+   * never be written to one path and looked for at another. Engines whose MCP
+   * delivery is not a workspace file wrote nothing and clean up nothing.
+   */
+  protected async cleanupMcpServers(request: ExecuteRequest): Promise<void> {
+    const outcome = this.mcpSyncOutcomes.get(request)
+    // This run's engine writes no workspace config at all, so there is nothing
+    // to release.
+    if (!outcome) return
+    this.mcpSyncOutcomes.delete(request)
+    // A sync still in flight is awaited first: its write is what created the
+    // reference this call has to release.
+    //
+    // A run whose own sync failed — or which deliberately wrote nothing into a
+    // repository-tracked config — holds no reference. Releasing one anyway
+    // would decrement a concurrent same-worktree run's refcount to zero and
+    // delete the config out from under it, so that path is a no-op.
+    if (!(await outcome)) return
+    const target = this.resolveMcpWorkspaceTarget(request)
+    if (!target) return
+    await cleanupManagedMcpConfigAsync(target.workDir, target.mcpConfigPath)
+  }
+
+  /**
+   * Per-request workspace MCP sync, resolving true once the write completed and
+   * took its reference to the managed config file. False when it failed, and
+   * also when the writer deliberately wrote nothing — a repository-tracked
+   * config with no managed entries to inject is left untouched, so there is no
+   * reference to release.
+   * Weak so a request object that never reaches cleanup cannot leak.
+   */
+  private readonly mcpSyncOutcomes = new WeakMap<ExecuteRequest, Promise<boolean>>()
+
+  /** The workspace MCP config file this request writes, or null if it writes none. */
+  private resolveMcpWorkspaceTarget(
+    request: ExecuteRequest,
+  ): { workDir: string; mcpConfigPath: string; servers: ResolvedMcpServer[] } | null {
     const { workDir, agentConfig } = request
-    const resolvedMcpServers = agentConfig?.resolvedMcpServers as ResolvedMcpServer[] | undefined
-    if (workDir && resolvedMcpServers !== undefined) {
-      const delivery = agentConfig?.mcpDelivery as ProviderMcpDelivery | undefined
-      if (delivery && delivery.mode !== 'workspace-file') return
-      // Before Provider capabilities were persisted into runtime config, Codex and OpenCode
-      // received MCP servers through runtime arguments. Preserve that legacy behavior instead
-      // of writing an unrelated Cursor config file into their workspace.
-      if (!delivery && (this.type === 'codex' || this.type === 'opencode')) return
-      const mcpConfigPath =
-        (agentConfig?.mcpConfigPath as string | undefined) ||
-        (delivery?.mode === 'workspace-file' ? delivery.defaultPath : '.cursor/mcp.json')
-      // An engine declares its own mcp.json dialect (see `mcpDialect`); engines
-      // that don't override it keep the original 3-arg call unchanged.
-      const dialect = this.mcpDialect
-      await (dialect
-        ? syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, resolvedMcpServers, { dialect })
-        : syncMcpToWorkspaceAtPathAsync(workDir, mcpConfigPath, resolvedMcpServers))
-      logger.debug(
-        { taskId: request.taskId, count: resolvedMcpServers.length, mcpConfigPath },
-        'Synced MCP servers to workspace',
-      )
-    }
+    const servers = agentConfig?.resolvedMcpServers as ResolvedMcpServer[] | undefined
+    if (!workDir || servers === undefined) return null
+    const delivery = agentConfig?.mcpDelivery as ProviderMcpDelivery | undefined
+    if (delivery && delivery.mode !== 'workspace-file') return null
+    // Before Provider capabilities were persisted into runtime config, Codex and OpenCode
+    // received MCP servers through runtime arguments. Preserve that legacy behavior instead
+    // of writing an unrelated Cursor config file into their workspace.
+    if (!delivery && (this.type === 'codex' || this.type === 'opencode')) return null
+    const mcpConfigPath =
+      (agentConfig?.mcpConfigPath as string | undefined) ||
+      (delivery?.mode === 'workspace-file' ? delivery.defaultPath : '.cursor/mcp.json')
+    return { workDir, mcpConfigPath, servers }
   }
 
   // ----------------------------------------------------------

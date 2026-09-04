@@ -164,6 +164,48 @@ revisiting when this area is next touched:
   disagrees with the lease in exactly the windows that matter — an Evaluation
   writes no `runs` row yet owns an `eval-<taskId>` worktree, and a Run's lease
   outlives its terminal status until cleanup.
+- **Sync itself is a source-side mutation and consults the lease the same way.**
+  A run that executes *in* `localPath` — every P4 Agent, and any Git Agent whose
+  per-Agent worktree could not be created — would have its uncommitted edits
+  rewritten by the `p4 sync` / `git checkout -f -B` of an `autoSync` tick or a
+  manual `POST /:id/sync`. Neither the heartbeat (this instance is alive) nor
+  `busyCheckouts` (other syncs only) can see that run. Occupancy is read off
+  `runs.workDir`, the same marker the workspace-delete route trusts: only a
+  worktree records it, so an **active** lease whose run recorded none is by
+  definition in the shared checkout. An Evaluation records no workspace at all,
+  so its source type decides: a **git** Evaluation owns an `eval-<taskId>`
+  worktree resolved through the explicit-worktree path, which throws rather than
+  degrading to `localPath`, and therefore never counts; a **p4** Evaluation has
+  no isolation mechanism and always counts. Reserved leases are still queued and
+  own no directory, so the phase filter belongs in the SQL predicate — a scan
+  capped at some row count can miss an active lease behind a long tail and let
+  the sync proceed under a live Agent CLI. A deferred sync returns the row to
+  plain `idle` and writes **neither** `lastSyncError` nor `lastSyncAt`: nothing
+  synced, and nothing failed either — stamping the deferral into
+  `lastSyncError` shows a persistent error notice in the web form and the CLI
+  for the whole duration of the run, is re-stamped by every auto-sync tick, and
+  destroys the genuine previous error. The reason belongs in the return value
+  and an info log.
+- **The sync's `syncing` status IS its durable claim, and it is committed in the
+  same SCM-mutation critical section that reads occupancy.** Reading the lease
+  table outside that section is a check-then-act with no counter-party: a lease
+  that activates after the read and before `p4 sync` / `git checkout -f -B`
+  starts is observed by neither side, which is precisely the data loss the gate
+  exists to prevent. Lease **activation** takes the same lock and refuses on a
+  committed claim, so the lock's total order forces exactly one loser however
+  the two interleave — the sync defers on an active lease, or the activation
+  fails with a lease conflict. This is the same claim-before-action shape as the
+  workload lease and the removal reservation; an in-process mutex would not do,
+  because the peer that must observe it is another process.
+  - The activation-side refusal is scoped to workloads that would sit in the
+    shared checkout, mirroring the sync-side gate exactly — refusing more than
+    the sync defers for would fail Git worktree work that was never at risk.
+    Because a Run that has not resolved its `workDir` yet reads as
+    shared-checkout on *both* sides, such a Run does lose to an in-flight sync
+    even when it would have got its own worktree. Failing admission is the safe
+    direction; it surfaces as an ordinary retryable admission conflict.
+  - A sync declined inside that section drops its own claim before the section
+    commits, so the row never advertises a sync that was already refused.
 - Every worktree removal — manual DELETE, TTL/LRU cleanup, and ephemeral
   Run/Evaluation cleanup alike —
   goes through **one guarded protocol** (`removeSourceWorkspaceGuarded`), and
@@ -284,6 +326,18 @@ revisiting when this area is next touched:
   Evaluation task/results/audit commit atomically; if any database write fails,
   the workload remains non-terminal and the next tick retries the whole
   settlement rather than releasing a half-written terminal state.
+- **A reap settles the owner it judged, not merely the status it saw.** Both
+  dead-owner passes — the lease-driven one and the orphaned-run reaper that
+  covers temp-workspace Runs holding no lease — snapshot `owner_instance_id`
+  before deciding liveness, so every write they make (fail, or requeue for
+  resume) carries that owner in its WHERE clause alongside the status. Status
+  alone is an ABA check: a peer may requeue and re-promote the Run in the
+  window, leaving it `running` again under itself, and the settlement would
+  then kill live work. An owner mismatch is not an error — it means another
+  replica settled the workload first, the path both passes already have. A NULL
+  owner is an absence, not a mismatch: ownership is stamped only while a Run
+  runs, so the pending and queued rows the lease-driven pass also settles
+  legitimately carry none.
 - PostgreSQL startup must still not reset in-progress Run, Evaluation, sync, or
   index rows merely because another replica started: another replica booting
   says nothing about a peer. Recovery of a peer's work is the heartbeat-driven

@@ -197,6 +197,75 @@ export function workspaceMutexKey(wsRoot: string, name: string): string {
   return `scm-worktree:${join(wsRoot, name)}`
 }
 
+const PLATFORM_EXCLUDE_HEADER = '# a2wave: platform-written workspace paths'
+
+/**
+ * Keep the paths the platform writes into a workspace out of `git status`.
+ *
+ * The dirty check already treats `platformWorkspacePaths()` as invisible, so the
+ * platform can rewrite `.mcp.json` or `.claude/skills` without pinning a
+ * worktree — but git never agreed. The MCP config holds Authorization bearer
+ * tokens and stdio API keys verbatim, so a colleague asking the Agent to "commit
+ * and push my changes" (`git add -A`) publishes the MCP owner's credentials.
+ * Excluding the same set makes git's view match the platform's.
+ *
+ * Written to `git rev-parse --git-path info/exclude`, which for a worktree
+ * resolves to the *common* repository's exclude file — deliberately, since the
+ * shared checkout is a run's fallback workspace and needs the same protection.
+ * Patterns are anchored (`/.mcp.json`) so only the repository root is affected,
+ * never a same-named file the repository tracks deeper in the tree.
+ *
+ * Idempotent: a pattern already present (by the platform or by a user) is never
+ * appended twice, so repeated runs leave the file byte-identical.
+ *
+ * **This covers untracked files only** — that is all any git ignore rule can do.
+ * A repository that tracks its own `.mcp.json` is protected the other way
+ * round: `isPathTrackedByGit` (engine/mcp-sync.ts) makes the credential write
+ * refuse before it can land as a modification to a tracked file.
+ *
+ * Known limitation: a per-Agent `mcpConfigPath` override that matches no
+ * Provider preset is not derivable here, the same gap `platformWorkspacePaths()`
+ * documents for `skillsDir`.
+ *
+ * Best-effort — a failure here must never fail workspace creation.
+ */
+async function ensurePlatformPathsExcluded(repoPath: string): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd: repoPath,
+      timeout: GIT_TIMEOUT_MS,
+    })
+    const excludePath = resolve(repoPath, stdout.trim())
+    let existing = ''
+    try {
+      existing = await readFile(excludePath, 'utf-8')
+    } catch {
+      // No exclude file yet (a `git init` template can omit it) — create it.
+    }
+    const present = new Set(existing.split('\n').map((line) => line.trim()))
+    const missing = [...platformWorkspacePaths()]
+      .sort()
+      .map((path) => `/${path}`)
+      .filter((pattern) => !present.has(pattern))
+    if (missing.length === 0) return
+
+    await mkdir(join(excludePath, '..'), { recursive: true })
+    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
+    const header = present.has(PLATFORM_EXCLUDE_HEADER) ? '' : `${PLATFORM_EXCLUDE_HEADER}\n`
+    await writeFile(excludePath, `${existing}${prefix}${header}${missing.join('\n')}\n`)
+  } catch (err) {
+    logger.warn({ err, repoPath }, 'Failed to exclude platform-written paths from git')
+  }
+}
+
+/** Apply the platform excludes to every repository backing a workspace. */
+async function excludePlatformPathsInWorkspace(wsPath: string, config: GitConfig): Promise<void> {
+  const repoPaths = config.repos?.length
+    ? config.repos.map((repo) => join(wsPath, repo.directory))
+    : [wsPath]
+  await Promise.all(repoPaths.map((repoPath) => ensurePlatformPathsExcluded(repoPath)))
+}
+
 export async function createGitWorkspace(
   localPath: string,
   wsRoot: string,
@@ -269,6 +338,7 @@ async function createGitWorkspaceUnlocked(
       } else {
         await switchBranchOnReuse(wsPath, localPath, config, options?.branch)
       }
+      await excludePlatformPathsInWorkspace(wsPath, config)
       return { path: wsPath, created: false }
     }
   }
@@ -358,6 +428,7 @@ async function createGitWorkspaceUnlocked(
     }
   }
 
+  await excludePlatformPathsInWorkspace(wsPath, config)
   return { path: wsPath, created: true }
 }
 

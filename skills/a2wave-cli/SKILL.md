@@ -279,11 +279,14 @@ Credentials are **redacted by default** (`********`). The API returns secrets in
 
 ```bash
 a2wave agents export <agent-id-or-name> -o agent.zip
+a2wave agents export <agent-id-or-name> --force        # overwrite an existing target
 a2wave agents import ./agent.zip
 a2wave agents import-url <remote-export-url>
 ```
 
 Use import/export to migrate an Agent package and its dependent MCP Servers and Skills between different a2wave instances.
+
+`export` never overwrites silently — pass `--force` when the target file already exists. Without `-o` the name comes from the response's `content-disposition`, reduced to its basename so a server-supplied `../` or absolute path cannot decide where the file lands.
 
 ## Update
 

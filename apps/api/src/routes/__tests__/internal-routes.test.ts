@@ -49,9 +49,20 @@ vi.mock('../internal-admin.js', () => ({
   default: new Hono().get('/probe', (c) => c.json({ ok: true })),
 }))
 
+// AUTH_SECRET is here because the internal process credentials are derived from
+// it (lib/internal-admin-auth.ts), so every replica of a deployment agrees on
+// them.
+const mockEnv = vi.hoisted(() => ({
+  TRUSTED_PROXY: false,
+  AUTH_SECRET: 'test-auth-secret-for-internal-routes',
+}))
+vi.mock('../../env.js', () => ({ env: mockEnv }))
+
 import {
-  INTERNAL_ADMIN_TOKEN_HEADER,
   getInternalAdminToken,
+  getInternalToken,
+  INTERNAL_ADMIN_TOKEN_HEADER,
+  INTERNAL_TOKEN_HEADER,
 } from '../../lib/internal-admin-auth.js'
 import internalRoutes from '../internal.js'
 
@@ -134,6 +145,7 @@ function queueSelects(...returns: Array<{ get?: unknown; all?: unknown }>) {
 }
 
 beforeEach(() => {
+  mockEnv.TRUSTED_PROXY = false
   dbSelect.mockReset()
   buildAgentCardMock.mockReset()
   handleA2ARequestMock.mockReset()
@@ -155,6 +167,18 @@ function buildApp() {
     return next()
   })
   return app.route('/internal', internalRoutes)
+}
+
+// Every in-process caller (the agent-router MCP) carries the process-scoped
+// internal token; a loopback socket alone no longer authenticates a request.
+function request(path: string, init: RequestInit = {}) {
+  return buildApp().request(path, {
+    ...init,
+    headers: {
+      ...((init.headers as Record<string, string>) ?? {}),
+      [INTERNAL_TOKEN_HEADER]: getInternalToken(),
+    },
+  })
 }
 
 describe('localhost guard', () => {
@@ -197,26 +221,76 @@ describe('localhost guard', () => {
     })
     app.route('/internal', internalRoutes)
     queueSelects({ all: [] })
-    const res = await app.request('/internal/agents')
+    const res = await app.request('/internal/agents', {
+      headers: { [INTERNAL_TOKEN_HEADER]: getInternalToken() },
+    })
     expect(res.status).toBe(200)
+  })
+
+  it('denies a loopback peer that forwarded an X-Forwarded-For when a proxy is trusted', async () => {
+    // With nginx/Caddy on the same host every internet request arrives from
+    // 127.0.0.1. A forwarded request is by definition NOT a local caller, so the
+    // loopback peer must not be read as one.
+    mockEnv.TRUSTED_PROXY = true
+    queueSelects({ all: [] })
+    const res = await request('/internal/agents', {
+      headers: { 'X-Forwarded-For': '203.0.113.5' },
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toMatch(/localhost-only/)
+  })
+})
+
+describe('internal credential guard', () => {
+  it('rejects a loopback caller with no internal token (anonymous A2A invoke)', async () => {
+    queueSelects({ get: { id: 'agt_1', publishStatus: 'published', publishChannels: ['a2a'] } })
+    const res = await buildApp().request('/internal/a2a/agt_1', { method: 'POST' })
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toMatch(/internal credential/)
+    expect(handleA2ARequestMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a loopback caller with a wrong internal token', async () => {
+    queueSelects({ all: [] })
+    const res = await buildApp().request('/internal/agents', {
+      headers: { [INTERNAL_TOKEN_HEADER]: 'wrong-token' },
+    })
+    expect(res.status).toBe(403)
+  })
+
+  it('accepts the stronger platform-admin credential on a non-admin route', async () => {
+    queueSelects({ all: [] })
+    const res = await buildApp().request('/internal/agents', {
+      headers: { [INTERNAL_ADMIN_TOKEN_HEADER]: getInternalAdminToken() },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects the streaming-card endpoints without the internal token', async () => {
+    const res = await buildApp().request('/internal/streaming-card/card_1/child', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ childId: 'c1' }),
+    })
+    expect(res.status).toBe(403)
   })
 })
 
 describe('internal admin credential guard', () => {
   it('rejects a loopback caller without the platform-admin credential', async () => {
-    const res = await buildApp().request('/internal/admin/probe')
+    const res = await request('/internal/admin/probe')
     expect(res.status).toBe(403)
   })
 
   it('rejects a loopback caller with the wrong credential', async () => {
-    const res = await buildApp().request('/internal/admin/probe', {
+    const res = await request('/internal/admin/probe', {
       headers: { [INTERNAL_ADMIN_TOKEN_HEADER]: 'wrong-token' },
     })
     expect(res.status).toBe(403)
   })
 
   it('allows platform-admin with the process credential', async () => {
-    const res = await buildApp().request('/internal/admin/probe', {
+    const res = await request('/internal/admin/probe', {
       headers: { [INTERNAL_ADMIN_TOKEN_HEADER]: getInternalAdminToken() },
     })
     expect(res.status).toBe(200)
@@ -234,7 +308,7 @@ describe('GET /internal/agents', () => {
         { id: 'agt_4', name: 'd', publishStatus: 'published', publishChannels: null },
       ],
     })
-    const res = await buildApp().request('/internal/agents')
+    const res = await request('/internal/agents')
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
     expect(body.data.map((a: { id: string }) => a.id)).toEqual(['agt_1'])
@@ -247,7 +321,7 @@ describe('GET /internal/agents', () => {
         { id: 'agt_2', name: 'b', publishStatus: 'published', publishChannels: ['a2a'] },
       ],
     })
-    const res = await buildApp().request('/internal/agents?ids=agt_2,agt_3')
+    const res = await request('/internal/agents?ids=agt_2,agt_3')
     const body = (await res.json()) as any
     expect(body.data.map((a: { id: string }) => a.id)).toEqual(['agt_2'])
   })
@@ -256,20 +330,20 @@ describe('GET /internal/agents', () => {
 describe('GET /internal/a2a/:agentId/card', () => {
   it('returns 404 when agent is missing', async () => {
     queueSelects({ get: undefined })
-    const res = await buildApp().request('/internal/a2a/agt_x/card')
+    const res = await request('/internal/a2a/agt_x/card')
     expect(res.status).toBe(404)
   })
 
   it('returns 403 when not published', async () => {
     queueSelects({ get: { id: 'agt_1', publishStatus: 'draft' } })
-    const res = await buildApp().request('/internal/a2a/agt_1/card')
+    const res = await request('/internal/a2a/agt_1/card')
     expect(res.status).toBe(403)
     expect(((await res.json()) as any).error).toBe('Agent is not published')
   })
 
   it('returns 403 when a2a channel not enabled', async () => {
     queueSelects({ get: { id: 'agt_1', publishStatus: 'published', publishChannels: ['api'] } })
-    const res = await buildApp().request('/internal/a2a/agt_1/card')
+    const res = await request('/internal/a2a/agt_1/card')
     expect(res.status).toBe(403)
     expect(((await res.json()) as any).error).toBe('A2A not enabled for this agent')
   })
@@ -279,7 +353,7 @@ describe('GET /internal/a2a/:agentId/card', () => {
       get: { id: 'agt_1', publishStatus: 'published', publishChannels: ['a2a'], name: 'A' },
     })
     buildAgentCardMock.mockReturnValue({ name: 'A', skills: [] })
-    const res = await buildApp().request('/internal/a2a/agt_1/card')
+    const res = await request('/internal/a2a/agt_1/card')
     expect(res.status).toBe(200)
     expect((await res.json()) as any).toEqual({ name: 'A', skills: [] })
     expect(buildAgentCardMock).toHaveBeenCalled()
@@ -289,13 +363,13 @@ describe('GET /internal/a2a/:agentId/card', () => {
 describe('POST /internal/a2a/:agentId', () => {
   it('returns 404 when agent is missing', async () => {
     queueSelects({ get: undefined })
-    const res = await buildApp().request('/internal/a2a/agt_x', { method: 'POST' })
+    const res = await request('/internal/a2a/agt_x', { method: 'POST' })
     expect(res.status).toBe(404)
   })
 
   it('returns 403 when a2a is not enabled', async () => {
     queueSelects({ get: { id: 'agt_1', publishStatus: 'published', publishChannels: ['api'] } })
-    const res = await buildApp().request('/internal/a2a/agt_1', { method: 'POST' })
+    const res = await request('/internal/a2a/agt_1', { method: 'POST' })
     expect(res.status).toBe(403)
   })
 
@@ -306,7 +380,7 @@ describe('POST /internal/a2a/:agentId', () => {
     handleA2ARequestMock.mockImplementation((c: { json: (b: unknown) => Response }) =>
       c.json({ ok: true }),
     )
-    const res = await buildApp().request('/internal/a2a/agt_1', { method: 'POST' })
+    const res = await request('/internal/a2a/agt_1', { method: 'POST' })
     expect(res.status).toBe(200)
     expect((await res.json()) as any).toEqual({ ok: true })
     expect(handleA2ARequestMock).toHaveBeenCalled()

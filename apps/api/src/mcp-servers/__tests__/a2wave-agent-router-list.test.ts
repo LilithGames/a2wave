@@ -1,8 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { type RouteTarget, listAgentsHandler } from '../a2wave-agent-router.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { INTERNAL_TOKEN_ENV, INTERNAL_TOKEN_HEADER } from '../../lib/internal-admin-auth.js'
+import { listAgentsHandler, type RouteTarget } from '../a2wave-agent-router.js'
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  process.env[INTERNAL_TOKEN_ENV] = 'router-process-token'
+})
+
+afterEach(() => {
+  delete process.env[INTERNAL_TOKEN_ENV]
 })
 
 function mockFetch(response: {
@@ -82,6 +88,11 @@ describe('listAgentsHandler', () => {
     expect(parsed.map((agent: { id: string }) => agent.id)).toEqual(['agt_1', 'agt_3'])
     const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(fetchCall[0]).toContain('/api/internal/agents?ids=agt_1,agt_3')
+    // The internal API authenticates the process credential, not the loopback
+    // socket — a router call without it is rejected.
+    expect(new Headers(fetchCall[1]?.headers).get(INTERNAL_TOKEN_HEADER)).toBe(
+      'router-process-token',
+    )
   })
 
   it('includes remote agents with remote: prefix ID', async () => {

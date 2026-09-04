@@ -18,6 +18,7 @@ import { verifyP4ClientRootCoverage } from './p4-client-root.js'
 import { selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { legacyScmReclaimRoot, scmReclaimRoot } from './scm-storage.js'
 import { isolateManagedScmStorage } from './scm-storage-reclaim.js'
+import { findSharedCheckoutScmWorkload } from './scm-workload-lifecycle.js'
 import { filesystemPathsOverlap } from './scm-workspace-safety.js'
 import { notifyScmSyncError } from './webhook-notifier.js'
 
@@ -492,6 +493,40 @@ async function releasePreAcquiredSync(sourceId: string, message: string): Promis
 }
 
 /**
+ * Release a held `syncing` status for a sync that was deferred rather than run.
+ *
+ * Terminal status is mandatory — an early return that leaves the row at
+ * `syncing` wedges every later CAS until restart — but the source is healthy
+ * and its data is untouched, so it goes back to plain `idle`.
+ *
+ * Neither `lastSyncError` nor `lastSyncAt` is written. A deferral is not a
+ * failure of the source: stamping the reason into `lastSyncError` made the web
+ * source form and the CLI render a persistent error notice for as long as the
+ * run held the checkout, re-stamped by every auto-sync tick, and it destroyed
+ * the genuine previous error. The reason reaches the caller in the return value
+ * and the operator through the info log at the call site.
+ *
+ * Takes an executor rather than reaching for `db`: the release must happen in
+ * the very SCM-mutation section that took the claim and read the occupancy, so
+ * the row never advertises a sync this process already declined to run.
+ */
+async function deferSync(executor: Pick<typeof db, 'update'>, sourceId: string): Promise<void> {
+  await executor
+    .update(scmSources)
+    .set({ syncStatus: 'idle', updatedAt: new Date() })
+    .where(eq(scmSources.id, sourceId))
+}
+
+/** Outcome of the single critical section that admits (or declines) a sync. */
+type SyncAcquisition =
+  | { kind: 'acquired'; source: typeof scmSources.$inferSelect }
+  | { kind: 'deferred'; occupant: { type: 'run' | 'evaluation'; id: string } }
+  /** Declined with the `syncing` claim held: the caller must write a terminal status. */
+  | { kind: 'refused'; message: string }
+  /** The claim CAS lost; nothing to release. */
+  | { kind: 'notAcquired' }
+
+/**
  * Execute a sync and update database state, dispatching by source type.
  *
  * Only one sync may run per source at a time: concurrent syncs write the same
@@ -584,31 +619,34 @@ async function runSyncUnderCheckoutLock(
   options: { statusAlreadyAcquired?: boolean; signal?: AbortSignal },
   syncAbort: AbortController,
 ): Promise<ScmSyncResult> {
-  // Acquire the DB status lock BEFORE reading the config the worker will act on,
-  // so the snapshot is consistent with the acquired row. Reading first would let
-  // a PATCH commit a new localPath/config in the gap between load and acquire,
-  // and the worker would then run against a stale checkout while the terminal
-  // write stamps initialSyncCompletedAt onto the new configuration.
-  let source: typeof scmSources.$inferSelect | undefined
-  if (options.statusAlreadyAcquired) {
-    // The caller already flipped the row to 'syncing'. Load a snapshot now that
-    // the lock is held — no concurrent sync can be mutating the checkout.
-    source = await (
-      await db.select().from(scmSources).where(eq(scmSources.id, sourceId)).limit(1)
-    )[0]
-    if (!source) {
+  // ONE SCM-mutation critical section covers the whole admission decision:
+  // acquiring the `syncing` claim, reading the config the worker will act on,
+  // and the durable occupancy gate.
+  //
+  // The claim must be committed in the same section it is checked in. Reading
+  // the config first would let a PATCH commit a new localPath/config in the gap
+  // between load and acquire, and the worker would then run against a stale
+  // checkout while the terminal write stamps initialSyncCompletedAt onto the new
+  // configuration. Reading occupancy outside the section is the sharper bug: a
+  // lease that activated after the read and before the sync started was seen by
+  // neither side, and `p4 sync` / `git checkout -f -B` then rewrote the checkout
+  // under a live Agent CLI. Lease activation takes this same lock and refuses on
+  // a committed claim (see activateScmWorkloadInMutation), so the lock's total
+  // order forces exactly one loser however the two interleave.
+  const acquisition = await withScmPathMutation(async (tx): Promise<SyncAcquisition> => {
+    let row: typeof scmSources.$inferSelect | undefined
+    if (options.statusAlreadyAcquired) {
+      // The caller already committed the claim. Load a snapshot now that the
+      // section is held — no concurrent sync can be mutating the checkout.
+      row = (await tx.select().from(scmSources).where(eq(scmSources.id, sourceId)).limit(1))[0]
       // Returning without a terminal write would strand the row at 'syncing'
       // until the next process restart.
-      releaseCheckout(sourceId)
-      await releasePreAcquiredSync(sourceId, 'SCM source not found')
-      return { ok: false, message: 'SCM source not found' }
-    }
-  } else {
-    // Atomic acquire: flip to 'syncing' only if it is not already 'syncing',
-    // and take the row returned by the UPDATE as the authoritative snapshot.
-    source = await runExclusive(async () => {
-      return (
-        await db
+      if (!row) return { kind: 'refused', message: 'SCM source not found' }
+    } else {
+      // Atomic acquire: flip to 'syncing' only if it is not already 'syncing',
+      // and take the row returned by the UPDATE as the authoritative snapshot.
+      row = (
+        await tx
           .update(scmSources)
           .set({ syncStatus: 'syncing', updatedAt: new Date() })
           .where(
@@ -621,41 +659,75 @@ async function runSyncUnderCheckoutLock(
           )
           .returning()
       )[0]
-    })
-    if (!source) {
-      // Either the row is gone or a sync already holds it. Distinguish so a
-      // missing source is not misreported as a conflict.
-      releaseCheckout(sourceId)
-      const stillExists = await (
-        await db
-          .select({ id: scmSources.id })
-          .from(scmSources)
-          .where(eq(scmSources.id, sourceId))
-          .limit(1)
-      )[0]
-      if (!stillExists) {
-        return { ok: false, message: 'SCM source not found' }
-      }
-      logger.info({ sourceId }, 'Skipping SCM sync: already in progress')
-      return { ok: false, message: 'Sync already in progress', alreadyRunning: true }
+      if (!row) return { kind: 'notAcquired' }
+    }
+
+    if (row.deletionRequestedAt) {
+      return { kind: 'refused', message: 'SCM source deletion is pending' }
+    }
+    const localPath = row.localPath
+    if (
+      [scmReclaimRoot(), legacyScmReclaimRoot()].some((r) => filesystemPathsOverlap(localPath, r))
+    ) {
+      return { kind: 'refused', message: 'SCM localPath overlaps the private reclaim root' }
+    }
+
+    // Durable occupancy gate. `busyCheckouts` only knows about other *syncs*, and
+    // the heartbeat only proves this instance is alive — neither sees a run that
+    // is executing IN the shared checkout. P4 Agents always execute there, and a
+    // git Agent lands there whenever its per-agent worktree could not be created,
+    // so an auto-sync tick or a manual sync would run `p4 sync` / `git checkout
+    // -f -B` underneath a live CLI and silently discard its uncommitted edits.
+    // Deferring costs one tick; the alternative costs the agent's work.
+    const occupant = await findSharedCheckoutScmWorkload(tx, sourceId, localPath, row.type)
+    if (occupant) {
+      // Drop the claim in the same section that took it, so no window exists in
+      // which the row advertises a sync this function already declined to run.
+      await deferSync(tx, sourceId)
+      return { kind: 'deferred', occupant }
+    }
+    return { kind: 'acquired', source: row }
+  })
+
+  if (acquisition.kind === 'notAcquired') {
+    // Either the row is gone or a sync already holds it. Distinguish so a
+    // missing source is not misreported as a conflict.
+    releaseCheckout(sourceId)
+    const stillExists = (
+      await db
+        .select({ id: scmSources.id })
+        .from(scmSources)
+        .where(eq(scmSources.id, sourceId))
+        .limit(1)
+    )[0]
+    if (!stillExists) {
+      return { ok: false, message: 'SCM source not found' }
+    }
+    logger.info({ sourceId }, 'Skipping SCM sync: already in progress')
+    return { ok: false, message: 'Sync already in progress', alreadyRunning: true }
+  }
+
+  if (acquisition.kind === 'refused') {
+    releaseCheckout(sourceId)
+    await releasePreAcquiredSync(sourceId, acquisition.message)
+    return { ok: false, message: acquisition.message }
+  }
+
+  if (acquisition.kind === 'deferred') {
+    const { occupant } = acquisition
+    releaseCheckout(sourceId)
+    logger.info(
+      { sourceId, workloadType: occupant.type, workloadId: occupant.id },
+      'Deferring SCM sync: checkout in use by a running workload',
+    )
+    return {
+      ok: false,
+      message: `Sync deferred: checkout in use by ${occupant.type} ${occupant.id}`,
+      alreadyRunning: true,
     }
   }
 
-  if (source.deletionRequestedAt) {
-    releaseCheckout(sourceId)
-    await releasePreAcquiredSync(sourceId, 'SCM source deletion is pending')
-    return { ok: false, message: 'SCM source deletion is pending' }
-  }
-
-  if (
-    [scmReclaimRoot(), legacyScmReclaimRoot()].some((root) =>
-      filesystemPathsOverlap(source.localPath, root),
-    )
-  ) {
-    releaseCheckout(sourceId)
-    await releasePreAcquiredSync(sourceId, 'SCM localPath overlaps the private reclaim root')
-    return { ok: false, message: 'SCM localPath overlaps the private reclaim root' }
-  }
+  const source = acquisition.source
 
   logger.info({ sourceId, name: source.name, type: source.type }, 'Starting SCM sync')
 

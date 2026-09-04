@@ -134,7 +134,11 @@ export const taskQueueDb: TaskQueueDb = {
       .where(eq(runs.id, runId))
   },
 
-  async requeueForResume(runId: string, interruptionCode?: string): Promise<boolean> {
+  async requeueForResume(
+    runId: string,
+    interruptionCode?: string,
+    expectedOwnerInstanceId?: string,
+  ): Promise<boolean> {
     return await withTransaction(async (tx) => {
       // Read inside the transaction so the mark merges onto whatever the dying
       // process last wrote, rather than a snapshot taken before it.
@@ -179,7 +183,19 @@ export const taskQueueDb: TaskQueueDb = {
           ownerInstanceId: null,
           updatedAt: new Date(),
         })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+        .where(
+          and(
+            eq(runs.id, runId),
+            eq(runs.status, 'running'),
+            // The owner fence, when the caller judged liveness against a
+            // specific owner. Status alone is an ABA check: a peer that
+            // requeued and re-promoted this run leaves it 'running' again,
+            // under itself, and requeueing it would yank live work. Startup
+            // recovery passes no owner — it IS the previous owner, single
+            // process, with no peer claim to fence against.
+            ...(expectedOwnerInstanceId ? [eq(runs.ownerInstanceId, expectedOwnerInstanceId)] : []),
+          ),
+        )
         .returning({ id: runs.id })
       // Only when this call made the transition; otherwise another replica
       // already settled the run and its steps are not ours to touch. The

@@ -63,6 +63,22 @@ ACL.
   yourself, demote the only active admin, or disable the last one. Disabling a
   user revokes outstanding tokens and closes password login, SSO, and OAuth
   gateway invocation together.
+- **`DELETE /users/:id` refuses while the user still owns resources** — 409
+  `USER_HAS_OWNED_RESOURCES`, with per-resource counts (`agents`, `mcpServers`,
+  `skills`, `skillGroups`, `kbDocuments`, `scmSources`, `evaluationSets`) so the
+  administrator can transfer or delete them first. Cascading them away would
+  destroy work nobody asked to lose, and orphaning them would leave resources no
+  one can administer. Provenance references are the opposite case and are severed
+  instead: the deleting transaction nulls `audit_logs.user_id`, `runs.user_id`,
+  `artifacts.user_id`, `artifact_shares.created_by`, `evaluation_tasks.user_id`
+  and `agents.schedule_run_as_user_id` before removing the row, so history
+  outlives the account — the audit entry keeps its `details.username`, so "who
+  did this" stays answerable. That happens in the route rather than as
+  `ON DELETE SET NULL` because altering an existing SQLite foreign key needs a
+  table rebuild, and drizzle's generated rebuild runs inside the migrator's
+  transaction where `PRAGMA foreign_keys=OFF` is a no-op — see the header of
+  `apps/api/drizzle/0100_awesome_marrow.sql`. Disabling remains the right move
+  for a departing employee; deletion is for accounts created by mistake.
 - **SCM edits during a sync return 409** — changing `localPath`/`config` mid-sync
   would release the running sync's lock.
 - **Workspace arbitration is durable and cross-replica, not in-process.** A
@@ -82,6 +98,13 @@ ACL.
   sources predating the limit stay editable.
 - **Agent PATCH diffs resource ids**: already-mounted skill/mcp/kb are not removed
   by an update that omits them.
+- **Clone and import project bindings onto the caller**: `POST /:id/clone` and the
+  ZIP/URL import hand the new Agent to the caller, so MCP, Skills, KB documents and
+  the SCM source are each kept only if the caller could bind them themselves (admin
+  sees all). Clone silently drops the rest — SCM falls back to `workspaceType: 'temp'`
+  and the dropped ids land in the `agent.clone` audit `details`; import warns "does
+  not exist on the target instance" and clears the binding, since an archive resolves
+  its references by *name* and a name is not an authorization.
 - **Two upload paths with different lifetimes.** `/api/uploads` is for icons —
   small, and **permanently public** once written. `/api/attachments` is staged: it
   returns a token, obeys `settings.attachments` limits/TTL, and 404s after expiry.
@@ -133,9 +156,28 @@ deliberately does not share `agents.maxConcurrency`.
 
 ## Channel-specific notes
 
-- **Internal Admin API** (`/api/internal/admin/*`) is localhost-only, used by the
-  platform-admin MCP, and **not filtered by owner** — it deliberately sees
-  everything.
+- **Internal API** (`/api/internal/*`) requires **both** a loopback peer **and** an
+  internal credential derived from `AUTH_SECRET` in
+  `apps/api/src/lib/internal-admin-auth.ts` — the loopback socket alone proves
+  nothing, because a same-host reverse proxy (`TRUSTED_PROXY`) makes every
+  internet request arrive from 127.0.0.1. For the same reason the gate denies a
+  loopback peer that carries `X-Forwarded-For` when `TRUSTED_PROXY` is on. Two
+  credentials exist: `A2WAVE_INTERNAL_TOKEN` (header `x-a2wave-internal-token`),
+  injected into the agent-router MCP, opens the non-admin routes; the stronger
+  `A2WAVE_INTERNAL_ADMIN_TOKEN` (header `x-a2wave-internal-admin-token`),
+  injected only into the platform-admin MCP for an active admin requester, is
+  required by `/api/internal/admin/*` and also accepted elsewhere.
+  Both are **derived from `AUTH_SECRET`** (HKDF-SHA256, distinct `info` strings),
+  not randomly generated per process. They reach their MCP through the workspace
+  MCP config file, which every replica shares under PostgreSQL, so a per-process
+  random value would make the later replica's sync overwrite the file and the
+  first replica's MCP present a token its own API rejects with 403. A derived
+  value is identical on every replica while keeping the original properties: it
+  is never written to `process.env`, the database or the logs, and it is handed
+  only to the SYSTEM builtin MCP rows (`userId IS NULL`). Distinct `info` strings
+  keep the router credential from being replayable against the admin surface.
+- **Internal Admin API** (`/api/internal/admin/*`) is **not filtered by owner** —
+  it deliberately sees everything, which is why it takes the admin credential.
 - **OAuth channel** attachment upload/consumption is isolated per user as
   `oauth:<issuer>:<sub>`.
 - **Feishu connection status** (`/api/agents/feishu-connections`) reflects only the

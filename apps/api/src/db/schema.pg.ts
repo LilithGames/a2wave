@@ -1807,3 +1807,39 @@ export const agentApiKeys = pgTable(
     agentChannelIdx: index('agent_api_keys_agent_channel_idx').on(table.agentId, table.channel),
   }),
 )
+
+// ============================================================
+// SAML Requests - durable InResponseTo state for the SAML SP
+// ============================================================
+/**
+ * Ids of AuthnRequests this SP has issued and not yet consumed.
+ *
+ * `getSaml()` runs with `validateInResponseTo: always`, which is what makes an
+ * unsolicited or replayed assertion unacceptable. node-saml's default cache for
+ * that state is a `Map` in the issuing process, so the ACS POST — which the IdP
+ * sends through the load balancer, not back down the request that started the
+ * flow — fails with `SAML_RESPONSE_UNSOLICITED` whenever it lands on another
+ * replica, or on the same one after a restart or deploy. Keeping the ids here
+ * makes the state shared and durable, which is what the guarantee assumed all
+ * along.
+ *
+ * Rows are consumed on a successful ACS and swept after
+ * `SAML_REQUEST_EXPIRATION_MS` (node-saml's `requestIdExpirationPeriodMs`, 8h);
+ * expiry is also enforced on read, so a late sweep never widens the window.
+ */
+export const samlRequests = pgTable(
+  'saml_requests',
+  {
+    /** The AuthnRequest ID node-saml generated; single-use, hence the primary key. */
+    id: text('id').primaryKey(),
+    /** node-saml's cache value for this key. Stored verbatim rather than assumed to equal the id. */
+    value: text('value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => ({
+    // The sweeper's only predicate.
+    createdAtIdx: index('saml_requests_created_at_idx').on(table.createdAt),
+  }),
+)

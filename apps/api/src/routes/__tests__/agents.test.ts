@@ -8,6 +8,7 @@ import {
   registerAgentDeleteTests,
   registerChannelTeardownTests,
 } from './agents-channel-teardown-cases.js'
+import { registerCloneBindingTests } from './agents-clone-binding-cases.js'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
 import { registerAgentSecretRedactionTests } from './agents-secret-redaction-cases.js'
@@ -646,13 +647,16 @@ describe('POST /agents/:id/clone', () => {
     expect(capturedValues.maxConcurrency).toBe(SAMPLE_AGENT.maxConcurrency)
   })
 
-  registerSkillVisibilityCloneTests({
+  const cloneCaseContext = {
     sampleAgent: SAMPLE_AGENT,
-    createApp: async (auth) => makeAgentsApp((await import('../agents.js')).default, auth),
+    createApp: async (auth: { userId: string; role: 'admin' | 'user' }) =>
+      makeAgentsApp((await import('../agents.js')).default, auth),
     makeSelectChain,
-    setSelectImplementation: (implementation) => mockDb.select.mockImplementation(implementation),
-    setInsertResult: (value) => mockDb.insert.mockReturnValue(value),
-  })
+    setSelectImplementation: (impl: () => unknown) => mockDb.select.mockImplementation(impl),
+    setInsertResult: (value: unknown) => mockDb.insert.mockReturnValue(value),
+  }
+  registerSkillVisibilityCloneTests(cloneCaseContext)
+  registerCloneBindingTests(cloneCaseContext)
 
   it('strips secrets so editor cannot walk away with the original credentials', async () => {
     const SOURCE = {

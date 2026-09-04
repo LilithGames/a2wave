@@ -23,11 +23,17 @@ vi.mock('../native-chat-attachments.js', () => ({
 vi.mock('../attachment-storage.js', () => ({
   deleteStagedAttachment: mockDeleteStagedAttachment,
 }))
+vi.mock('../logger.js', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
 
+import { logger } from '../logger.js'
 import {
   buildQQOfficialConversationId,
   buildQQOfficialIntents,
   classifyQQGatewayClose,
+  computeQQReconnectDelay,
+  MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES,
   normalizeQQOfficialMessage,
   planQQShardStarts,
   QQ_MAX_ARTIFACT_UPLOAD_BYTES,
@@ -727,5 +733,193 @@ describe('QQ Official Gateway messages', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('QQ Gateway reconnect backoff', () => {
+  /** A socket that fails the handshake, the shape a token-fetch outage produces. */
+  class ClosingSocket extends EventEmitter {
+    readyState = 1
+
+    constructor() {
+      super()
+      queueMicrotask(() => {
+        this.readyState = 3
+        this.emit('close', 1006)
+      })
+    }
+
+    send(): void {}
+
+    close(code = 1006): void {
+      this.readyState = 3
+      this.emit('close', code)
+    }
+  }
+
+  type ShardInternals = {
+    id: number
+    sequence: number | null
+    ready: boolean
+    consecutiveFailures: number
+  }
+  type ConnectionInternals = {
+    stopping: boolean
+    shards: Map<number, ShardInternals>
+    shardCount: number
+    failureReason?: string
+    [key: string]: unknown
+  }
+  type ManagerInternals = {
+    connectShard: (agentId: string, connection: unknown, shard: unknown) => void
+    handleGatewayPayload: (
+      agentId: string,
+      connection: unknown,
+      shard: unknown,
+      raw: string,
+    ) => Promise<void>
+    connections: Map<string, ConnectionInternals>
+  }
+
+  function buildManager(onSocket: () => void) {
+    const manager = new QQOfficialConnectionManager(() => {
+      onSocket()
+      return new ClosingSocket() as unknown as WebSocket
+    })
+    const internals = manager as unknown as ManagerInternals
+    const shard: ShardInternals = { id: 0, sequence: null, ready: false, consecutiveFailures: 0 }
+    const connection: ConnectionInternals = {
+      generation: 1,
+      config,
+      client: { invalidateToken: vi.fn(), getToken: vi.fn() },
+      gatewayUrl: 'wss://gateway.example',
+      shardCount: 1,
+      identifyLimiter: { acquire: async () => {} },
+      readyTimeoutMs: 1_000,
+      shards: new Map([[0, shard]]),
+      stopping: false,
+    }
+    internals.connections.set('agent-1', connection)
+    return { manager, internals, connection, shard }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('backs off exponentially with jitter and caps at 60s', () => {
+    expect(computeQQReconnectDelay(1, () => 0)).toBeGreaterThanOrEqual(500)
+    expect(computeQQReconnectDelay(1, () => 1)).toBeLessThanOrEqual(1_000)
+    expect(computeQQReconnectDelay(2, () => 1)).toBeLessThanOrEqual(2_000)
+    expect(computeQQReconnectDelay(2, () => 0)).toBeGreaterThan(computeQQReconnectDelay(1, () => 1))
+    // Cap: without one, attempt 20 would ask for ~6 days.
+    expect(computeQQReconnectDelay(20, () => 1)).toBeLessThanOrEqual(60_000)
+    expect(computeQQReconnectDelay(20, () => 0)).toBeGreaterThan(30_000)
+    // Jitter: two draws from the same attempt must not be identical.
+    expect(computeQQReconnectDelay(5, () => 0)).not.toBe(computeQQReconnectDelay(5, () => 1))
+  })
+
+  it('spaces retries instead of hammering the Gateway once a second', async () => {
+    vi.useFakeTimers()
+    let created = 0
+    const { internals, connection, shard } = buildManager(() => {
+      created += 1
+    })
+
+    internals.connectShard('agent-1', connection, shard)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(created).toBe(1)
+    expect(shard.consecutiveFailures).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(created).toBe(2)
+    expect(shard.consecutiveFailures).toBe(2)
+
+    // The second retry must wait longer than the first: at 700ms the old fixed
+    // 1s delay would already have fired again.
+    await vi.advanceTimersByTimeAsync(700)
+    expect(created).toBe(2)
+    await vi.advanceTimersByTimeAsync(1_300)
+    expect(created).toBe(3)
+  })
+
+  it('reports the connection as failed past the budget but keeps re-probing at the cap', async () => {
+    vi.useFakeTimers()
+    let created = 0
+    const { manager, internals, connection, shard } = buildManager(() => {
+      created += 1
+    })
+
+    internals.connectShard('agent-1', connection, shard)
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES; i++) {
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+
+    expect(connection.failureReason).toBeTruthy()
+    expect(manager.getConnectionStatuses()).toEqual([
+      { agentId: 'agent-1', socketOpen: false, failed: true, lastError: connection.failureReason },
+    ])
+
+    // An outage longer than the backoff window must not park the channel
+    // offline forever: the probe continues at the 60s cap, so the connection
+    // comes back on its own once the network does.
+    const attemptsAtBudget = created
+    expect(attemptsAtBudget).toBeGreaterThanOrEqual(MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES)
+    await vi.advanceTimersByTimeAsync(60_000 * 5)
+    expect(created).toBeGreaterThan(attemptsAtBudget)
+  })
+
+  it('logs the exhausted budget once and warns periodically afterwards', async () => {
+    vi.useFakeTimers()
+    const { internals, connection, shard } = buildManager(() => {})
+
+    internals.connectShard('agent-1', connection, shard)
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES + 5; i++) {
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+
+    const exhaustedErrors = vi
+      .mocked(logger.error)
+      .mock.calls.filter(([, message]) => String(message).includes('reconnect budget exhausted'))
+    expect(exhaustedErrors).toHaveLength(1)
+    expect(vi.mocked(logger.warn).mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it('clears the failed status when the shard recovers after the budget was spent', async () => {
+    vi.useFakeTimers()
+    const { manager, internals, connection, shard } = buildManager(() => {})
+
+    internals.connectShard('agent-1', connection, shard)
+    for (let i = 0; i < MAX_QQ_CONSECUTIVE_RECONNECT_FAILURES + 2; i++) {
+      await vi.advanceTimersByTimeAsync(60_000)
+    }
+    expect(manager.getConnectionStatuses()[0].failed).toBe(true)
+
+    await internals.handleGatewayPayload(
+      'agent-1',
+      connection,
+      shard,
+      JSON.stringify({ op: 0, t: 'READY', s: 1, d: { session_id: 'session-1' } }),
+    )
+
+    expect(shard.consecutiveFailures).toBe(0)
+    expect(connection.failureReason).toBeUndefined()
+    expect(manager.getConnectionStatuses()[0].failed).toBe(false)
+  })
+
+  it('resets the failure budget once the shard is READY again', async () => {
+    const { internals, connection, shard } = buildManager(() => {})
+    shard.consecutiveFailures = 7
+    connection.failureReason = 'previous outage'
+
+    await internals.handleGatewayPayload(
+      'agent-1',
+      connection,
+      shard,
+      JSON.stringify({ op: 0, t: 'READY', s: 1, d: { session_id: 'session-1' } }),
+    )
+
+    expect(shard.consecutiveFailures).toBe(0)
+    expect(connection.failureReason).toBeUndefined()
   })
 })

@@ -17,6 +17,14 @@
 #   DEPLOY_AUTH_SECRET  应用 AUTH_SECRET
 #   DEPLOY_ADMIN_PASS   管理员初始密码
 #
+# SSH host key (optional; unset = accept-new, i.e. record on first contact, then pin):
+#   DEPLOY_KNOWN_HOSTS_FILE  known_hosts file to verify the host against (strict)
+#   DEPLOY_HOST_KEY          a single known_hosts line ("<host> ssh-ed25519 AAAA…")
+#
+# Advanced (optional):
+#   DEPLOY_REMOTE_ENV_FILE   remote path for the container env file
+#                            (default /home/<user>/a2wave.env; written 0600, removed after start)
+#
 # 企业 OIDC（可选；ISSUER + CLIENT_ID 要么全设、要么全不设，不设即不启用）:
 #   DEPLOY_OIDC_ISSUER             IdP issuer（discovery = {issuer}/.well-known/openid-configuration）
 #   DEPLOY_OIDC_CLIENT_ID          在 IdP 注册的 client_id
@@ -72,7 +80,7 @@ while [[ $# -gt 0 ]]; do
     --admin-pass) ADMIN_PASS="$2";   shift 2 ;;
     --skip-build) SKIP_BUILD=true;   shift ;;
     --help)
-      sed -n '2,24p' "$0" | sed 's/^# \?//'
+      sed -n '2,34p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -127,11 +135,31 @@ if ! command -v docker &>/dev/null; then
   exit 1
 fi
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o LogLevel=ERROR"
-SUDO="echo '${REMOTE_PASS}' | sudo -S"
+# ── SSH host key policy ───────────────────────────────────────────────────────
+# Shared with codex-login-remote.sh; see scripts/deploy/lib/ssh-opts.sh.
+# shellcheck source=scripts/deploy/lib/ssh-opts.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy/lib/ssh-opts.sh"
+a2wave_init_ssh_opts
 
-remote() { sshpass -p "${REMOTE_PASS}" ssh ${SSH_OPTS} "${REMOTE_USER}@${REMOTE_HOST}" "$@" 2>&1; }
-scp_upload() { sshpass -p "${REMOTE_PASS}" scp ${SSH_OPTS} "$@"; }
+# Secrets never go into a command line: `ps auxww` is readable by every local
+# user on both ends. The sudo password is the first line of the remote shell's
+# stdin, and sshpass takes the SSH password from the environment (-e) rather
+# than from our own argv (-p).
+REMOTE_PRELUDE='IFS= read -r A2WAVE_SUDO_PASS'
+SUDO='printf "%s\n" "$A2WAVE_SUDO_PASS" | sudo -S -p ""'
+
+# $1 is piped to the remote command after the sudo password line; the rest is the
+# command itself. Process substitution rather than a pipe: with `pipefail`, a
+# remote command that ignores stdin would otherwise fail the whole script.
+remote_with_input() {
+  local input="$1"
+  shift
+  SSHPASS="${REMOTE_PASS}" sshpass -e ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" \
+    "${REMOTE_PRELUDE}
+$*" < <(printf '%s\n%s' "${REMOTE_PASS}" "${input}") 2>&1
+}
+remote() { remote_with_input "" "$@"; }
+scp_upload() { SSHPASS="${REMOTE_PASS}" sshpass -e scp "${SSH_OPTS[@]}" "$@"; }
 
 # ── 切换到项目根目录 ──────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -196,7 +224,59 @@ remote "${SUDO} docker load -i ${TMP_IMAGE}"
 
 echo "   重启容器..."
 remote "${SUDO} docker rm -f ${CONTAINER_NAME} 2>/dev/null || true"
+
+# Every value the container needs travels in an env file written over the remote
+# shell's stdin, never as `-e NAME=secret` in the remote command line: argv is
+# world-readable through `ps auxww`, so AUTH_SECRET and ADMIN_PASSWORD used to be
+# visible to any local user on the deployment host for the life of the command.
+CONTAINER_ENV=(
+  "AUTH_SECRET=${AUTH_SECRET}"
+  "ADMIN_PASSWORD=${ADMIN_PASS}"
+  "AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE}"
+  "A2WAVE_RUN_AS_UID=${REMOTE_UID}"
+  "A2WAVE_RUN_AS_GID=${REMOTE_GID}"
+)
+
+# Inject nothing when unconfigured: an empty issuer would read as a
+# present-but-broken config rather than an absent one.
+if [[ "${OIDC_SET_COUNT}" -eq 2 ]]; then
+  CONTAINER_ENV+=(
+    "A2WAVE_OIDC_ISSUER=${OIDC_ISSUER}"
+    "A2WAVE_OIDC_CLIENT_ID=${OIDC_CLIENT_ID}"
+  )
+  # Optional knobs: only pass through what was actually supplied, so an empty
+  # value never overrides an image-level default.
+  if [[ -n "${OIDC_CLIENT_SECRET}" ]]; then
+    CONTAINER_ENV+=("A2WAVE_OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}")
+  fi
+  if [[ -n "${OIDC_SCOPES}" ]]; then
+    CONTAINER_ENV+=("A2WAVE_OIDC_SCOPES=${OIDC_SCOPES}")
+  fi
+  if [[ -n "${OIDC_CHANNEL_AUDIENCES}" ]]; then
+    CONTAINER_ENV+=("A2WAVE_OIDC_CHANNEL_AUDIENCES=${OIDC_CHANNEL_AUDIENCES}")
+  fi
+fi
+
+for proxy_name in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do
+  if [[ -n "${!proxy_name:-}" ]]; then
+    CONTAINER_ENV+=( "${proxy_name}=${!proxy_name}" )
+  fi
+done
+
+# One KEY=VALUE per line, verbatim: docker parses the file itself, so no shell
+# ever sees these values. A newline has no representation in that format — refuse
+# rather than ship a container missing half its config.
+ENV_FILE_CONTENT=""
+for entry in "${CONTAINER_ENV[@]}"; do
+  if [[ "${entry}" == *$'\n'* ]]; then
+    echo "❌ ${entry%%=*} contains a newline, which docker --env-file cannot represent"
+    exit 1
+  fi
+  ENV_FILE_CONTENT+="${entry}"$'\n'
+done
+
 # appuser uses HOME=/home/appuser; persist it and retain the three legacy nested mounts.
+REMOTE_ENV_FILE="${DEPLOY_REMOTE_ENV_FILE:-/home/${REMOTE_USER}/a2wave.env}"
 DOCKER_RUN_ARGS=(
   docker run -d
   --name "${CONTAINER_NAME}"
@@ -207,39 +287,9 @@ DOCKER_RUN_ARGS=(
   -v "${DATA_DIR}/.claude:/home/appuser/.claude"
   -v "${DATA_DIR}/.cursor:/home/appuser/.cursor"
   -v "${DATA_DIR}/.codex:/home/appuser/.codex"
-  -e "AUTH_SECRET=${AUTH_SECRET}"
-  -e "ADMIN_PASSWORD=${ADMIN_PASS}"
-  -e "AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE}"
-  -e "A2WAVE_RUN_AS_UID=${REMOTE_UID}"
-  -e "A2WAVE_RUN_AS_GID=${REMOTE_GID}"
+  --env-file "${REMOTE_ENV_FILE}"
+  "${IMAGE_TAG}"
 )
-
-# Inject nothing when unconfigured: an empty issuer would read as a
-# present-but-broken config rather than an absent one.
-if [[ "${OIDC_SET_COUNT}" -eq 2 ]]; then
-  DOCKER_RUN_ARGS+=(
-    -e "A2WAVE_OIDC_ISSUER=${OIDC_ISSUER}"
-    -e "A2WAVE_OIDC_CLIENT_ID=${OIDC_CLIENT_ID}"
-  )
-  # Optional knobs: only pass through what was actually supplied, so an empty
-  # value never overrides an image-level default.
-  if [[ -n "${OIDC_CLIENT_SECRET}" ]]; then
-    DOCKER_RUN_ARGS+=(-e "A2WAVE_OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}")
-  fi
-  if [[ -n "${OIDC_SCOPES}" ]]; then
-    DOCKER_RUN_ARGS+=(-e "A2WAVE_OIDC_SCOPES=${OIDC_SCOPES}")
-  fi
-  if [[ -n "${OIDC_CHANNEL_AUDIENCES}" ]]; then
-    DOCKER_RUN_ARGS+=(-e "A2WAVE_OIDC_CHANNEL_AUDIENCES=${OIDC_CHANNEL_AUDIENCES}")
-  fi
-fi
-
-for proxy_name in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do
-  if [[ -n "${!proxy_name:-}" ]]; then
-    DOCKER_RUN_ARGS+=( -e "${proxy_name}=${!proxy_name}" )
-  fi
-done
-DOCKER_RUN_ARGS+=( "${IMAGE_TAG}" )
 
 quote_remote_arg() {
   local value=${1//\'/\'\\\'\'}
@@ -250,7 +300,16 @@ DOCKER_RUN_COMMAND=""
 for arg in "${DOCKER_RUN_ARGS[@]}"; do
   DOCKER_RUN_COMMAND+="$(quote_remote_arg "$arg") "
 done
-remote "${SUDO} ${DOCKER_RUN_COMMAND}"
+
+# umask 077 before the file exists: docker (as root) can still read it, nobody
+# else can, and it is removed as soon as the container has been created.
+QUOTED_ENV_FILE="$(quote_remote_arg "${REMOTE_ENV_FILE}")"
+remote_with_input "${ENV_FILE_CONTENT}" "umask 077
+cat > ${QUOTED_ENV_FILE}
+${SUDO} ${DOCKER_RUN_COMMAND}
+run_status=\$?
+rm -f ${QUOTED_ENV_FILE}
+exit \$run_status"
 
 # ── 健康检查 ──────────────────────────────────────────────────────────────────
 echo ""
