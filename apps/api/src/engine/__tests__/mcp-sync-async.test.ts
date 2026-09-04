@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -624,5 +625,108 @@ describe('syncMcpToWorkspaceAtPathAsync — target identity, not pathname', () =
     expect(readFileSync(path.join(repo, 'config/local-mcp.json'), 'utf-8')).toContain(
       'resolved-secret-token',
     )
+    // The exclude entry only ever named `.mcp.json`; the credentials landed in
+    // `config/local-mcp.json`, so that file is what `git add -A` would stage.
+    await runGit('add', '-A')
+    expect(await runGit('diff', '--cached')).toBe('')
+  })
+
+  it('refuses when the resolved target cannot be kept out of the index', async () => {
+    mkdirSync(path.join(repo, 'config'))
+    // A negated ignore rule beats `info/exclude`, so the resolved target cannot
+    // be excluded and the write has nowhere safe to land.
+    await trackFile('.gitignore', '!config/local-mcp.json\n')
+    symlinkSync(path.join('config', 'local-mcp.json'), path.join(repo, '.mcp.json'))
+
+    await expect(syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])).rejects.toThrow(
+      /config\/local-mcp\.json/,
+    )
+
+    expect(existsSync(path.join(repo, 'config/local-mcp.json'))).toBe(false)
+  })
+
+  /**
+   * A hardlink gives one inode two pathnames, neither of which is a symlink and
+   * neither of which shares the other's basename — so a directory listing
+   * filtered by name never even compares them. Writing in place through one
+   * name modifies the tracked file behind the other.
+   */
+  it('never modifies a tracked file hardlinked to the target', async () => {
+    const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+    await trackFile('config/team-mcp.json', committed)
+    linkSync(path.join(repo, 'config/team-mcp.json'), path.join(repo, '.mcp.json'))
+
+    await syncMcpToWorkspaceAtPathAsync(repo, '.mcp.json', [secretServer])
+
+    expect(readFileSync(path.join(repo, 'config/team-mcp.json'), 'utf-8')).toBe(committed)
+    await runGit('add', '-A')
+    expect(await runGit('diff', '--cached')).toBe('')
+  })
+})
+
+/**
+ * A multi-repo workspace root is not itself a checkout: `git rev-parse` fails
+ * there. That says nothing about where the write lands — a config path that
+ * resolves into one of the sub-repositories is as committable as any other
+ * tracked file, so the question has to be asked of the repository owning the
+ * RESOLVED target, not of the workspace root.
+ */
+describe('syncMcpToWorkspaceAtPathAsync — multi-repo workspace root', () => {
+  let workspace: string
+  let frontend: string
+
+  async function runGit(...args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd: frontend })
+    return stdout
+  }
+
+  const secretServer: ResolvedMcpServer = {
+    name: 'api',
+    type: 'http',
+    url: 'https://mcp.example.com',
+    headers: { Authorization: 'Bearer multi-repo-secret-token' },
+  }
+
+  beforeEach(async () => {
+    workspace = mkdtempSync(path.join(os.tmpdir(), 'mcp-sync-multirepo-test-'))
+    frontend = path.join(workspace, 'frontend')
+    mkdirSync(frontend)
+    await runGit('init', '-b', 'main')
+    await runGit('config', 'user.email', 'test@test.com')
+    await runGit('config', 'user.name', 'Test')
+    writeFileSync(path.join(frontend, 'README.md'), '# frontend')
+    await runGit('add', '.')
+    await runGit('commit', '-m', 'init')
+  })
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it('refuses when the root config resolves into a file a sub-repository tracks', async () => {
+    const committed = '{"mcpServers":{"team":{"command":"node","args":["team.js"]}}}'
+    writeFileSync(path.join(frontend, 'team-mcp.json'), committed)
+    await runGit('add', '--', 'team-mcp.json')
+    await runGit('commit', '-m', 'track team-mcp.json')
+    symlinkSync(path.join('frontend', 'team-mcp.json'), path.join(workspace, '.mcp.json'))
+
+    await expect(
+      syncMcpToWorkspaceAtPathAsync(workspace, '.mcp.json', [secretServer]),
+    ).rejects.toThrow(/git rm --cached/)
+
+    expect(readFileSync(path.join(frontend, 'team-mcp.json'), 'utf-8')).toBe(committed)
+    expect(await runGit('status', '--porcelain')).toBe('')
+  })
+
+  it('keeps an untracked sub-repository target out of the sub-repository index', async () => {
+    symlinkSync(path.join('frontend', 'local-mcp.json'), path.join(workspace, '.mcp.json'))
+
+    expect(await syncMcpToWorkspaceAtPathAsync(workspace, '.mcp.json', [secretServer])).toBe(true)
+
+    expect(readFileSync(path.join(frontend, 'local-mcp.json'), 'utf-8')).toContain(
+      'multi-repo-secret-token',
+    )
+    await runGit('add', '-A')
+    expect(await runGit('diff', '--cached')).toBe('')
   })
 })
