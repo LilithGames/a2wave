@@ -142,7 +142,7 @@ export const INTERACTIVE_CARD_PROMPT = `## 交互卡片（向用户收集反馈�
 - 除 \`confirm_cancel\` 外，每个组件必须有唯一的 \`name\`（英文/数字）；\`select\`/\`multi_select\` 必须给 \`options\`。
 - 含输入类组件时，系统会生成一个「提交」按钮收集全部字段。
 - 一条消息最多放一个卡片块、最多 10 个组件；只在确实需要用户反馈时使用，普通回复直接输出文本即可。
-- 卡片块之外可以照常写正文；若没写 \`body\`，块之外的正文会作为卡片说明。`
+- 卡片块之外可以照常写正文；正文会与 \`body\` 一起保留在同一张卡片中，正文在前、\`body\` 在后。\`body\` 只需补充问答说明，不必重复正文。`
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 解析 Agent 输出
@@ -299,23 +299,27 @@ function maybeLabel(c: InteractiveCardComponent): CardJson | null {
   return c.label ? { tag: 'markdown', content: `**${c.label}**` } : null
 }
 
-/**
- * 构建交互卡片 JSON 2.0。
- * @param spec   Agent 声明的卡片
- * @param cbId   feishu_card_callbacks 记录 id（嵌入每个按钮的 callback value）
- * @param bodyFallback spec 未写 body 时的兜底正文（取自卡片块之外的可视文本）
- */
+/** Preserve the reply context alongside the question, without duplicating identical text. */
+export function resolveInteractiveCardBody(body?: string, surroundingText?: string): string {
+  const text = surroundingText?.trim() ?? ''
+  const details = body?.trim() ?? ''
+  if (!text) return details
+  if (!details || details === text) return text
+  return `${text}\n\n${details}`
+}
+
+/** Build a card with the surrounding reply text followed by the question details. */
 export function buildInteractiveCardJson(
   spec: InteractiveCardSpec,
   cbId: string,
-  bodyFallback?: string,
+  surroundingText?: string,
   style?: CardStyle,
   debugSuffix?: string,
 ): CardJson {
   const elements: CardJson[] = []
 
-  const body = spec.body ?? bodyFallback
-  if (body?.trim()) elements.push({ tag: 'markdown', content: body.trim() })
+  const body = resolveInteractiveCardBody(spec.body, surroundingText)
+  if (body) elements.push({ tag: 'markdown', content: body })
 
   const confirm = spec.components.find((c) => c.type === 'confirm_cancel') as
     | Extract<InteractiveCardComponent, { type: 'confirm_cancel' }>
@@ -383,7 +387,7 @@ export function buildInteractiveCardJson(
     )
   }
 
-  // 调试信息固定在卡片最底部（操作区之后），独立元素，不受 spec.body 覆盖 bodyFallback 影响。
+  // Keep debug information below the actions, separate from the reply body.
   const debugFooter = debugFooterElement(debugSuffix)
   if (debugFooter) elements.push(debugFooter)
 

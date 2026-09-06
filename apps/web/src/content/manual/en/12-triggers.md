@@ -232,6 +232,8 @@ Within one session line the Agent can see the previous rounds of context. How th
 
 Once you set the reply content type to **`interactive_card`**, whenever the Agent needs you to **confirm an action** or **fill in / choose information** to continue, it will directly send a clickable, fillable Feishu card (confirm/cancel buttons, dropdown single-select, multi-select, text input, date, etc.) instead of asking you to type out an answer. After you act and submit, the result returns as a new round of input to **the same session**, and the Agent continues accordingly.
 
+- **Reply context**: the Agent's explanation and question details appear together in the card. After you submit or cancel, the original card keeps that content and shows the action result.
+
 - **Who can act**: only the **card's recipient** (the person who triggered this round of conversation) can act; clicks by others in the group are rejected, avoiding mistaken actions on your behalf.
 - **Where replies land**: after continuing, the Agent's reply **always attaches to your original question message**, rather than nesting layer by layer under the cards — even if several cards pop up in a row, the reply chain always returns to the initial question, so the group doesn't get increasingly tangled.
 - **Validity**: cards have an expiry; clicking an expired or already-handled card shows an "invalid" prompt, and you'll need to start a new conversation if needed.
