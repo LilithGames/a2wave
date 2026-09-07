@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-09-07 · `node scripts/gates/check-license-inventory.mjs --write` · 826 packages
+Generated: 2026-09-07 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -14,7 +14,7 @@ checked for forbidden licenses, and each carries the same license as its parent 
 
 | License | Packages |
 |---|---|
-| MIT | 704 |
+| MIT | 705 |
 | ISC | 41 |
 | Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
@@ -78,12 +78,12 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/plugin-transform-react-jsx-source | 7.27.1 | MIT |
 | @babel/plugin-transform-typescript | 7.28.6 | MIT |
 | @babel/preset-typescript | 7.28.5 | MIT |
-| @babel/runtime | 7.28.6, 7.29.7, 8.0.0 | MIT |
+| @babel/runtime | 7.29.7, 8.0.0 | MIT |
 | @babel/template | 7.28.6 | MIT |
 | @babel/traverse | 7.29.0 | MIT |
 | @babel/types | 7.29.0, 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 2.5.10 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.5.12 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.3 | MIT |
 | @codemirror/commands | 6.11.0 | MIT |
 | @codemirror/language | 6.12.4 | MIT |
@@ -146,7 +146,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @modelcontextprotocol/sdk | 1.30.0 | MIT |
 | @node-rs/argon2 | 2.2.0 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
-| @oxc-project/types | 0.143.0, 0.147.0 | MIT |
+| @oxc-project/types | 0.147.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
 | @playwright/test | 1.62.1 | Apache-2.0 |
@@ -227,8 +227,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @tanstack/react-query | 5.102.8 | MIT |
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
-| @testing-library/react | 16.3.2 | MIT |
-| @testing-library/user-event | 14.6.6 | MIT |
+| @testing-library/react | 16.3.3 | MIT |
+| @testing-library/user-event | 14.6.7 | MIT |
 | @types/adm-zip | 0.5.8 | MIT |
 | @types/aria-query | 5.0.4 | MIT |
 | @types/babel__core | 7.20.5 | MIT |
@@ -259,7 +259,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/pg | 8.23.1 | MIT |
 | @types/qs | 6.15.1 | MIT |
 | @types/react | 19.2.18 | MIT |
-| @types/react-dom | 19.2.5 | MIT |
+| @types/react-dom | 19.2.7 | MIT |
 | @types/retry | 0.12.0, 0.12.5 | MIT |
 | @types/sanitize-html | 2.16.1 | MIT |
 | @types/unist | 2.0.11, 3.0.3 | MIT |
@@ -441,7 +441,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | fix-dts-default-cjs-exports | 1.0.1 | MIT |
 | follow-redirects | 1.16.0 | MIT |
 | form-data | 4.0.6 | MIT |
-| formatly | 0.3.0 | MIT |
+| formatly | 0.7.0 | MIT |
 | forwarded | 0.2.0 | MIT |
 | fresh | 2.0.0 | MIT |
 | fs-constants | 1.0.0 | MIT |
@@ -452,7 +452,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | get-intrinsic | 1.3.0 | MIT |
 | get-proto | 1.0.1 | MIT |
 | get-stream | 8.0.1, 9.0.1 | MIT |
-| get-tsconfig | 4.14.1, 4.14.2 | MIT |
+| get-tsconfig | 4.14.3 | MIT |
 | github-from-package | 0.0.0 | MIT |
 | gopd | 1.2.0 | MIT |
 | graceful-fs | 4.2.11 | ISC |
@@ -520,7 +520,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | json2mq | 0.2.0 | MIT |
 | json5 | 2.2.3 | MIT |
 | kind-of | 6.0.3 | MIT |
-| knip | 6.32.2 | ISC |
+| knip | 6.34.0 | ISC |
 | launder | 1.7.1 | MIT |
 | lightningcss | 1.32.0, 1.33.0 | MPL-2.0 |
 | lilconfig | 3.1.3 | MIT |
@@ -629,12 +629,13 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | once | 1.4.0 | ISC |
 | onetime | 6.0.0, 7.0.0 | MIT |
 | openid-client | 6.8.7 | MIT |
-| oxc-parser | 0.143.0 | MIT |
+| oxc-parser | 0.147.0 | MIT |
 | oxc-resolver | 11.24.2 | MIT |
 | p-finally | 1.0.0 | MIT |
 | p-queue | 6.6.2 | MIT |
 | p-retry | 4.6.2 | MIT |
 | p-timeout | 3.2.0 | MIT |
+| package-manager-detector | 1.8.0 | MIT |
 | parse-entities | 4.0.2 | MIT |
 | parse-ms | 4.0.0 | MIT |
 | parse-srcset | 1.0.2 | MIT |
@@ -805,7 +806,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ts-mixer | 6.0.4 | MIT |
 | tslib | 2.8.1 | 0BSD |
 | tsup | 8.5.1 | MIT |
-| tsx | 4.23.12 | MIT |
+| tsx | 4.23.13 | MIT |
 | tunnel | 0.0.6 | MIT |
 | tunnel-agent | 0.6.0 | Apache-2.0 |
 | type-fest | 4.41.0 | (MIT OR CC0-1.0) |
@@ -814,7 +815,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | typed-rest-client | 2.3.1 | MIT |
 | typescript | 5.9.3 | Apache-2.0 |
 | ufo | 1.6.3 | MIT |
-| unbash | 4.0.10 | ISC |
+| unbash | 4.0.11 | ISC |
 | underscore | 1.13.8 | MIT |
 | undici | 6.28.0, 7.29.0 | MIT |
 | undici-types | 6.21.0 | MIT |
@@ -860,6 +861,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | yallist | 3.1.1 | ISC |
 | yaml | 2.9.0 | ISC |
 | yoctocolors | 2.1.2 | MIT |
-| zod | 3.25.76, 4.4.3 | MIT |
+| zod | 3.25.76, 4.5.4 | MIT |
 | zod-to-json-schema | 3.25.2 | ISC |
 | zwitch | 2.0.4 | MIT |
