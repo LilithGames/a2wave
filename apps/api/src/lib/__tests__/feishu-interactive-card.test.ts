@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  type CardActionGateRow,
   buildInteractiveCardJson,
   buildPlainCardJson,
   buildResolvedCardJson,
+  type CardActionGateRow,
   decideCardAction,
   parseInteractiveCardSpec,
   summarizeCardAction,
@@ -60,6 +60,56 @@ describe('parseInteractiveCardSpec', () => {
 })
 
 describe('buildInteractiveCardJson', () => {
+  it.each([
+    [
+      'Question details',
+      'Analysis before the question',
+      'Analysis before the question\n\nQuestion details',
+    ],
+    [undefined, 'Analysis before the question', 'Analysis before the question'],
+    ['', 'Analysis before the question', 'Analysis before the question'],
+    ['   ', 'Analysis before the question', 'Analysis before the question'],
+    ['Question details', undefined, 'Question details'],
+    ['Question details', '   ', 'Question details'],
+    [' Same question ', ' Same question ', 'Same question'],
+    ['Question', 'Question details', 'Question details\n\nQuestion'],
+  ])(
+    'preserves visible text when body is %j and surrounding text is %j',
+    (body, text, expected) => {
+      const card = buildInteractiveCardJson(
+        { body, components: [{ type: 'confirm_cancel' }] },
+        'fcb_body',
+        text,
+      )
+      expect(card.body).toMatchObject({
+        elements: [{ tag: 'markdown', content: expected }, { tag: 'hr' }, { tag: 'column_set' }],
+      })
+    },
+  )
+
+  it('keeps text around the declaration and long Markdown before the question', () => {
+    const before = `## Analysis\n${'Detailed finding.\n'.repeat(350)}`
+    const after = '[Download report](https://example.com/report)'
+    const { spec, text } = parseInteractiveCardSpec(
+      `${before}\n\`\`\`a2wave-card\n${JSON.stringify({
+        body: 'Which option should we use?',
+        components: [{ type: 'confirm_cancel' }],
+      })}\n\`\`\`\n${after}`,
+    )
+    expect(spec).not.toBeNull()
+    if (!spec) throw new Error('Expected a valid interactive card declaration')
+    const card = buildInteractiveCardJson(spec, 'fcb_long', text)
+    expect(card.body).toMatchObject({
+      elements: [
+        { tag: 'markdown', content: `${text}\n\nWhich option should we use?` },
+        { tag: 'hr' },
+        { tag: 'column_set' },
+      ],
+    })
+    expect(text).toContain(before.trim())
+    expect(text).toContain(after)
+  })
+
   it('builds standalone callback buttons for confirm_cancel (no form)', async () => {
     const { spec } = parseInteractiveCardSpec(
       block('{"title":"标题","body":"正文","components":[{"type":"confirm_cancel"}]}'),
