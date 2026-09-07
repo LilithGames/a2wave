@@ -820,8 +820,11 @@ export function AgentDetailPage() {
             activeTab === 'runs'
               ? {
                   right: (
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-2">
                       <RunsRetryAllButton controller={runsRetryAll} />
+                      {/* The two controls act on different things (one page of
+                          Runs vs. the whole list), so they are not one group. */}
+                      <span className="h-4 w-px bg-border" aria-hidden="true" />
                       <Button
                         type="button"
                         variant="ghost"

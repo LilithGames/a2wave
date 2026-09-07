@@ -1,4 +1,4 @@
-import { RotateCcw } from 'lucide-react'
+import { ListRestart } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -105,7 +105,12 @@ export function RunsRetryAllButton({ controller }: { controller: RunsRetryAllCon
             : t('agentDetail.runsRetryAllFailed')
       }
     >
-      <RotateCcw className={`h-3.5 w-3.5 ${replaying ? 'animate-spin' : ''}`} aria-hidden="true" />
+      {/* Not a circular arrow: sitting next to the tab's refresh it would read
+          as a second refresh button rather than a bulk action on the list. */}
+      <ListRestart
+        className={`h-3.5 w-3.5 ${replaying ? 'animate-pulse' : ''}`}
+        aria-hidden="true"
+      />
       {t('agentDetail.runsRetryAllFailed')}
     </Button>
   )
