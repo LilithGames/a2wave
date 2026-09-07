@@ -433,9 +433,15 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
     const rejection = combined.match(/handshake transport error[^\n]*\b40[13]\b[^\n]*/i)
     if (rejection) return { valid: false, message: rejection[0].trim() }
 
+    // A green row is not enough: doctor also reports success when the transport
+    // was skipped (disabled by configuration), and a handshake that never
+    // happened confirms nothing. The connected wording — `connected (HTTP 101
+    // Switching Protocols)` — is the evidence that one did.
     const websocketLine = combined.match(/([✓✗⚠])\s+websocket\b[ \t]*(.*)/)
-    if (authGlyph === '✓' && websocketLine?.[1] === '✓') {
-      return { valid: true, message: websocketLine[2]?.trim() || undefined }
+    const handshakeMessage = websocketLine?.[2]?.trim()
+    const handshakeCompleted = !!handshakeMessage && /\b101\b|connected/i.test(handshakeMessage)
+    if (authGlyph === '✓' && websocketLine?.[1] === '✓' && handshakeCompleted) {
+      return { valid: true, message: handshakeMessage }
     }
     // Everything else is doctor hedging: a credential is present, and nothing
     // here either confirms or refutes that the vendor still takes it.

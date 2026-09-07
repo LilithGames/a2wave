@@ -50,6 +50,7 @@ vi.mock('../../engine/execution-lease-registry.js', () => ({
   cancelExecutionLease: vi.fn().mockResolvedValue(undefined),
   bindExecutionLeaseTask: vi.fn(),
   hasExecutionLease: vi.fn().mockReturnValue(false),
+  isRunExecutionSettling: vi.fn().mockReturnValue(false),
   reserveExecutionLease: vi.fn(),
   reserveExecutionLeaseForAgent: vi.fn().mockResolvedValue(undefined),
   completeExecutionLease: vi.fn().mockResolvedValue(undefined),
@@ -1523,13 +1524,13 @@ describe('POST /runs/:id/rerun', () => {
     })
 
     it('refuses while the failed attempt is still cleaning up', async () => {
-      // `failed` is written before the execution lease is released, and the
-      // lease is keyed by run id. Re-admitting the same id inside that window
-      // hands the old owner's completeExecutionLease() the NEW attempt's
-      // bindings: it would tear down the retry's cancellation wiring and
-      // release the SCM lease the retry is holding.
-      const { hasExecutionLease } = await import('../../engine/execution-lease-registry.js')
-      ;(hasExecutionLease as Mock).mockReturnValueOnce(true)
+      // `failed` is written before the previous attempt finishes unwinding —
+      // the lease, and the durable SCM release that outlives it, are both keyed
+      // by run id. Re-admitting inside that window hands the dying owner's
+      // cleanup the NEW attempt's bindings: it would tear down the retry's
+      // cancellation wiring and release the SCM lease the retry is holding.
+      const { isRunExecutionSettling } = await import('../../engine/execution-lease-registry.js')
+      ;(isRunExecutionSettling as Mock).mockReturnValueOnce(true)
       arrangeFailedRun()
 
       const res = await app.request('/runs/run_1/rerun', { method: 'POST' })

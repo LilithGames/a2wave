@@ -207,6 +207,23 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
     expect(status.code).toBeUndefined()
   })
 
+  it('does not accept a websocket row that never made a handshake', async () => {
+    // doctor also reports a green websocket row when the transport is disabled
+    // by configuration — nothing was sent, so nothing was confirmed.
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(
+      doctorChild,
+      '  ✓ auth         auth is configured\n' + '  ✓ websocket    skipped (disabled by config)\n',
+      0,
+    )
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(false)
+  })
+
   it('marks a confirmed session as verified', async () => {
     const [statusChild, doctorChild] = queueChildren(2)
     const promise = engine.checkLoginStatus()

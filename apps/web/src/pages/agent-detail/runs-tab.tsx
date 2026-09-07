@@ -49,7 +49,7 @@ interface RunsTabProps {
    * The bulk-retry action lives in the tab bar (outside this component), and it
    * must act on exactly the Runs the operator can see.
    */
-  onFailedRunIdsChange?: (runIds: string[]) => void
+  onFailedRunIdsChange?: (runIds: string[], listUpdatedAt: number) => void
 }
 
 export function RunsTab({
@@ -89,6 +89,7 @@ export function RunsTab({
 
   const {
     data: runsData,
+    dataUpdatedAt,
     isLoading,
     isFetching,
     refetch,
@@ -122,8 +123,11 @@ export function RunsTab({
   )
 
   useEffect(() => {
-    onFailedRunIdsChange?.(failedRunIdsKey ? failedRunIdsKey.split(',') : [])
-  }, [failedRunIdsKey, onFailedRunIdsChange])
+    // `dataUpdatedAt` travels with the ids on purpose: an unchanged set of
+    // failed Runs is still news when it comes from a fresher fetch — that is
+    // how the bulk retry tells "failed again" from "not refreshed yet".
+    onFailedRunIdsChange?.(failedRunIdsKey ? failedRunIdsKey.split(',') : [], dataUpdatedAt ?? 0)
+  }, [failedRunIdsKey, dataUpdatedAt, onFailedRunIdsChange])
 
   if (isLoading) {
     return (

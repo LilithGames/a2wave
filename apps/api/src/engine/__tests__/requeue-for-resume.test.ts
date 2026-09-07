@@ -271,6 +271,58 @@ describe('taskQueueDb.requeueForResume — the resume mark is part of the transi
     })
   })
 
+  it('restores reply context for an in-place retry that kept its event id', async () => {
+    // `triggerSessionId == null` used to stand for "no pending Feishu event
+    // will rebuild this row". A retry keeps the original event's id while that
+    // event was consumed by the first attempt, so without the retry marker the
+    // context is never restored — and the queued recovery gate then fails the
+    // retry for having no reply target.
+    const feishuContext = {
+      receive_id_type: 'chat_id',
+      receive_id: 'oc_alerts',
+      channel: { channel_type: 'feishu', channel_info: { chat_id: 'oc_alerts' } },
+    }
+    await seedRun({
+      triggerSource: 'feishu',
+      triggerSessionId: 'msg_1',
+      executionMetadata: { liveChatId: 'sess_live', retryAttempt: 1 },
+    })
+    await db.insert(runSteps).values({
+      id: 'stp_retry',
+      runId: 'run_1',
+      order: 1,
+      input: { message: 'Explain this alert', context: feishuContext },
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+
+    expect((await loadRun())?.executionMetadata).toMatchObject({
+      nativeChatContext: feishuContext,
+      retryAttempt: 1,
+    })
+  })
+
+  it('leaves a native Feishu event to its replay rather than restoring context', async () => {
+    await seedRun({ triggerSource: 'feishu', triggerSessionId: 'msg_1' })
+    await db.insert(runSteps).values({
+      id: 'stp_event',
+      runId: 'run_1',
+      order: 1,
+      input: {
+        message: 'Explain this alert',
+        context: { receive_id_type: 'chat_id', receive_id: 'oc_alerts' },
+      },
+      status: 'running',
+      createdAt: NOW,
+    } as never)
+
+    await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+
+    expect((await loadRun())?.executionMetadata).not.toHaveProperty('nativeChatContext')
+  })
+
   it('restores A2A referenced context from its interrupted step', async () => {
     const a2aContext = {
       channel: {

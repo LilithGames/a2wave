@@ -42,6 +42,7 @@ describe('RunsTab failed-run reporting', () => {
         data: [run('run_1', 'failed'), run('run_2', 'completed'), run('run_3', 'failed')],
         pagination: { page: 1, pageSize: 15, total: 3, totalPages: 1 },
       },
+      dataUpdatedAt: 1_700_000_000_000,
       isLoading: false,
       isFetching: false,
       refetch: vi.fn(),
@@ -50,7 +51,9 @@ describe('RunsTab failed-run reporting', () => {
 
     renderWithProviders(<RunsTab agentId="agt_1" onFailedRunIdsChange={onFailedRunIdsChange} />)
 
-    await waitFor(() => expect(onFailedRunIdsChange).toHaveBeenCalledWith(['run_1', 'run_3']))
+    await waitFor(() =>
+      expect(onFailedRunIdsChange).toHaveBeenCalledWith(['run_1', 'run_3'], expect.any(Number)),
+    )
   })
 
   it('reports an empty set while the page is still loading', async () => {
@@ -64,6 +67,6 @@ describe('RunsTab failed-run reporting', () => {
 
     renderWithProviders(<RunsTab agentId="agt_1" onFailedRunIdsChange={onFailedRunIdsChange} />)
 
-    await waitFor(() => expect(onFailedRunIdsChange).toHaveBeenCalledWith([]))
+    await waitFor(() => expect(onFailedRunIdsChange).toHaveBeenCalledWith([], expect.any(Number)))
   })
 })

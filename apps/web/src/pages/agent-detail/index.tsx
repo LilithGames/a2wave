@@ -232,10 +232,14 @@ export function AgentDetailPage() {
   const [runsSpinning, setRunsSpinning] = useState(false)
   const handleRunsFetchingChange = useCallback((v: boolean) => setRunsIsFetching(v), [])
   const [failedRunIds, setFailedRunIds] = useState<string[]>([])
-  const handleFailedRunIdsChange = useCallback((ids: string[]) => setFailedRunIds(ids), [])
+  const [failedRunsUpdatedAt, setFailedRunsUpdatedAt] = useState(0)
+  const handleFailedRunIdsChange = useCallback((ids: string[], listUpdatedAt: number) => {
+    setFailedRunIds(ids)
+    setFailedRunsUpdatedAt(listUpdatedAt)
+  }, [])
   // Mounted at page level, not inside the tab bar: the button unmounts on a tab
   // switch, and the recovery must not forget what it already replayed.
-  const runsRetryAll = useRunsRetryAll(failedRunIds, canWrite)
+  const runsRetryAll = useRunsRetryAll(failedRunIds, canWrite, failedRunsUpdatedAt)
   const handleRunsRefresh = useCallback(() => {
     runsRefetchRef.current?.()
     setRunsSpinning(true)

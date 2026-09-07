@@ -19,7 +19,10 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { hasExecutionLease, reserveExecutionLease } from '../engine/execution-lease-registry.js'
+import {
+  isRunExecutionSettling,
+  reserveExecutionLease,
+} from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
@@ -1039,13 +1042,14 @@ app.post('/:id/rerun', async (c) => {
   // so one Provider outage turns the Runs list into pairs of identical intents
   // where nothing says which failures are already handled.
   if (originalRun.status === 'failed') {
-    // `failed` is written before the previous attempt's execution lease is
-    // released, and that lease is keyed by run id. Re-admitting the same id
-    // inside the cleanup window hands the dying owner's
-    // `completeExecutionLease()` the NEW attempt's bindings — tearing down its
-    // cancellation wiring and releasing the SCM lease it holds. A retry a
-    // second later is the whole cost of avoiding that.
-    if (hasExecutionLease(id)) {
+    // `failed` is written before the previous attempt has finished unwinding,
+    // and everything it holds is keyed by run id. Re-admitting the same id
+    // inside that window hands the dying owner's cleanup the NEW attempt's
+    // bindings — tearing down its cancellation wiring, and (because the durable
+    // SCM release is fire-and-forget with retries) releasing the SCM lease the
+    // retry is holding. A retry a second later is the whole cost of avoiding
+    // that.
+    if (isRunExecutionSettling(id)) {
       return c.json({ error: 'The previous attempt is still finishing; retry in a moment' }, 409)
     }
 

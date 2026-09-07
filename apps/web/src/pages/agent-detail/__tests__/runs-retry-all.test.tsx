@@ -40,12 +40,15 @@ function Harness({
   failedRunIds,
   canRetry = true,
   buttonMounted = true,
+  listUpdatedAt = 1_000,
 }: {
   failedRunIds: string[]
   canRetry?: boolean
   buttonMounted?: boolean
+  /** When the list snapshot behind `failedRunIds` was fetched. */
+  listUpdatedAt?: number
 }) {
-  const controller = useRunsRetryAll(failedRunIds, canRetry)
+  const controller = useRunsRetryAll(failedRunIds, canRetry, listUpdatedAt)
   return buttonMounted ? <RunsRetryAllButton controller={controller} /> : null
 }
 
@@ -125,22 +128,37 @@ describe('RunsRetryAllButton', () => {
     ])
   })
 
-  it('offers a run again once it has actually failed again', async () => {
-    // In-place retry reuses the row, so the SAME id can fail again later. The
-    // memory only exists to survive the stale list between the click and the
-    // refetch — holding it forever would make a page silently refuse to retry
-    // a genuinely new failure.
-    const { rerender } = renderWithProviders(<Harness failedRunIds={['run_a']} />)
+  it('offers a run again once a fresher list still calls it failed', async () => {
+    // The row can fail AGAIN under the same id now that a retry reuses it, and
+    // a quick second failure may never be observed as anything else. What makes
+    // it eligible is a list snapshot taken AFTER the batch that still reports
+    // it failed — not having watched it pass through some other status.
+    const { rerender } = renderWithProviders(
+      <Harness failedRunIds={['run_a']} listUpdatedAt={1_000} />,
+    )
     await clickRetryAll()
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1))
 
-    // The refetch lands: the row is running now, so it leaves the failed set.
-    rerender(<Harness failedRunIds={[]} />)
-    // ...and later it fails again.
-    rerender(<Harness failedRunIds={['run_a']} />)
+    rerender(<Harness failedRunIds={['run_a']} listUpdatedAt={2_000} />)
     await clickRetryAll()
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2))
+  })
+
+  it('ignores a list snapshot older than the batch it is judging', async () => {
+    // The in-flight refetch that was already running when the batch started
+    // still shows the pre-retry state; acting on it would double-submit.
+    const { rerender } = renderWithProviders(
+      <Harness failedRunIds={['run_a']} listUpdatedAt={2_000} />,
+    )
+    await clickRetryAll()
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1))
+
+    rerender(<Harness failedRunIds={['run_a']} listUpdatedAt={1_000} />)
+
+    expect(
+      screen.getByRole('button', { name: i18n.t('agentDetail.runsRetryAllFailed') }),
+    ).toBeDisabled()
   })
 
   it('remembers what it replayed across a tab switch', async () => {
