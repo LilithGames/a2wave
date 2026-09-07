@@ -11,7 +11,6 @@ import {
   gte,
   inArray,
   lte,
-  ne,
   type SQL,
   sql,
 } from 'drizzle-orm'
@@ -35,6 +34,7 @@ import { logger } from '../lib/logger.js'
 import { getCurrentUserId } from '../lib/owner-filter.js'
 import { registerPendingContext } from '../lib/pending-job-registry.js'
 import { processInstanceId } from '../lib/process-instance.js'
+import { resolveRerunContext } from '../lib/rerun-builder.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { runWithLifecycle } from '../lib/run-launcher.js'
 import { finishRunError } from '../lib/run-lifecycle.js'
@@ -52,41 +52,6 @@ import type { WorkerTaskPayload } from '../worker/index.js'
 
 class RunAdmissionLostError extends Error {}
 class RunAtCapacityError extends Error {}
-
-/**
- * Enrich rerun context for Feishu-triggered runs.
- *
- * The original step context carries the Feishu chat_id but not the
- * receive_id_type/receive_id pair required by
- * finishRunSuccess → sendFeishuMessageByContext. Synthesize the pair from
- * whichever shape is available:
- *   - New (post-unified-channel): `context.channel.channel_info.chat_id`
- *   - Legacy (pre-MR !84 rows): flat `context.chat_id`
- *
- * The legacy fallback is kept because MR !84 explicitly does not migrate
- * historical rows; reruns of those must still succeed.
- *
- * KNOWN LIMITATION: if the original Feishu message was in a topic thread
- * (`thread_id` present), the rerun reply will land at the chat root rather
- * than the original thread — `sendFeishuMessageByContext` currently does not
- * support thread-scoped replies. Tracked; product decision pending on whether
- * rerun should pin to the original thread.
- */
-function enrichRerunContext(
-  triggerSource: string | null,
-  context: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!context) return undefined
-  if (triggerSource !== 'feishu') return context
-  if (context.receive_id_type) return context
-
-  const nestedChatId = (context.channel as { channel_info?: { chat_id?: string } } | undefined)
-    ?.channel_info?.chat_id
-  const flatChatId = typeof context.chat_id === 'string' ? context.chat_id : undefined
-  const chatId = nestedChatId ?? flatChatId
-  if (!chatId) return context
-  return { ...context, receive_id_type: 'chat_id', receive_id: chatId }
-}
 
 const app = new Hono()
 
@@ -980,10 +945,8 @@ app.post('/:id/rerun', async (c) => {
     isChatAppRerun &&
     ((agent.chatAppConfig ?? {}) as { allowAttachments?: boolean }).allowAttachments === false
 
-  const originalContext = (latestStep?.input as Record<string, unknown> | undefined)?.context as
-    | Record<string, unknown>
-    | undefined
-  const rerunContext = enrichRerunContext(originalRun.triggerSource, originalContext)
+  const stepContextValue = (latestStep?.input as { context?: unknown } | undefined)?.context
+  const rerunContext = resolveRerunContext(originalRun, stepContextValue)
 
   // 附件：rerun 要带上原 run 的附件（否则带附件的 run 重跑变纯文本，与原 run 输入不一致）。
   // 来源两处（缺一不可）：
@@ -1030,7 +993,7 @@ app.post('/:id/rerun', async (c) => {
     rerunAttachments = []
   }
 
-  const rerunConsumerId = resolveRerunConsumerId(originalRun, agentId, originalContext)
+  const rerunConsumerId = resolveRerunConsumerId(originalRun, agentId, rerunContext)
   // 有带 token 的附件但无法确定 consumerId（如 OAuth run 的 channel context 缺 issuer/sub）：
   // 与其带错身份让 materialize 消费鉴权静默失败，不如显式丢弃并 warn（review [P1]）。
   // uri ref 是外部抓取、不走 token 消费鉴权，不受 consumerId 缺失影响，保留。
@@ -1046,9 +1009,8 @@ app.post('/:id/rerun', async (c) => {
     {
       originalRunId: id,
       triggerSource: originalRun.triggerSource,
-      hasOriginalContext: !!originalContext,
-      originalContextKeys: originalContext ? Object.keys(originalContext) : [],
       hasRerunContext: !!rerunContext,
+      rerunContextKeys: rerunContext ? Object.keys(rerunContext) : [],
       rerunContextReceiveId: (rerunContext as Record<string, unknown> | undefined)?.receive_id,
       rerunContextReceiveIdType: (rerunContext as Record<string, unknown> | undefined)
         ?.receive_id_type,
@@ -1058,6 +1020,13 @@ app.post('/:id/rerun', async (c) => {
 
   const newRunId = createId('run')
   const userId = getCurrentUserId(c)
+  // Feishu and A2A reruns need their channel/reference context after a queue wait or
+  // process restart. executeChatRun consumes this field after it has persisted
+  // the new step, using the same durable handoff as native chat channels.
+  const durableRerunContext =
+    (originalRun.triggerSource === 'feishu' || originalRun.triggerSource === 'a2a') && rerunContext
+      ? rerunContext
+      : undefined
   const newRun = (
     await db
       .insert(runs)
@@ -1072,16 +1041,13 @@ app.post('/:id/rerun', async (c) => {
         triggerUserName: originalRun.triggerUserName,
         triggerAgentName: originalRun.triggerAgentName,
         userId,
-        // 带上原 run 的附件（若有），供 executeChatRun 出队时重新 materialize。
-        ...(rerunAttachments && rerunAttachments.length > 0
-          ? {
-              executionMetadata: {
-                runtimeAdminRequesterUserId: userId,
-                attachments: rerunAttachments,
-                ...(rerunConsumerId ? { attachmentConsumerId: rerunConsumerId } : {}),
-              },
-            }
-          : { executionMetadata: { runtimeAdminRequesterUserId: userId } }),
+        // Carry recoverable inputs until executeChatRun persists the new step.
+        executionMetadata: {
+          runtimeAdminRequesterUserId: userId,
+          ...(rerunAttachments.length > 0 ? { attachments: rerunAttachments } : {}),
+          ...(rerunConsumerId ? { attachmentConsumerId: rerunConsumerId } : {}),
+          ...(durableRerunContext ? { nativeChatContext: durableRerunContext } : {}),
+        },
       })
       .returning()
   )[0]

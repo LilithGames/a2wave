@@ -1,13 +1,11 @@
-import { eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { asyncQuery } from '../../test/async-query.js'
 import type { WorkerTaskPayload } from '../../worker/types.js'
 import {
   _getStickyProviderFallbackCacheSizeForTests,
   _resetStickyProviderFallbackForTests,
   executeWithRetry,
 } from '../execute-with-retry.js'
-
-import { asyncQuery } from '../../test/async-query.js'
 
 const mockExecuteInWorker = vi.fn()
 vi.mock('../../worker/index.js', () => ({
@@ -19,10 +17,7 @@ vi.mock('../settings.js', () => ({
   getSetting: vi.fn(() => undefined),
 }))
 
-const mockDbSelect = vi.fn()
 const mockDbFrom = vi.fn()
-const mockDbWhere = vi.fn()
-const mockDbGet = vi.fn()
 vi.mock('../../db/client.js', () => ({
   db: {
     select: () => ({ from: mockDbFrom }),
@@ -139,6 +134,62 @@ describe('executeWithRetry', () => {
       A2WAVE_CHANNEL_B64: channelB64,
     })
     expect(other?.env).not.toHaveProperty('A2WAVE_CHANNEL_B64')
+  })
+
+  it('injects referenced context only into the Agent and router environments', async () => {
+    mockExecuteInWorker.mockResolvedValue({
+      success: true,
+      output: 'done',
+      chatId: null,
+      durationMs: 100,
+    })
+    const referencedPromptContext = {
+      source: 'feishu',
+      text: 'Grafana alert: dependency timed out.',
+      messageId: 'om_alert',
+      messageType: 'interactive',
+      truncated: false,
+    }
+    const payload: WorkerTaskPayload = {
+      ...basePayload,
+      referencedPromptContext,
+      agentConfig: {
+        ...basePayload.agentConfig,
+        agentEnv: { EXISTING: '1' },
+        resolvedMcpServers: [
+          {
+            name: 'a2wave-agent-router',
+            type: 'stdio',
+            command: 'node',
+            args: ['router.js'],
+            env: { A2WAVE_ROUTE_TARGETS: '[]' },
+          },
+          {
+            name: 'other-mcp',
+            type: 'stdio',
+            command: 'node',
+            args: ['other.js'],
+            env: {},
+          },
+        ],
+      },
+    }
+
+    await executeWithRetry('task_1', payload)
+
+    const forwardedPayload = mockExecuteInWorker.mock.calls[0][1] as WorkerTaskPayload
+    const encoded = forwardedPayload.agentConfig.agentEnv?.A2WAVE_REFERENCED_CONTEXT_B64
+    expect(encoded).toBe(
+      Buffer.from(JSON.stringify(referencedPromptContext), 'utf8').toString('base64url'),
+    )
+    const router = forwardedPayload.agentConfig.resolvedMcpServers?.find(
+      (server) => server.name === 'a2wave-agent-router',
+    )
+    const other = forwardedPayload.agentConfig.resolvedMcpServers?.find(
+      (server) => server.name === 'other-mcp',
+    )
+    expect(router?.env?.A2WAVE_REFERENCED_CONTEXT_B64).toBe(encoded)
+    expect(other?.env).not.toHaveProperty('A2WAVE_REFERENCED_CONTEXT_B64')
   })
 
   it('retries on failure and succeeds on second attempt', async () => {

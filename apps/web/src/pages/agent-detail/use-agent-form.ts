@@ -208,6 +208,7 @@ export function useAgentForm(
           (entry.connectionMode ?? 'direct') === (b[i].connectionMode ?? 'direct') &&
           (entry.protocolVersion ?? '0.3') === (b[i].protocolVersion ?? '0.3') &&
           Boolean(entry.callerProvenance) === Boolean(b[i].callerProvenance) &&
+          Boolean(entry.referencedContext) === Boolean(b[i].referencedContext) &&
           entry.description === b[i].description &&
           entry.apiKey === b[i].apiKey,
       )
@@ -641,6 +642,7 @@ export function useAgentForm(
             connectionMode: t.connectionMode ?? 'direct',
             protocolVersion: t.protocolVersion ?? '0.3',
             callerProvenance: t.callerProvenance ?? false,
+            referencedContext: t.referencedContext ?? false,
             description: t.description || '',
             apiKey: t.apiKey || '',
             showApiKey: false,
@@ -819,6 +821,9 @@ export function useAgentForm(
               protocolVersion,
               ...(protocolVersion === '1.0' && e.callerProvenance
                 ? { callerProvenance: true }
+                : {}),
+              ...(protocolVersion === '1.0' && e.referencedContext
+                ? { referencedContext: true }
                 : {}),
               description: e.description.trim() || undefined,
               apiKey: e.apiKey.trim() || undefined,

@@ -40,6 +40,7 @@ import {
   INTERACTIVE_CARD_PROMPT,
   type InteractiveCardSpec,
   parseInteractiveCardSpec,
+  resolveInteractiveCardBody,
   summarizeCardAction,
 } from './feishu-interactive-card.js'
 import {
@@ -55,6 +56,12 @@ import {
   removePendingMessage,
 } from './feishu-pending-store.js'
 import { textToPostContent } from './feishu-post-content.js'
+import {
+  resolveFeishuReferencedMessage,
+  summarizeFeishuContextForLog,
+  toFeishuReferencedMessageContext,
+  toFeishuReferencedPromptContext,
+} from './feishu-referenced-message.js'
 import {
   resolveFeishuFailureReplyMentionOpenId,
   resolveFeishuMentionRootId,
@@ -688,28 +695,24 @@ async function sendInteractiveCardReply(opts: {
   triggerSessionId: string | null | undefined
   /** 触发者 open_id（卡片接收者）；回调时据此限制仅本人可点击。 */
   triggerOpenId: string | null | undefined
-  /**
-   * 本轮 Agent 产出卡片所用的引擎会话 id（= 本轮 run 的 result.chatId）。
-   * 续跑时作为 payload.chatId 续接「刚才提问」的那轮会话——必须用执行后的
-   * result.chatId，而非执行前查到的上一轮 chatId（否则首次发卡点击会新开会话）。
-   */
+  /** Resume the session that produced this card (the completed run's result.chatId). */
   resumeChatId: string | null | undefined
   spec: InteractiveCardSpec
-  bodyFallback?: string
+  surroundingText?: string
   replyMode: 'quote' | 'new' | 'none'
   /** 机器人名，作为卡片默认标题栏文字（Agent 自带 spec.title 时优先用 spec.title）。 */
   agentName?: string
   /** 调试信息文本后缀（按运营勾选）；渲染到卡片底部，并持久化供就地更新卡片复用。 */
   debugSuffix?: string
 }): Promise<boolean> {
-  const { client, agentId, message, spec, bodyFallback, replyMode, agentName, debugSuffix } = opts
+  const { client, agentId, message, spec, surroundingText, replyMode, agentName, debugSuffix } =
+    opts
   if (replyMode === 'none') return false
 
   sweepExpiredCardCallbacks()
   const cbId = createId('fcb')
-  // 持久化时补上 body：Agent 常按提示把正文写在卡片块外、不设 spec.body（此时初始卡片用 bodyFallback）。
-  // 点击后就地更新卡片只能从持久化的 spec 重建，若不补 body 会丢失原始问题正文（只剩结果行）。
-  const persistedSpec = spec.body || !bodyFallback ? spec : { ...spec, body: bodyFallback }
+  // Persist the complete displayed body so callback updates preserve the reply context.
+  const cardSpec = { ...spec, body: resolveInteractiveCardBody(spec.body, surroundingText) }
   try {
     await db.insert(feishuCardCallbacks).values({
       id: cbId,
@@ -723,7 +726,7 @@ async function sendInteractiveCardReply(opts: {
       // quoteAnchorId 已是上一轮透传来的原始问题 id，逐轮透传保持锚点不变。
       originalMessageId: quoteAnchorId(message),
       triggerOpenId: opts.triggerOpenId ?? null,
-      spec: JSON.stringify(persistedSpec),
+      spec: JSON.stringify(cardSpec),
       debugSuffix: debugSuffix || null,
       status: 'pending',
       createdAt: new Date(),
@@ -734,7 +737,8 @@ async function sendInteractiveCardReply(opts: {
     return false
   }
 
-  const card = buildInteractiveCardJson(spec, cbId, bodyFallback, { title: agentName }, debugSuffix)
+  const style = { title: agentName }
+  const card = buildInteractiveCardJson(cardSpec, cbId, undefined, style, debugSuffix)
   const content = JSON.stringify(card)
   try {
     let resp: { message_id?: string; data?: { message_id?: string } } | undefined
@@ -900,6 +904,8 @@ export function buildFeishuContext(
       // The channel schema requires a non-empty chat_type; every non-p2p chat is
       // treated as a group elsewhere, so use that when the event omits it.
       chat_type: message.chat_type ?? 'group',
+      parent_id: message.parent_id,
+      root_id: message.root_id,
       thread_id: message.thread_id,
     },
     fetchedUserInfo:
@@ -2157,10 +2163,20 @@ class FeishuConnectionManager {
         // in: resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH.
         const env = agentConfig.agentEnv
         const resolvedWorkDir = await resolveWorkDir(currentAgent, undefined, runId, env)
-
         let rootText = ''
         let rootImagePaths: string[] = []
         let rootFilePaths: string[] = []
+        const referencedMessage = await resolveFeishuReferencedMessage(
+          config.groupInjectReferencedMessage,
+          message,
+          freshClient,
+          extractText,
+          (err, referencedMessageId) =>
+            logger.warn(
+              { err, agentId, referencedMessageId },
+              'Failed to fetch referenced Feishu message',
+            ),
+        )
         const contentRootId = resolveFeishuTopicRootId(
           config.topicInjectRootMessage,
           keepNativePrompt,
@@ -2341,7 +2357,6 @@ class FeishuConnectionManager {
         if (imageHint) {
           mainText = mainText ? `${mainText}\n\n---\n${imageHint}` : imageHint
         }
-
         const fullPrompt = keepNativePrompt
           ? replyText
           : mainText || (imagePaths.length > 0 ? '[图片]' : '') || intent
@@ -2354,7 +2369,6 @@ class FeishuConnectionManager {
             senderUserInfo = await fetchFeishuUserInfo(freshClient, senderOpenId, config.appId)
           }
         }
-
         // ── Build context, step, payload ──
         const { context: feishuContext, displayName: feishuDisplayName } = buildFeishuContext(
           sender,
@@ -2362,6 +2376,8 @@ class FeishuConnectionManager {
           senderUserInfo,
           config.appId,
         )
+        if (referencedMessage)
+          feishuContext.referenced_message = toFeishuReferencedMessageContext(referencedMessage)
         if (imagePaths.length > 0) {
           feishuContext.images = imagePaths
         }
@@ -2370,10 +2386,15 @@ class FeishuConnectionManager {
           feishuContext.files = allFilePaths
         }
         logger.info(
-          { agentId, messageId: message.message_id, feishuContext },
+          {
+            agentId,
+            messageId: message.message_id,
+            feishuContext: summarizeFeishuContextForLog(feishuContext),
+            imageCount: imagePaths.length,
+            fileCount: allFilePaths.length,
+          },
           'Feishu: context built',
         )
-
         // Strategy Z: feishu runs were reserved earlier (line ~1454) before user
         // info was fetched. Backfill triggerUserName here, post-fetch, so the
         // runs list can show the sender's name without a JOIN. Idempotent —
@@ -2398,15 +2419,14 @@ class FeishuConnectionManager {
           },
           message: { id: createId('msg'), runId, role: 'user', content: fullPrompt },
         })
-
         // 不在此创建 collector：runWithLifecycle 内部已 createPersistingLogCollector +
         // registerLogCollector，Web UI 通过该 collector 看到流式日志；feishu 本地无需另起一份。
-
         const taskId = buildTaskId('feishu/', runId, stepId)
         const payload: WorkerTaskPayload = {
           taskId,
           prompt: fullPrompt,
           context: feishuContext,
+          referencedPromptContext: toFeishuReferencedPromptContext(referencedMessage),
           model: agentConfig.model || undefined,
           workDir: resolvedWorkDir,
           chatId: previousChatId ?? undefined,
@@ -2687,7 +2707,7 @@ class FeishuConnectionManager {
                 // 用本轮执行后的 chatId 续接「刚才提问」那轮会话（见 sendInteractiveCardReply 注释）。
                 resumeChatId: result.chatId ?? previousChatId,
                 spec: parsedCard.spec,
-                bodyFallback: parsedCard.text,
+                surroundingText: parsedCard.text,
                 replyMode,
                 agentName: agent.name,
                 debugSuffix,

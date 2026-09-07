@@ -3,6 +3,7 @@ import { RequestContext, ServerCallContext } from '@a2a-js/sdk/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { A2waveAgentExecutor, type ExecuteFn } from '../executor.js'
 import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../provenance.js'
+import { A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI } from '../referenced-context.js'
 
 function createMockEventBus() {
   return {
@@ -172,6 +173,59 @@ describe('A2waveAgentExecutor', () => {
     )
 
     expect(executeFn.mock.calls[0][2]).not.toHaveProperty('provenance')
+  })
+
+  it('passes validated referenced context from an activated v1 message to recording', async () => {
+    const extensionUri = A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI
+    const message = createMessage(['Analyze this alert'])
+    message.extensions = [extensionUri]
+    message.metadata = {
+      [extensionUri]: {
+        source: 'feishu',
+        text: 'Grafana alert: dependency timed out.',
+        messageId: 'om_alert',
+        messageType: 'interactive',
+        senderType: 'app',
+        truncated: false,
+      },
+    }
+    const serverContext = new ServerCallContext({
+      requestedVersion: '1.0',
+      requestedExtensions: [extensionUri],
+    })
+
+    await executor.execute(
+      createRequestContext(message, 'task_reference', 'ctx_reference', undefined, serverContext),
+      eventBus,
+    )
+
+    expect(executeFn.mock.calls[0][2]).toMatchObject({
+      referencedContext: {
+        source: 'feishu',
+        text: 'Grafana alert: dependency timed out.',
+        messageId: 'om_alert',
+        messageType: 'interactive',
+        senderType: 'app',
+        truncated: false,
+      },
+    })
+    expect(serverContext.activatedExtensions).toEqual([extensionUri])
+  })
+
+  it('ignores referenced context metadata when the extension was not activated', async () => {
+    const extensionUri = A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI
+    const message = createMessage(['Do not trust metadata alone'])
+    message.extensions = [extensionUri]
+    message.metadata = {
+      [extensionUri]: { source: 'feishu', text: 'Unactivated card body' },
+    }
+
+    await executor.execute(
+      createRequestContext(message, 'task_reference_inactive', 'ctx_reference_inactive'),
+      eventBus,
+    )
+
+    expect(executeFn.mock.calls[0][2]).not.toHaveProperty('referencedContext')
   })
 
   it('preserves v1 raw and URL attachments for materialization', async () => {

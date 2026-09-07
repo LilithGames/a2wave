@@ -29,6 +29,7 @@ import {
 } from '../middleware/gateway-auth.js'
 import { extractCallerAgentFromHeaders } from './caller.js'
 import type { CancelFn, ExecuteFn } from './executor.js'
+import { toPersistedReferencedMessage } from './referenced-context.js'
 
 type AgentRow = typeof agents.$inferSelect
 
@@ -311,7 +312,12 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
 
       const stepInput: Record<string, unknown> = {
         message: materializedResult.mergedPrompt,
-        context: { channel },
+        context: {
+          channel,
+          ...(options?.referencedContext
+            ? { referenced_message: toPersistedReferencedMessage(options.referencedContext) }
+            : {}),
+        },
       }
       if (materializedResult.materialized.length > 0) {
         stepInput.attachments = materializedResult.materialized
@@ -321,7 +327,16 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         ...payload,
         workDir: resolvedWorkDir,
         prompt: materializedResult.mergedPrompt,
-        context: { ...(payload.context ?? {}), channel },
+        context: {
+          ...(payload.context ?? {}),
+          channel,
+          ...(options?.referencedContext
+            ? { referenced_message: toPersistedReferencedMessage(options.referencedContext) }
+            : {}),
+        },
+        ...(options?.referencedContext
+          ? { referencedPromptContext: options.referencedContext }
+          : {}),
       }
 
       await persistRunTurn({
@@ -342,7 +357,11 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         },
       })
 
-      const { provenance: _provenance, ...executeOptions } = options ?? {}
+      const {
+        provenance: _provenance,
+        referencedContext: _referencedContext,
+        ...executeOptions
+      } = options ?? {}
       const { result, retries, logs } = await executeWithRetry(taskId, enrichedPayload, {
         ...executeOptions,
         runId,

@@ -2,6 +2,10 @@ import { AgentCard } from '@a2a-js/sdk'
 import { type A2ASkill, ATTACHMENT_MIME_TYPES } from '@a2wave/shared'
 import { normalizeAuthType } from '../middleware/gateway-auth.js'
 import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from './provenance.js'
+import {
+  A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+  A2WAVE_REFERENCED_CONTEXT_MAX_CHARS,
+} from './referenced-context.js'
 
 export interface AgentLike {
   id: string
@@ -43,6 +47,16 @@ export function buildAgentCard(agent: AgentLike, baseUrl: string): AgentCard {
             'Carries audit-only original user and immediate caller Agent display names across A2A hops.',
           required: false,
           params: { metadataKey: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI },
+        },
+        {
+          uri: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+          description:
+            'Carries bounded quoted external material when the calling Agent explicitly opts in.',
+          required: false,
+          params: {
+            metadataKey: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+            maxTextChars: A2WAVE_REFERENCED_CONTEXT_MAX_CHARS,
+          },
         },
       ],
     },

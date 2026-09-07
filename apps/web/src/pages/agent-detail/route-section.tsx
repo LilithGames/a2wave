@@ -1,3 +1,7 @@
+import { Checkbox, Select, Tag } from 'antd'
+import { Eye, EyeOff, Plus, Route, Settings2, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -10,10 +14,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { selectFilterOption } from '@/lib/select-filter'
-import { Checkbox, Select, Tag } from 'antd'
-import { Eye, EyeOff, Plus, Route, Settings2, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import { hasConfiguredRouteTargets } from './provider-capabilities'
 import type { RemoteEntry } from './types'
 
@@ -296,23 +296,42 @@ export function RouteSection({
                   )}
                   {(entry.connectionMode ?? 'direct') === 'direct' &&
                     (entry.protocolVersion ?? '0.3') === '1.0' && (
-                      <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
-                        <Checkbox
-                          aria-label={t('agentRoute.remoteCallerProvenance')}
-                          checked={Boolean(entry.callerProvenance)}
-                          onChange={(event) =>
-                            updateRemoteEntry(entry.id, 'callerProvenance', event.target.checked)
-                          }
-                        />
-                        <div className="space-y-0.5">
-                          <div className="text-sm text-foreground">
-                            {t('agentRoute.remoteCallerProvenance')}
+                      <>
+                        <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+                          <Checkbox
+                            aria-label={t('agentRoute.remoteCallerProvenance')}
+                            checked={Boolean(entry.callerProvenance)}
+                            onChange={(event) =>
+                              updateRemoteEntry(entry.id, 'callerProvenance', event.target.checked)
+                            }
+                          />
+                          <div className="space-y-0.5">
+                            <div className="text-sm text-foreground">
+                              {t('agentRoute.remoteCallerProvenance')}
+                            </div>
+                            <p className="text-muted-foreground text-xs">
+                              {t('agentRoute.remoteCallerProvenanceHint')}
+                            </p>
                           </div>
-                          <p className="text-muted-foreground text-xs">
-                            {t('agentRoute.remoteCallerProvenanceHint')}
-                          </p>
                         </div>
-                      </div>
+                        <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+                          <Checkbox
+                            aria-label={t('agentRoute.remoteReferencedContext')}
+                            checked={Boolean(entry.referencedContext)}
+                            onChange={(event) =>
+                              updateRemoteEntry(entry.id, 'referencedContext', event.target.checked)
+                            }
+                          />
+                          <div className="space-y-0.5">
+                            <div className="text-sm text-foreground">
+                              {t('agentRoute.remoteReferencedContext')}
+                            </div>
+                            <p className="text-muted-foreground text-xs">
+                              {t('agentRoute.remoteReferencedContextHint')}
+                            </p>
+                          </div>
+                        </div>
+                      </>
                     )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>

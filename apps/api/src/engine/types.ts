@@ -46,6 +46,16 @@ export interface AgentRuntimeContext {
   env: Record<string, string>
 }
 
+/** External material quoted by the caller and presented as untrusted prompt context. */
+export interface ReferencedPromptContext {
+  source: string
+  text: string
+  messageId?: string
+  messageType?: string
+  senderType?: string
+  truncated?: boolean
+}
+
 export interface ExecuteRequest {
   /** Unique task identifier */
   taskId: string
@@ -59,8 +69,10 @@ export interface ExecuteRequest {
   fallbackModels?: string[]
   /** Existing session ID (used to continue an earlier context) */
   chatId?: string
-  /** Extra context (for the {{context}} template variable, rendered as a JSON string) */
+  /** Complete runtime/audit context; a sanitized view is used for {{context}}. */
   context?: Record<string, unknown>
+  /** Quoted external material rendered in a dedicated untrusted prompt section. */
+  referencedPromptContext?: ReferencedPromptContext
   /** Branch name (used for log tagging) */
   branch?: string
   /** Full Agent config (passed through so engines can read advanced options like readOnly / sandbox) */

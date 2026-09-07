@@ -145,6 +145,47 @@ describe('PublishTab — 渠道卡片网格', () => {
     expect(switches.map((item) => item.getAttribute('aria-checked'))).toEqual(['true', 'true'])
   })
 
+  it('switching Agents resets Feishu referenced-message injection when config is absent', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    const configuredAgent = {
+      id: 'agt_feishu_1',
+      publishStatus: 'draft',
+      publishChannels: ['feishu'],
+      feishuConfig: {
+        appId: 'cli_feishu_1',
+        appSecret: 'secret-from-first-agent',
+        groupInjectReferencedMessage: true,
+      },
+    }
+    const unconfiguredAgent = {
+      id: 'agt_feishu_2',
+      publishStatus: 'draft',
+      publishChannels: [],
+      feishuConfig: null,
+    }
+    const firstProps = { ...baseProps(), agentId: configuredAgent.id }
+    const { rerender } = renderWithProviders(
+      <PublishTab {...firstProps} agent={configuredAgent as never} />,
+    )
+    await openConfig(user, 'feishu')
+
+    const injectionToggle = screen.getByRole('checkbox', {
+      name: '携带被回复消息内容',
+    })
+    expect(injectionToggle).toBeChecked()
+
+    rerender(
+      <PublishTab
+        {...baseProps()}
+        agentId={unconfiguredAgent.id}
+        agent={unconfiguredAgent as never}
+      />,
+    )
+
+    await waitFor(() => expect(injectionToggle).not.toBeChecked())
+  })
+
   it('REST API 卡片没有开关，只显示「始终启用」', () => {
     renderWithProviders(<PublishTab {...baseProps()} />)
 

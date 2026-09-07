@@ -87,6 +87,10 @@
               ],
               "default": "quote"
             },
+            "groupInjectReferencedMessage": {
+              "type": "boolean",
+              "default": false
+            },
             "topicTriggerOnAt": {
               "type": "boolean",
               "default": true
@@ -276,6 +280,9 @@
                   ]
                 },
                 "callerProvenance": {
+                  "type": "boolean"
+                },
+                "referencedContext": {
                   "type": "boolean"
                 },
                 "description": {

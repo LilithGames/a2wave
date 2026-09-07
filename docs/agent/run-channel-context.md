@@ -17,6 +17,8 @@ This brought duplicate read logic to the Agent executor, sub-agents, logs, and t
 
 - `runSteps.input.context.channel` — Run step input; visible on the run detail page, used for auditing and replay.
 - `WorkerTaskPayload.context.channel` — the same object the Agent executor reads at runtime via the worker payload.
+- `runSteps.input.context.referenced_message` and `WorkerTaskPayload.context.referenced_message` — optional quoted-message content created by Feishu reference injection or a negotiated A2A referenced-context extension.
+- `WorkerTaskPayload.referencedPromptContext` — an internal, normalized copy used only to render the quoted body in the dedicated untrusted `<referenced_context>` section.
 
 Old fields (`caller`, `sender_*`, `sender_user`, etc.) are no longer written to new runs; historical DB records are kept as-is.
 
@@ -52,10 +54,21 @@ interface FeishuChannelInfo {
   chat_type: string                  // 'p2p' | 'group' | 'topic' | ...
   message_id: string
   thread_id?: string
+  parent_id?: string
+  root_id?: string
   sender_type: string                // 'user' | 'bot' | ...
   sender_open_id: string
   sender_union_id?: string
   sender_user_id?: string
+}
+
+interface FeishuReferencedMessage {
+  source?: string
+  message_id: string
+  message_type: string
+  sender_type?: string
+  text: string
+  truncated: boolean
 }
 
 interface ScheduleChannelInfo { schedule_id?: string; cron?: string }
@@ -73,6 +86,10 @@ Field naming is uniformly **snake_case**, aligned with Feishu's existing convent
 | `feishu` | `app_id`, `chat_id`, `chat_type`, `message_id`, `sender_open_id` | Feishu contact API | `fetchUserInfo` must be enabled to get `user_info` |
 | `schedule` | `schedule_id?`, `cron?` | — | Triggered by no one; `user_info` is always `null` |
 | `debug` | `triggered_by_user_id` | a2wave user table | Web debug entry; resolves email from the logged-in user |
+
+For Feishu, `parent_id` and `root_id` preserve the event's native reply relationship. When the Agent enables `groupInjectReferencedMessage`, an ordinary-group reply can additionally populate top-level `context.referenced_message` with the referenced message's readable text. The complete field remains available in the persisted step input and runtime context for audit and replay. At the common engine boundary, the body and unknown reference fields are removed from the view rendered through `{{context}}`; the current question alone is rendered through `{{message}}` and `<user_query>`. The body is rendered once in a separate, XML-escaped `<referenced_context>` section, and reruns rebuild that section from the persisted context. Missing permissions, lookup failures, unsupported card forms, and bodies with no readable text leave the field absent and do not block the current run.
+
+The same normalized prompt-only value can cross an A2A 1.0 hop through the optional referenced-context extension when the calling Agent explicitly opts in. The sender requires peer capability negotiation (or an explicit direct-route declaration), while the receiver validates and persists the value before rendering it through the same untrusted `<referenced_context>` boundary. The extension never changes authentication or authorization. See [`docs/extensions/referenced-context-v1.md`](../extensions/referenced-context-v1.md).
 
 ## Cases where user_info is null
 

@@ -9,6 +9,13 @@ import {
   registerChannelTeardownTests,
 } from './agents-channel-teardown-cases.js'
 import { registerCloneBindingTests } from './agents-clone-binding-cases.js'
+import {
+  makeDeleteChain,
+  makeInsertChain,
+  makeSelectChain,
+  makeUpdateChain,
+  makeUpdateReturningChain,
+} from './agents-db-chains.js'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
 import { registerAgentSecretRedactionTests } from './agents-secret-redaction-cases.js'
@@ -229,95 +236,6 @@ vi.mock('@a2wave/shared', async () => {
     }),
   }
 })
-
-function makeSelectChain(result: unknown) {
-  return {
-    from: vi.fn().mockReturnValue(
-      asyncQuery({
-        where: vi.fn().mockReturnValue(
-          asyncQuery({
-            get: vi.fn().mockReturnValue(result),
-            all: vi.fn().mockReturnValue(result ? [result] : []),
-            orderBy: vi.fn().mockReturnValue(
-              asyncQuery({
-                all: vi.fn().mockReturnValue(result ? [result] : []),
-              }),
-            ),
-          }),
-        ),
-        orderBy: vi.fn().mockReturnValue(
-          asyncQuery({
-            all: vi.fn().mockReturnValue(result ? [result] : []),
-          }),
-        ),
-        all: vi.fn().mockReturnValue(result ? [result] : []),
-      }),
-    ),
-  }
-}
-
-function makeInsertChain(returnValue?: unknown) {
-  return {
-    values: vi.fn().mockReturnValue(
-      asyncQuery({
-        returning: vi.fn().mockReturnValue(
-          asyncQuery({
-            get: vi.fn().mockReturnValue(returnValue ?? {}),
-          }),
-        ),
-        run: vi.fn(),
-      }),
-    ),
-  }
-}
-
-function makeUpdateChain() {
-  return {
-    set: vi.fn().mockReturnValue(
-      asyncQuery({
-        where: vi.fn().mockReturnValue(
-          asyncQuery({
-            run: vi.fn().mockReturnValue({ changes: 1 }),
-          }),
-        ),
-      }),
-    ),
-  }
-}
-
-function makeUpdateReturningChain(returnValue?: unknown) {
-  return {
-    set: vi.fn().mockReturnValue(
-      asyncQuery({
-        where: vi.fn().mockReturnValue(
-          asyncQuery({
-            returning: vi.fn().mockReturnValue(
-              asyncQuery({
-                get: vi.fn().mockReturnValue(returnValue ?? {}),
-              }),
-            ),
-            run: vi.fn(),
-          }),
-        ),
-      }),
-    ),
-  }
-}
-
-function makeDeleteChain() {
-  return {
-    where: vi.fn().mockReturnValue(
-      asyncQuery({
-        run: vi.fn(),
-        returning: vi.fn().mockReturnValue(
-          asyncQuery({
-            get: vi.fn().mockReturnValue(undefined),
-          }),
-        ),
-      }),
-    ),
-  }
-}
 
 import { db } from '../../db/client.js'
 import { scheduleNext, tryAcquireSlot } from '../../engine/task-queue.js'
@@ -2463,6 +2381,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
           groupTriggerOnAt: false,
           groupTriggerOnNewMessage: true,
           groupReplyMode: 'none',
+          groupInjectReferencedMessage: true,
         },
       }),
     })
@@ -2472,6 +2391,7 @@ describe('feishuConfig legacy normalization in HTTP handlers', () => {
     expect(saved.groupTriggerOnAt).toBe(false)
     expect(saved.groupTriggerOnNewMessage).toBe(true)
     expect(saved.groupReplyMode).toBe('none')
+    expect(saved.groupInjectReferencedMessage).toBe(true)
     // normalizeFeishuConfig 补齐的话题群默认值
     expect(saved.topicTriggerOnAt).toBe(true)
     expect(saved.topicTriggerOnNewTopic).toBe(false)

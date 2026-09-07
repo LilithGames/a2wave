@@ -33,6 +33,45 @@ export interface RerunSource {
 }
 
 /**
+ * Resolve the context that belongs to the turn being replayed.
+ *
+ * A queued turn may not have produced a step, so its durable native context is
+ * authoritative. Completed turns prefer the audited step input and use the
+ * durable value only as a pre-step fallback. Feishu replays also need the
+ * top-level receive target consumed by the reply sender; older rows only carry
+ * that chat id inside the channel context (or in the legacy flat shape).
+ */
+export function resolveRerunContext(
+  originalRun: Pick<typeof runs.$inferSelect, 'triggerSource' | 'executionMetadata'>,
+  stepContextValue: unknown,
+): Record<string, unknown> | undefined {
+  const stepContext =
+    stepContextValue && typeof stepContextValue === 'object' && !Array.isArray(stepContextValue)
+      ? (stepContextValue as Record<string, unknown>)
+      : undefined
+  const nativeContextValue = originalRun.executionMetadata?.nativeChatContext
+  const nativeContext =
+    nativeContextValue &&
+    typeof nativeContextValue === 'object' &&
+    !Array.isArray(nativeContextValue)
+      ? (nativeContextValue as Record<string, unknown>)
+      : undefined
+  const context = originalRun.executionMetadata?.queuedTurn
+    ? nativeContext
+    : (stepContext ?? nativeContext)
+
+  if (!context || originalRun.triggerSource !== 'feishu' || context.receive_id_type) {
+    return context
+  }
+
+  const nestedChatId = (context.channel as { channel_info?: { chat_id?: string } } | undefined)
+    ?.channel_info?.chat_id
+  const flatChatId = typeof context.chat_id === 'string' ? context.chat_id : undefined
+  const chatId = nestedChatId ?? flatChatId
+  return chatId ? { ...context, receive_id_type: 'chat_id', receive_id: chatId } : context
+}
+
+/**
  * Resolve the turn a rerun should replay.
  *
  * Reads the LATEST step (max order): `runs.intent` is rewritten to the most
@@ -49,9 +88,8 @@ export async function loadRerunSource(originalRun: typeof runs.$inferSelect): Pr
       .limit(1)
   )[0]
 
-  const originalContext = (latestStep?.input as Record<string, unknown> | undefined)?.context as
-    | Record<string, unknown>
-    | undefined
+  const stepContextValue = (latestStep?.input as { context?: unknown } | undefined)?.context
+  const originalContext = resolveRerunContext(originalRun, stepContextValue)
 
   const stepAttachmentsRaw = (latestStep?.input as { attachments?: unknown } | undefined)
     ?.attachments as RerunAttachmentRef[] | undefined

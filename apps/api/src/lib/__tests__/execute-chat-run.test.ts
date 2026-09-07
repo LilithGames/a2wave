@@ -7,7 +7,6 @@ import { asyncQuery } from '../../test/async-query.js'
 // ============================================================
 
 const mockDbGet = vi.fn()
-const mockDbAll = vi.fn(() => [])
 const mockDbRun = vi.fn()
 const mockUpdateSet = vi.fn()
 const mockUpdateWhere = vi.fn()
@@ -803,6 +802,86 @@ describe('executeChatRun', () => {
     expect(mockExecuteWithRetry).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ context: { key: 'value' } }),
+      expect.any(Object),
+    )
+  })
+
+  it.each([
+    ['direct context', false],
+    ['queued context', true],
+  ])('restores Feishu referenced prompt context from %s', async (_case, queued) => {
+    const feishuContext = {
+      channel: { channel_type: 'feishu' },
+      referenced_message: {
+        message_id: 'om_alert',
+        message_type: 'interactive',
+        sender_type: 'app',
+        text: 'Payment dependency timed out.',
+        truncated: false,
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      { ...baseRun, triggerSource: 'feishu', triggerSessionId: null },
+      baseScmSource,
+      undefined,
+    )
+    if (queued) mockTakePendingContext.mockReturnValue(feishuContext)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1', queued ? undefined : feishuContext)
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        prompt: 'hello',
+        context: feishuContext,
+        referencedPromptContext: {
+          source: 'feishu',
+          messageId: 'om_alert',
+          messageType: 'interactive',
+          senderType: 'app',
+          text: 'Payment dependency timed out.',
+          truncated: false,
+        },
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('restores referenced prompt context for an A2A rerun', async () => {
+    const a2aContext = {
+      channel: { channel_type: 'a2a' },
+      referenced_message: {
+        source: 'feishu',
+        message_id: 'om_alert',
+        message_type: 'interactive',
+        text: 'Payment dependency timed out.',
+        truncated: false,
+      },
+    }
+    setupSelectSequence(
+      baseAgent,
+      { ...baseRun, triggerSource: 'a2a', triggerSessionId: null },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1', a2aContext)
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        context: a2aContext,
+        referencedPromptContext: {
+          source: 'feishu',
+          messageId: 'om_alert',
+          messageType: 'interactive',
+          text: 'Payment dependency timed out.',
+          truncated: false,
+        },
+      }),
       expect.any(Object),
     )
   })

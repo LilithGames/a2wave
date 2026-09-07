@@ -144,6 +144,7 @@ export async function executeInWorker(
       workDir: payload.workDir || '',
       prompt: payload.prompt,
       context: payload.context,
+      referencedPromptContext: payload.referencedPromptContext,
       model: payload.model,
       fallbackModels: payload.agentConfig?.fallbackModels || [],
       chatId: payload.chatId,

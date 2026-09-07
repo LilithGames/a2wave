@@ -38,6 +38,8 @@ export interface RunRow {
   id: string
   triggerSource: string | null
   triggerSessionId: string | null
+  /** Whether the run carries a persisted, sendable chat target for restart-safe promotion. */
+  hasNativeChatContext?: boolean
 }
 
 /**
@@ -404,27 +406,15 @@ export async function recoverOnStartup(
     if (hooks.recoverInFlight !== false) {
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
-        // Feishu never resumes here, ahead of the resume check so no attempt is
-        // burned on a decision already made. A requeued row is promoted by the
-        // scheduleNext below through the generic executeChatRun path, and that
-        // path cannot rebuild a Feishu reply target: Feishu is not a native
-        // chat channel, so nothing restores `executionMetadata.nativeChatContext`,
-        // and run-lifecycle's reply-by-context fallback needs a `receive_id`
-        // the queued row does not carry. The resumed run would then finish in
-        // silence — and worse, by the time replayPendingFeishuMessages runs it
-        // is 'running' again, so the replay skips it ('prior-run-running') and
-        // the user never hears back at all.
-        //
-        // Failing it instead hands the message to the feishu_pending_messages
-        // replay, which rebuilds the full Feishu context (streaming card, quote
-        // target, reply mode) and does answer. The price is that the replay
-        // opens a fresh provider session — lookupPreviousChatId only resolves
-        // *completed* runs, so the interrupted run's liveChatId is invisible to
-        // it — and side effects can therefore be repeated. That trade is taken
-        // deliberately: a repeated turn is recoverable, a silent one is not.
-        // Lifting this requires the replay path to carry the interrupted run's
-        // liveChatId into the run it creates; until then, do not resume Feishu.
-        if (run.triggerSource === 'feishu') {
+        // Native Feishu events need replay to rebuild their reply closure and
+        // streaming card. Fail before the resume check so no attempt is burned
+        // on a row that queued recovery would reset for replay anyway. A generic
+        // promotion could otherwise race replay and suppress its reply.
+        // API-created Feishu reruns have no event to replay; let them resume
+        // with persisted context, including the interrupted-step fallback in
+        // requeueForResume. The queued gate below still rejects any rerun whose
+        // context could not be restored.
+        if (run.triggerSource === 'feishu' && run.triggerSessionId) {
           await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
           stats.runningAborted++
           continue
@@ -481,17 +471,15 @@ export async function recoverOnStartup(
         stats.pendingOrphaned++
       }
 
-      // Feishu queued runs lose their in-memory closure (reply target,
-      // streaming card registration, quote context) on restart. The DB-backed
-      // feishu_pending_messages row is replayed separately after Feishu
-      // connections come back. Fail the stale queued rows here so scheduleNext
-      // does NOT promote them via the generic executeChatRun path (which would
-      // run without Feishu context and then block replay). The running loop
-      // above never adds to this set — a running Feishu row is failed outright
-      // rather than requeued, for exactly the same reason.
+      // Native Feishu event runs lose their reply closure on restart and are
+      // replayed from pending messages. API-created reruns have no event to
+      // replay: preserve them only when their reply context was persisted (or
+      // restored from the interrupted step by requeueForResume). Legacy reruns
+      // without a sendable context must fail instead of finishing silently.
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        if (run.triggerSource === 'feishu') {
+        const isRestartSafeFeishuRerun = !run.triggerSessionId && run.hasNativeChatContext === true
+        if (run.triggerSource === 'feishu' && !isRestartSafeFeishuRerun) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++
         }

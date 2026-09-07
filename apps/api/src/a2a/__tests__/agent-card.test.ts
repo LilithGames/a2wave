@@ -3,6 +3,7 @@ import { ATTACHMENT_MIME_TYPES } from '@a2wave/shared'
 import { describe, expect, it } from 'vitest'
 import { buildAgentCard, serializeAgentCard } from '../agent-card.js'
 import { A2WAVE_CALLER_PROVENANCE_EXTENSION_URI } from '../provenance.js'
+import { A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI } from '../referenced-context.js'
 
 const BASE_URL = 'https://example.com'
 
@@ -49,6 +50,16 @@ describe('buildAgentCard', () => {
           required: false,
           params: {
             metadataKey: A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
+          },
+        },
+        {
+          uri: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+          description:
+            'Carries bounded quoted external material when the calling Agent explicitly opts in.',
+          required: false,
+          params: {
+            metadataKey: A2WAVE_REFERENCED_CONTEXT_EXTENSION_URI,
+            maxTextChars: 12000,
           },
         },
       ],

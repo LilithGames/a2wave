@@ -2,7 +2,6 @@
  * Execute agent task with retry (exponential backoff).
  * Wraps executeInWorker and retries on failure up to maxRetries times.
  */
-import type { RunChannelContext } from '@a2wave/shared'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { runs } from '../db/schema.js'
@@ -23,9 +22,9 @@ import { createRunLogFileWriter } from './run-log-file.js'
 
 const A2WAVE_AGENT_ROUTER_MCP_NAME = 'a2wave-agent-router'
 
-function injectChannelB64IntoAgentConfig(
+function injectRouterRuntimeEnvIntoAgentConfig(
   agentConfig: WorkerTaskPayload['agentConfig'],
-  channelB64: string,
+  runtimeEnv: Record<string, string>,
 ): WorkerTaskPayload['agentConfig'] {
   const existingEnv = (agentConfig.agentEnv as Record<string, string> | undefined) ?? {}
   const resolvedMcpServers = agentConfig.resolvedMcpServers?.map((server) => {
@@ -34,14 +33,14 @@ function injectChannelB64IntoAgentConfig(
       ...server,
       env: {
         ...(server.env ?? {}),
-        A2WAVE_CHANNEL_B64: channelB64,
+        ...runtimeEnv,
       },
     }
   })
 
   return {
     ...agentConfig,
-    agentEnv: { ...existingEnv, A2WAVE_CHANNEL_B64: channelB64 },
+    agentEnv: { ...existingEnv, ...runtimeEnv },
     ...(resolvedMcpServers ? { resolvedMcpServers } : {}),
   }
 }
@@ -377,12 +376,9 @@ async function executeWithRetryCore(
   payload: WorkerTaskPayload,
   options?: ExecuteWithRetryOptions,
 ): Promise<ExecuteWithRetryResult> {
-  // Inject A2WAVE_CHANNEL_B64 (base64url-encoded RunChannelContext) into
-  // agentEnv so the a2wave-agent-router MCP can forward it as
-  // X-A2WAVE-Channel-B64 on outbound a2a hops — preserving the original
-  // end-user identity across sub-agent calls. Done here at the *true* single
-  // chokepoint (run-launcher / a2a run-recording / feishu-service all converge
-  // on this function); doing it in run-launcher would miss the latter two.
+  // Inject bounded runtime context into agentEnv and the Agent router MCP at
+  // the common execution chokepoint. The router can then forward identity
+  // assertions automatically and quoted material only on an explicit tool opt-in.
   //
   // PII NOTE: the encoded payload contains user_info (email / mobile) in
   // base64url (reversible, not encrypted). Agent authors must NOT dump
@@ -393,14 +389,25 @@ async function executeWithRetryCore(
   // socket so PII never enters the process env table. Keep channel_type +
   // channel_info (non-PII) in env for cheap reads; strip user_info.
   const channelCtx = (payload.context as { channel?: unknown } | undefined)?.channel
+  const routerRuntimeEnv: Record<string, string> = {}
+  if (channelCtx) {
+    routerRuntimeEnv.A2WAVE_CHANNEL_B64 = Buffer.from(JSON.stringify(channelCtx), 'utf8').toString(
+      'base64url',
+    )
+  }
+  if (payload.referencedPromptContext) {
+    routerRuntimeEnv.A2WAVE_REFERENCED_CONTEXT_B64 = Buffer.from(
+      JSON.stringify(payload.referencedPromptContext),
+      'utf8',
+    ).toString('base64url')
+  }
   let effectivePayload: WorkerTaskPayload = payload
-  if (channelCtx && payload.agentConfig) {
-    const channelB64 = Buffer.from(JSON.stringify(channelCtx), 'utf8').toString('base64url')
+  if (Object.keys(routerRuntimeEnv).length > 0 && payload.agentConfig) {
     effectivePayload = {
       ...payload,
-      agentConfig: injectChannelB64IntoAgentConfig(payload.agentConfig, channelB64),
+      agentConfig: injectRouterRuntimeEnvIntoAgentConfig(payload.agentConfig, routerRuntimeEnv),
     }
-  } else if (channelCtx && !payload.agentConfig) {
+  } else if (Object.keys(routerRuntimeEnv).length > 0 && !payload.agentConfig) {
     // Non-fatal: channel context built but no agentConfig to carry the env var
     // downstream. Downstream a2a hops from this run will NOT forward the
     // upstream identity — future sub-agent calls will look anonymous. Worth a
@@ -408,7 +415,7 @@ async function executeWithRetryCore(
     // that should have agentConfig.
     logger.warn(
       { taskId, runId: options?.runId },
-      'A2WAVE_CHANNEL_B64 not injected: payload.agentConfig missing; sub-agent calls will lose upstream identity',
+      'A2A router runtime context not injected: payload.agentConfig missing; sub-agent calls will lose upstream context',
     )
   }
 

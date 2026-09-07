@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-08-31 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-09-04 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -302,14 +302,14 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | bail | 2.0.2 | MIT |
 | balanced-match | 4.0.4 | MIT |
 | base64-js | 1.5.1 | MIT |
-| baseline-browser-mapping | 2.9.19 | Apache-2.0 |
+| baseline-browser-mapping | 2.11.21 | Apache-2.0 |
 | better-sqlite3 | 12.11.1 | MIT |
 | bindings | 1.5.0 | MIT |
 | bl | 4.1.0 | MIT |
 | body-parser | 2.3.0 | MIT |
 | brace-expansion | 5.0.9 | MIT |
 | braces | 3.0.3 | MIT |
-| browserslist | 4.28.1 | MIT |
+| browserslist | 4.28.8 | MIT |
 | buffer | 5.7.1 | MIT |
 | buffer-from | 1.1.2 | MIT |
 | bundle-require | 5.1.0 | MIT |
@@ -317,7 +317,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | cac | 6.7.14 | MIT |
 | call-bind-apply-helpers | 1.0.2 | MIT |
 | call-bound | 1.0.4 | MIT |
-| caniuse-lite | 1.0.30001769 | CC-BY-4.0 |
+| caniuse-lite | 1.0.30001810 | CC-BY-4.0 |
 | ccount | 2.0.1 | MIT |
 | chai | 6.2.2 | MIT |
 | chalk | 5.6.2 | MIT |
@@ -393,7 +393,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | drizzle-orm | 0.45.2 | Apache-2.0 |
 | dunder-proto | 1.0.1 | MIT |
 | ee-first | 1.1.1 | MIT |
-| electron-to-chromium | 1.5.286 | ISC |
+| electron-to-chromium | 1.5.421 | ISC |
 | emoji-regex | 10.6.0 | MIT |
 | encodeurl | 2.0.0 | MIT |
 | end-of-stream | 1.4.5 | MIT |
@@ -430,7 +430,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | fast-safe-stringify | 2.1.1 | MIT |
 | fast-string-truncated-width | 3.0.3 | MIT |
 | fast-string-width | 3.0.2 | MIT |
-| fast-uri | 3.1.5 | BSD-3-Clause |
+| fast-uri | 3.1.7 | BSD-3-Clause |
 | fast-wrap-ansi | 0.2.0 | MIT |
 | fd-package-json | 2.0.0 | MIT |
 | fdir | 6.5.0 | MIT |
@@ -617,7 +617,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | napi-build-utils | 2.0.0 | MIT |
 | negotiator | 1.0.0 | MIT |
 | node-abi | 3.87.0 | MIT |
-| node-releases | 2.0.27 | MIT |
+| node-releases | 2.0.54 | MIT |
 | npm-run-path | 5.3.0, 6.0.0 | MIT |
 | nwsapi | 2.2.23 | MIT |
 | oauth4webapi | 3.8.7 | MIT |
@@ -826,7 +826,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | unist-util-visit | 5.1.0 | MIT |
 | unist-util-visit-parents | 6.0.2 | MIT |
 | unpipe | 1.0.0 | MIT |
-| update-browserslist-db | 1.2.3 | MIT |
+| update-browserslist-db | 1.3.2 | MIT |
 | use-sync-external-store | 1.6.0 | MIT |
 | util-deprecate | 1.0.2 | MIT |
 | uuid | 14.0.0 | MIT |

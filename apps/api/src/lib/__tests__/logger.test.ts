@@ -27,6 +27,7 @@ describe('logger redaction', () => {
       'privateKeyEnc',
       'A2WAVE_GATEWAY_TOKEN',
       'A2WAVE_CHANNEL_B64',
+      'A2WAVE_REFERENCED_CONTEXT_B64',
     ]) {
       expect(REDACT_PATHS).toContain(key)
     }

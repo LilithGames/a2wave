@@ -365,6 +365,56 @@ describe('createRecordedA2AExecuteFn', () => {
     expect(channel.channel_info.caller_agent?.agent_id).toBe('agt_caller')
   })
 
+  it('persists and forwards referenced context as untrusted prompt material', async () => {
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    mockExecuteWithRetry.mockResolvedValue({
+      result: { success: true, output: 'done', durationMs: 100 },
+      retries: [],
+    })
+    const referencedContext = {
+      source: 'feishu',
+      text: 'Grafana alert: dependency timed out.',
+      messageId: 'om_alert',
+      messageType: 'interactive',
+      senderType: 'app',
+      truncated: false,
+    }
+
+    const executeFn = await createRecordedA2AExecuteFn(fakeContext, fakeAgent)
+    await executeFn('task_reference', defaultPayload, { referencedContext })
+
+    const insertedValues = mockDb.insert.mock.results[0].value.values.mock.calls.map(
+      (call: unknown[]) => call[0],
+    )
+    expect(insertedValues).toContainEqual(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          context: expect.objectContaining({
+            referenced_message: {
+              source: 'feishu',
+              text: 'Grafana alert: dependency timed out.',
+              message_id: 'om_alert',
+              message_type: 'interactive',
+              sender_type: 'app',
+              truncated: false,
+            },
+          }),
+        }),
+      }),
+    )
+    const payload = mockExecuteWithRetry.mock.calls[0][1]
+    expect(payload.referencedPromptContext).toEqual(referencedContext)
+    expect(payload.context.referenced_message).toEqual({
+      source: 'feishu',
+      text: 'Grafana alert: dependency timed out.',
+      message_id: 'om_alert',
+      message_type: 'interactive',
+      sender_type: 'app',
+      truncated: false,
+    })
+    expect(mockExecuteWithRetry.mock.calls[0][2]).not.toHaveProperty('referencedContext')
+  })
+
   it('records cross-instance message provenance without promoting it to user_info', async () => {
     mockTryAcquireSlot.mockReturnValue('acquired')
     mockExecuteWithRetry.mockResolvedValue({

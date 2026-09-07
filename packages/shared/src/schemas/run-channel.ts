@@ -97,6 +97,8 @@ export const feishuChannelInfoSchema = z.object({
   chat_id: z.string(),
   chat_type: z.string(), // 'p2p' | 'group' | 'topic' | ... (kept open: feishu may add more)
   message_id: z.string(),
+  parent_id: z.string().optional(),
+  root_id: z.string().optional(),
   thread_id: z.string().optional(),
   sender_type: z.string(), // 'user' | 'bot' | ...
   // Omitted rather than empty: upstream sometimes lacks open_id for app/bot

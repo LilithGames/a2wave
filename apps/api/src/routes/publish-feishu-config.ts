@@ -15,6 +15,7 @@ export const feishuConfigBodySchema = z
     groupTriggerOnAt: z.boolean().default(true),
     groupTriggerOnNewMessage: z.boolean().default(false),
     groupReplyMode: z.enum(['quote', 'new', 'none']).default('quote'),
+    groupInjectReferencedMessage: z.boolean().default(false),
     topicTriggerOnAt: z.boolean().default(true),
     topicTriggerOnNewTopic: z.boolean().default(false),
     topicTriggerOnNewComment: z.boolean().default(false),

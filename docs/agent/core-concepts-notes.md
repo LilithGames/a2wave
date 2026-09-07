@@ -80,19 +80,22 @@ is **requeued and continued** from that session rather than failed, so a deploy
 restart does not replay a prompt whose side effects have already landed
 (`lib/resume-decision.ts`, three attempts max).
 
-**Feishu is the one trigger source excluded from resume**, and the exclusion is
-deliberate. A requeued row is promoted through the generic `executeChatRun`
-path, which has no way to rebuild a Feishu reply target: Feishu is not a native
-chat channel, so nothing restores `executionMetadata.nativeChatContext`, and the
-reply-by-context fallback in `run-lifecycle.ts` needs a `receive_id` the queued
-row does not carry. A resumed Feishu run would complete in silence — and because
-it is `running` again by the time `replayPendingFeishuMessages` fires, the replay
-skips it (`prior-run-running`) and the user is never answered at all. Recovery
-therefore fails a running Feishu run outright (`SERVER_RESTART_DURING_EXEC`,
-before the resume check so no attempt is burned) and lets the
-`feishu_pending_messages` replay rebuild the message with its full context.
+**Native Feishu event runs are excluded from resume.** They carry a
+`triggerSessionId` and depend on an in-memory reply closure and streaming card
+that generic `executeChatRun` promotion cannot rebuild. Promoting them before
+`replayPendingFeishuMessages` also makes replay skip them (`prior-run-running`).
+Recovery therefore fails these running rows outright
+(`SERVER_RESTART_DURING_EXEC`, before the resume check so no attempt is burned)
+and lets pending-message replay rebuild the full reply context.
 
-The cost is that the replay opens a **fresh** provider session — `lookupPreviousChatId`
+**API-created Feishu reruns can resume.** They have no `triggerSessionId` or
+pending event to replay. Their sendable reply target is persisted in
+`executionMetadata.nativeChatContext`, or restored from the interrupted step
+by `requeueForResume`. The queued recovery gate preserves these reruns only
+when that context is available; legacy rows without a reply target fail instead
+of completing silently.
+
+For native events, replay opens a **fresh** provider session — `lookupPreviousChatId`
 only resolves *completed* runs, so the interrupted run's `liveChatId` is invisible
 to it — and side effects can be repeated. A repeated turn is recoverable; a silent
 one is not. Removing the carve-out requires teaching the replay path to carry the

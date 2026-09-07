@@ -46,6 +46,7 @@ export const FEISHU_CONFIG_KEYS = [
   'groupTriggerOnAt',
   'groupTriggerOnNewMessage',
   'groupReplyMode',
+  'groupInjectReferencedMessage',
   // Topic group settings
   'topicTriggerOnAt',
   'topicTriggerOnNewTopic',
@@ -126,6 +127,10 @@ export type AgentYamlA2ARouteTarget =
       connectionMode?: (typeof A2A_CONNECTION_MODES)[number]
       /** Direct endpoint protocol version; omitted legacy routes remain direct A2A 0.3. */
       protocolVersion?: (typeof A2A_PROTOCOL_VERSIONS)[number]
+      /** Direct A2A 1.0 endpoint supports display-only caller provenance. */
+      callerProvenance?: boolean
+      /** Direct A2A 1.0 endpoint supports explicitly forwarded referenced context. */
+      referencedContext?: boolean
       description?: string
       apiKey?: string
     }
@@ -597,6 +602,7 @@ env:
 #   groupTriggerOnAt: true
 #   groupTriggerOnNewMessage: false
 #   groupReplyMode: quote                  # quote | new | none
+#   groupInjectReferencedMessage: false    # include the replied-to message as context
 #   topicTriggerOnAt: true
 #   topicReplyMode: topic_reply            # topic_reply | none
 #   p2pReplyMode: quote                    # Direct chat: quote | new | none (default quote)

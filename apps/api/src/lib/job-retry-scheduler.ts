@@ -118,6 +118,11 @@ async function scheduleJobRetry(
   const nextAttempt = nextJobRetryAttempt(attempt)
   // Point every link at the ORIGINAL run, so the whole chain is queryable by one id.
   const chainOrigin = originalRun.executionMetadata?.jobRetryOf ?? originalRun.id
+  const durableRerunContext =
+    (originalRun.triggerSource === 'feishu' || originalRun.triggerSource === 'a2a') &&
+    source.originalContext
+      ? source.originalContext
+      : undefined
 
   const newRunId = createId('run')
   await db
@@ -145,6 +150,7 @@ async function scheduleJobRetry(
               ...(consumerId ? { attachmentConsumerId: consumerId } : {}),
             }
           : {}),
+        ...(durableRerunContext ? { nativeChatContext: durableRerunContext } : {}),
         jobRetryOf: chainOrigin,
         jobRetryAttempt: nextAttempt,
       },

@@ -1,14 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mockDbSelect = vi.fn()
 const mockDbFrom = vi.fn()
 const mockDbSet = vi.fn()
-const mockDbWhere = vi.fn()
-const mockDbGet = vi.fn()
-const mockDbAll = vi.fn()
-const mockDbUpdate = vi.fn()
-const mockDbOrderBy = vi.fn()
-const mockDbLimit = vi.fn()
 const mockWithAdmission = vi.hoisted(() => vi.fn())
 const mockWithScmPathMutation = vi.hoisted(() => vi.fn())
 const mockActivateScmWorkloadInMutation = vi.hoisted(() => vi.fn())
@@ -42,6 +35,9 @@ vi.mock('../../db/schema.js', () => ({
     status: 'runs.status',
     createdAt: 'runs.created_at',
     worktreeConfig: 'runs.worktree_config',
+    triggerSource: 'runs.trigger_source',
+    triggerSessionId: 'runs.trigger_session_id',
+    executionMetadata: 'runs.execution_metadata',
   },
   agents: {
     id: 'agents.id',
@@ -168,6 +164,57 @@ describe('taskQueueDb runtime status validation', () => {
 
     expect(result).toEqual([])
     expect(allSpy).not.toHaveBeenCalled()
+  })
+
+  it('getRunsByStatus reports whether a run has durable native chat context', async () => {
+    chainSelect({
+      get: () => null,
+      all: () => [
+        {
+          id: 'run_durable',
+          triggerSource: 'feishu',
+          triggerSessionId: null,
+          executionMetadata: {
+            nativeChatContext: { receive_id_type: 'chat_id', receive_id: 'oc_1' },
+          },
+        },
+        {
+          id: 'run_legacy',
+          triggerSource: 'feishu',
+          triggerSessionId: null,
+          executionMetadata: { queuedTurn: true },
+        },
+        {
+          id: 'run_malformed',
+          triggerSource: 'feishu',
+          triggerSessionId: null,
+          executionMetadata: { nativeChatContext: {} },
+        },
+      ],
+    })
+
+    const result = await taskQueueDb.getRunsByStatus('agt_1', 'queued')
+
+    expect(result).toEqual([
+      {
+        id: 'run_durable',
+        triggerSource: 'feishu',
+        triggerSessionId: null,
+        hasNativeChatContext: true,
+      },
+      {
+        id: 'run_legacy',
+        triggerSource: 'feishu',
+        triggerSessionId: null,
+        hasNativeChatContext: false,
+      },
+      {
+        id: 'run_malformed',
+        triggerSource: 'feishu',
+        triggerSessionId: null,
+        hasNativeChatContext: false,
+      },
+    ])
   })
 
   it('failRunWithError 同时更新 step output.error 和 run result.error', async () => {

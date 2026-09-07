@@ -265,9 +265,10 @@ const FEISHU_BASE_SCOPES = [
   'im:message',
   'im:message.p2p_msg:readonly',
   'im:message.group_at_msg:readonly',
-  // 接收群里「所有消息」（不仅 @机器人）的事件，缺它则群聊里即便勾选「群内新增消息」
-  // 触发，飞书也只会推送 @机器人 的消息。属敏感权限，需在飞书后台单独申请审批。
-  'im:message.group_msg:readonly',
+  // Receive all user messages in a group and authorize app-identity lookups of
+  // a replied-to group message. This is a sensitive scope in Feishu and needs
+  // separate approval before either feature works.
+  'im:message.group_msg',
   'im:resource',
   'cardkit:card:write',
   'contact:contact.base:readonly',
@@ -426,6 +427,7 @@ export function PublishTab({
   const [groupTriggerOnAt, setGroupTriggerOnAt] = useState(true)
   const [groupTriggerOnNewMessage, setGroupTriggerOnNewMessage] = useState(false)
   const [groupReplyMode, setGroupReplyMode] = useState<'quote' | 'new' | 'none'>('quote')
+  const [groupInjectReferencedMessage, setGroupInjectReferencedMessage] = useState(false)
   // 话题群
   const [topicTriggerOnAt, setTopicTriggerOnAt] = useState(true)
   const [topicTriggerOnNewTopic, setTopicTriggerOnNewTopic] = useState(false)
@@ -810,6 +812,7 @@ export function PublishTab({
       setOauthAllowedEmails(persisted.oauthAllowedEmails ?? [])
 
       const raw: PersistedFeishuConfig | null | undefined = agent.feishuConfig
+      setGroupInjectReferencedMessage(raw?.groupInjectReferencedMessage ?? false)
       if (raw) {
         // 兼容旧配置：旧字段 triggerOnAt / triggerOnNewMessage / replyMode → 新 group* / topic* 结构
         const isLegacy = !('groupTriggerOnAt' in raw) && !('groupReplyMode' in raw)
@@ -958,6 +961,7 @@ export function PublishTab({
     groupTriggerOnAt: (v) => setGroupTriggerOnAt(v as boolean),
     groupTriggerOnNewMessage: (v) => setGroupTriggerOnNewMessage(v as boolean),
     groupReplyMode: (v) => setGroupReplyMode(v as 'quote' | 'new' | 'none'),
+    groupInjectReferencedMessage: (v) => setGroupInjectReferencedMessage(v as boolean),
     topicTriggerOnAt: (v) => setTopicTriggerOnAt(v as boolean),
     topicTriggerOnNewTopic: (v) => setTopicTriggerOnNewTopic(v as boolean),
     topicTriggerOnNewComment: (v) => setTopicTriggerOnNewComment(v as boolean),
@@ -1054,6 +1058,7 @@ export function PublishTab({
     groupTriggerOnAt,
     groupTriggerOnNewMessage,
     groupReplyMode,
+    groupInjectReferencedMessage,
     topicTriggerOnAt,
     topicTriggerOnNewTopic,
     topicTriggerOnNewComment,
@@ -1204,6 +1209,7 @@ export function PublishTab({
     groupTriggerOnAt,
     groupTriggerOnNewMessage,
     groupReplyMode,
+    groupInjectReferencedMessage,
     topicTriggerOnAt,
     topicTriggerOnNewTopic,
     topicTriggerOnNewComment,
@@ -1727,12 +1733,15 @@ export function PublishTab({
             triggerOnAt: groupTriggerOnAt,
             triggerOnNewMessage: groupTriggerOnNewMessage,
             replyMode: groupReplyMode,
+            injectReferencedMessage: groupInjectReferencedMessage,
           }}
           onGroupChange={(patch) => {
             if (patch.triggerOnAt !== undefined) setGroupTriggerOnAt(patch.triggerOnAt)
             if (patch.triggerOnNewMessage !== undefined)
               setGroupTriggerOnNewMessage(patch.triggerOnNewMessage)
             if (patch.replyMode !== undefined) setGroupReplyMode(patch.replyMode)
+            if (patch.injectReferencedMessage !== undefined)
+              setGroupInjectReferencedMessage(patch.injectReferencedMessage)
           }}
           p2pReplyMode={p2pReplyMode}
           onP2pReplyModeChange={setP2pReplyMode}
