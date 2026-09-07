@@ -7,6 +7,10 @@ import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cleanupManagedMcpConfigAsync,
+  syncMcpToWorkspaceAtPathAsync,
+} from '../../engine/mcp-sync.js'
+import {
   cleanupStaleWorkspaces,
   createGitWorkspace,
   defaultWorkspacesPath,
@@ -25,6 +29,27 @@ vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../scm-workspace-safety.js')>()),
   assertStoredScmWorkspacesRoot: vi.fn().mockResolvedValue(undefined),
 }))
+
+const excludeWriteGate = vi.hoisted(() => ({
+  wait: null as Promise<void> | null,
+  entered: null as (() => void) | null,
+}))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      if (excludeWriteGate.wait && String(args[0]).endsWith('info/exclude')) {
+        const wait = excludeWriteGate.wait
+        excludeWriteGate.wait = null
+        excludeWriteGate.entered?.()
+        await wait
+      }
+      return actual.writeFile(...args)
+    },
+  }
+})
 
 const execFileAsync = promisify(execFile)
 
@@ -902,6 +927,110 @@ describe('git-workspace', () => {
       expect(result.created).toBe(true)
       expect(existsSync(join(result.path, 'frontend', 'README.md'))).toBe(true)
       expect(existsSync(join(result.path, 'backend', 'README.md'))).toBe(true)
+    })
+
+    it('excludes platform-written paths in every sub-repo', async () => {
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', multiRepoConfig)
+
+      for (const dir of ['frontend', 'backend']) {
+        const exclude = await readFile(join(REPO_DIR, dir, '.git', 'info', 'exclude'), 'utf-8')
+        expect(exclude).toContain('/.mcp.json')
+      }
+    })
+  })
+
+  describe('createGitWorkspace — platform path excludes', () => {
+    beforeEach(async () => {
+      await initGitRepo(REPO_DIR)
+    })
+
+    const excludeFile = () => join(REPO_DIR, '.git', 'info', 'exclude')
+
+    it('keeps MCP config out of git so an agent commit cannot push its credentials', async () => {
+      const result = await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+      await mkdir(join(result.path, '.cursor'), { recursive: true })
+      await writeFile(
+        join(result.path, '.cursor', 'mcp.json'),
+        '{"mcpServers":{"x":{"headers":{"Authorization":"Bearer secret"}}}}',
+      )
+      await writeFile(join(result.path, '.mcp.json'), '{}')
+
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: result.path,
+      })
+      expect(stdout).not.toContain('mcp.json')
+    })
+
+    it('preserves live MCP exclusions when another workspace initializes concurrently', async () => {
+      let release = () => {}
+      const entered = new Promise<void>((resolve) => {
+        excludeWriteGate.entered = resolve
+      })
+      excludeWriteGate.wait = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const creation = createGitWorkspace(REPO_DIR, WS_ROOT, 'second-agent', singleRepoConfig)
+      await entered
+      const configPath = 'custom-mcp.json'
+      const sync = syncMcpToWorkspaceAtPathAsync(REPO_DIR, configPath, [
+        {
+          name: 'api',
+          type: 'http',
+          url: 'https://mcp.example.com',
+          headers: { Authorization: 'Bearer concurrent-test-secret' },
+        },
+      ])
+      // The old independent writer completes while workspace creation retains a
+      // stale snapshot. A shared lock may instead defer sync until release.
+      await Promise.race([sync, new Promise((resolve) => setTimeout(resolve, 300))])
+      release()
+      excludeWriteGate.entered = null
+      await Promise.all([creation, sync])
+      try {
+        await execFileAsync('git', ['add', '-A'], { cwd: REPO_DIR })
+        const { stdout } = await execFileAsync('git', ['diff', '--cached'], { cwd: REPO_DIR })
+        expect(stdout).toBe('')
+      } finally {
+        await cleanupManagedMcpConfigAsync(REPO_DIR, configPath)
+      }
+    })
+
+    it('writes each platform path exactly once across repeated runs', async () => {
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+      const afterCreate = await readFile(excludeFile(), 'utf-8')
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+      const afterReuse = await readFile(excludeFile(), 'utf-8')
+
+      expect(afterReuse).toBe(afterCreate)
+      const occurrences = afterReuse.split('\n').filter((line) => line.trim() === '/.mcp.json')
+      expect(occurrences).toHaveLength(1)
+    })
+
+    it('does not cover a path the repository already tracks', async () => {
+      // Ignore rules apply to untracked files only, which is why writers of
+      // credential-bearing files consult `isPathTrackedByGit` before writing.
+      await writeFile(join(REPO_DIR, '.mcp.json'), '{"mcpServers":{}}')
+      await execFileAsync('git', ['add', '--', '.mcp.json'], { cwd: REPO_DIR })
+      await execFileAsync('git', ['commit', '-m', 'track mcp config'], { cwd: REPO_DIR })
+
+      const result = await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+      await writeFile(join(result.path, '.mcp.json'), '{"mcpServers":{"x":{}}}')
+
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: result.path,
+      })
+      expect(stdout).toContain('.mcp.json')
+    })
+
+    it('preserves exclude rules the user already wrote', async () => {
+      await mkdir(join(REPO_DIR, '.git', 'info'), { recursive: true })
+      await writeFile(excludeFile(), '# user rules\nscratch/\n')
+
+      await createGitWorkspace(REPO_DIR, WS_ROOT, 'fix-bug', singleRepoConfig)
+
+      const exclude = await readFile(excludeFile(), 'utf-8')
+      expect(exclude).toContain('scratch/')
+      expect(exclude).toContain('/.mcp.json')
     })
   })
 

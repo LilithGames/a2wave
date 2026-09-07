@@ -502,6 +502,48 @@ OAuth-published Agent answers `503 OAUTH_NOT_CONFIGURED`. The **CLI** has no SAM
 leaves `a2wave login --password` as the only CLI credential. Such deployments must configure OIDC
 in addition to SAML.
 
+### 8.1 SAML `InResponseTo` state is durable
+
+Web SAML sign-in runs with `validateInResponseTo: always` — an assertion is only
+accepted as the answer to an AuthnRequest this SP actually issued, which is what
+blocks IdP-initiated injection and replay. That guarantee needs somewhere to
+remember the issued request ids, and node-saml's default is an in-memory `Map` in
+whichever process built the redirect.
+
+That default is wrong for anything but a single, never-restarted container. The IdP
+form-POSTs the assertion to `/api/auth/saml/acs` through the load balancer, so it
+lands on an arbitrary replica; a restart or a deploy loses the ids just as
+effectively. Either way the login fails with `SAML_RESPONSE_UNSOLICITED`, which
+reads like an IdP misconfiguration and sends the administrator looking in the
+wrong place.
+
+The ids therefore live in the `saml_requests` table
+(`createSamlRequestCacheProvider()` in `apps/api/src/lib/saml.ts`), so the state
+is shared across replicas and survives restarts. Abandoned ids expire after
+`SAML_REQUEST_EXPIRATION_MS` (8h, node-saml's own `requestIdExpirationPeriodMs`
+default). **Expiry is enforced on read as well as by the hourly sweeper** — a
+late or not-yet-started sweep must never widen the window in which an id is
+replayable. The sweeper starts lazily the first time a SAML instance is built, so
+a deployment with no SAML configured holds no timer.
+
+**The read is what consumes the id**, not `removeAsync`. node-saml validates the
+entire assertion before it removes anything, so a `SELECT`-then-`DELETE` pair
+would let one captured SAMLResponse POSTed at two replicas validate on both and
+mint two sessions. `getAsync` is therefore a single `DELETE ... RETURNING`
+carrying the expiry predicate: exactly one caller wins the row.
+
+The consequence to know when reading that code: node-saml reads one id **twice**
+per validation (the Response's `InResponseTo`, then the assertion's
+`SubjectConfirmationData`). The consumed value is therefore held in an
+`AsyncLocalStorage` store whose lifetime is **one validation** —
+`runInSamlValidation`, which `validateSamlPostResponse` (the ACS route's only
+validation entry point) wraps the call in. Bind it to the id instead — a map at
+provider or process scope — and any later read of that id is answered too, so a
+concurrent or replayed ACS POST of one captured SAMLResponse validates a second
+time on that replica, reopening the single-use window the consuming DELETE
+exists to close. Outside a validation there is nothing to reuse and the DB
+consume is the only answer, which is why the store needs no expiry of its own.
+
 Two wording traps when writing user-facing copy:
 
 - "enterprise SSO" covers both protocols while this channel covers only one, so name OIDC

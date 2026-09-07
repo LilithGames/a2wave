@@ -46,8 +46,20 @@ describe('reapOrphanedRuns', () => {
     const reaped = await reapOrphanedRuns(d)
 
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
     expect(d.afterRunSettled).toHaveBeenCalledWith('run_1')
+  })
+
+  it('fences the resume requeue on the owner the candidate was judged against', async () => {
+    // ABA: replica B may requeue and re-promote this run between the scan and
+    // the write, stamping itself as the new owner. A status-only CAS would
+    // then yank B's live run; the expected owner travels with every write so a
+    // re-promoted row falls into the "another replica settled it first" path.
+    // The fail path is asserted the same way in the first test above.
+    const d = deps({ canResume: vi.fn(async () => true) })
+    await reapOrphanedRuns(d)
+
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'instance-b')
   })
 
   it('leaves a run whose owner is still beating', async () => {
@@ -172,7 +184,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'instance-b')
     expect(d.claimRun).not.toHaveBeenCalled()
     // Still reported: the caller nudges the Agent's queue either way, and a
     // requeued run needs that nudge to be picked up.
@@ -189,7 +201,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     await reapOrphanedRuns(d)
 
-    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC')
+    expect(d.requeueRun).toHaveBeenCalledWith('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'instance-b')
   })
 
   it('does not sync external state to failed when the run is resumed', async () => {
@@ -207,7 +219,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
     expect(d.requeueRun).not.toHaveBeenCalled()
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
   })
@@ -223,7 +235,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
   })
 
@@ -239,7 +251,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
   })
 
@@ -251,7 +263,7 @@ describe('reapOrphanedRuns — resuming instead of failing', () => {
     expect(await reapOrphanedRuns(d)).toEqual([
       { runId: 'run_1', agentId: 'agt_1', resumed: false },
     ])
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
   })
 })
 
@@ -268,7 +280,7 @@ describe('reapOrphanedRuns — the requeue is a CAS, not a promise', () => {
 
     const reaped = await reapOrphanedRuns(d)
 
-    expect(d.claimRun).toHaveBeenCalledWith('run_1')
+    expect(d.claimRun).toHaveBeenCalledWith('run_1', 'instance-b')
     expect(reaped).toEqual([{ runId: 'run_1', agentId: 'agt_1', resumed: false }])
   })
 

@@ -3,8 +3,8 @@ import { Cron } from 'croner'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runs, users } from '../db/schema.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
 import { tryAcquireSlot } from '../engine/task-queue.js'
+import { taskQueueDb } from '../engine/task-queue-db.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
@@ -63,11 +63,23 @@ class ScheduleTriggerManager {
         return
       }
 
-      const job = new Cron(schedule.cron, { timezone }, () => {
-        this.triggerRun(agentId, schedule, index).catch((err) =>
-          logger.error({ err, agentId, scheduleIndex: index }, 'Schedule trigger failed'),
+      // croner throws synchronously on an unknown IANA timezone. Without this guard
+      // the throw escaped `start`, which had already called `stop` — losing the
+      // agent's *valid* schedules — and aborted `restoreAll` for every later agent.
+      let job: Cron
+      try {
+        job = new Cron(schedule.cron, { timezone }, () => {
+          this.triggerRun(agentId, schedule, index).catch((err) =>
+            logger.error({ err, agentId, scheduleIndex: index }, 'Schedule trigger failed'),
+          )
+        })
+      } catch (err) {
+        logger.warn(
+          { err, agentId, cron: schedule.cron, timezone, scheduleIndex: index },
+          'Cron registration rejected (likely an unknown timezone), skipping schedule registration',
         )
-      })
+        return
+      }
 
       jobs.push(job)
       logger.info(
@@ -108,7 +120,16 @@ class ScheduleTriggerManager {
       if (!channels.includes('schedule')) continue
       const config = agent.scheduleConfig as ScheduleConfigInput | null
       if (!config || normalizeScheduleConfigs(config).length === 0) continue
-      this.start(agent.id, config)
+      // Per-agent isolation: one malformed config must not cost every agent behind
+      // it in the list its schedules for the rest of the process lifetime.
+      try {
+        this.start(agent.id, config)
+      } catch (err) {
+        logger.error(
+          { err, agentId: agent.id },
+          'Schedule restoration failed for agent, continuing with the remaining agents',
+        )
+      }
     }
     logger.info(`Schedule triggers restored: ${this.jobs.size} active`)
   }

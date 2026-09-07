@@ -1,6 +1,6 @@
-import i18n from '@/i18n'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { HTTP_CODES, KNOWN_CODES, apiErrorKey, formatApiError } from '../api-error'
+import i18n from '@/i18n'
+import { apiErrorKey, formatApiError, HTTP_CODES, KNOWN_CODES } from '../api-error'
 
 describe('apiErrorKey', () => {
   it('maps a known backend error code to its i18n key', () => {
@@ -26,6 +26,15 @@ describe('apiErrorKey', () => {
   it('falls back to the generic key for an unmapped code', () => {
     // A code the frontend has no copy for must not leak to the user verbatim.
     expect(apiErrorKey('SOME_BRAND_NEW_CODE')).toBe('apiError.UNKNOWN')
+  })
+
+  // The route answers 409 with this code plus a per-resource breakdown when the
+  // account still owns Agents, Skills, SCM sources and the like. Without the
+  // registration the admin is told only that something went wrong, and the one
+  // thing they can act on — that a transfer is needed first — never reaches them.
+  it('translates the owned-resource deletion block', () => {
+    expect(KNOWN_CODES.has('USER_HAS_OWNED_RESOURCES')).toBe(true)
+    expect(apiErrorKey('USER_HAS_OWNED_RESOURCES')).toBe('apiError.USER_HAS_OWNED_RESOURCES')
   })
 
   it('falls back for free-form messages that are not error codes', () => {

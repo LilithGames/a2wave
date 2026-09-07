@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { runSteps, runs } from '../db/schema.js'
+import { runs } from '../db/schema.js'
 import { listActiveExecutionLeases } from '../engine/execution-lease-registry.js'
 import { taskQueueDb } from '../engine/task-queue-db.js'
 import {
@@ -10,10 +10,10 @@ import {
   loadInstanceLiveness,
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
+import { claimReapableRun } from './reap-run-claim.js'
 import { canRequeueInterruptedRun } from './resume-chat-id.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { syncReapedRunExternalState } from './scm-lease-sweeper.js'
-import { withScmPathMutation } from './scm-path-plan.js'
 
 /**
  * Fail runs abandoned by a crashed instance, for workloads that hold no lease.
@@ -78,8 +78,15 @@ export interface OrphanedRunReaperDeps {
   /** False during the post-boot grace window, when an empty table means nothing. */
   canJudgePeers: () => boolean
   isRunLocallyActive: (runId: string) => boolean
-  /** Status CAS; false means another replica settled the run first. */
-  claimRun: (runId: string) => Promise<boolean>
+  /**
+   * Status + owner CAS; false means another replica settled the run first.
+   *
+   * The owner is part of the condition, not decoration: liveness was judged
+   * against the `ownerInstanceId` this scan snapshotted, and a peer can requeue
+   * and re-promote the run in between, stamping itself as the new owner. A
+   * status-only CAS would then fail that peer's live run.
+   */
+  claimRun: (runId: string, expectedOwnerInstanceId: string) => Promise<boolean>
   afterRunSettled: (runId: string) => Promise<void>
   /**
    * Whether this run may continue from the session it already opened.
@@ -91,13 +98,18 @@ export interface OrphanedRunReaperDeps {
    */
   canResume?: (runId: string, assumeFailureCode: string) => Promise<boolean>
   /**
-   * Status CAS back to `queued`, clearing result and ownership.
+   * Status + owner CAS back to `queued`, clearing result and ownership.
    *
+   * Fenced on the same expected owner as `claimRun`, for the same reason.
    * Returns false when the transition did not happen — another replica settled
    * the row first. Reporting that as a resume would both lie about the outcome
    * and skip the fail path, leaving the row exactly as this pass found it.
    */
-  requeueRun?: (runId: string, interruptionCode: string) => Promise<boolean>
+  requeueRun?: (
+    runId: string,
+    interruptionCode: string,
+    expectedOwnerInstanceId: string,
+  ) => Promise<boolean>
   now: () => Date
 }
 
@@ -123,20 +135,17 @@ export async function listOrphanedRunCandidates(): Promise<OrphanedRunCandidate[
   return rows.flatMap((row) => (row.agentId ? [{ ...row, agentId: row.agentId }] : []))
 }
 
-export async function claimRunForReap(runId: string): Promise<boolean> {
-  const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
-  return withScmPathMutation(async (tx) => {
-    const claimed = await tx
-      .update(runs)
-      .set({ status: 'failed', result: { error: reason }, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), inArray(runs.status, [...REAPABLE_RUN_STATUSES])))
-      .returning({ id: runs.id })
-    if (claimed.length === 0) return false
-    await tx
-      .update(runSteps)
-      .set({ status: 'failed', output: { error: reason } })
-      .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
-    return true
+export async function claimRunForReap(
+  runId: string,
+  expectedOwnerInstanceId: string,
+): Promise<boolean> {
+  return claimReapableRun(runId, expectedOwnerInstanceId, {
+    statuses: REAPABLE_RUN_STATUSES,
+    // Strict equality, unlike the SCM lease sweeper: this pass only settles
+    // `running` rows, and ownership is stamped for exactly that status. A row
+    // with no owner was never judged against a liveness verdict, so a mismatch
+    // — including an absence — is simply "not this pass's to settle".
+    allowUnownedRows: false,
   })
 }
 
@@ -161,7 +170,8 @@ export const defaultReaperDepsForTest: OrphanedRunReaperDeps = {
   // with "resume by starting over", and the second is the case a run killed
   // before its CLI emitted anything falls into.
   canResume: canRequeueInterruptedRun,
-  requeueRun: (runId, interruptionCode) => taskQueueDb.requeueForResume(runId, interruptionCode),
+  requeueRun: (runId, interruptionCode, expectedOwnerInstanceId) =>
+    taskQueueDb.requeueForResume(runId, interruptionCode, expectedOwnerInstanceId),
   now: () => new Date(),
 }
 
@@ -175,7 +185,11 @@ const defaultDeps = defaultReaperDepsForTest
  * resume that fails must degrade to the pre-existing behaviour, never leave the
  * row 'running' for the next pass to find in the same state.
  */
-async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<boolean> {
+async function tryResume(
+  deps: OrphanedRunReaperDeps,
+  runId: string,
+  expectedOwnerInstanceId: string,
+): Promise<boolean> {
   if (!deps.canResume || !deps.requeueRun) return false
   const code = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC.code
   try {
@@ -194,7 +208,7 @@ async function tryResume(deps: OrphanedRunReaperDeps, runId: string): Promise<bo
     // write. A separate mark left a window in which the dying CLI's
     // fire-and-forget session tap merged a stale snapshot over it, and the run
     // then re-executed from scratch because nothing said it was interrupted.
-    const requeued = await deps.requeueRun(runId, code)
+    const requeued = await deps.requeueRun(runId, code, expectedOwnerInstanceId)
     logger.info({ runId, requeued }, 'orphaned-run-reaper: resume requeue attempted')
     return requeued
   } catch (error) {
@@ -245,11 +259,11 @@ export async function reapOrphanedRuns(
       // may already have landed. Every failure here — the check, the mark, the
       // requeue — falls through to the fail path rather than stranding the row
       // as 'running', which is the one outcome this pass exists to prevent.
-      if (await tryResume(deps, candidate.id)) {
+      if (await tryResume(deps, candidate.id, candidate.ownerInstanceId)) {
         reaped.push({ runId: candidate.id, agentId: candidate.agentId, resumed: true })
         continue
       }
-      if (!(await deps.claimRun(candidate.id))) continue
+      if (!(await deps.claimRun(candidate.id, candidate.ownerInstanceId))) continue
       await deps.afterRunSettled(candidate.id)
       reaped.push({ runId: candidate.id, agentId: candidate.agentId, resumed: false })
     } catch (error) {

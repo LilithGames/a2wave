@@ -61,7 +61,7 @@ jobs:
     steps:
       # fetch-depth: 0 — the classifier diffs against the merge base, which a
       # shallow clone does not contain.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: classify
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
       - run: pnpm lint
       - run: node --test scripts/gates/__tests__/check-docker-context.test.mjs
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The shared package exports dist/index.d.ts; api/web/cli need dist to
       # exist before `tsc --noEmit` can resolve @a2wave/shared.
       - uses: ./.github/actions/setup
@@ -142,8 +142,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
       # Via the environment, not an inline expression: a body containing shell
@@ -160,7 +160,7 @@ jobs:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Install gitleaks
@@ -185,7 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
       - run: pnpm audit --audit-level high
 
@@ -203,7 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
       - run: pnpm licenses:check
 
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           build-shared: 'true'
@@ -230,7 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # scripts/deploy tests re-run the remote docker commands under dash to prove
       # they don't rely on bash extensions and parse correctly under POSIX sh.
       - name: Install dash
@@ -241,7 +241,7 @@ jobs:
       - run: pnpm --filter @a2wave/shared test
       - run: pnpm --filter a2wave test
       - run: pnpm provider-clis:test
-      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs
+      - run: node --test scripts/deploy/__tests__/deploy-remote.test.mjs scripts/deploy/__tests__/codex-login-remote.test.mjs
       # The api gate's own regression tests — they guard the "a suite that fails to
       # load reports zero failing assertions" hole, which is invisible to the gate
       # it protects. Cheap (synthetic reports, no real suite run), so they live in
@@ -292,7 +292,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           install-scripts: 'true'
@@ -308,7 +308,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           build-shared: 'true'
@@ -438,11 +438,11 @@ jobs:
     env:
       SCM_STORAGE_POSTGRES_URL: postgres://a2wave:a2wave@127.0.0.1:5432/a2wave_scm_test
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 9.15.4
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -452,7 +452,7 @@ jobs:
       # rather than on anything this gate is meant to catch.
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @a2wave/shared build
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       # Build here rather than inside the script so the layers can be cached
       # between runs. A fresh runner has no layer cache, so every run was
       # re-downloading the pinned p4 binary from the Perforce CDN — 20MB of
@@ -460,7 +460,7 @@ jobs:
       # our own storage code. `--load` puts the image in the local daemon, which
       # is where the script's ownership matrix looks for it.
       - name: Build the image (cached)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true

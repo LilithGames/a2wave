@@ -87,12 +87,17 @@ vi.mock('../../engine/task-queue-db.js', () => ({
   taskQueueDb: {},
 }))
 
+import { getInternalToken, INTERNAL_TOKEN_HEADER } from '../../lib/internal-admin-auth.js'
+import { asyncQuery } from '../../test/async-query.js'
 import app from '../internal.js'
 
-import { asyncQuery } from '../../test/async-query.js'
-
 function request(method: string, path: string, body?: unknown) {
-  const init: RequestInit = { method, headers: { 'Content-Type': 'application/json' } }
+  const init: RequestInit = {
+    method,
+    // Loopback alone no longer authenticates: every in-process caller carries the
+    // process-scoped internal token.
+    headers: { 'Content-Type': 'application/json', [INTERNAL_TOKEN_HEADER]: getInternalToken() },
+  }
   if (body) init.body = JSON.stringify(body)
   // Pass the (fail-closed) localhost guard: supply a loopback remoteAddress the
   // way the node-server adapter does for the platform-admin MCP's 127.0.0.1 call.
@@ -204,6 +209,7 @@ describe('internal streaming card endpoints', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            [INTERNAL_TOKEN_HEADER]: getInternalToken(),
             'X-A2WAVE-Caller-Agent-Id': 'agt_gateway',
             'X-A2WAVE-Caller-Agent-Name-B64': encodeCallerAgentNameHeader('网关测试Agent'),
           },

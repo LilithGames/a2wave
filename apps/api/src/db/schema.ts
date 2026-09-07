@@ -57,3 +57,4 @@ export const gitTriggerStates = active.gitTriggerStates
 export const deviceAuthorizations = active.deviceAuthorizations
 export const cliTokens = active.cliTokens
 export const agentApiKeys = active.agentApiKeys
+export const samlRequests = active.samlRequests

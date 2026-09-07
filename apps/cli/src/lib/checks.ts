@@ -18,7 +18,8 @@ import { existsSync, readFileSync } from 'node:fs'
  * diagnose is worse than useless, so every probe degrades to a `fail` check
  * carrying the reason.
  */
-import { loadConfig } from '../config.js'
+import { loadConfig, resolveCredential } from '../config.js'
+import { CliError } from '../errors.js'
 import { resolveTokenCachePath } from './token-cache.js'
 
 const URL_ENV_VAR = 'A2WAVE_URL'
@@ -323,9 +324,39 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<CheckRe
   // JWT itself (same source as the SSO cache), not an a2wave self-signed token.
   // The a2wave 24h short-lived token is exchanged on every API call by client.ts
   // and lives only in memory, so there is nothing on disk to check for it.
-  const cfg = loadConfig()
-  const token = cfg?.token
-  if (!token) {
+  //
+  // The credential is resolved AGAINST THE TARGET URL, exactly as client.ts does.
+  // Reading the legacy top-level token instead used to pair `--url https://other`
+  // with the stored instance's credential and post it to that host — a diagnostic
+  // that leaks the thing it was run to inspect. When no credential belongs to the
+  // target, the resolution failure IS the check: nothing is dialled with a token.
+  let token: string | undefined
+  let credentialError: CliError | null = null
+  if (url) {
+    try {
+      token = resolveCredential(url)
+    } catch (err) {
+      if (!(err instanceof CliError)) throw err
+      credentialError = err
+    }
+  }
+
+  if (!url) {
+    checks.push({
+      name: 'credentials.token',
+      status: 'warn',
+      message: 'skipped: waiting on instance.url (URL not set)',
+      hint: HINT_SET_URL,
+    })
+  } else if (credentialError) {
+    checks.push({
+      name: 'credentials.token',
+      status: 'warn',
+      message: credentialError.message,
+      hint: credentialError.hint ?? HINT_LOGIN,
+      detail: { url, ...(credentialError.subtype ? { subtype: credentialError.subtype } : {}) },
+    })
+  } else if (!token) {
     checks.push({
       name: 'credentials.token',
       status: 'warn',

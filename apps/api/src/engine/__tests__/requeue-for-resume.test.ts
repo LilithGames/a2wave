@@ -67,7 +67,7 @@ vi.mock('../../lib/scm-path-plan.js', () => ({ withScmPathMutation: vi.fn() }))
 
 const { db } = await import('../../db/client.js')
 const { runs, runSteps } = await import('../../db/schema.js')
-const { taskQueueDb } = await import('../task-queue-db.js')
+const { taskQueueDb, getQueuedRunAgentIds } = await import('../task-queue-db.js')
 
 const NOW = new Date('2026-08-20T10:00:00Z')
 
@@ -94,6 +94,15 @@ describe('taskQueueDb.requeueForResume', () => {
   beforeEach(async () => {
     await db.delete(runSteps)
     await db.delete(runs)
+  })
+
+  it('finds distinct queued agents independently of local leases or sync ownership', async () => {
+    await seedRun({ id: 'run_queued_a', status: 'queued' })
+    await seedRun({ id: 'run_queued_b', status: 'queued' })
+    await seedRun({ id: 'run_peer', status: 'queued', initiatorAgentId: 'agt_peer' })
+    await seedRun({ id: 'run_running', initiatorAgentId: 'agt_running' })
+    await seedRun({ id: 'run_unassigned', status: 'queued', initiatorAgentId: null })
+    expect((await getQueuedRunAgentIds()).sort()).toEqual(['agt_1', 'agt_peer'])
   })
 
   it('returns the run to the queue', async () => {
@@ -167,6 +176,45 @@ describe('taskQueueDb.requeueForResume', () => {
     await seedRun({ status: 'completed' })
     await taskQueueDb.requeueForResume('run_1')
     expect((await loadRun())?.status).toBe('completed')
+  })
+})
+
+describe('taskQueueDb.requeueForResume — owner fence', () => {
+  beforeEach(async () => {
+    await db.delete(runSteps)
+    await db.delete(runs)
+  })
+
+  it('refuses to requeue a run another replica re-promoted under its own id', async () => {
+    // ABA: the reaper judged 'dead-instance' dead, but between its scan and
+    // this write replica C requeued and re-promoted the run, stamping itself.
+    // A status-only CAS would requeue C's live run out from under it.
+    await seedRun({ ownerInstanceId: 'instance-c' })
+
+    expect(
+      await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'dead-instance'),
+    ).toBe(false)
+    const run = await loadRun()
+    expect(run?.status).toBe('running')
+    expect(run?.ownerInstanceId).toBe('instance-c')
+  })
+
+  it('requeues when the expected owner still matches', async () => {
+    await seedRun()
+
+    expect(
+      await taskQueueDb.requeueForResume('run_1', 'INSTANCE_STOPPED_DURING_EXEC', 'dead-instance'),
+    ).toBe(true)
+    expect((await loadRun())?.status).toBe('queued')
+  })
+
+  it('requeues regardless of owner when no expected owner is given', async () => {
+    // Startup recovery is the single-owner case: this process IS the previous
+    // owner, and there is no peer whose claim could be fenced against.
+    await seedRun({ ownerInstanceId: 'anything' })
+
+    expect(await taskQueueDb.requeueForResume('run_1')).toBe(true)
+    expect((await loadRun())?.status).toBe('queued')
   })
 })
 

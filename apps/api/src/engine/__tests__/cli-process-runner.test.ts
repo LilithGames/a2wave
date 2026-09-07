@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { logger } from '../../lib/logger.js'
 import {
   CliProcessRunner,
   type CliProcessRunnerOptions,
@@ -16,7 +17,7 @@ import {
 import { registerExecutionProcessLogSink } from '../execution-process-log.js'
 
 vi.mock('../../lib/logger.js', () => ({
-  logger: { debug: vi.fn(), warn: vi.fn() },
+  logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
 
 class FakeChildProcess extends EventEmitter {
@@ -101,6 +102,135 @@ describe('CliProcessRunner contract', () => {
     decoder.flush()
 
     expect(lines).toEqual(['kept'])
+  })
+
+  it('drops a newline-free oversized stdout line instead of buffering it without bound', async () => {
+    // A single stream-json line carrying a huge tool payload used to grow the
+    // decoder's remainder until the concat passed V8's maximum string length
+    // and threw RangeError inside the stream 'data' handler, killing the API
+    // process. The line is dropped; the stream keeps working after it.
+    const onStdoutLine = vi.fn()
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+
+    vi.mocked(logger.warn).mockClear()
+
+    children[0].stdout.write(Buffer.from('x'.repeat(10 * 1024 * 1024)))
+    // A chunk this large exceeds the stream's high-water mark, so delivery to
+    // the 'data' handler is deferred; close before that lands would assert
+    // nothing.
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].stdout.write(Buffer.from('\nkept\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].stdout.write(Buffer.from('z'.repeat(10 * 1024 * 1024)))
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].stdout.write(Buffer.from('\nalso kept\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].emit('close', 0)
+    await execution
+
+    expect(onStdoutLine.mock.calls).toEqual([['kept'], ['also kept']])
+    // Warned once, not once per dropped line: an Agent emitting one oversized
+    // line usually emits many, and a line per drop buries the real log.
+    expect(logger.warn).toHaveBeenCalledTimes(1)
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 'task_1', discardedChars: 10 * 1024 * 1024 }),
+      expect.stringContaining('oversized output line'),
+    )
+  })
+
+  it('drops an oversized stderr line when stderr is parsed as stream output', async () => {
+    const onStdoutLine = vi.fn()
+    const { runner, children, options } = createHarness({ onStdoutLine, parseStderrLines: true })
+    const execution = runner.run(options)
+
+    children[0].stderr.write(Buffer.from('y'.repeat(10 * 1024 * 1024)))
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].stderr.write(Buffer.from('\nkept\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    children[0].emit('close', 0)
+    await execution
+
+    expect(onStdoutLine.mock.calls).toEqual([['kept']])
+  })
+
+  it('fails the run rather than the process when the line sink throws', async () => {
+    // The 'data' handler runs outside the run promise's try, so an exception
+    // escaping it is an uncaught exception that takes the API down.
+    const onStdoutLine = vi.fn(() => {
+      throw new Error('sink exploded')
+    })
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+
+    expect(() => children[0].stdout.write(Buffer.from('boom\n'))).not.toThrow()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(children[0].kill).toHaveBeenCalledWith('SIGTERM')
+    children[0].emit('close', null, 'SIGTERM')
+
+    await expect(execution).resolves.toMatchObject({
+      reason: 'spawn-error',
+      error: expect.objectContaining({ message: 'sink exploded' }),
+    })
+  })
+
+  it('escalates to SIGKILL when a child ignores SIGTERM after a decode failure', async () => {
+    // Finalizing straight from the decode handler cleared the force-kill timer
+    // and dropped the process from activeProcesses, so a child ignoring SIGTERM
+    // survived the run and was invisible to shutdown().
+    vi.useFakeTimers()
+    const onStdoutLine = vi.fn(() => {
+      throw new Error('sink exploded')
+    })
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+    const child = children[0]
+
+    child.stdout.write(Buffer.from('boom\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+
+    let settled = false
+    void execution.then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+
+    child.emit('close', null, 'SIGKILL')
+    await expect(execution).resolves.toMatchObject({
+      reason: 'spawn-error',
+      error: expect.objectContaining({ message: 'sink exploded' }),
+    })
+    // Exactly one finalize: the cleanup hook is the observable proof.
+    expect(options.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('records only the first decode failure when output keeps arriving', async () => {
+    const onStdoutLine = vi.fn(() => {
+      throw new Error('first failure')
+    })
+    const { runner, children, options } = createHarness({ onStdoutLine })
+    const execution = runner.run(options)
+    const child = children[0]
+
+    child.stdout.write(Buffer.from('one\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    onStdoutLine.mockImplementation(() => {
+      throw new Error('second failure')
+    })
+    child.stdout.write(Buffer.from('two\n'))
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit('close', null, 'SIGTERM')
+
+    await expect(execution).resolves.toMatchObject({
+      reason: 'spawn-error',
+      error: expect.objectContaining({ message: 'first failure' }),
+    })
+    expect(child.kill).toHaveBeenCalledTimes(1)
   })
 
   it('persists sanitized Agent Router lifecycle events from child stderr', async () => {

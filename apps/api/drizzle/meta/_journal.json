@@ -862,6 +862,13 @@
       "when": 1787317599075,
       "tag": "0122_stale_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "6",
+      "when": 1788342026051,
+      "tag": "0123_opposite_genesis",
+      "breakpoints": true
     }
   ]
 }

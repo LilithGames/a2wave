@@ -1,8 +1,11 @@
+import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { scmWorkloadLeases } from '../../db/schema.js'
 import {
   activateScmWorkload,
   findDurableAgentScmWorkload,
   findDurableScmSourceWorkload,
+  findSharedCheckoutScmWorkload,
   releaseRecoveredScmWorkload,
   releaseReservedScmWorkload,
   releaseScmWorkload,
@@ -16,17 +19,33 @@ interface Row {
   [key: string]: unknown
 }
 
+/**
+ * A drizzle select result: awaitable on its own, and still `.limit()`-able.
+ *
+ * Queries that filter fully in SQL await the `where()` builder directly, while
+ * single-row lookups keep chaining `.limit(1)`; one helper has to serve both.
+ */
+function selectResult(rows: Row[]) {
+  const result = Promise.resolve(rows) as Promise<Row[]> & { limit: () => Promise<Row[]> }
+  result.limit = () => Promise.resolve(rows)
+  return result
+}
+
 function query(rows: Row[]) {
-  return {
-    from: () => ({
-      where: () => ({ limit: () => Promise.resolve(rows) }),
-    }),
-  }
+  // One `where` mock per query, hoisted so a test can inspect the predicate the
+  // builder was actually handed — a fresh mock per `from()` call would record
+  // nothing.
+  const where = vi.fn(() => selectResult(rows))
+  return { where, builder: { from: () => ({ where }) } }
 }
 
 function mutationTx(selectResults: Row[][]) {
   const select = vi.fn()
-  for (const rows of selectResults) select.mockReturnValueOnce(query(rows))
+  for (const rows of selectResults) select.mockReturnValueOnce(query(rows).builder)
+  // Anything the case did not seed reads as "no row". Activation now also
+  // looks the source up to see whether a sync claim is committed on it, and a
+  // case that says nothing about the source means there is none.
+  select.mockReturnValue(query([]).builder)
 
   const inserted: Row[] = []
   const updated: Row[] = []
@@ -426,6 +445,254 @@ describe('SCM workload lifecycle', () => {
     const { tx } = mutationTx([[]])
 
     await expect(findDurableScmSourceWorkload(tx as never, 'scm_src')).resolves.toBeNull()
+  })
+})
+
+describe('activation versus a committed sync claim', () => {
+  const reserved = {
+    id: 'run:run_1',
+    workloadType: 'run',
+    workloadId: 'run_1',
+    agentId: 'agt_1',
+    scmSourceId: 'scm_1',
+    phase: 'reserved',
+    ownerInstanceId: null,
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  // The window this closes: sync reads occupancy and finds nothing, then a
+  // lease activates, then `p4 sync` / `git checkout -f -B` rewrites the
+  // checkout under the live CLI. Sync now commits its `syncing` claim in the
+  // same SCM-mutation critical section it reads occupancy in, so the two sides
+  // are ordered by that lock: whichever takes it second loses. This is that
+  // second case — activation observing the claim.
+  it('refuses to activate a shared-checkout workload while the source holds a sync claim', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'syncing' }],
+      [{ workDir: null }],
+    ])
+
+    await expect(
+      activateScmWorkload(
+        { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+        { withMutation: (fn) => withMutation(fn, activation.tx) },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadLeaseConflictError)
+    expect(activation.updated).toEqual([])
+  })
+
+  it('activates normally when the source is idle', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'idle' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toEqual([
+      expect.objectContaining({ phase: 'active', ownerInstanceId: 'instance-a' }),
+    ])
+  })
+
+  // Symmetry with the sync-side gate: it only defers for workloads that sit in
+  // the shared checkout, so activation may only refuse for exactly those. A run
+  // that already recorded a per-Agent worktree is not one of them.
+  it('activates a run that recorded a worktree outside the shared checkout', async () => {
+    const activation = mutationTx([
+      [reserved],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'git', syncStatus: 'syncing' }],
+      [{ workDir: '/srv/scm/workspaces/scm_1/agt_1' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toHaveLength(1)
+  })
+
+  it('activates a git evaluation during a sync, which owns an eval-<taskId> worktree', async () => {
+    const activation = mutationTx([
+      [
+        {
+          ...reserved,
+          id: 'evaluation:evt_1',
+          workloadType: 'evaluation',
+          workloadId: 'evt_1',
+        },
+      ],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'git', syncStatus: 'syncing' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'evaluation', workloadId: 'evt_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toHaveLength(1)
+  })
+
+  it('refuses a p4 evaluation during a sync, whose checkout is shared by construction', async () => {
+    const activation = mutationTx([
+      [
+        {
+          ...reserved,
+          id: 'evaluation:evt_1',
+          workloadType: 'evaluation',
+          workloadId: 'evt_1',
+        },
+      ],
+      [{ localPath: '/srv/scm/sources/scm_1', type: 'p4', syncStatus: 'syncing' }],
+    ])
+
+    await expect(
+      activateScmWorkload(
+        { type: 'evaluation', workloadId: 'evt_1', ownerInstanceId: 'instance-a' },
+        { withMutation: (fn) => withMutation(fn, activation.tx) },
+      ),
+    ).rejects.toBeInstanceOf(ScmWorkloadLeaseConflictError)
+    expect(activation.updated).toEqual([])
+  })
+
+  // Re-activation by the owner is the process re-entering its own lease; the
+  // checkout is already claimed by it, so a sync claim is not its problem.
+  it('stays idempotent for an already-active lease of the same owner', async () => {
+    const activation = mutationTx([
+      [{ ...reserved, phase: 'active', ownerInstanceId: 'instance-a' }],
+    ])
+
+    await activateScmWorkload(
+      { type: 'run', workloadId: 'run_1', ownerInstanceId: 'instance-a' },
+      { withMutation: (fn) => withMutation(fn, activation.tx) },
+    )
+    expect(activation.updated).toEqual([])
+  })
+})
+
+describe('findSharedCheckoutScmWorkload', () => {
+  const SHARED = '/srv/scm/sources/src_1'
+
+  function executor(leases: Row[], runRows: Row[] = []) {
+    const leaseQuery = query(leases)
+    const select = vi.fn()
+    select.mockReturnValueOnce(leaseQuery.builder)
+    select.mockReturnValueOnce(query(runRows).builder)
+    return { executor: { select } as never, select, leaseWhere: leaseQuery.where }
+  }
+
+  it('returns null when no lease pins the source', async () => {
+    await expect(
+      findSharedCheckoutScmWorkload(executor([]).executor, 'src_1', SHARED, 'git'),
+    ).resolves.toBeNull()
+  })
+
+  // Reserved work is queued and owns no directory, and an unbounded scan of
+  // released rows is what let an active lease hide past the old row cap — so
+  // the phase filter belongs in SQL, not in a post-filter loop.
+  it('filters leases to the active phase in SQL', async () => {
+    const { executor: exec, leaseWhere } = executor([])
+
+    await findSharedCheckoutScmWorkload(exec, 'src_1', SHARED, 'git')
+
+    expect(leaseWhere).toHaveBeenCalledWith(
+      and(eq(scmWorkloadLeases.scmSourceId, 'src_1'), eq(scmWorkloadLeases.phase, 'active')),
+    )
+  })
+
+  it('ignores a run executing in its own per-agent worktree', async () => {
+    const leases = [{ type: 'run', id: 'run_1' }]
+    const runRows = [{ id: 'run_1', workDir: '/srv/scm/workspaces/src_1/agent-abc' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases, runRows).executor, 'src_1', SHARED, 'git'),
+    ).resolves.toBeNull()
+  })
+
+  it('reports a run executing in the shared checkout', async () => {
+    const leases = [{ type: 'run', id: 'run_1' }]
+    const runRows = [{ id: 'run_1', workDir: SHARED }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases, runRows).executor, 'src_1', SHARED, 'git'),
+    ).resolves.toEqual({ type: 'run', id: 'run_1' })
+  })
+
+  // P4 Agents and git worktree-creation fallbacks both execute in `localPath`,
+  // and neither records runs.workDir — an unrecorded workDir is exactly the
+  // shared-checkout case, so it must be treated as occupancy.
+  it('reports an active run that recorded no workDir', async () => {
+    const leases = [{ type: 'run', id: 'run_1' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(
+        executor(leases, [{ id: 'run_1', workDir: null }]).executor,
+        'src_1',
+        SHARED,
+        'git',
+      ),
+    ).resolves.toEqual({ type: 'run', id: 'run_1' })
+  })
+
+  // A git evaluation runs in `eval-<taskId>`: prepareEvaluationWorkspace resolves
+  // that worktree explicitly and resolveWorkDir *throws* rather than degrading to
+  // localPath, so the task never reaches the shared checkout. Counting it there
+  // deferred every sync tick for the whole replay for no safety gain.
+  it('ignores an evaluation on a git source, which owns an eval-<taskId> worktree', async () => {
+    const leases = [{ type: 'evaluation', id: 'evt_1' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases).executor, 'src_1', SHARED, 'git'),
+    ).resolves.toBeNull()
+  })
+
+  // P4 has no isolation mechanism — the client spec binds one server-side Root —
+  // so an evaluation there is in the shared checkout by construction.
+  it('reports an evaluation on a p4 source, whose checkout is shared by construction', async () => {
+    const leases = [{ type: 'evaluation', id: 'evt_1' }]
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases).executor, 'src_1', SHARED, 'p4'),
+    ).resolves.toEqual({ type: 'evaluation', id: 'evt_1' })
+  })
+
+  // The old scan stopped at 100 rows, so an active lease sitting behind a long
+  // tail of leases was simply not seen and the sync ran under a live Agent CLI.
+  it('detects an active lease beyond the old 100-row scan cap', async () => {
+    const leases = Array.from({ length: 151 }, (_, i) => ({ type: 'run', id: `run_${i}` }))
+    const runRows = leases.map((lease, i) => ({
+      id: lease.id,
+      workDir: i === 150 ? SHARED : `/srv/scm/workspaces/src_1/agent-${i}`,
+    }))
+
+    await expect(
+      findSharedCheckoutScmWorkload(executor(leases, runRows).executor, 'src_1', SHARED, 'git'),
+    ).resolves.toEqual({ type: 'run', id: 'run_150' })
+  })
+
+  // One lookup per lease made the occupancy gate O(N) round trips on the hot
+  // auto-sync path; the run rows are fetched in a single batched select.
+  it('batches every run lookup into one select', async () => {
+    const leases = Array.from({ length: 30 }, (_, i) => ({ type: 'run', id: `run_${i}` }))
+    const runRows = leases.map((lease) => ({
+      id: lease.id,
+      workDir: `/srv/scm/workspaces/src_1/agent-${lease.id}`,
+    }))
+    const { executor: exec, select } = executor(leases, runRows)
+
+    await findSharedCheckoutScmWorkload(exec, 'src_1', SHARED, 'git')
+
+    expect(select).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips the run lookup entirely when no run lease is active', async () => {
+    const { executor: exec, select } = executor([{ type: 'evaluation', id: 'evt_1' }])
+
+    await findSharedCheckoutScmWorkload(exec, 'src_1', SHARED, 'git')
+
+    expect(select).toHaveBeenCalledTimes(1)
   })
 })
 

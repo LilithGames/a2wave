@@ -21,6 +21,31 @@ import {
 import { emit, jsonArg, redactSecrets } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
 
+/**
+ * The filename to write a downloaded body to, derived from Content-Disposition.
+ *
+ * The header is **server-controlled**, so it is treated as untrusted input: it may
+ * carry `../`, an absolute path, or a percent-encoding that does not decode. Only
+ * the basename is kept, which confines the write to the current directory, and any
+ * degenerate result ('' / '.' / '..') falls back to the caller's own name rather
+ * than resolving to a directory.
+ */
+function resolveDownloadFilename(headers: Headers, fallback: string): string {
+  const disposition = headers.get('content-disposition') ?? ''
+  const match =
+    disposition.match(/filename\*=UTF-8''([^;]+)/) ?? disposition.match(/filename="?([^";]+)"?/)
+  if (!match) return fallback
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(match[1])
+  } catch {
+    // A malformed encoding says nothing about the body, which downloaded fine.
+    return fallback
+  }
+  const safeName = basename(decoded)
+  return !safeName || safeName === '.' || safeName === '..' ? fallback : safeName
+}
+
 interface Agent {
   id: string
   name: string
@@ -521,6 +546,7 @@ export const agentsCommand = defineCommand({
           alias: 'o',
           description: 'Output file path (default: <agent-name>-export.zip)',
         },
+        force: { type: 'boolean', description: 'Overwrite the target file if it exists' },
         ...urlArg,
       },
       run: async ({ args }) => {
@@ -530,12 +556,13 @@ export const agentsCommand = defineCommand({
         const res = await client.getRaw(`/api/agents/${agentId}/export`)
         const buffer = Buffer.from(await res.arrayBuffer())
 
-        const disposition = res.headers.get('content-disposition') ?? ''
-        const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
-        const defaultName = filenameMatch
-          ? decodeURIComponent(filenameMatch[1])
-          : `${agentId}-export.zip`
-        const outputPath = (args.output as string) || defaultName
+        const outputPath =
+          (args.output as string) || resolveDownloadFilename(res.headers, `${agentId}-export.zip`)
+
+        // Silent overwrite loses data; an explicit --output is protected too.
+        if (existsSync(outputPath) && !args.force) {
+          throw new CliError(`Target file already exists: ${outputPath} (use --force to overwrite)`)
+        }
 
         writeFileSync(outputPath, buffer)
         console.log(`Exported → ${outputPath} (${(buffer.length / 1024).toFixed(1)}KB)`)
@@ -1076,19 +1103,8 @@ export const agentsCommand = defineCommand({
             const client = createClient({ url: args.url as string | undefined })
             const artifactId = args.id as string
             const res = await client.getRaw(`/api/artifacts/${artifactId}/download`)
-            let outPath = args.out as string | undefined
-            if (!outPath) {
-              // The server Content-Disposition filename is untrusted: it may contain ../, absolute paths,
-              // or clash with a local file. Take only the basename into the current directory to
-              // prevent writing outside it; fall back to artifactId if parsing fails.
-              const disp = res.headers.get('content-disposition') ?? ''
-              const m =
-                disp.match(/filename\*=UTF-8''([^;]+)/) ?? disp.match(/filename="?([^";]+)"?/)
-              const rawName = m ? decodeURIComponent(m[1]) : artifactId
-              // basename strips path separators; also guard against degenerate names like '' / '.' / '..' to avoid writing to a directory.
-              const safeName = basename(rawName)
-              outPath = !safeName || safeName === '.' || safeName === '..' ? artifactId : safeName
-            }
+            const outPath =
+              (args.out as string | undefined) || resolveDownloadFilename(res.headers, artifactId)
             // Silent overwrite loses data; explicit --out is protected too. Require --force when the target exists.
             if (existsSync(outPath) && !args.force) {
               throw new CliError(

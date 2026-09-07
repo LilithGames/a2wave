@@ -43,6 +43,7 @@ import {
   buildOutboundA2AReferencedContext,
 } from '../a2a/referenced-context.js'
 import type { ReferencedPromptContext } from '../engine/types.js'
+import { INTERNAL_TOKEN_ENV, INTERNAL_TOKEN_HEADER } from '../lib/internal-auth-constants.js'
 import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
 import { assertSafeHttpUrl, UnsafeUrlError } from '../lib/url-safety-core.js'
 import {
@@ -275,9 +276,24 @@ export function parseRouteTargets(env?: string): RouteTarget[] | null {
 
 const routeTargets = parseRouteTargets(process.env.A2WAVE_ROUTE_TARGETS)
 
+/**
+ * Stamp the process-scoped internal credential the API requires on EVERY
+ * `/api/internal/*` route. The platform injects it into this MCP's env; a
+ * loopback socket is not proof of a local caller behind a same-host reverse
+ * proxy, so the token is what authenticates the router.
+ */
+function withInternalAuthHeaders(headers: Headers): Headers {
+  const token = process.env[INTERNAL_TOKEN_ENV]
+  if (token) headers.set(INTERNAL_TOKEN_HEADER, token)
+  return headers
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: dynamic JSON responses
 async function fetchJson(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${apiUrl}${path}`, init)
+  const res = await fetch(`${apiUrl}${path}`, {
+    ...init,
+    headers: withInternalAuthHeaders(new Headers(init?.headers)),
+  })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${body}`)
@@ -1876,6 +1892,7 @@ async function sendA2ARequest(
 }
 
 function withInternalContextHeaders(headers: Headers): Headers {
+  withInternalAuthHeaders(headers)
   const streamingCardId = process.env.A2WAVE_STREAMING_CARD_ID
   if (streamingCardId) headers.set('X-Streaming-Card-Id', streamingCardId)
 
@@ -1964,7 +1981,7 @@ async function createRemoteUpdateCallback(
   const childId = `remote_${safeRemoteName}_${Date.now()}`
   await fetch(`${apiUrl}/api/internal/streaming-card/${streamingCardId}/child`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withInternalAuthHeaders(new Headers({ 'Content-Type': 'application/json' })),
     body: JSON.stringify({ childId, label: remoteName }),
   }).catch((err) => {
     console.warn(
@@ -1975,7 +1992,7 @@ async function createRemoteUpdateCallback(
   return (content: string) => {
     fetch(`${apiUrl}/api/internal/streaming-card/${streamingCardId}/child/${childId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withInternalAuthHeaders(new Headers({ 'Content-Type': 'application/json' })),
       body: JSON.stringify({ content }),
     }).catch((err) => {
       console.warn(

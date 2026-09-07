@@ -21,6 +21,7 @@ import {
 } from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { processInstanceId } from './process-instance.js'
+import { claimReapableRun } from './reap-run-claim.js'
 import { FAILURE_REASONS } from './run-failure-reasons.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 import { isScmEvaluationWorkloadRegistered } from './scm-workload-guard.js'
@@ -286,7 +287,7 @@ export interface DeadInstanceWorkloadReaperDeps {
    * status, results/steps, and Evaluation audit back together so the next tick
    * can retry instead of observing a terminal-but-incomplete workload.
    */
-  claimRun: (runId: string) => Promise<boolean>
+  claimRun: (runId: string, expectedOwnerInstanceId: string) => Promise<boolean>
   claimEvaluation: (taskId: string) => Promise<boolean>
   /** Synchronize non-transactional external state after the Run settlement commits. */
   afterRunSettled: (runId: string) => Promise<void>
@@ -302,23 +303,19 @@ const REAPABLE_EVALUATION_STATUSES = ['running', 'pending', 'queued'] as const
 /**
  * Take ownership and settle the Run's database state in one transaction.
  *
- * `.returning()` row count is the claim result — the two drivers disagree
- * about `changes`/`rowCount`, so it is the only portable answer.
+ * The transaction itself lives in `reap-run-claim.ts`, shared with the
+ * orphaned-run reaper; this pass differs only in its scope — it also settles
+ * pending and queued rows, which carry no owner.
  */
-async function claimRunForReap(runId: string): Promise<boolean> {
-  const reason = FAILURE_REASONS.INSTANCE_STOPPED_DURING_EXEC
-  return withScmPathMutation(async (tx) => {
-    const claimed = await tx
-      .update(runs)
-      .set({ status: 'failed', result: { error: reason }, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), inArray(runs.status, [...REAPABLE_RUN_STATUSES])))
-      .returning({ id: runs.id })
-    if (claimed.length === 0) return false
-    await tx
-      .update(runSteps)
-      .set({ status: 'failed', output: { error: reason } })
-      .where(and(eq(runSteps.runId, runId), eq(runSteps.status, 'running')))
-    return true
+export async function claimRunForReap(
+  runId: string,
+  expectedOwnerInstanceId: string,
+): Promise<boolean> {
+  return claimReapableRun(runId, expectedOwnerInstanceId, {
+    statuses: REAPABLE_RUN_STATUSES,
+    // A NULL owner is not a mismatch but an absence: the pending and queued
+    // rows this pass also settles never carried one.
+    allowUnownedRows: true,
   })
 }
 
@@ -451,6 +448,9 @@ export async function failScmWorkloadsOfDeadInstances(
       type: lease.workloadType,
       workloadId: lease.workloadId,
     }
+    // Non-null by the filter above; restated so the owner fence below is typed.
+    const ownerInstanceId = lease.ownerInstanceId
+    if (!ownerInstanceId) continue
     if (deps.isWorkloadLocallyActive(identity)) continue
     if (!isLeaseOwnerDead(lease, liveness, now)) continue
     if (await isWorkloadTerminal(deps.db as WorkloadStatusExecutor, identity)) continue
@@ -462,7 +462,7 @@ export async function failScmWorkloadsOfDeadInstances(
     // The settlement itself uses a status CAS, because completion or
     // cancellation may still win between the read above and the transaction.
     if (identity.type === 'run') {
-      if (!(await deps.claimRun(identity.workloadId))) continue
+      if (!(await deps.claimRun(identity.workloadId, ownerInstanceId))) continue
       await deps.afterRunSettled(identity.workloadId)
     } else {
       if (!(await deps.claimEvaluation(identity.workloadId))) continue

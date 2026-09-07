@@ -46,6 +46,30 @@ export const GH_AUTH_STATUS_AUTHENTICATED = `github.com
   - Token scopes: 'admin:public_key', 'gist', 'read:org', 'repo'
 `
 
+/**
+ * `gh auth status` — gh 2.97.0, logged into an enterprise host *and* github.com.
+ *
+ * The trap: the report is one document covering every host, so reading the
+ * first "Logged in to" line names whichever host `gh` happened to print first —
+ * not the host the channel's token actually targets. Answering the self-comment
+ * guard with the wrong login makes it compare against a stranger and never
+ * suppress anything.
+ */
+export const GH_AUTH_STATUS_TWO_HOSTS = `ghe.corp.example.com
+  ✓ Logged in to ghe.corp.example.com account enterprise-user (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: ghp_************************************
+  - Token scopes: 'read:org', 'repo'
+
+github.com
+  ✓ Logged in to github.com account a2wave-bot (keyring)
+  - Active account: true
+  - Git operations protocol: ssh
+  - Token: gho_************************************
+  - Token scopes: 'gist', 'read:org', 'repo'
+`
+
 /** `gh auth status` with no credential at all. */
 export const GH_AUTH_STATUS_LOGGED_OUT = 'You are not logged into any GitHub hosts.'
 
@@ -97,11 +121,75 @@ export const GH_GRAPHQL_PR_NODE = {
   headRefOid: '2222222222222222222222222222222222222222',
   headRefName: 'patch-3',
   baseRefName: 'trunk',
-  comments: { totalCount: 1 },
-  reviews: { totalCount: 0 },
-  reviewThreads: { totalCount: 0 },
+  comments: {
+    totalCount: 1,
+    nodes: [{ createdAt: '2026-08-05T20:39:08Z', author: { login: 'hubot' } }],
+  },
+  reviews: { totalCount: 0, nodes: [] },
+  reviewThreads: { totalCount: 0, nodes: [] },
   author: { login: 'hubot' },
 }
+
+/**
+ * A `gh` PR node whose newest activity is a review comment, not a conversation
+ * comment.
+ *
+ * GitHub splits discussion across three collections and `commented` sums all
+ * three, so "who wrote the newest comment" cannot be read off `comments` alone —
+ * a review posted after the last conversation comment is the newer one.
+ */
+export const GH_GRAPHQL_PR_NODE_REVIEW_LAST = {
+  number: 14083,
+  title: 'Bump deps',
+  url: 'https://github.com/cli/cli/pull/14083',
+  updatedAt: '2026-08-06T09:00:00Z',
+  isDraft: false,
+  headRefOid: '3333333333333333333333333333333333333333',
+  headRefName: 'deps',
+  baseRefName: 'trunk',
+  comments: {
+    totalCount: 1,
+    nodes: [{ createdAt: '2026-08-06T08:00:00Z', author: { login: 'human' } }],
+  },
+  reviews: {
+    totalCount: 1,
+    nodes: [{ createdAt: '2026-08-06T09:00:00Z', author: { login: 'a2wave-bot' } }],
+  },
+  reviewThreads: { totalCount: 0, nodes: [] },
+  author: { login: 'human' },
+}
+
+/**
+ * `glab api projects/:id/merge_requests/:iid/notes?sort=desc` — glab 1.x.
+ *
+ * The newest entry is a **system** note ("added 1 commit"), which is exactly why
+ * the newest row cannot be taken at face value: system notes are excluded from
+ * `user_notes_count`, so the note that moved the counter is the newest one with
+ * `system: false`.
+ */
+export const GLAB_MR_NOTES_SYSTEM_FIRST = [
+  {
+    id: 3,
+    system: true,
+    body: 'added 1 commit',
+    created_at: '2026-08-06T10:00:00Z',
+    author: { username: 'a2wave-bot' },
+  },
+  {
+    id: 2,
+    system: false,
+    body: 'Reviewed: looks good.',
+    created_at: '2026-08-06T09:59:00Z',
+    author: { username: 'a2wave-bot' },
+  },
+  {
+    id: 1,
+    system: false,
+    body: 'Please take a look.',
+    created_at: '2026-08-06T09:00:00Z',
+    author: { username: 'human' },
+  },
+]
 
 /** `gh api graphql` reporting a missing repository in-band, with HTTP 200. */
 export const GH_GRAPHQL_NOT_FOUND = {

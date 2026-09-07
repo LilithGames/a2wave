@@ -463,7 +463,7 @@ function reaperDeps(
     loadLiveness: () => Promise<InstanceLivenessMap>
     canJudgePeers: () => boolean
     isWorkloadLocallyActive: (identity: { type: string; workloadId: string }) => boolean
-    claimRun: (runId: string) => Promise<boolean>
+    claimRun: (runId: string, expectedOwnerInstanceId: string) => Promise<boolean>
     claimEvaluation: (taskId: string) => Promise<boolean>
   }> = {},
 ) {
@@ -613,7 +613,7 @@ describe('failScmWorkloadsOfDeadInstances', () => {
     expect(await failScmWorkloadsOfDeadInstances(deps)).toEqual([])
     // The claim must actually be attempted, or this test would pass for the
     // wrong reason — e.g. the reap never reaching the write at all.
-    expect(claimRun).toHaveBeenCalledWith('run_stuck')
+    expect(claimRun).toHaveBeenCalledWith('run_stuck', 'instance-b')
     expect(afterRunSettled).not.toHaveBeenCalled()
   })
 
@@ -625,8 +625,19 @@ describe('failScmWorkloadsOfDeadInstances', () => {
 
     await failScmWorkloadsOfDeadInstances(deps)
 
-    expect(claimRun).toHaveBeenCalledWith('run_stuck')
+    expect(claimRun).toHaveBeenCalledWith('run_stuck', 'instance-b')
     expect(afterRunSettled).toHaveBeenCalledWith('run_stuck')
+  })
+
+  it('fences the run settlement on the lease owner it judged dead', async () => {
+    // ABA: replica B may requeue and re-promote the run between the liveness
+    // read and this write, stamping itself as the run's owner. A status-only
+    // CAS would then fail B's live run, so the owner travels with the claim.
+    const { deps, claimRun } = reaperDeps([activePeerLease()], [[{ status: 'running' }]])
+
+    await failScmWorkloadsOfDeadInstances(deps)
+
+    expect(claimRun).toHaveBeenCalledWith('run_stuck', 'instance-b')
   })
 
   it('does not reap an evaluation another writer settled first', async () => {

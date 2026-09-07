@@ -190,6 +190,14 @@ function renderCredentials(report: CheckReport): void {
   printSection('a2wave credentials', `(${CONFIG_FILE})`)
   const kind = str(cred, 'kind')
   if (!kind) {
+    // A credential that exists but belongs to another instance is NOT "not logged
+    // in": telling the user to log in again would send them through a flow they
+    // already completed. Print what the resolver actually said instead.
+    if (str(cred, 'subtype') === 'no_credential_for_url') {
+      printKv('Token:', `${ICON_BAD} ${c.warn(cred.message)}`)
+      if (cred.hint) console.log(c.dim(`Hint: ${cred.hint}`))
+      return
+    }
     printKv('Token:', `${ICON_BAD} ${c.warn('not logged in')} ${c.dim('(run a2wave login)')}`)
     return
   }

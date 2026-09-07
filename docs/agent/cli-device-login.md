@@ -158,6 +158,13 @@ terminal. `claimed` is terminal too, which is what makes a device code single-us
   the one attack this flow is meaningfully exposed to. The page also carries an explicit warning.
 - **A prefilled link (`verificationUriComplete`) never auto-approves.** It fills the code in;
   the decision still requires a click, because the decision *is* the control.
+- **The URL handed to the browser opener is validated first.** `verificationUriComplete`
+  arrives in a server response, so the CLI parses it and opens it only when the scheme is
+  `http:` or `https:` — otherwise a `javascript:` or `file:` URL would be handed straight to
+  the OS opener. On Windows the opener is `rundll32 url.dll,FileProtocolHandler`, never
+  `cmd /c start`: libuv quotes an argument only when it contains a space, tab or quote, so
+  `&`, `|` and `^` in the URL would otherwise reach cmd.exe's parser as operators. The same
+  scheme guard applies to the SSO entry URL in `buildSsoRedirectUrl()`.
 - **Single use.** A claimed code is refused, so a token is minted at most once per login.
   The claim is a compare-and-set on `approved`, so two concurrent polls cannot both succeed.
 - **Account status is re-checked at claim time**, not only at approval — an account can be

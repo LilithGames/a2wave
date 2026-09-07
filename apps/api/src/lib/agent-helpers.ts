@@ -47,7 +47,12 @@ import {
   WorktreeBranchLockedError,
   WorktreeDirtyError,
 } from './git-workspace.js'
-import { getInternalAdminToken, INTERNAL_ADMIN_TOKEN_ENV } from './internal-admin-auth.js'
+import {
+  getInternalAdminToken,
+  getInternalToken,
+  INTERNAL_ADMIN_TOKEN_ENV,
+  INTERNAL_TOKEN_ENV,
+} from './internal-admin-auth.js'
 import { clampJobRetries } from './job-retry-policy.js'
 import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
@@ -631,6 +636,31 @@ function getControlPlaneMcpRuntimeEnv(
   return { [INTERNAL_ADMIN_TOKEN_ENV]: getInternalAdminToken() }
 }
 
+/**
+ * Runtime env for the agent-router MCP.
+ *
+ * The router talks to `/api/internal/*`, which now authenticates the
+ * process-scoped internal credential on EVERY route — a loopback socket proves
+ * nothing behind a same-host reverse proxy. Like the platform-admin token, the
+ * secret never enters SQLite and is handed only to the SYSTEM builtin row
+ * (userId IS NULL), never to a user row squatting on the reserved name.
+ */
+function buildRouterMcpRuntimeEnv(
+  server: Pick<McpRow, 'name' | 'userId'>,
+  agent: Pick<AgentRow, 'id' | 'name' | 'a2aRouteTargets'>,
+): Record<string, string> {
+  return {
+    ...(agent.a2aRouteTargets?.length
+      ? { A2WAVE_ROUTE_TARGETS: JSON.stringify(agent.a2aRouteTargets) }
+      : {}),
+    A2WAVE_CALLER_AGENT_ID: agent.id,
+    A2WAVE_CALLER_AGENT_NAME: agent.name,
+    ...(isOwnerSafeBuiltinMcp(server.name, server.userId)
+      ? { [INTERNAL_TOKEN_ENV]: getInternalToken() }
+      : {}),
+  }
+}
+
 function isMcpBlockedAtRuntime(
   server: McpRow,
   agentOwnerId: string | null | undefined,
@@ -952,13 +982,7 @@ export async function buildAgentConfig(
     mcpRows.map((s) => {
       let extraEnv: Record<string, string> | undefined
       if (s.name === 'a2wave-agent-router') {
-        extraEnv = {
-          ...(agent.a2aRouteTargets?.length
-            ? { A2WAVE_ROUTE_TARGETS: JSON.stringify(agent.a2aRouteTargets) }
-            : {}),
-          A2WAVE_CALLER_AGENT_ID: agent.id,
-          A2WAVE_CALLER_AGENT_NAME: agent.name,
-        }
+        extraEnv = buildRouterMcpRuntimeEnv(s, agent)
       } else {
         // The process credential never enters SQLite. Inject it only after system
         // ownership and the current runtime requester's active admin role are proven.
@@ -990,11 +1014,7 @@ export async function buildAgentConfig(
         agentConfig.resolvedMcpServers.push(
           await toResolvedMcp(
             routerMcp,
-            {
-              A2WAVE_ROUTE_TARGETS: JSON.stringify(agent.a2aRouteTargets),
-              A2WAVE_CALLER_AGENT_ID: agent.id,
-              A2WAVE_CALLER_AGENT_NAME: agent.name,
-            },
+            buildRouterMcpRuntimeEnv(routerMcp, agent),
             mcpRuntimeAuthorization,
             agent.userId,
           ),

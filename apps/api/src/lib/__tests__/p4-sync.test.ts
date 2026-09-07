@@ -13,6 +13,8 @@ const {
   mockRunCodegraphIndex,
   mockWriteBackgroundAudit,
   mockIsolateManagedScmStorage,
+  mockFindSharedCheckoutScmWorkload,
+  mutationState,
 } = vi.hoisted(() => {
   const setResult = { run: vi.fn() }
   const whereResult = { get: vi.fn(), all: vi.fn(), run: vi.fn() }
@@ -39,12 +41,32 @@ const {
     _setResult: setResult,
   }
 
+  // Records how deep inside `withScmPathMutation` each observed call ran.
+  // The sync claim and the occupancy read must both be > 0 and belong to the
+  // SAME critical section, or a lease activating in between is unobserved.
+  // Which SCM-mutation critical section each observed call ran in. 0 means
+  // "outside every mutation". The sync claim and the occupancy read must share
+  // one non-zero section, or a lease activating between them is unobserved.
+  const mutationState = {
+    section: 0,
+    nextSection: 0,
+    gateSections: [] as number[],
+    claimSections: [] as number[],
+  }
+
   return {
+    mutationState,
     mockDb: db,
     mockNotifyScmSyncError: vi.fn().mockResolvedValue(undefined),
     mockExecuteGitSync: vi.fn(),
     mockRunCodegraphIndex: vi.fn().mockResolvedValue({ ok: true, message: 'indexed' }),
     mockWriteBackgroundAudit: vi.fn().mockResolvedValue(undefined),
+    mockFindSharedCheckoutScmWorkload: vi.fn(
+      async (): Promise<{ type: string; id: string } | null> => {
+        mutationState.gateSections.push(mutationState.section)
+        return null
+      },
+    ),
     mockIsolateManagedScmStorage: vi.fn().mockResolvedValue({
       isolated: [],
       blocked: [],
@@ -71,9 +93,20 @@ vi.mock('../audit.js', () => ({ writeBackgroundAudit: mockWriteBackgroundAudit }
 vi.mock('../scm-storage-reclaim.js', () => ({
   isolateManagedScmStorage: mockIsolateManagedScmStorage,
 }))
+vi.mock('../scm-workload-lifecycle.js', () => ({
+  findSharedCheckoutScmWorkload: mockFindSharedCheckoutScmWorkload,
+}))
 vi.mock('../scm-path-plan.js', () => ({
   selectScmPathPeers: vi.fn().mockResolvedValue([]),
-  withScmPathMutation: (fn: (executor: typeof mockDb) => unknown) => fn(mockDb),
+  withScmPathMutation: async (fn: (executor: typeof mockDb) => unknown) => {
+    const outer = mutationState.section
+    mutationState.section = ++mutationState.nextSection
+    try {
+      return await fn(mockDb)
+    } finally {
+      mutationState.section = outer
+    }
+  },
 }))
 
 vi.mock('node:child_process', () => ({
@@ -560,7 +593,12 @@ function mockDbUpdate({
       returning: vi.fn(() => asyncQuery({ get: getFn })),
     }),
   )
-  const setFn = vi.fn((_values: Record<string, unknown>) => asyncQuery({ where: whereFn }))
+  const setFn = vi.fn((values: Record<string, unknown>) => {
+    // The durable sync claim. Recording the section it commits in is what the
+    // interleaving regression test asserts against the occupancy read.
+    if (values.syncStatus === 'syncing') mutationState.claimSections.push(mutationState.section)
+    return asyncQuery({ where: whereFn })
+  })
   mockDb.update.mockReturnValue(asyncQuery({ set: setFn }) as any)
   return { setFn, whereFn, runFn, getFn }
 }
@@ -569,6 +607,14 @@ describe('syncScmSource', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     lastSeededSource = undefined
+    mutationState.section = 0
+    mutationState.nextSection = 0
+    mutationState.gateSections.length = 0
+    mutationState.claimSections.length = 0
+    mockFindSharedCheckoutScmWorkload.mockImplementation(async () => {
+      mutationState.gateSections.push(mutationState.section)
+      return null
+    })
     // Ensure no checkout lock leaked from a prior test wedges this one.
     releaseCheckout('s1')
     mockExistsSync.mockReturnValue(true)
@@ -654,6 +700,171 @@ describe('syncScmSource', () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain('reclaim root')
     expect(mockExecuteGitSync).not.toHaveBeenCalled()
+  })
+
+  // A run executes IN the shared checkout (always for P4, and for a git Agent
+  // whose worktree creation degraded to localPath). `p4 sync` / `git checkout
+  // -f -B` under a live CLI destroys its uncommitted edits, and neither the
+  // heartbeat nor `busyCheckouts` can see a run — only the workload lease can.
+  it('defers a sync while a workload lease pins the shared checkout', async () => {
+    const source = {
+      id: 's1',
+      name: 'in use',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    const { setFn } = mockDbUpdate()
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue({ type: 'run', id: 'run_9' })
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(false)
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain('run run_9')
+    expect(mockExecuteGitSync).not.toHaveBeenCalled()
+    // The row must not be stranded at 'syncing' — but the source is healthy, so
+    // the deferral goes back to plain 'idle'.
+    expect(setFn).toHaveBeenCalledWith(expect.objectContaining({ syncStatus: 'idle' }))
+    expect(isCheckoutBusy('s1')).toBe(false)
+  })
+
+  // A deferral is not a failure of the source. Writing it into `lastSyncError`
+  // made the web form and the CLI show a persistent error banner for the whole
+  // duration of the run, re-stamped on every auto-sync tick, and it overwrote
+  // the genuine previous error. The reason lives in the return value and the
+  // log instead.
+  it('leaves lastSyncError and lastSyncAt untouched when a sync is deferred', async () => {
+    const source = {
+      id: 's1',
+      name: 'in use',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    const { setFn } = mockDbUpdate()
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue({ type: 'run', id: 'run_9' })
+
+    await syncScmSource('s1')
+
+    for (const [value] of setFn.mock.calls as [Record<string, unknown>][]) {
+      expect(value).not.toHaveProperty('lastSyncError')
+      expect(value).not.toHaveProperty('lastSyncAt')
+    }
+  })
+
+  // The occupancy rule differs by source type: a git evaluation owns an
+  // `eval-<taskId>` worktree, a p4 one cannot. The gate needs the type to tell
+  // them apart, so the sync must pass it through.
+  it('passes the source type to the shared-checkout occupancy gate', async () => {
+    const source = {
+      id: 's1',
+      name: 'p4 source',
+      type: 'p4',
+      config: { type: 'p4', port: 'perforce:1666', user: 'u', client: 'c' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+
+    // The p4 execution path is not mocked here; only the gate call is asserted,
+    // so whatever the unmocked `p4` invocation settles to is irrelevant.
+    await syncScmSource('s1').catch(() => undefined)
+
+    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(
+      expect.anything(),
+      's1',
+      '/repo',
+      'p4',
+    )
+  })
+
+  it('syncs normally when no lease pins the shared checkout', async () => {
+    const source = {
+      id: 's1',
+      name: 'free',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+    mockExecuteGitSync.mockResolvedValue({ ok: true, message: 'Synced', filesUpdated: 0 })
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(true)
+    expect(mockFindSharedCheckoutScmWorkload).toHaveBeenCalledWith(
+      expect.anything(),
+      's1',
+      '/repo',
+      'git',
+    )
+  })
+
+  // The interleaving this closes. Previously the occupancy read ran on the bare
+  // `db` handle, outside every transaction, while the `syncing` claim was
+  // committed in a separate `runExclusive`. A lease that activated between them
+  // was observed by neither side, and `p4 sync` / `git checkout -f -B` then
+  // rewrote the checkout under a live Agent CLI. Both now happen in one
+  // SCM-mutation critical section, so the lock's total order forces a loser:
+  // either the sync sees the lease, or the activation sees the claim.
+  it('commits the sync claim and reads occupancy in one SCM mutation section', async () => {
+    const source = {
+      id: 's1',
+      name: 'ordered',
+      type: 'git',
+      config: { type: 'git', repoUrl: 'https://github.com/org/repo', branch: 'main' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    mockDbUpdate()
+    mockExecuteGitSync.mockResolvedValue({ ok: true, message: 'Synced', filesUpdated: 0 })
+
+    await syncScmSource('s1')
+
+    expect(mutationState.gateSections[0]).toBeGreaterThan(0)
+    expect(mutationState.claimSections[0]).toBeGreaterThan(0)
+    expect(mutationState.gateSections[0]).toBe(mutationState.claimSections[0])
+  })
+
+  // A lease that activates after the occupancy read must not find the sync
+  // already running: the read is inside the claim's critical section, so an
+  // activation ordered after it observes the claim (asserted on the lifecycle
+  // side), and one ordered before it is seen right here.
+  it('defers when a lease activates before the claim section commits', async () => {
+    const source = {
+      id: 's1',
+      name: 'raced',
+      type: 'p4',
+      config: { type: 'p4', p4port: 'perforce:1666', p4user: 'u', p4client: 'c' },
+      localPath: '/repo',
+      initialSyncCompletedAt: new Date(),
+    }
+    mockDbSelectGet(source)
+    const { setFn } = mockDbUpdate()
+    // Stands in for a lease that won the SCM mutation lock first: by the time
+    // the sync's own section reads occupancy, the lease is already active.
+    mockFindSharedCheckoutScmWorkload.mockResolvedValue({ type: 'run', id: 'run_race' })
+
+    const result = await syncScmSource('s1')
+
+    expect(result.ok).toBe(false)
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain('run run_race')
+    expect(setFn).toHaveBeenCalledWith(expect.objectContaining({ syncStatus: 'idle' }))
+    for (const [value] of setFn.mock.calls as [Record<string, unknown>][]) {
+      expect(value).not.toHaveProperty('lastSyncError')
+      expect(value).not.toHaveProperty('lastSyncAt')
+    }
+    expect(isCheckoutBusy('s1')).toBe(false)
   })
 
   it('aborts and waits for a cancellable automatic initial sync', async () => {

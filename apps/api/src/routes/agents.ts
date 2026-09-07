@@ -152,8 +152,13 @@ import { isAdmin } from '../middleware/auth-middleware.js'
 import type { WorkerTaskPayload } from '../worker/index.js'
 import { registerAgentChannelConfigRoute } from './agent-channel-config.js'
 import {
+  buildCloneDropDetails,
+  type CloneWorkspaceBinding,
   filterBindableMcpIdsForClone,
+  projectBindableKbDocumentIdsForClone,
   projectBindableSkillReferencesForClone,
+  resolveScmBindingForClone,
+  sanitizeEnvForClone,
 } from './agent-clone-scope.js'
 import {
   collectNativeChatConnectionChecks,
@@ -2110,35 +2115,24 @@ app.post('/:id/clone', async (c) => {
   const { id } = c.req.param()
   const { agent } = await requireAgentWrite(c, id)
 
-  // Strip secrets from the clone — clone hands the new agent's ownership to
-  // the caller (`userId = getCurrentUserId(c)`), so an `editor` could otherwise
-  // walk away with the source agent's provider key / OAuth token / sensitive
-  // env values and re-share them to anyone they invite. Once the original
-  // owner revokes editor membership those copies remain — irreversible.
-  // Mirrors `sanitizeAgent` in agent-export.ts: env.sensitive value cleared,
-  // provider* secrets dropped. authMode is kept so the caller knows which
-  // credential to refill.
-  const clonedEnv = agent.env
-    ? Object.fromEntries(
-        Object.entries(agent.env).map(([k, v]) => [k, v.sensitive ? { ...v, value: '' } : v]),
-      )
-    : null
+  // Secrets never travel with a clone (see sanitizeEnvForClone).
+  const clonedEnv = sanitizeEnvForClone(agent.env)
 
   const cloneId = createId('agt')
   const now = new Date()
   const userId = getCurrentUserId(c)
+  // Every binding is projected onto the clone's new owner: it must not carry MCP,
+  // Skills or KB documents the caller could not have bound themselves, which would
+  // otherwise survive a membership revoke.
   const clonedSkillReferences = await projectBindableSkillReferencesForClone(
     c,
     agent.skills,
     agent.skillGroupIds,
   )
-  // Drop admin-only / stdio MCP the caller couldn't bind themselves — the clone is
-  // theirs, and this copy would otherwise survive a membership revoke.
-  const clonedMcpServerIds = await filterBindableMcpIdsForClone(
-    c,
-    agent.mcpServerIds as string[] | null | undefined,
-  )
-  const insertClone = async (executor: typeof db) =>
+  const clonedMcpServerIds = await filterBindableMcpIdsForClone(c, agent.mcpServerIds)
+  const { kept: clonedKbDocumentIds, dropped: droppedKbDocumentIds } =
+    await projectBindableKbDocumentIdsForClone(c, agent.kbDocumentIds)
+  const insertClone = async (executor: typeof db, workspaceBinding: CloneWorkspaceBinding) =>
     (
       await executor
         .insert(agents)
@@ -2153,10 +2147,8 @@ app.post('/:id/clone', async (c) => {
           systemPrompt: agent.systemPrompt,
           skills: clonedSkillReferences.skillIds,
           skillGroupIds: clonedSkillReferences.skillGroupIds,
-          // Drop admin-only / stdio MCP the caller couldn't bind themselves — the
-          // clone is theirs, and this copy would otherwise survive membership revoke.
           mcpServerIds: clonedMcpServerIds,
-          kbDocumentIds: agent.kbDocumentIds,
+          kbDocumentIds: clonedKbDocumentIds,
           publishStatus: 'draft',
           endpointApiKey: null,
           a2aEndpointApiKey: null,
@@ -2192,8 +2184,8 @@ app.post('/:id/clone', async (c) => {
           publishedAt: null,
           providerId: agent.providerId,
           env: clonedEnv,
-          workspaceType: agent.workspaceType,
-          scmSourceId: agent.scmSourceId,
+          workspaceType: workspaceBinding.workspaceType,
+          scmSourceId: workspaceBinding.scmSourceId,
           maxConcurrency: agent.maxConcurrency,
           userId,
           createdAt: now,
@@ -2201,30 +2193,41 @@ app.post('/:id/clone', async (c) => {
         })
         .returning()
     )[0]
-  const bindingResult =
-    agent.workspaceType === 'scm' && agent.scmSourceId
-      ? await withScmPathMutation(async (tx) => {
-          const source = (
-            await tx
-              .select({ id: scmSources.id })
-              .from(scmSources)
-              .where(
-                and(
-                  eq(scmSources.id, agent.scmSourceId as string),
-                  isNull(scmSources.deletionRequestedAt),
-                ),
-              )
-              .limit(1)
-          )[0]
-          if (!source) return { allowed: false as const, agent: undefined }
-          return { allowed: true as const, agent: await insertClone(tx as typeof db) }
-        })
-      : { allowed: true as const, agent: await insertClone(db) }
+  // Keep the SCM binding only when the caller could have created it (see
+  // resolveScmBindingForClone) — the verdict comes from the authoritative re-read
+  // under the lifecycle lock, so ownership and the deletion race decide together.
+  const sourceBinding = { workspaceType: agent.workspaceType, scmSourceId: agent.scmSourceId }
+  const bindingResult = sourceBinding.scmSourceId
+    ? await withScmPathMutation(async (tx) => {
+        const scm = await resolveScmBindingForClone(c, tx as typeof db, sourceBinding)
+        if (scm.unavailable) {
+          return { allowed: false as const, agent: undefined, droppedScmSourceId: null }
+        }
+        return {
+          allowed: true as const,
+          agent: await insertClone(tx as typeof db, scm.binding),
+          droppedScmSourceId: scm.droppedScmSourceId,
+        }
+      })
+    : {
+        allowed: true as const,
+        agent: await insertClone(db, sourceBinding),
+        droppedScmSourceId: null,
+      }
   if (!bindingResult.allowed) {
     return c.json({ error: 'The Agent SCM source is no longer available' }, 409)
   }
   const cloned = bindingResult.agent
-  logAudit(c, { action: 'agent.clone', resource: 'agent', resourceId: cloneId })
+  const droppedDetails = buildCloneDropDetails(
+    bindingResult.droppedScmSourceId,
+    droppedKbDocumentIds,
+  )
+  logAudit(c, {
+    action: 'agent.clone',
+    resource: 'agent',
+    resourceId: cloneId,
+    ...(droppedDetails ? { details: droppedDetails } : {}),
+  })
 
   return c.json({ data: maskAgentSecrets(cloned) }, 201)
 })

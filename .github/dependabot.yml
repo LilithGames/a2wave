@@ -45,8 +45,18 @@ updates:
         update-types: [version-update:semver-major]
     labels: [dependencies]
 
+  # Every third-party action is pinned to a full commit SHA (see
+  # docs/agent/ci-pipeline.md), so a compromised upstream cannot move a tag under
+  # jobs that hold the npm and GHCR publish credentials. That also makes this
+  # entry the only update path: Dependabot rewrites both the SHA and its trailing
+  # `# vX.Y.Z` comment, which nobody would track by hand.
   - package-ecosystem: github-actions
-    directory: /
+    # `/` covers .github/workflows; a composite action nested under
+    # .github/actions is only scanned when its own directory is listed, and
+    # setup/action.yml pins two actions of its own.
+    directories:
+      - /
+      - /.github/actions/setup
     schedule:
       interval: weekly
     open-pull-requests-limit: 3

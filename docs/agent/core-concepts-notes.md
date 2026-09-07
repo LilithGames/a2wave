@@ -72,6 +72,35 @@ whole chain is queryable from one id. Dropping either field makes the chain
 non-terminating. Each replay writes a `run.auto_retry` background audit entry
 (Iron Rule 5 — background work still needs a trail).
 
+## Run — restart recovery and resume
+
+`recoverOnStartup` (`engine/task-queue.ts`) settles what the dead process left
+behind. A `running` run that recorded the provider session it had already opened
+is **requeued and continued** from that session rather than failed, so a deploy
+restart does not replay a prompt whose side effects have already landed
+(`lib/resume-decision.ts`, three attempts max).
+
+**Native Feishu event runs are excluded from resume.** They carry a
+`triggerSessionId` and depend on an in-memory reply closure and streaming card
+that generic `executeChatRun` promotion cannot rebuild. Promoting them before
+`replayPendingFeishuMessages` also makes replay skip them (`prior-run-running`).
+Recovery therefore fails these running rows outright
+(`SERVER_RESTART_DURING_EXEC`, before the resume check so no attempt is burned)
+and lets pending-message replay rebuild the full reply context.
+
+**API-created Feishu reruns can resume.** They have no `triggerSessionId` or
+pending event to replay. Their sendable reply target is persisted in
+`executionMetadata.nativeChatContext`, or restored from the interrupted step
+by `requeueForResume`. The queued recovery gate preserves these reruns only
+when that context is available; legacy rows without a reply target fail instead
+of completing silently.
+
+For native events, replay opens a **fresh** provider session — `lookupPreviousChatId`
+only resolves *completed* runs, so the interrupted run's `liveChatId` is invisible
+to it — and side effects can be repeated. A repeated turn is recoverable; a silent
+one is not. Removing the carve-out requires teaching the replay path to carry the
+interrupted run's `liveChatId` into the run it creates.
+
 ## Evaluation
 
 An Evaluation Set groups Cases (each an ordered list of

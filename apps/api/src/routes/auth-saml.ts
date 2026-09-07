@@ -13,21 +13,20 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { Profile } from '@node-saml/node-saml'
 import { type Context, Hono } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import { SignJWT, jwtVerify } from 'jose'
+import { jwtVerify, SignJWT } from 'jose'
 import { env } from '../env.js'
 import { isCookieSecure } from '../lib/auth-cookie.js'
 import { loadAuthSettings } from '../lib/auth-settings.js'
 import { logger } from '../lib/logger.js'
-import { getSamlEnv, isSamlConfigured } from '../lib/saml-config.js'
 import {
-  SamlPublicUrlMissingError,
   classifySamlValidationError,
   extractSamlIdentity,
   getSaml,
+  SamlPublicUrlMissingError,
+  validateSamlPostResponse,
 } from '../lib/saml.js'
+import { getSamlEnv, isSamlConfigured } from '../lib/saml-config.js'
 import {
-  type SsoFlowPurpose,
-  type SsoIdentity,
   completeSsoBind,
   completeSsoLogin,
   completeSsoShareAccess,
@@ -35,6 +34,8 @@ import {
   loginErrorTarget,
   loopbackOriginFromReferer,
   resolveSessionUserId,
+  type SsoFlowPurpose,
+  type SsoIdentity,
   sanitizeReturnTarget,
   sanitizeReturnTo,
 } from '../lib/sso-login.js'
@@ -217,10 +218,11 @@ app.post('/acs', async (c) => {
   let profile: Profile | null
   let loggedOut: boolean
   try {
-    // 验签 + 时效（NotBefore/NotOnOrAfter）+ audience + InResponseTo 全部由 node-saml 完成
-    ;({ profile, loggedOut } = await (await getSaml()).validatePostResponseAsync({
-      SAMLResponse: samlResponse,
-    }))
+    // 验签 + 时效（NotBefore/NotOnOrAfter）+ audience + InResponseTo 全部由 node-saml 完成。
+    // 走 validateSamlPostResponse 而非直接调实例：它为本次校验开一个 AsyncLocalStorage
+    // 作用域，node-saml 对同一 request id 的第二次读取只在本次校验内可见——并发或重放的
+    // 同一份 SAMLResponse 因此拿不到已被消费的 id。
+    ;({ profile, loggedOut } = await validateSamlPostResponse(samlResponse))
   } catch (err) {
     if (err instanceof SamlPublicUrlMissingError) {
       logger.error('SAML ACS blocked: artifacts.publicBaseUrl not configured')

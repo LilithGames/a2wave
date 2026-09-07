@@ -9,10 +9,21 @@
  *
  * 安全基线：断言必须签名（wantAssertionsSigned）、audience 必须等于 SP entityId、
  * InResponseTo 强制校验（validateInResponseTo=always，防未经请求的响应注入 / 重放）。
- * InResponseTo 状态用 node-saml 自带 InMemoryCacheProvider —— 单容器部署，内存即可。
  * idpCert 接受完整 PEM 或去掉头尾行的 base64 体（node-saml 原生支持两种格式）。
+ *
+ * InResponseTo state is durable, not in-process: issued request ids live in the
+ * `saml_requests` table (createSamlRequestCacheProvider), because the IdP posts
+ * the assertion back through the load balancer and it may land on any replica —
+ * or on the same one after a restart. node-saml's default InMemoryCacheProvider
+ * fails those logins with SAML_RESPONSE_UNSOLICITED.
  */
-import { type Profile, SAML, ValidateInResponseTo } from '@node-saml/node-saml'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { type CacheProvider, type Profile, SAML, ValidateInResponseTo } from '@node-saml/node-saml'
+import { and, eq, gte, lt } from 'drizzle-orm'
+import { db } from '../db/client.js'
+import { samlRequests } from '../db/schema.js'
+import { runExclusive } from '../db/transaction.js'
+import { logger } from './logger.js'
 import { getSamlEnv } from './saml-config.js'
 import { getSsoCallbackOrigin } from './server-url.js'
 import type { SsoIdentity } from './sso-login.js'
@@ -113,6 +124,193 @@ export function extractSamlIdentity(profile: Profile, fallbackIssuer: string): S
   return identity
 }
 
+/**
+ * How long an issued AuthnRequest id stays acceptable.
+ *
+ * Mirrors node-saml's own `requestIdExpirationPeriodMs` default (8h) so the
+ * durable cache expires ids on exactly the schedule the library documents;
+ * shortening it here would silently fail logins the library considers valid.
+ */
+export const SAML_REQUEST_EXPIRATION_MS = 8 * 60 * 60 * 1000
+
+/** Hourly, matching the other lapsed-row sweepers. Cheap: one indexed DELETE. */
+const SAML_REQUEST_SWEEP_INTERVAL_MS = 60 * 60 * 1000
+
+/**
+ * The ids one in-progress validation has already consumed, keyed by request id.
+ *
+ * `getAsync` deletes the row it returns (see below), but node-saml reads the
+ * same id twice during one `validatePostResponseAsync`: once for the Response's
+ * `InResponseTo`, and again for the assertion's `SubjectConfirmationData`. The
+ * second read has to succeed or every legitimate login fails as
+ * `SubjectInResponseTo is not valid`.
+ *
+ * The scope is therefore the **validation**, not the id: `runInSamlValidation`
+ * establishes one store per `validatePostResponseAsync` call, and only reads
+ * running inside that call can see what it took. A store keyed by id and shared
+ * by the whole process would answer any later read of the same id — so a
+ * concurrent or replayed ACS POST of one captured SAMLResponse landing on this
+ * replica would validate a second time, reopening exactly the single-use window
+ * the consuming DELETE exists to close. No time bound is needed or wanted: the
+ * store dies with the call, and outside a call there is nothing to reuse, which
+ * leaves the DB consume as the only possible answer.
+ */
+const samlValidationScope = new AsyncLocalStorage<Map<string, string>>()
+
+/**
+ * Run one SAML assertion validation, scoping whatever it consumes to itself.
+ *
+ * Every call into `validatePostResponseAsync` must go through here (see
+ * `validateSamlPostResponse`); a validation run outside a scope still works,
+ * it just loses the second read and fails the login.
+ */
+export function runInSamlValidation<T>(validate: () => Promise<T>): Promise<T> {
+  return samlValidationScope.run(new Map(), validate)
+}
+
+/**
+ * node-saml `CacheProvider` backed by the `saml_requests` table.
+ *
+ * `validateInResponseTo: always` is only as good as the store behind it. The
+ * default `InMemoryCacheProvider` keeps issued request ids in the heap of the
+ * process that built the redirect, while the IdP form-POSTs the assertion to
+ * `/api/auth/saml/acs` through the load balancer. Any replica but that one — or
+ * that same one after a restart or a deploy — finds no matching id and rejects a
+ * perfectly good login as `SAML_RESPONSE_UNSOLICITED`, an error whose shape
+ * points the administrator at their IdP configuration rather than at us.
+ *
+ * A table is the whole fix: the state is already per-flow, tiny, and short
+ * lived. Expiry is enforced on **read** as well as by the sweeper, so a sweeper
+ * that is late (or a replica whose timer has not started) can never widen the
+ * window an id stays replayable.
+ *
+ * The read also **consumes**. node-saml validates the whole assertion before it
+ * calls `removeAsync`, so a `SELECT`-then-`DELETE` pair leaves a real window: the
+ * same captured SAMLResponse POSTed at two replicas (or twice in quick
+ * succession at one) has both of them read the row, both validate, and both mint
+ * a session. A single `DELETE ... RETURNING` makes exactly one of them win,
+ * which is what "single use" has to mean when the store is shared. `removeAsync`
+ * then usually finds nothing left to delete, and tolerates that.
+ *
+ * The provider itself holds no state: the one value a validation must read
+ * twice lives in that validation's own `samlValidationScope` store.
+ */
+export function createSamlRequestCacheProvider(): CacheProvider {
+  return {
+    async saveAsync(key: string, value: string) {
+      const createdAt = new Date()
+      // node-saml reads null as "this id is already in use" and refuses to
+      // reissue, so a pre-existing row must win rather than be overwritten.
+      // `onConflictDoNothing` is the whole check: a preceding SELECT would only
+      // add a round trip and still lose the race it was meant to describe.
+      //
+      // `runExclusive` because this is a bare write racing whatever transaction
+      // another request holds: on SQLite's one shared connection a plain insert
+      // issued mid-`BEGIN` joins that transaction and is erased by its ROLLBACK
+      // — here, after the AuthnRequest has already gone to the IdP, leaving a
+      // callback that can only fail as SAML_RESPONSE_UNSOLICITED.
+      const inserted = await runExclusive(async () =>
+        db
+          .insert(samlRequests)
+          .values({ id: key, value, createdAt })
+          .onConflictDoNothing()
+          .returning({ id: samlRequests.id }),
+      )
+      if (inserted.length === 0) return null
+
+      return { value, createdAt: createdAt.getTime() }
+    },
+
+    async getAsync(key: string) {
+      const now = Date.now()
+
+      // Second read of the same validation (SubjectConfirmation), still ours.
+      // `getStore()` is the binding: another validation — concurrent or a replay
+      // of the same captured response — has a different store and lands on the
+      // consuming DELETE below, which by then finds nothing.
+      const validation = samlValidationScope.getStore()
+      const held = validation?.get(key)
+      if (held !== undefined) return held
+
+      // Claim and expire in one statement. `.returning()` rather than a row
+      // count: the two drivers disagree on `changes`/`rowCount` (see
+      // apps/api/AGENTS.md).
+      //
+      // `runExclusive` for the same reason as saveAsync,
+      // and it matters more here: a consume erased by a stranger's ROLLBACK
+      // resurrects the id, so the captured SAMLResponse becomes replayable —
+      // exactly the single-use property this consuming delete exists for.
+      const consumed = await runExclusive(async () =>
+        db
+          .delete(samlRequests)
+          .where(
+            and(
+              eq(samlRequests.id, key),
+              gte(samlRequests.createdAt, new Date(now - SAML_REQUEST_EXPIRATION_MS)),
+            ),
+          )
+          .returning({ value: samlRequests.value }),
+      )
+      const value = consumed[0]?.value
+      if (value === undefined) return null
+
+      validation?.set(key, value)
+      return value
+    },
+
+    async removeAsync(key: string | null) {
+      if (key === null) return null
+      // Normally a no-op on the table: `getAsync` already took the row. Still
+      // issued, because node-saml also calls this on paths that never read
+      // (an InResponseTo mismatch), where it is the only thing that clears the
+      // row. Answering with the key when we held it keeps the InMemory
+      // provider's "returns the key it forgot" contract.
+      const held = samlValidationScope.getStore()?.delete(key) ?? false
+      const removed = await runExclusive(async () =>
+        db.delete(samlRequests).where(eq(samlRequests.id, key)).returning({ id: samlRequests.id }),
+      )
+      return removed[0]?.id ?? (held ? key : null)
+    },
+  }
+}
+
+/** Delete request ids past the expiration window. Returns how many went. */
+export async function sweepExpiredSamlRequests(now: Date): Promise<number> {
+  // Bare write on a timer, so the transaction it lands in is arbitrary: without
+  // `runExclusive` a rolled-back stranger silently resurrects every row this
+  // reported as swept, and the count returned to the log would be a lie.
+  const deleted = await runExclusive(async () =>
+    db
+      .delete(samlRequests)
+      .where(lt(samlRequests.createdAt, new Date(now.getTime() - SAML_REQUEST_EXPIRATION_MS)))
+      .returning({ id: samlRequests.id }),
+  )
+  return deleted.length
+}
+
+let sweepTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Start the sweeper once, lazily, the first time a SAML instance is built.
+ *
+ * Deliberately not wired into server startup: a deployment with no SAML
+ * configured never issues a request id, so there is nothing to sweep and no
+ * reason to hold a timer. Consumed rows are deleted by `removeAsync` on the
+ * success path; this only clears the abandoned ones.
+ */
+function ensureSamlRequestSweeper(): void {
+  if (sweepTimer) return
+  sweepTimer = setInterval(() => {
+    void sweepExpiredSamlRequests(new Date())
+      .then((deleted) => {
+        if (deleted > 0) logger.info({ deleted }, 'saml: swept expired request ids')
+      })
+      // A failed sweep must not kill the timer — the next tick is the recovery.
+      .catch((error) => logger.error({ error }, 'saml: request id sweep failed'))
+  }, SAML_REQUEST_SWEEP_INTERVAL_MS)
+  sweepTimer.unref?.()
+}
+
 let samlCache: { key: string; instance: SAML } | null = null
 
 /**
@@ -144,11 +342,34 @@ export async function getSaml(): Promise<SAML> {
     // 两者至少其一有效签名由 node-saml 保证。
     wantAssertionsSigned: true,
     wantAuthnResponseSigned: false,
-    // InResponseTo 强制校验，请求 ID 存 node-saml 默认 InMemoryCacheProvider（单容器足够）
+    // InResponseTo is enforced, and the issued request ids live in the
+    // `saml_requests` table rather than node-saml's in-memory default. The ACS
+    // POST arrives on whichever replica the load balancer picks, so process
+    // memory would fail every login that does not come back to the issuer — see
+    // createSamlRequestCacheProvider.
     validateInResponseTo: ValidateInResponseTo.always,
+    requestIdExpirationPeriodMs: SAML_REQUEST_EXPIRATION_MS,
+    cacheProvider: createSamlRequestCacheProvider(),
   })
+  ensureSamlRequestSweeper()
   samlCache = { key, instance }
   return instance
+}
+
+/**
+ * 验证 ACS 收到的 SAMLResponse —— 路由层唯一的断言校验入口。
+ *
+ * The wrapper is the point: `runInSamlValidation` gives this one call its own
+ * scope, so the id it consumes is readable by its own second read and by nothing
+ * else. Calling `validatePostResponseAsync` directly would skip that and either
+ * fail the login (no scope) or, with a process-wide cache, hand a replay the
+ * value again — see `samlValidationScope`.
+ */
+export async function validateSamlPostResponse(
+  samlResponse: string,
+): Promise<{ profile: Profile | null; loggedOut: boolean }> {
+  const saml = await getSaml()
+  return runInSamlValidation(() => saml.validatePostResponseAsync({ SAMLResponse: samlResponse }))
 }
 
 /** 重置实例缓存 — 仅测试用。 */

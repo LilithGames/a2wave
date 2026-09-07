@@ -778,6 +778,81 @@ describe('agentsCommand', () => {
     })
   })
 
+  describe('export', () => {
+    function exportResponse(disposition: string | null) {
+      return {
+        headers: { get: (k: string) => (k === 'content-disposition' ? disposition : null) },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      }
+    }
+
+    it('writes to the server-supplied filename', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="my-bot.zip"'))
+      await getSubCommand('export').run({ args: { id: 'agt_1' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('my-bot.zip', expect.any(Buffer))
+    })
+
+    it('strips path components from a traversal filename', async () => {
+      // The Content-Disposition filename is server-controlled; an export must never
+      // be able to write outside the directory the command was run in.
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(
+        exportResponse('attachment; filename="%2e%2e%2f%2e%2e%2f.bashrc"'),
+      )
+      await getSubCommand('export').run({ args: { id: 'agt_1' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('.bashrc', expect.any(Buffer))
+    })
+
+    it('refuses an absolute server-supplied path', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="/etc/cron.d/evil"'))
+      await getSubCommand('export').run({ args: { id: 'agt_1' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('evil', expect.any(Buffer))
+    })
+
+    it('falls back to <agentId>-export.zip on a malformed percent-encoding', async () => {
+      // decodeURIComponent throws on a lone '%'; a diagnostic-free crash here would
+      // abort an export the server already produced.
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="%E0%A4%A.zip"'))
+      await getSubCommand('export').run({ args: { id: 'agt_1' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('agt_1-export.zip', expect.any(Buffer))
+    })
+
+    it('falls back to <agentId>-export.zip when the filename is degenerate', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename=".."'))
+      await getSubCommand('export').run({ args: { id: 'agt_1' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('agt_1-export.zip', expect.any(Buffer))
+    })
+
+    it('refuses to overwrite an existing target without --force', async () => {
+      mockExistsSync.mockReturnValue(true)
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="my-bot.zip"'))
+      await expect(getSubCommand('export').run({ args: { id: 'agt_1' } })).rejects.toThrow(
+        /already exists/,
+      )
+      expect(mockWriteFileSync).not.toHaveBeenCalled()
+    })
+
+    it('overwrites an existing target with --force', async () => {
+      mockExistsSync.mockReturnValue(true)
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="my-bot.zip"'))
+      await getSubCommand('export').run({ args: { id: 'agt_1', force: true } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('my-bot.zip', expect.any(Buffer))
+    })
+
+    it('honours an explicit --output path verbatim', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGetRaw.mockResolvedValueOnce(exportResponse('attachment; filename="my-bot.zip"'))
+      await getSubCommand('export').run({ args: { id: 'agt_1', output: 'out/backup.zip' } })
+      expect(mockWriteFileSync).toHaveBeenCalledWith('out/backup.zip', expect.any(Buffer))
+    })
+  })
+
   describe('artifacts', () => {
     it('lists artifacts by agentId', async () => {
       mockResolveAgentId.mockResolvedValueOnce('agt_1')

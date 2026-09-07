@@ -69,7 +69,17 @@ export interface TaskQueueDb {
    * let the next execution be judged by the old error, and would leave the row
    * matching the orphaned-run reaper's dead-owner predicate.
    */
-  requeueForResume(runId: string, interruptionCode?: string): Promise<boolean>
+  requeueForResume(
+    runId: string,
+    interruptionCode?: string,
+    /**
+     * Fences the transition on the owner the caller judged dead. Omitted by
+     * startup recovery, which is the previous owner itself; the orphaned-run
+     * reaper passes it, because a peer may re-promote the row under its own id
+     * between the liveness verdict and this write.
+     */
+    expectedOwnerInstanceId?: string,
+  ): Promise<boolean>
   /** Decide capacity, persist status and reserve the SCM binding atomically. */
   admitRun?(
     agentId: string,
@@ -396,6 +406,19 @@ export async function recoverOnStartup(
     if (hooks.recoverInFlight !== false) {
       const runningRuns = await db.getRunsByStatus(agentId, 'running')
       for (const run of runningRuns) {
+        // Native Feishu events need replay to rebuild their reply closure and
+        // streaming card. Fail before the resume check so no attempt is burned
+        // on a row that queued recovery would reset for replay anyway. A generic
+        // promotion could otherwise race replay and suppress its reply.
+        // API-created Feishu reruns have no event to replay; let them resume
+        // with persisted context, including the interrupted-step fallback in
+        // requeueForResume. The queued gate below still rejects any rerun whose
+        // context could not be restored.
+        if (run.triggerSource === 'feishu' && run.triggerSessionId) {
+          await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
+          stats.runningAborted++
+          continue
+        }
         // Requeue rather than abandon when the run recorded the session it was
         // already in: the next turn continues from there instead of replaying a
         // prompt whose side effects may already have landed.
@@ -448,13 +471,11 @@ export async function recoverOnStartup(
         stats.pendingOrphaned++
       }
 
-      // Native Feishu event runs lose their in-memory closure (reply target,
-      // streaming card registration, quote context) on restart. Their
-      // DB-backed pending-message row is replayed after Feishu connections
-      // return. API-created reruns intentionally carry no triggerSessionId and
-      // are restart-safe only when their channel context was persisted in
-      // executionMetadata. Pre-upgrade reruns without that context must fail
-      // closed instead of being promoted with no reply target.
+      // Native Feishu event runs lose their reply closure on restart and are
+      // replayed from pending messages. API-created reruns have no event to
+      // replay: preserve them only when their reply context was persisted (or
+      // restored from the interrupted step by requeueForResume). Legacy reruns
+      // without a sendable context must fail instead of finishing silently.
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
         const isRestartSafeFeishuRerun = !run.triggerSessionId && run.hasNativeChatContext === true

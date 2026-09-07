@@ -12,11 +12,26 @@ import { QoderAgentEngine } from './qoder-agent.js'
 import { TraeAgentEngine } from './trae-agent.js'
 import type { AgentEngine } from './types.js'
 
+/**
+ * How long an aggregate health probe stays valid.
+ *
+ * Every probe spawns one CLI per registered Provider (`<cli> --version`, 10s
+ * timeout each) and `GET /api/health` is unauthenticated and mounted ahead of
+ * the rate limiter — without a cache, a trivial request loop turns into an
+ * unbounded process fan-out. 30s is short enough that an operator watching the
+ * probe still sees a newly installed/removed CLI promptly.
+ */
+export const ENGINE_HEALTH_CACHE_TTL_MS = 30_000
+
 class EngineRegistry {
   private readonly engines = new Map<string, AgentEngine>()
+  private healthCache: { at: number; results: Record<string, boolean> } | null = null
+  private healthInFlight: Promise<Record<string, boolean>> | null = null
 
   register(engine: AgentEngine): void {
     this.engines.set(engine.type, engine)
+    // A cached aggregate no longer describes the registry.
+    this.healthCache = null
     logger.info({ type: engine.type }, 'Registered agent engine')
   }
 
@@ -34,12 +49,37 @@ class EngineRegistry {
     return engine
   }
 
+  /**
+   * Aggregate every engine's health, memoized for {@link ENGINE_HEALTH_CACHE_TTL_MS}
+   * and coalesced across concurrent callers, so N simultaneous requests cost one
+   * probe round instead of N × (one CLI spawn per engine).
+   */
   async healthCheckAll(): Promise<Record<string, boolean>> {
-    const results: Record<string, boolean> = {}
-    for (const [type, engine] of this.engines) {
-      results[type] = await engine.healthCheck()
+    const cached = this.healthCache
+    if (cached && Date.now() - cached.at < ENGINE_HEALTH_CACHE_TTL_MS) {
+      return { ...cached.results }
     }
-    return results
+    if (this.healthInFlight) return { ...(await this.healthInFlight) }
+
+    const probe = this.probeAllEngines()
+    this.healthInFlight = probe
+    try {
+      const results = await probe
+      this.healthCache = { at: Date.now(), results }
+      return { ...results }
+    } finally {
+      if (this.healthInFlight === probe) this.healthInFlight = null
+    }
+  }
+
+  private async probeAllEngines(): Promise<Record<string, boolean>> {
+    const entries = [...this.engines]
+    // Parallel: the probes are independent spawns, and a sequential loop made the
+    // worst case the SUM of every CLI's 10s timeout.
+    const states = await Promise.all(
+      entries.map(([, engine]) => engine.healthCheck().catch(() => false)),
+    )
+    return Object.fromEntries(entries.map(([type], i) => [type, states[i] ?? false]))
   }
 
   /** Cancel the active CLI process by taskId, regardless of its Provider. */
