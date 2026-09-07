@@ -46,6 +46,11 @@ equivalent.
   calls. These are not list pages and are not charged to the page budget.
 - GitLab **system** notes ("added 1 commit") are skipped: they never move
   `user_notes_count`, so they are never the comment that fired the event.
+- GitLab's follow-up author is used only when its `created_at` is strictly
+  earlier than the listed request's `updated_at`. A reply arriving after that
+  snapshot cannot identify who moved its comment count. Missing, invalid or
+  equal timestamps fail open; equality cannot prove ordering at the timestamp's
+  precision. The follow-up stays within the existing one-call budget.
 - **Only a delta of exactly one comment can be suppressed.** The forges report
   the *newest* author, not every author in the delta, so a delta of 2 — a
   colleague commented and the Agent replied before the next poll — is fired even

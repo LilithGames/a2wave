@@ -338,12 +338,43 @@ describe('fetchForgeAccount', () => {
 })
 
 describe('fetchLatestCommentAuthor', () => {
+  it('fails open when timestamp precision cannot order the note against the listing', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({
+        stdout: JSON.stringify([
+          { system: false, created_at: '2026-08-06T10:00:00Z', author: { username: 'a2wave-bot' } },
+        ]),
+      }),
+    )
+
+    await expect(
+      fetchLatestCommentAuthor('glab', 'group/repo', 42, undefined, '2026-08-06T10:00:00Z'),
+    ).resolves.toBeUndefined()
+  })
+
+  it('does not attribute a listed human comment to a bot reply arriving after the listing', async () => {
+    runStatusProbe.mockResolvedValue(
+      probeResult({
+        stdout: JSON.stringify([
+          { system: false, created_at: '2026-08-06T10:00:01Z', author: { username: 'a2wave-bot' } },
+          { system: false, created_at: '2026-08-06T10:00:00Z', author: { username: 'alice' } },
+        ]),
+      }),
+    )
+
+    await expect(
+      fetchLatestCommentAuthor('glab', 'group/repo', 42, undefined, '2026-08-06T10:00:00Z'),
+    ).resolves.toBeUndefined()
+  })
+
   it('skips GitLab system notes, which never moved the user note counter', async () => {
     runStatusProbe.mockResolvedValue(
       probeResult({ stdout: JSON.stringify(GLAB_MR_NOTES_SYSTEM_FIRST) }),
     )
 
-    expect(await fetchLatestCommentAuthor('glab', 'group/repo', 42)).toBe('a2wave-bot')
+    expect(
+      await fetchLatestCommentAuthor('glab', 'group/repo', 42, undefined, '2026-08-06T10:00:00Z'),
+    ).toBe('a2wave-bot')
   })
 
   it('asks the notes endpoint for the newest entries only', async () => {
@@ -351,7 +382,7 @@ describe('fetchLatestCommentAuthor', () => {
       probeResult({ stdout: JSON.stringify(GLAB_MR_NOTES_SYSTEM_FIRST) }),
     )
 
-    await fetchLatestCommentAuthor('glab', 'group/repo', 42)
+    await fetchLatestCommentAuthor('glab', 'group/repo', 42, undefined, '2026-08-06T10:00:00Z')
 
     const [, argv] = runStatusProbe.mock.calls[0] as [string, string[]]
     expect(argv[1]).toContain('group%2Frepo/merge_requests/42/notes')
@@ -361,7 +392,9 @@ describe('fetchLatestCommentAuthor', () => {
   it('fails open to undefined when the notes call errors', async () => {
     runStatusProbe.mockResolvedValue(probeResult(GLAB_API_404))
 
-    await expect(fetchLatestCommentAuthor('glab', 'group/repo', 42)).resolves.toBeUndefined()
+    await expect(
+      fetchLatestCommentAuthor('glab', 'group/repo', 42, undefined, '2026-08-06T10:00:00Z'),
+    ).resolves.toBeUndefined()
   })
 
   it('spends no call on GitHub, whose listing already carries the author', async () => {

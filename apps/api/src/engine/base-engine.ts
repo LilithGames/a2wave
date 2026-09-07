@@ -112,7 +112,14 @@ export abstract class BaseAgentEngine implements AgentEngine {
         const result = await this.executeStreamWithModel(enriched, model)
         return { ...result, durationMs: Date.now() - start }
       } catch (err) {
-        return this.handleFallback(runtimeRequest, model, fallbackModels, err, start, memoryContext)
+        return await this.handleFallback(
+          runtimeRequest,
+          model,
+          fallbackModels,
+          err,
+          start,
+          memoryContext,
+        )
       }
     } finally {
       await this.cleanupMcpServers(preparedRequest)

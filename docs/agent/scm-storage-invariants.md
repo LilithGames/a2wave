@@ -316,6 +316,14 @@ revisiting when this area is next touched:
   Evaluation queue after freeing capacity — evaluations run one per Agent, so a
   leaked evaluation lease stalls that Agent's entire queue until an unrelated
   trigger arrives.
+- Queued Runs are also reconciled from durable state every stale-lease sweep
+  (normally 60 seconds), independently of lease releases. A sync may win the
+  SCM mutation lock just before a completion nudge tries to activate the next
+  Run; that failed promotion leaves the Run queued. The next sweep retries
+  through the same capacity and lease CAS after the sync claim clears, whether
+  sync succeeded, failed, or handed off to CodeGraph on any replica. Only one
+  queue reconciliation pass runs at a time per process, a blocked Agent does not
+  prevent other queues advancing, and shutdown's promotion pause still applies.
 - **A dead owner's non-terminal workload is failed, not left running.** The
   sweep only releases leases of terminal workloads, so a crashed instance would
   otherwise pin its Agent binding and slot forever behind a Run stuck at

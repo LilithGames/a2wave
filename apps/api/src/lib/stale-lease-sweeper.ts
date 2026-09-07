@@ -5,7 +5,7 @@ import {
   listActiveExecutionLeases,
 } from '../engine/execution-lease-registry.js'
 import { scheduleNext, sweepStaleLeases } from '../engine/task-queue.js'
-import { taskQueueDb } from '../engine/task-queue-db.js'
+import { getQueuedRunAgentIds, taskQueueDb } from '../engine/task-queue-db.js'
 import { runEvaluationTask } from '../routes/evaluation.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { pruneDeadInstanceHeartbeats } from './instance-heartbeat.js'
@@ -26,6 +26,7 @@ const DEFAULT_SWEEP_INTERVAL_MS = 60_000
  * leases whose Run row was deleted and therefore has no possible owner cleanup.
  */
 export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): () => void {
+  let queueReconciliationInFlight = false
   // async callback: sweepStaleLeases reads run status from the DB, which is a
   // Promise on PostgreSQL. Without awaiting it, `released` would be a Promise —
   // truthy, but with no `.length` — so the guard below would never fire and
@@ -149,6 +150,22 @@ export function startStaleLeaseSweeper(intervalMs = DEFAULT_SWEEP_INTERVAL_MS): 
       }
     } catch (error) {
       logger.error({ error }, 'stale-lease-sweeper: orphaned run reap failed')
+    }
+    // A sync can win between a lease release and its queue nudge. Retrying
+    // durable queued work independently of released leases closes that gap,
+    // even when the sync or its CodeGraph handoff finishes on another replica.
+    // Keep at most one pass in flight when database calls outlast the interval.
+    if (!queueReconciliationInFlight) {
+      queueReconciliationInFlight = true
+      try {
+        for (const agentId of await getQueuedRunAgentIds()) {
+          await scheduleNext(taskQueueDb, agentId, (rid, aid) => void executeChatRun(aid, rid))
+        }
+      } catch (error) {
+        logger.error({ error }, 'stale-lease-sweeper: queued run reconciliation failed')
+      } finally {
+        queueReconciliationInFlight = false
+      }
     }
     try {
       await pruneDeadInstanceHeartbeats()

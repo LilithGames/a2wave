@@ -1,12 +1,12 @@
 import { hkdfSync, timingSafeEqual } from 'node:crypto'
 import { env } from '../env.js'
 
-export const INTERNAL_ADMIN_TOKEN_ENV = 'A2WAVE_INTERNAL_ADMIN_TOKEN'
-export const INTERNAL_ADMIN_TOKEN_HEADER = 'x-a2wave-internal-admin-token'
-
-/** Credential for the non-admin `/api/internal/*` surface (agent-router MCP). */
-export const INTERNAL_TOKEN_ENV = 'A2WAVE_INTERNAL_TOKEN'
-export const INTERNAL_TOKEN_HEADER = 'x-a2wave-internal-token'
+export {
+  INTERNAL_ADMIN_TOKEN_ENV,
+  INTERNAL_ADMIN_TOKEN_HEADER,
+  INTERNAL_TOKEN_ENV,
+  INTERNAL_TOKEN_HEADER,
+} from './internal-auth-constants.js'
 
 /**
  * Both credentials are DERIVED from `AUTH_SECRET`, not randomly generated per

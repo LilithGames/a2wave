@@ -13,6 +13,8 @@ const {
   pruneDeadInstanceHeartbeats,
   reconcileAbandonedWorkspaceRemovals,
   reapOrphanedRuns,
+  getQueuedRunAgentIds,
+  taskQueueDb,
 } = vi.hoisted(() => ({
   listActiveExecutionLeases: vi.fn(),
   completeExecutionLease: vi.fn(),
@@ -26,13 +28,16 @@ const {
   pruneDeadInstanceHeartbeats: vi.fn(),
   reconcileAbandonedWorkspaceRemovals: vi.fn(),
   reapOrphanedRuns: vi.fn(),
+  getQueuedRunAgentIds: vi.fn(),
+  taskQueueDb: {},
 }))
 
 vi.mock('../../engine/execution-lease-registry.js', () => ({
   listActiveExecutionLeases,
   completeExecutionLease,
+  reserveExecutionLease: vi.fn(),
 }))
-vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb: {} }))
+vi.mock('../../engine/task-queue-db.js', () => ({ taskQueueDb, getQueuedRunAgentIds }))
 vi.mock('../../engine/task-queue.js', () => ({ sweepStaleLeases, scheduleNext }))
 vi.mock('../../engine/evaluation-queue-db.js', () => ({ evaluationQueueDb: {} }))
 vi.mock('../../engine/evaluation-queue.js', () => ({ scheduleNextEvaluation }))
@@ -54,6 +59,8 @@ import { startStaleLeaseSweeper } from '../stale-lease-sweeper.js'
 describe('startStaleLeaseSweeper', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    scheduleNext.mockReset()
+    getQueuedRunAgentIds.mockReset().mockResolvedValue([])
     vi.useFakeTimers()
     listActiveExecutionLeases.mockResolvedValue([])
     sweepStaleLeases.mockResolvedValue([])
@@ -254,6 +261,108 @@ describe('startStaleLeaseSweeper', () => {
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(reconcileAbandonedWorkspaceRemovals).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it('promotes queued work after a peer releases its sync claim without any lease release', async () => {
+    const { scheduleNext: realScheduleNext } = await vi.importActual<
+      typeof import('../../engine/task-queue.js')
+    >('../../engine/task-queue.js')
+    let syncing = true
+    let queued = true
+    Object.assign(taskQueueDb, {
+      getAgentMaxConcurrency: async () => 1,
+      countOccupiedSlots: async () => (queued ? 0 : 1),
+      getOldestQueuedRun: async () => (queued ? { id: 'run_waiting' } : undefined),
+      promoteQueuedRun: async () => {
+        if (syncing) throw new Error('SCM source is syncing')
+        queued = false
+        return true
+      },
+    })
+    scheduleNext.mockImplementation(realScheduleNext)
+    getQueuedRunAgentIds.mockImplementation(async () => (queued ? ['agt_waiting'] : []))
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const stop = startStaleLeaseSweeper(1000)
+    try {
+      // The completion nudge loses to a sync; the accepted run stays queued.
+      await realScheduleNext(taskQueueDb as never, 'agt_waiting', executeChatRun)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(queued).toBe(true)
+      expect(executeChatRun).not.toHaveBeenCalled()
+
+      // The peer releases its sync claim, including after indexing. Nothing
+      // finishes locally, so only durable queue reconciliation can retry.
+      syncing = false
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(executeChatRun).toHaveBeenCalledExactlyOnceWith('agt_waiting', 'run_waiting')
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(executeChatRun).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+      errorLog.mockRestore()
+    }
+  })
+
+  it('continues past a syncing agent and respects shutdown promotion pause', async () => {
+    const queue = await vi.importActual<typeof import('../../engine/task-queue.js')>(
+      '../../engine/task-queue.js',
+    )
+    let queued = true
+    Object.assign(taskQueueDb, {
+      getAgentMaxConcurrency: async () => 1,
+      countOccupiedSlots: async () => 0,
+      getOldestQueuedRun: async (agentId: string) =>
+        agentId === 'agt_syncing' || queued ? { id: `run_${agentId}` } : undefined,
+      promoteQueuedRun: async (agentId: string) => {
+        if (agentId === 'agt_syncing') throw new Error('SCM source is syncing')
+        queued = false
+        return true
+      },
+    })
+    scheduleNext.mockImplementation(queue.scheduleNext)
+    getQueuedRunAgentIds.mockResolvedValue(['agt_syncing', 'agt_ready'])
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const stop = startStaleLeaseSweeper(1000)
+    queue.pauseTaskQueuePromotions()
+    try {
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(executeChatRun).not.toHaveBeenCalled()
+      queue._resumeTaskQueuePromotionsForTests()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(executeChatRun).toHaveBeenCalledExactlyOnceWith('agt_ready', 'run_agt_ready')
+    } finally {
+      stop()
+      errorLog.mockRestore()
+      queue._resumeTaskQueuePromotionsForTests()
+    }
+  })
+
+  it('does not overlap durable queue scans when a scan outlasts the interval', async () => {
+    let resolveScan!: (agents: string[]) => void
+    getQueuedRunAgentIds.mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveScan = resolve
+        }),
+    )
+    const stop = startStaleLeaseSweeper(1000)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(getQueuedRunAgentIds).toHaveBeenCalledTimes(1)
+    resolveScan([])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getQueuedRunAgentIds).toHaveBeenCalledTimes(2)
+    stop()
+  })
+
+  it('retries a failed durable queue scan on the next interval', async () => {
+    getQueuedRunAgentIds.mockRejectedValueOnce(new Error('peer database unavailable'))
+    getQueuedRunAgentIds.mockResolvedValue(['agt_waiting'])
+    const stop = startStaleLeaseSweeper(1000)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(scheduleNext).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(scheduleNext).toHaveBeenCalledWith(taskQueueDb, 'agt_waiting', expect.any(Function))
     stop()
   })
 

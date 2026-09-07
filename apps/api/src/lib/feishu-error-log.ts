@@ -57,7 +57,8 @@ export function createLarkSdkLogger(): LarkLogger {
   const forward = (level: 'error' | 'warn' | 'debug', args: unknown[]): void => {
     const messages: string[] = []
     const details: Record<string, unknown>[] = []
-    for (const arg of args) {
+    // LoggerProxy passes its arguments as one array; formatErrors nests another.
+    for (const arg of args.flat(Infinity)) {
       if (typeof arg === 'object' && arg !== null) details.push(summarizeFeishuError(arg))
       else messages.push(String(arg))
     }

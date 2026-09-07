@@ -62,6 +62,11 @@ stopped sharing a working directory because a run of Agent B re-mounting
   my changes" published the MCP owner's credentials. `--git-path` resolves to the
   **common** repository's exclude file, which is intended: the shared checkout is
   a run's fallback workspace and needs the same cover.
+  Workspace initialization and MCP sync use the same `appendGitExcludePatterns`
+  helper and exclude-file lock. Writes append only missing rules instead of
+  replacing a previously read snapshot: another process may have installed a
+  live run's rules since that read. Concurrent replicas may duplicate a rule or
+  header, which Git tolerates, but never erase each other's exclusions.
 - **An ignore rule only ever covers UNTRACKED files, so a repository that
   *tracks* its own `.mcp.json` gets no cover from the exclude at all.** Teams
   legitimately commit one to share non-secret MCP definitions; the platform's
@@ -153,6 +158,8 @@ stopped sharing a working directory because a run of Agent B re-mounting
   spanning several awaits, so unserialised a sibling's fresh config could land
   inside another run's cleanup window and then be deleted by it; the reference
   count is therefore also re-read inside the critical section.
+- Model fallback is awaited inside the cleanup boundary: MCP files remain
+  available until the fallback attempt settles, not merely until it starts.
 - Cleanup **waits for a sync still in flight**. A sibling prepare step rejecting
   mid-write leaves the engine's `finally` looking at a reference that has not
   been taken yet: walking away there would let the write land credentials in the

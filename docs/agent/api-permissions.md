@@ -72,8 +72,11 @@ ACL.
   instead: the deleting transaction nulls `audit_logs.user_id`, `runs.user_id`,
   `artifacts.user_id`, `artifact_shares.created_by`, `evaluation_tasks.user_id`
   and `agents.schedule_run_as_user_id` before removing the row, so history
-  outlives the account — the audit entry keeps its `details.username`, so "who
-  did this" stays answerable. That happens in the route rather than as
+  outlives the account. Before clearing audit references, the same update stores
+  `details.deletedActor` (`id`, `username`) while preserving existing details;
+  ordinary writes need not have a username, and `details.username` can name the
+  target rather than the actor. Audit listing uses this snapshot when the account
+  is gone, so "who did this" stays answerable. That happens in the route rather than as
   `ON DELETE SET NULL` because altering an existing SQLite foreign key needs a
   table rebuild, and drizzle's generated rebuild runs inside the migrator's
   transaction where `PRAGMA foreign_keys=OFF` is a no-op — see the header of
@@ -176,6 +179,9 @@ deliberately does not share `agents.maxConcurrency`.
   is never written to `process.env`, the database or the logs, and it is handed
   only to the SYSTEM builtin MCP rows (`userId IS NULL`). Distinct `info` strings
   keep the router credential from being replayable against the admin surface.
+  MCP subprocesses import header/env names from the side-effect-free
+  `internal-auth-constants.ts`, never the derivation module: their sanitized
+  environment intentionally lacks the platform's `AUTH_SECRET`.
 - **Internal Admin API** (`/api/internal/admin/*`) is **not filtered by owner** —
   it deliberately sees everything, which is why it takes the admin credential.
 - **OAuth channel** attachment upload/consumption is isolated per user as

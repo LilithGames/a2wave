@@ -82,6 +82,15 @@ export async function countOccupiedRunSlots(
   return occupyingRunIds.size
 }
 
+/** Durable queue discovery also sees work waiting on another replica's sync. */
+export async function getQueuedRunAgentIds(): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ agentId: runs.initiatorAgentId })
+    .from(runs)
+    .where(and(eq(runs.status, 'queued'), isNotNull(runs.initiatorAgentId)))
+  return rows.flatMap((row) => (row.agentId ? [row.agentId] : []))
+}
+
 export const taskQueueDb: TaskQueueDb = {
   async countOccupiedSlots(agentId: string): Promise<number> {
     return countOccupiedRunSlots(db, agentId)

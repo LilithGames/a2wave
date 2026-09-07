@@ -17,6 +17,7 @@ import type { Stats } from 'node:fs'
 import { mkdir, readFile, readlink, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
+import { appendGitExcludePatterns } from '../lib/git-exclude.js'
 import { withKeyedLock } from '../lib/keyed-mutex.js'
 import { logger } from '../lib/logger.js'
 import { processInstanceId } from '../lib/process-instance.js'
@@ -298,9 +299,6 @@ async function nearestExistingDir(dir: string): Promise<string> {
   }
 }
 
-/** The `# a2wave` header `ensurePlatformPathsExcluded` writes; shared so the two never double up. */
-const PLATFORM_EXCLUDE_HEADER = '# a2wave: platform-written workspace paths'
-
 /**
  * Guarantee that the file this write creates stays invisible to `git add -A`.
  *
@@ -389,27 +387,14 @@ async function gitWorkTreeFor(absolutePath: string): Promise<string | null> {
  * workspace appends to it, so the read-modify-write is serialised on the file:
  * two syncs that both read the same "before" content would otherwise have the
  * later write drop the earlier rule, leaving a run that already verified its
- * exclusion unprotected. In-process only — the cross-replica half is bounded by
- * the re-check in `ensurePathExcluded`, which refuses rather than writes.
+ * exclusion unprotected. The shared helper also serves workspace initialization
+ * and appends rather than replacing a snapshot, preserving peer-process writes.
  */
 async function appendGitExclude(workTree: string, pattern: string): Promise<void> {
   const gitPath = await runGitProbe(['rev-parse', '--git-path', 'info/exclude'], workTree)
   if (gitPath === null) return
   const excludePath = resolve(workTree, gitPath.trim())
-  await withKeyedLock(`git-exclude:${excludePath}`, async () => {
-    let existing = ''
-    try {
-      existing = await readFile(excludePath, 'utf-8')
-    } catch {
-      // No exclude file yet (a `git init` template can omit it) — create it.
-    }
-    const present = new Set(existing.split('\n').map((line) => line.trim()))
-    if (present.has(pattern)) return
-    await mkdir(dirname(excludePath), { recursive: true })
-    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
-    const header = present.has(PLATFORM_EXCLUDE_HEADER) ? '' : `${PLATFORM_EXCLUDE_HEADER}\n`
-    await writeFile(excludePath, `${existing}${prefix}${header}${pattern}\n`)
-  })
+  await appendGitExcludePatterns(excludePath, [pattern])
 }
 
 /**

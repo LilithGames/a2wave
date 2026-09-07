@@ -817,6 +817,7 @@ const NOTES_PAGE_SIZE = 20
 /** GitLab merge request note as returned by `/merge_requests/:iid/notes`. */
 interface GitLabNote {
   system?: boolean
+  created_at?: string
   author?: { username?: string }
 }
 
@@ -836,13 +837,21 @@ export async function fetchLatestCommentAuthor(
   project: string,
   number: number,
   host?: string,
+  observedUpdatedAt?: string,
 ): Promise<string | undefined> {
   if (provider === 'gh') return undefined
+  const observedTime = Date.parse(observedUpdatedAt ?? '')
+  if (!Number.isFinite(observedTime)) return undefined
   try {
     const path = `projects/${encodeURIComponent(project)}/merge_requests/${number}/notes?per_page=${NOTES_PAGE_SIZE}&order_by=created_at&sort=desc`
     const notes = await callApiRaw('glab', path, host)
     if (!Array.isArray(notes)) return undefined
     const newest = (notes as GitLabNote[]).find((note) => !note.system && note.author?.username)
+    // The count came from an earlier listing. A later reply cannot identify
+    // who caused that delta; let the event fire instead of losing a colleague's
+    // comment. Missing or equal timestamps cannot establish ordering either.
+    const commentTime = Date.parse(newest?.created_at ?? '')
+    if (!Number.isFinite(commentTime) || commentTime >= observedTime) return undefined
     return newest?.author?.username
   } catch (err) {
     logger.warn(

@@ -15,8 +15,8 @@
  *    transaction nulls `audit_logs.user_id`, `runs.user_id`,
  *    `artifacts.user_id`, `artifact_shares.created_by`,
  *    `evaluation_tasks.user_id` and `agents.schedule_run_as_user_id` first. The
- *    audit row survives with its `details.username` intact, so "who did this"
- *    stays answerable (Iron Rule 5) without pinning the account forever.
+ *    audit row preserves its details and snapshots `details.deletedActor`, so
+ *    "who did this" stays answerable without pinning the account forever.
  *  - **Ownership references refuse the delete.** Agents, MCP servers, Skills,
  *    Skill groups, KB documents, SCM sources and Evaluation sets are *owned*;
  *    silently cascading them away, or silently orphaning them, both lose data an
@@ -125,6 +125,48 @@ describe('DELETE /users/:id with rows referencing the user', () => {
     return app.request(`/api/users/${id}`, { method: 'DELETE' })
   }
 
+  it('preserves the actor of ordinary audit writes and displays it after account deletion', async () => {
+    await seedUser('usr_actor')
+    const { writeAudit } =
+      await vi.importActual<typeof import('../../lib/audit.js')>('../../lib/audit.js')
+    app.post('/record-action', async (c) => {
+      await writeAudit(c, { userId: 'usr_actor', action: 'skill.delete', resource: 'skill' })
+      await writeAudit(c, {
+        userId: 'usr_actor',
+        action: 'user.role.updated',
+        resource: 'user',
+        details: { username: 'the-target-user', previousRole: 'user' },
+      })
+      return c.json({ ok: true })
+    })
+    const auditRoute = await import('../audit-logs.js')
+    app.route('/api/audit-logs', auditRoute.default)
+    expect((await app.request('/record-action', { method: 'POST' })).status).toBe(200)
+
+    expect((await deleteUser('usr_actor')).status).toBe(200)
+    const response = await app.request('/api/audit-logs')
+    const { data } = (await response.json()) as {
+      data: Array<{
+        userId: string | null
+        username: string | null
+        action: string
+        details: unknown
+      }>
+    }
+    expect(data).toHaveLength(2)
+    for (const row of data) {
+      expect(row.userId).toBeNull()
+      expect(row.username).toBe('usr_actor')
+      expect(row.details).toMatchObject({
+        deletedActor: { id: 'usr_actor', username: 'usr_actor' },
+      })
+    }
+    expect(data.find((row) => row.action === 'user.role.updated')?.details).toMatchObject({
+      username: 'the-target-user',
+      previousRole: 'user',
+    })
+  })
+
   it('deletes a user who has audit and run history, nulling the provenance columns', async () => {
     await seedUser('usr_alice')
     await db.insert(auditLogs).values({
@@ -160,9 +202,10 @@ describe('DELETE /users/:id with rows referencing the user', () => {
     const audit = (await db.select().from(auditLogs).where(eq(auditLogs.id, 'aud_1')))[0]
     expect(audit).toBeDefined()
     expect(audit?.userId).toBeNull()
-    // Auditability survives the account: the actor's name was captured in
-    // `details` at write time, so the entry still says who acted.
-    expect(audit?.details).toEqual({ username: 'usr_alice' })
+    expect(audit?.details).toEqual({
+      username: 'usr_alice',
+      deletedActor: { id: 'usr_alice', username: 'usr_alice' },
+    })
 
     const run = (await db.select().from(runs).where(eq(runs.id, 'run_1')))[0]
     expect(run).toBeDefined()
@@ -275,6 +318,11 @@ describe('DELETE /users/:id with rows referencing the user', () => {
     expect((await db.select().from(auditLogs).where(eq(auditLogs.id, 'aud_solo')))[0]?.userId).toBe(
       'usr_solo',
     )
+    expect(
+      (await db.select().from(auditLogs).where(eq(auditLogs.id, 'aud_solo')))[0]?.details,
+    ).toEqual({
+      username: 'usr_solo',
+    })
     expect((await db.select().from(runs).where(eq(runs.id, 'run_solo')))[0]?.userId).toBe(
       'usr_solo',
     )

@@ -794,3 +794,40 @@ describe('BaseAgentEngine.executeStream — fallback', () => {
     expect(result.error).toBe('plain string failure')
   })
 })
+
+describe('BaseAgentEngine.executeStream — fallback MCP lifetime', () => {
+  it('keeps config until the fallback settles', async () => {
+    isModelErrorMock.mockReturnValue(true)
+    selectFallbackModelMock.mockReturnValue('fallback-model')
+    let finish!: () => void
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    let started!: () => void
+    const entered = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let attempt = 0
+    const engine = new TestEngine('cursor', async () => {
+      if (++attempt === 1) throw new Error('model unavailable')
+      started()
+      await gate
+      return { success: true, output: 'fallback', durationMs: 0 }
+    })
+    const pending = engine.executeStream(
+      makeReq({
+        fallbackModels: ['fallback-model'],
+        agentConfig: {
+          resolvedMcpServers: [{ name: 'server', type: 'http', url: 'http://localhost' }],
+        } as never,
+      }),
+    )
+    await entered
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const cleanedBeforeFallbackFinished = cleanupManagedMcpConfigAsyncMock.mock.calls.length
+    finish()
+    await pending
+    expect(cleanedBeforeFallbackFinished).toBe(0)
+    expect(cleanupManagedMcpConfigAsyncMock).toHaveBeenCalledTimes(1)
+  })
+})

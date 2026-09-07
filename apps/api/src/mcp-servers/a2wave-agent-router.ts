@@ -36,7 +36,7 @@ import {
   A2WAVE_CALLER_PROVENANCE_EXTENSION_URI,
   buildOutboundA2AProvenance,
 } from '../a2a/provenance.js'
-import { INTERNAL_TOKEN_ENV, INTERNAL_TOKEN_HEADER } from '../lib/internal-admin-auth.js'
+import { INTERNAL_TOKEN_ENV, INTERNAL_TOKEN_HEADER } from '../lib/internal-auth-constants.js'
 import { createStreamingSafeFetch, parseTrustedHostnames } from '../lib/streaming-safe-fetch.js'
 import { assertSafeHttpUrl, UnsafeUrlError } from '../lib/url-safety-core.js'
 import {

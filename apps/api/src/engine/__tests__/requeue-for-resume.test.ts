@@ -67,7 +67,7 @@ vi.mock('../../lib/scm-path-plan.js', () => ({ withScmPathMutation: vi.fn() }))
 
 const { db } = await import('../../db/client.js')
 const { runs, runSteps } = await import('../../db/schema.js')
-const { taskQueueDb } = await import('../task-queue-db.js')
+const { taskQueueDb, getQueuedRunAgentIds } = await import('../task-queue-db.js')
 
 const NOW = new Date('2026-08-20T10:00:00Z')
 
@@ -94,6 +94,15 @@ describe('taskQueueDb.requeueForResume', () => {
   beforeEach(async () => {
     await db.delete(runSteps)
     await db.delete(runs)
+  })
+
+  it('finds distinct queued agents independently of local leases or sync ownership', async () => {
+    await seedRun({ id: 'run_queued_a', status: 'queued' })
+    await seedRun({ id: 'run_queued_b', status: 'queued' })
+    await seedRun({ id: 'run_peer', status: 'queued', initiatorAgentId: 'agt_peer' })
+    await seedRun({ id: 'run_running', initiatorAgentId: 'agt_running' })
+    await seedRun({ id: 'run_unassigned', status: 'queued', initiatorAgentId: null })
+    expect((await getQueuedRunAgentIds()).sort()).toEqual(['agt_1', 'agt_peer'])
   })
 
   it('returns the run to the queue', async () => {

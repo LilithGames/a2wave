@@ -42,6 +42,28 @@ describe('summarizeFeishuError', () => {
 })
 
 describe('createLarkSdkLogger', () => {
+  it('preserves diagnostics from the nested argument arrays passed by the SDK logger proxy', () => {
+    vi.mocked(logger.error).mockClear()
+    // LoggerProxy wraps its arguments in an array; formatErrors adds another.
+    createLarkSdkLogger().error(['http request failed', [buildSdkAxiosError()]])
+
+    const [bindings, message] = vi.mocked(logger.error).mock.calls[0] as [
+      Record<string, unknown>,
+      string,
+    ]
+    expect(bindings.larkDetails).toEqual([
+      expect.objectContaining({
+        status: 400,
+        feishuCode: 99991663,
+        feishuMsg: 'app ticket invalid',
+        logId: 'logid-1',
+      }),
+    ])
+    expect(message).toContain('http request failed')
+    expect(JSON.stringify(bindings)).not.toContain('SUPER_SECRET_APP_SECRET')
+    expect(JSON.stringify(bindings)).not.toContain('Bearer t-LEAKED_TENANT_TOKEN')
+  })
+
   it('summarises the error instead of letting the SDK print it to stderr', () => {
     vi.mocked(logger.error).mockClear()
 

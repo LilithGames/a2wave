@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { GitConfig, WorktreeCleanup } from '@a2wave/shared'
+import { appendGitExcludePatterns } from './git-exclude.js'
 import { withKeyedLock } from './keyed-mutex.js'
 import { logger } from './logger.js'
 import { defaultScmWorkspacesPath } from './scm-storage.js'
@@ -197,8 +198,6 @@ export function workspaceMutexKey(wsRoot: string, name: string): string {
   return `scm-worktree:${join(wsRoot, name)}`
 }
 
-const PLATFORM_EXCLUDE_HEADER = '# a2wave: platform-written workspace paths'
-
 /**
  * Keep the paths the platform writes into a workspace out of `git status`.
  *
@@ -236,23 +235,10 @@ async function ensurePlatformPathsExcluded(repoPath: string): Promise<void> {
       timeout: GIT_TIMEOUT_MS,
     })
     const excludePath = resolve(repoPath, stdout.trim())
-    let existing = ''
-    try {
-      existing = await readFile(excludePath, 'utf-8')
-    } catch {
-      // No exclude file yet (a `git init` template can omit it) — create it.
-    }
-    const present = new Set(existing.split('\n').map((line) => line.trim()))
-    const missing = [...platformWorkspacePaths()]
-      .sort()
-      .map((path) => `/${path}`)
-      .filter((pattern) => !present.has(pattern))
-    if (missing.length === 0) return
-
-    await mkdir(join(excludePath, '..'), { recursive: true })
-    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
-    const header = present.has(PLATFORM_EXCLUDE_HEADER) ? '' : `${PLATFORM_EXCLUDE_HEADER}\n`
-    await writeFile(excludePath, `${existing}${prefix}${header}${missing.join('\n')}\n`)
+    await appendGitExcludePatterns(
+      excludePath,
+      [...platformWorkspacePaths()].sort().map((path) => `/${path}`),
+    )
   } catch (err) {
     logger.warn({ err, repoPath }, 'Failed to exclude platform-written paths from git')
   }

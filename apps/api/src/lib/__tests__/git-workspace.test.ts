@@ -7,6 +7,10 @@ import { promisify } from 'node:util'
 import type { GitConfig } from '@a2wave/shared'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cleanupManagedMcpConfigAsync,
+  syncMcpToWorkspaceAtPathAsync,
+} from '../../engine/mcp-sync.js'
+import {
   cleanupStaleWorkspaces,
   createGitWorkspace,
   defaultWorkspacesPath,
@@ -25,6 +29,27 @@ vi.mock('../scm-workspace-safety.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../scm-workspace-safety.js')>()),
   assertStoredScmWorkspacesRoot: vi.fn().mockResolvedValue(undefined),
 }))
+
+const excludeWriteGate = vi.hoisted(() => ({
+  wait: null as Promise<void> | null,
+  entered: null as (() => void) | null,
+}))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      if (excludeWriteGate.wait && String(args[0]).endsWith('info/exclude')) {
+        const wait = excludeWriteGate.wait
+        excludeWriteGate.wait = null
+        excludeWriteGate.entered?.()
+        await wait
+      }
+      return actual.writeFile(...args)
+    },
+  }
+})
 
 const execFileAsync = promisify(execFile)
 
@@ -934,6 +959,40 @@ describe('git-workspace', () => {
         cwd: result.path,
       })
       expect(stdout).not.toContain('mcp.json')
+    })
+
+    it('preserves live MCP exclusions when another workspace initializes concurrently', async () => {
+      let release = () => {}
+      const entered = new Promise<void>((resolve) => {
+        excludeWriteGate.entered = resolve
+      })
+      excludeWriteGate.wait = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const creation = createGitWorkspace(REPO_DIR, WS_ROOT, 'second-agent', singleRepoConfig)
+      await entered
+      const configPath = 'custom-mcp.json'
+      const sync = syncMcpToWorkspaceAtPathAsync(REPO_DIR, configPath, [
+        {
+          name: 'api',
+          type: 'http',
+          url: 'https://mcp.example.com',
+          headers: { Authorization: 'Bearer concurrent-test-secret' },
+        },
+      ])
+      // The old independent writer completes while workspace creation retains a
+      // stale snapshot. A shared lock may instead defer sync until release.
+      await Promise.race([sync, new Promise((resolve) => setTimeout(resolve, 300))])
+      release()
+      excludeWriteGate.entered = null
+      await Promise.all([creation, sync])
+      try {
+        await execFileAsync('git', ['add', '-A'], { cwd: REPO_DIR })
+        const { stdout } = await execFileAsync('git', ['diff', '--cached'], { cwd: REPO_DIR })
+        expect(stdout).toBe('')
+      } finally {
+        await cleanupManagedMcpConfigAsync(REPO_DIR, configPath)
+      }
     })
 
     it('writes each platform path exactly once across repeated runs', async () => {

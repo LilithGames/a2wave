@@ -720,7 +720,13 @@ class GitTriggerManager {
     const project = fired.request.project || repo.project
     const author =
       fired.request.lastCommentAuthor ??
-      (await fetchLatestCommentAuthor(provider, project, fired.request.number, repo.host))
+      (await fetchLatestCommentAuthor(
+        provider,
+        project,
+        fired.request.number,
+        repo.host,
+        fired.request.updatedAt,
+      ))
     if (!author) return false
 
     // Both forges treat account names case-insensitively.

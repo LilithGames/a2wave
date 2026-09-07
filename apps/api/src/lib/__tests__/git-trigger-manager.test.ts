@@ -158,6 +158,10 @@ vi.mock('../../engine/task-queue.js', () => ({
 const listOpenRequests = vi.fn()
 const fetchForgeAccount = vi.fn()
 const fetchLatestCommentAuthor = vi.fn()
+const runStatusProbe = vi.fn()
+vi.mock('../../engine/login-status-helper.js', () => ({
+  runStatusProbe: (...args: unknown[]) => runStatusProbe(...args),
+}))
 vi.mock('../git-trigger-cli.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git-trigger-cli.js')>()
   return {
@@ -357,6 +361,31 @@ describe('self-authored comment suppression', () => {
       lastError: null,
     })
   }
+
+  it('dispatches the listed human comment when a bot replies before the notes lookup', async () => {
+    seedOneComment()
+    fetchForgeAccount.mockResolvedValue('a2wave-bot')
+    listOpenRequests.mockResolvedValue({
+      requests: [pr(1, { comments: 2, updatedAt: '2026-08-06T10:00:00Z' })],
+      complete: true,
+    })
+    runStatusProbe.mockResolvedValue({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        { system: false, created_at: '2026-08-06T10:00:01Z', author: { username: 'a2wave-bot' } },
+        { system: false, created_at: '2026-08-06T09:59:59Z', author: { username: 'alice' } },
+      ]),
+      stderr: '',
+    })
+    const actual =
+      await vi.importActual<typeof import('../git-trigger-cli.js')>('../git-trigger-cli.js')
+    fetchLatestCommentAuthor.mockImplementation(actual.fetchLatestCommentAuthor)
+
+    await pollOnce(config({ events: ['commented'] }))
+
+    expect(runRows).toHaveLength(1)
+    expect([...stateRows.values()][0].state.requests['1'].comments).toBe(2)
+  })
 
   it('ignores a comment the channel wrote itself, and still advances the fingerprint', async () => {
     seedOneComment()

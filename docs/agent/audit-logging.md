@@ -23,6 +23,15 @@ logAudit(c, {
 - `resource` + `resourceId` — the entity touched. Most entries carry a `resourceId` and no `details`, and the page relies on it to identify the row.
 - The user and IP come from the Hono context automatically. Don't pass `userId` unless the acting identity genuinely differs from the session.
 
+### Account deletion preserves the actor
+
+Deleting an account snapshots its ID and username into `details.deletedActor`
+in the same update that clears the audit row's foreign key. Existing details are
+preserved: `details.username` may describe the operation's target, and ordinary
+mutation entries often have no details at all. `GET /api/audit-logs` falls back
+to the snapshot for the displayed username once the actor's account is gone.
+The deletion transaction rolls this update back if deletion is refused.
+
 ### Background work uses `logBackgroundAudit()`
 
 Work with no request context — the data-retention sweep, evaluation execution — has no session to attribute to, but still needs a trail. Identity comes from the row that scheduled the work:

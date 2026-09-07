@@ -22,6 +22,7 @@ import { type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { logAudit } from '../lib/audit.js'
 import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { hashPassword, validatePassword } from '../lib/auth.js'
+import { jsonSet } from '../lib/json-sql.js'
 
 const app = new Hono()
 
@@ -151,9 +152,10 @@ app.delete('/:id', async (c) => {
       //
       // Nulling rather than deleting: an audit entry, run, artifact, share link or
       // evaluation task must outlive the account that produced it. Iron Rule 5
-      // makes "who did this" permanently answerable, and the username captured in
-      // `audit_logs.details` at write time keeps that true once the id is gone. A
-      // scheduled Agent likewise just loses its run-as identity.
+      // makes "who did this" permanently answerable. Ordinary audit writes do not
+      // snapshot the actor, and details.username can describe the target instead,
+      // so preserve a separate actor snapshot before severing the reference.
+      // A scheduled Agent likewise just loses its run-as identity.
       //
       // Why here and not `ON DELETE SET NULL`: changing an existing foreign key in
       // SQLite needs a full table rebuild, and drizzle's generated rebuild
@@ -165,7 +167,13 @@ app.delete('/:id', async (c) => {
       // migration and behave identically on both dialects. They are undone by the
       // ROLLBACK that `LastAdminDeletionRefused` triggers below, so a refused
       // last-admin deletion leaves every reference intact.
-      await tx.update(auditLogs).set({ userId: null }).where(eq(auditLogs.userId, id))
+      await tx
+        .update(auditLogs)
+        .set({
+          userId: null,
+          details: jsonSet(auditLogs.details, ['deletedActor'], { id, username: user.username }),
+        })
+        .where(eq(auditLogs.userId, id))
       await tx.update(runs).set({ userId: null }).where(eq(runs.userId, id))
       await tx.update(artifacts).set({ userId: null }).where(eq(artifacts.userId, id))
       await tx

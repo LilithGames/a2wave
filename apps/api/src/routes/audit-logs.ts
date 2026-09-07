@@ -1,4 +1,4 @@
-import { type SQL, and, count, desc, eq, gte, lte } from 'drizzle-orm'
+import { and, count, desc, eq, gte, lte, type SQL } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { db } from '../db/client.js'
 import { auditLogs, users } from '../db/schema.js'
@@ -67,7 +67,18 @@ app.get('/', async (c) => {
   const total = totalResult?.count ?? 0
 
   return c.json({
-    data,
+    data: data.map((row) => {
+      const actor = row.details?.deletedActor
+      const deletedUsername =
+        row.userId === null &&
+        actor !== null &&
+        typeof actor === 'object' &&
+        'username' in actor &&
+        typeof actor.username === 'string'
+          ? actor.username
+          : null
+      return { ...row, username: row.username ?? deletedUsername }
+    }),
     pagination: {
       total,
       page: pageNum,
