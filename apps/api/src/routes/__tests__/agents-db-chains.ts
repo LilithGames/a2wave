@@ -1,7 +1,7 @@
-import { vi } from 'vitest'
+import { type Mock, vi } from 'vitest'
 import { asyncQuery } from '../../test/async-query.js'
 
-export function makeSelectChain(result: unknown) {
+export function makeSelectChain(result: unknown): { from: Mock } {
   return {
     from: vi.fn().mockReturnValue(
       asyncQuery({
@@ -27,7 +27,7 @@ export function makeSelectChain(result: unknown) {
   }
 }
 
-export function makeInsertChain(returnValue?: unknown) {
+export function makeInsertChain(returnValue?: unknown): { values: Mock } {
   return {
     values: vi.fn().mockReturnValue(
       asyncQuery({
@@ -42,7 +42,7 @@ export function makeInsertChain(returnValue?: unknown) {
   }
 }
 
-export function makeUpdateChain() {
+export function makeUpdateChain(): { set: Mock } {
   return {
     set: vi.fn().mockReturnValue(
       asyncQuery({
@@ -56,7 +56,7 @@ export function makeUpdateChain() {
   }
 }
 
-export function makeUpdateReturningChain(returnValue?: unknown) {
+export function makeUpdateReturningChain(returnValue?: unknown): { set: Mock } {
   return {
     set: vi.fn().mockReturnValue(
       asyncQuery({
@@ -75,7 +75,7 @@ export function makeUpdateReturningChain(returnValue?: unknown) {
   }
 }
 
-export function makeDeleteChain() {
+export function makeDeleteChain(): { where: Mock } {
   return {
     where: vi.fn().mockReturnValue(
       asyncQuery({
