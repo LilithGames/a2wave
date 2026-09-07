@@ -1522,6 +1522,44 @@ describe('POST /runs/:id/rerun', () => {
       expect(metadata.queuedTurn).toBe(true)
     })
 
+    it('refuses while the failed attempt is still cleaning up', async () => {
+      // `failed` is written before the execution lease is released, and the
+      // lease is keyed by run id. Re-admitting the same id inside that window
+      // hands the old owner's completeExecutionLease() the NEW attempt's
+      // bindings: it would tear down the retry's cancellation wiring and
+      // release the SCM lease the retry is holding.
+      const { hasExecutionLease } = await import('../../engine/execution-lease-registry.js')
+      ;(hasExecutionLease as Mock).mockReturnValueOnce(true)
+      arrangeFailedRun()
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(409)
+      expect(mockExecuteChatRun).not.toHaveBeenCalled()
+      // Nothing was claimed, so the row must still read as the failure it was.
+      expect(
+        setCalls.find((call) => (call as { status?: string }).status === 'pending'),
+      ).toBeUndefined()
+    })
+
+    it('puts the failure back when admission throws rather than refuses', async () => {
+      // queue_full is a return value; a worktree teardown inside admission can
+      // also throw. Both leave a claimed row that nothing will ever execute.
+      arrangeFailedRun()
+      mockTryAcquireSlot.mockImplementationOnce(() => {
+        throw new Error('worktree removal failed')
+      })
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(500)
+      const restored = setCalls.find(
+        (call) => (call as { status?: string }).status === 'failed',
+      ) as Record<string, unknown>
+      expect(restored).toBeDefined()
+      expect(restored.result).toEqual({ error: 'refresh token was revoked' })
+    })
+
     it('records the retry as its own audit action', async () => {
       arrangeFailedRun()
 

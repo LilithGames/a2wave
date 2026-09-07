@@ -125,6 +125,24 @@ describe('RunsRetryAllButton', () => {
     ])
   })
 
+  it('offers a run again once it has actually failed again', async () => {
+    // In-place retry reuses the row, so the SAME id can fail again later. The
+    // memory only exists to survive the stale list between the click and the
+    // refetch — holding it forever would make a page silently refuse to retry
+    // a genuinely new failure.
+    const { rerender } = renderWithProviders(<Harness failedRunIds={['run_a']} />)
+    await clickRetryAll()
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1))
+
+    // The refetch lands: the row is running now, so it leaves the failed set.
+    rerender(<Harness failedRunIds={[]} />)
+    // ...and later it fails again.
+    rerender(<Harness failedRunIds={['run_a']} />)
+    await clickRetryAll()
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2))
+  })
+
   it('remembers what it replayed across a tab switch', async () => {
     // The button lives in the Runs tab bar and unmounts when the operator looks
     // at another tab; coming back must not re-offer the batch just submitted.

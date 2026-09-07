@@ -787,6 +787,42 @@ describe('recoverOnStartup', () => {
     expect(onExecute).toHaveBeenCalledWith('run_feishu_rerun_q', 'agt_1')
   })
 
+  it('lets a running in-place retry of a native Feishu run resume across a restart', async () => {
+    // The running branch fails any Feishu run holding a triggerSessionId,
+    // trusting pending-message replay to rebuild it. For a retry that replay
+    // was already consumed by the first attempt, so failing here means the
+    // retry dies for a rescue that never arrives.
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'running'
+          ? [
+              {
+                id: 'run_feishu_retry_running',
+                triggerSource: 'feishu',
+                triggerSessionId: 'msg_1',
+                hasNativeChatContext: true,
+                retryAttempt: 1,
+              },
+            ]
+          : [],
+      ),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'], {
+      canResume: vi.fn().mockResolvedValue(true),
+    })
+
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalled()
+    expect(db.requeueForResume).toHaveBeenCalledWith(
+      'run_feishu_retry_running',
+      FAILURE_REASONS.SERVER_RESTART_DURING_EXEC.code,
+    )
+    expect(stats.runningResumed).toBe(1)
+  })
+
   it('preserves a queued in-place retry of a native Feishu run across a restart', async () => {
     // The `!triggerSessionId` half of the restart-safe predicate assumes any
     // Feishu run carrying a session id is a native event that pending-message

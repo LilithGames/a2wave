@@ -48,6 +48,18 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+/**
+ * `codex doctor` output, trimmed to the two lines that decide the verdict.
+ *
+ * The `auth` row reports on the LOCAL credential ("auth is configured") — it is
+ * the `websocket` row that opens a Responses socket with that credential and is
+ * therefore the only line that proves the vendor still accepts it. A revoked
+ * token leaves `auth` happy and the handshake at 401.
+ */
+const DOCTOR_HEALTHY =
+  '  ✓ auth         auth is configured\n' +
+  '  ✓ websocket    connected (HTTP 101 Switching Protocols) · 15s timeout\n'
+
 describe('CodexAgentEngine.checkLoginStatus', () => {
   const engine = new CodexAgentEngine({
     path: 'codex',
@@ -63,7 +75,7 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
     const promise = engine.checkLoginStatus()
     settle(statusChild, 'Logged in using ChatGPT\n', 0)
     await Promise.resolve()
-    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
+    settle(doctorChild, DOCTOR_HEALTHY, 0)
     const status = await promise
     expect(status.installed).toBe(true)
     expect(status.loggedIn).toBe(true)
@@ -100,7 +112,7 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
     const promise = engine.checkLoginStatus()
     settle(statusChild, '\n\n  Logged in using ChatGPT  \n\n', 0)
     await Promise.resolve()
-    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
+    settle(doctorChild, DOCTOR_HEALTHY, 0)
     const status = await promise
     expect(status.loggedIn).toBe(true)
     expect(status.method).toBe('ChatGPT')
@@ -114,7 +126,7 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
     statusChild.stdout.end()
     statusChild.emit('close', 0)
     await Promise.resolve()
-    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
+    settle(doctorChild, DOCTOR_HEALTHY, 0)
     const status = await promise
     expect(status.loggedIn).toBe(true)
   })
@@ -144,12 +156,63 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
     expect(status.error).toMatch(/no Codex credentials were found/)
   })
 
+  it('refuses to call a session verified on the local auth row alone', async () => {
+    // "auth is configured" is a statement about ~/.codex/auth.json. Reporting
+    // it as verified is the exact false green this whole probe exists to kill.
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(doctorChild, '  ✓ auth         auth is configured\n', 0)
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(false)
+  })
+
+  it('treats a 401 on the vendor handshake as a rejected credential', async () => {
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(
+      doctorChild,
+      '  ✓ auth         auth is configured\n' +
+        '  ⚠ websocket    Responses WebSocket failed; HTTPS fallback may still work\n' +
+        '      handshake transport error http 401 Unauthorized: Some("")\n',
+      1,
+    )
+    const status = await promise
+    expect(status.loggedIn).toBe(false)
+    expect(status.verified).toBe(true)
+    expect(status.code).toBe('CREDENTIALS_REJECTED')
+  })
+
+  it('does not blame the credential for a transport problem', async () => {
+    // A blocked socket says nothing about the token; a proxy or firewall must
+    // not be reported to the operator as an expired login.
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(
+      doctorChild,
+      '  ✓ auth         auth is configured\n' +
+        '  ⚠ websocket    Responses WebSocket failed; HTTPS fallback may still work\n' +
+        '      handshake transport error dns failure\n',
+      1,
+    )
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(false)
+    expect(status.code).toBeUndefined()
+  })
+
   it('marks a confirmed session as verified', async () => {
     const [statusChild, doctorChild] = queueChildren(2)
     const promise = engine.checkLoginStatus()
     settle(statusChild, 'Logged in using ChatGPT\n', 0)
     await Promise.resolve()
-    settle(doctorChild, 'Notes\n   ✓ auth         signed in as someone\n', 0)
+    settle(doctorChild, DOCTOR_HEALTHY, 0)
     const status = await promise
     expect(status.loggedIn).toBe(true)
     expect(status.verified).toBe(true)

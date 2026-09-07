@@ -67,6 +67,11 @@ export function buildRetryMetadata(
     // Which engine the original request selected; the retry replays the same
     // request, so it must select the same one.
     ...(prior.oauthEngineType ? { oauthEngineType: prior.oauthEngineType } : {}),
+    // Consume-once flags that are still here BECAUSE the failed attempt never
+    // spent them. The request asked for a fresh provider session; dropping the
+    // ask would let the retry resume an older completed conversation instead.
+    ...(prior.oauthResetSession ? { oauthResetSession: true } : {}),
+    ...(prior.nativeChatResetSession ? { nativeChatResetSession: true } : {}),
     ...(options.attachments?.length ? { attachments: options.attachments } : {}),
     ...(options.attachmentConsumerId ? { attachmentConsumerId: options.attachmentConsumerId } : {}),
     ...(options.nativeChatContext ? { nativeChatContext: options.nativeChatContext } : {}),

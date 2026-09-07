@@ -45,12 +45,18 @@ export function useRunsRetryAll(failedRunIds: string[], canRetry: boolean): Runs
   // page turn taken during it — from replaying the same work twice.
   const alreadyReplayed = useRef(new Set<string>())
   const [replayedCount, setReplayedCount] = useState(0)
-  const pendingRunIds = useMemo(
-    () => failedRunIds.filter((runId) => !alreadyReplayed.current.has(runId)),
+  const pendingRunIds = useMemo(() => {
+    // Forget a run the moment the list stops calling it failed: the retry took
+    // effect. Holding the id forever would be wrong now that a retry reuses the
+    // row — the same id can fail AGAIN later, and a page that still remembered
+    // it would quietly refuse to retry a genuinely new failure.
+    for (const runId of alreadyReplayed.current) {
+      if (!failedRunIds.includes(runId)) alreadyReplayed.current.delete(runId)
+    }
+    return failedRunIds.filter((runId) => !alreadyReplayed.current.has(runId))
     // `replayedCount` is the dependency that re-derives this after a replay:
     // the ref itself never changes identity.
-    [failedRunIds, replayedCount],
-  )
+  }, [failedRunIds, replayedCount])
 
   const retryAll = useCallback(() => {
     if (pendingRunIds.length === 0 || !canRetry || replaying) return

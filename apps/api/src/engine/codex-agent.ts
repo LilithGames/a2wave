@@ -387,10 +387,18 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
   /**
    * Asks `codex doctor` whether the stored credentials are still accepted.
    *
-   * Doctor is the only Codex subcommand that reaches OpenAI to answer this: it
-   * reports an `auth` line and opens a Responses WebSocket, so a revoked
-   * refresh token turns into a definite `✗ auth` rather than the cheerful
-   * "Logged in using ChatGPT" that `login status` prints from disk alone.
+   * Doctor is the only Codex subcommand that reaches OpenAI, and the reading is
+   * deliberately split across its two rows:
+   *
+   * - `auth` reports on the LOCAL credential — a healthy line literally says
+   *   "auth is configured". On its own it proves no more than `login status`
+   *   does, so it can only ever REFUSE (`✗` = no usable credential present).
+   * - `websocket` opens a Responses socket WITH that credential. `✓ connected
+   *   (HTTP 101)` is the only evidence the vendor still accepts it, and a
+   *   revoked token shows up here as `handshake transport error http 401`.
+   *
+   * Treating `✓ auth` as confirmation would rebuild the false green this probe
+   * exists to remove.
    *
    * Returns `null` for "cannot say" — a missing CLI, a timeout, or output with
    * no auth line at all. That is deliberately different from `{valid: false}`:
@@ -414,13 +422,23 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
     // validity.
     const authLine = combined.match(/([✓✗⚠])\s+auth\b[ \t]*(.*)/)
     if (!authLine) return null
+    const [, authGlyph, authRest] = authLine
+    if (authGlyph === '✗') return { valid: false, message: authRest?.trim() || undefined }
 
-    const [, glyph, rest] = authLine
-    const message = rest?.trim() || undefined
-    if (glyph === '✗') return { valid: false, message }
-    if (glyph === '✓') return { valid: true, message }
-    // '⚠' is doctor hedging (degraded transport, fallback still possible); it
-    // is not a refusal, and it is not a confirmation either.
+    // The vendor's own answer. A 401/403 on the handshake is the credential
+    // being refused; any other transport failure (proxy, DNS, blocked
+    // WebSocket policy) says nothing about the token, and reporting it as an
+    // expired login would send the operator to re-authenticate over a network
+    // problem.
+    const rejection = combined.match(/handshake transport error[^\n]*\b40[13]\b[^\n]*/i)
+    if (rejection) return { valid: false, message: rejection[0].trim() }
+
+    const websocketLine = combined.match(/([✓✗⚠])\s+websocket\b[ \t]*(.*)/)
+    if (authGlyph === '✓' && websocketLine?.[1] === '✓') {
+      return { valid: true, message: websocketLine[2]?.trim() || undefined }
+    }
+    // Everything else is doctor hedging: a credential is present, and nothing
+    // here either confirms or refutes that the vendor still takes it.
     return null
   }
 

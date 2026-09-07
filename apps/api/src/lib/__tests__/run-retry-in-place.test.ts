@@ -56,6 +56,16 @@ describe('buildRetryMetadata', () => {
     expect(next.retryAttempt).toBe(3)
   })
 
+  it('keeps an unconsumed request for a fresh session', () => {
+    // The flags are consume-once: still being here means the failed attempt
+    // never spent them. Dropping them would let the retry resume an older
+    // completed conversation that the original request explicitly refused.
+    const next = buildRetryMetadata(previous, { userId: 'usr_new' })
+
+    expect(next.oauthResetSession).toBe(true)
+    expect(next.nativeChatResetSession).toBe(true)
+  })
+
   it('keeps the OAuth caller that owns this run', () => {
     // The field gates who may read and cancel the run; dropping it would widen
     // access, because an absent value is treated as legacy-and-allowed.

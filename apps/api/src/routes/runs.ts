@@ -19,7 +19,7 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { reserveExecutionLease } from '../engine/execution-lease-registry.js'
+import { hasExecutionLease, reserveExecutionLease } from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
@@ -1039,6 +1039,16 @@ app.post('/:id/rerun', async (c) => {
   // so one Provider outage turns the Runs list into pairs of identical intents
   // where nothing says which failures are already handled.
   if (originalRun.status === 'failed') {
+    // `failed` is written before the previous attempt's execution lease is
+    // released, and that lease is keyed by run id. Re-admitting the same id
+    // inside the cleanup window hands the dying owner's
+    // `completeExecutionLease()` the NEW attempt's bindings — tearing down its
+    // cancellation wiring and releasing the SCM lease it holds. A retry a
+    // second later is the whole cost of avoiding that.
+    if (hasExecutionLease(id)) {
+      return c.json({ error: 'The previous attempt is still finishing; retry in a moment' }, 409)
+    }
+
     const retryMetadata = buildRetryMetadata(originalRun.executionMetadata, {
       userId,
       attachments: rerunAttachments,
@@ -1054,7 +1064,17 @@ app.post('/:id/rerun', async (c) => {
       return c.json({ error: 'Run is no longer failed; it may already be retrying' }, 409)
     }
 
-    const retrySlot = await tryAcquireSlot(taskQueueDb, agentId, id, agent.maxConcurrency ?? 1)
+    let retrySlot: Awaited<ReturnType<typeof tryAcquireSlot>>
+    try {
+      retrySlot = await tryAcquireSlot(taskQueueDb, agentId, id, agent.maxConcurrency ?? 1)
+    } catch (error) {
+      // A full queue is a return value, but admission can also throw (a
+      // worktree teardown, an SCM arbitration error). Either way the row has
+      // already been claimed: leaving it `pending` with its error erased and
+      // nothing scheduled destroys the failure record and strands the run.
+      await restoreFailedRun(originalRun)
+      throw error
+    }
     if (retrySlot === 'queue_full') {
       await restoreFailedRun(originalRun)
       return c.json({ error: 'Queue is full' }, 429)

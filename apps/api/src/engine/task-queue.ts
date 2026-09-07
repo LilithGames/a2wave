@@ -34,6 +34,23 @@ export function parsePendingOrphanTimeoutMs(value: string | undefined): number {
   return parsed
 }
 
+/**
+ * Whether a native Feishu event is still waiting to be replayed for this run.
+ *
+ * A `triggerSessionId` normally means exactly that: the row came from a Feishu
+ * event whose pending message can rebuild the reply closure a restart
+ * destroyed. An in-place retry breaks the equivalence — it keeps the original
+ * event's session id, but that event was consumed by the first attempt, so no
+ * replay is coming and treating the row as "replay will handle it" silently
+ * discards the retry.
+ */
+export function awaitsFeishuEventReplay(run: {
+  triggerSessionId: string | null
+  retryAttempt?: number
+}): boolean {
+  return !!run.triggerSessionId && run.retryAttempt == null
+}
+
 export interface RunRow {
   id: string
   triggerSource: string | null
@@ -421,7 +438,7 @@ export async function recoverOnStartup(
         // with persisted context, including the interrupted-step fallback in
         // requeueForResume. The queued gate below still rejects any rerun whose
         // context could not be restored.
-        if (run.triggerSource === 'feishu' && run.triggerSessionId) {
+        if (run.triggerSource === 'feishu' && awaitsFeishuEventReplay(run)) {
           await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
           stats.runningAborted++
           continue
@@ -494,8 +511,8 @@ export async function recoverOnStartup(
       // is coming", not "a reply can be sent".
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        const awaitsEventReplay = !!run.triggerSessionId && run.retryAttempt == null
-        const isRestartSafeFeishuRerun = !awaitsEventReplay && run.hasNativeChatContext === true
+        const isRestartSafeFeishuRerun =
+          !awaitsFeishuEventReplay(run) && run.hasNativeChatContext === true
         if (run.triggerSource === 'feishu' && !isRestartSafeFeishuRerun) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++
