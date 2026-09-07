@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-09-04 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-09-07 · `node scripts/gates/check-license-inventory.mjs --write` · 826 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -14,7 +14,7 @@ checked for forbidden licenses, and each carries the same license as its parent 
 
 | License | Packages |
 |---|---|
-| MIT | 705 |
+| MIT | 704 |
 | ISC | 41 |
 | Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
@@ -37,14 +37,14 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 
 | Package | Version(s) | License |
 |---|---|---|
-| @a2a-js/sdk | 1.0.1 | Apache-2.0 |
+| @a2a-js/sdk | 1.1.0 | Apache-2.0 |
 | @adobe/css-tools | 4.4.4 | MIT |
 | @ant-design/colors | 8.0.1 | MIT |
 | @ant-design/cssinjs | 2.1.2 | MIT |
 | @ant-design/cssinjs-utils | 2.1.2 | MIT |
 | @ant-design/fast-color | 3.0.1 | MIT |
-| @ant-design/icons | 6.3.2 | MIT |
-| @ant-design/icons-svg | 4.5.0 | MIT |
+| @ant-design/icons | 6.3.4 | MIT |
+| @ant-design/icons-svg | 4.6.0 | MIT |
 | @ant-design/react-slick | 2.0.0 | MIT |
 | @asamuzakjp/css-color | 3.2.0 | MIT |
 | @babel/code-frame | 7.29.0, 7.29.7 | MIT |
@@ -87,8 +87,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @codemirror/autocomplete | 6.20.3 | MIT |
 | @codemirror/commands | 6.11.0 | MIT |
 | @codemirror/language | 6.12.4 | MIT |
-| @codemirror/state | 6.7.1 | MIT |
-| @codemirror/view | 6.43.9 | MIT |
+| @codemirror/state | 6.7.2 | MIT |
+| @codemirror/view | 6.43.11 | MIT |
 | @csstools/color-helpers | 5.1.0 | MIT-0 |
 | @csstools/css-calc | 2.1.4 | MIT |
 | @csstools/css-color-parser | 3.1.0 | MIT |
@@ -138,13 +138,13 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @jridgewell/resolve-uri | 3.1.2 | MIT |
 | @jridgewell/sourcemap-codec | 1.5.5 | MIT |
 | @jridgewell/trace-mapping | 0.3.31 | MIT |
-| @larksuiteoapi/node-sdk | 1.73.0 | MIT |
+| @larksuiteoapi/node-sdk | 1.73.3 | MIT |
 | @lezer/common | 1.5.2 | MIT |
 | @lezer/highlight | 1.2.3 | MIT |
 | @lezer/lr | 1.4.10 | MIT |
-| @marijn/find-cluster-break | 1.0.3 | MIT |
+| @marijn/find-cluster-break | 1.0.4 | MIT |
 | @modelcontextprotocol/sdk | 1.30.0 | MIT |
-| @node-rs/argon2 | 2.1.0 | MIT |
+| @node-rs/argon2 | 2.2.0 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
 | @oxc-project/types | 0.143.0, 0.147.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
@@ -173,34 +173,34 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @rc-component/input | 1.3.1 | MIT |
 | @rc-component/input-number | 1.6.2 | MIT |
 | @rc-component/listy | 1.2.3 | MIT |
-| @rc-component/mentions | 1.11.0 | MIT |
-| @rc-component/menu | 1.4.1 | MIT |
+| @rc-component/mentions | 1.12.0 | MIT |
+| @rc-component/menu | 1.5.0 | MIT |
 | @rc-component/mini-decimal | 1.1.4 | MIT |
 | @rc-component/motion | 1.3.3 | MIT |
 | @rc-component/mutate-observer | 2.0.1 | MIT |
-| @rc-component/notification | 2.0.7 | MIT |
+| @rc-component/notification | 2.0.8 | MIT |
 | @rc-component/overflow | 1.0.1 | MIT |
 | @rc-component/pagination | 1.4.0 | MIT |
-| @rc-component/picker | 1.12.0 | MIT |
+| @rc-component/picker | 1.12.2 | MIT |
 | @rc-component/portal | 2.2.1 | MIT |
-| @rc-component/progress | 1.0.2 | MIT |
+| @rc-component/progress | 1.0.3 | MIT |
 | @rc-component/qrcode | 2.0.0 | MIT |
 | @rc-component/rate | 1.0.1 | MIT |
 | @rc-component/resize-observer | 1.1.2 | MIT |
 | @rc-component/segmented | 1.3.0 | MIT |
 | @rc-component/select | 1.10.1 | MIT |
 | @rc-component/slider | 1.1.1 | MIT |
-| @rc-component/steps | 1.2.2 | MIT |
+| @rc-component/steps | 1.2.3 | MIT |
 | @rc-component/switch | 1.0.3 | MIT |
 | @rc-component/table | 1.11.1 | MIT |
-| @rc-component/tabs | 1.12.0 | MIT |
-| @rc-component/tooltip | 1.5.0 | MIT |
+| @rc-component/tabs | 1.13.0 | MIT |
+| @rc-component/tooltip | 1.5.2 | MIT |
 | @rc-component/tour | 2.4.0 | MIT |
 | @rc-component/tree | 1.4.0 | MIT |
 | @rc-component/tree-select | 1.16.1 | MIT |
 | @rc-component/trigger | 3.10.1 | MIT |
 | @rc-component/upload | 1.1.1 | MIT |
-| @rc-component/util | 1.12.0 | MIT |
+| @rc-component/util | 1.12.0, 1.13.0 | MIT |
 | @rc-component/virtual-list | 1.5.1 | MIT |
 | @reduxjs/toolkit | 2.12.0 | MIT |
 | @rolldown/pluginutils | 1.0.0-beta.27, 1.0.1 | MIT |
@@ -210,9 +210,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @sec-ant/readable-stream | 0.4.1 | MIT |
 | @sindresorhus/merge-streams | 4.0.0 | MIT |
 | @slack/logger | 5.0.0 | MIT |
-| @slack/socket-mode | 3.0.0 | MIT |
-| @slack/types | 3.0.0 | MIT |
-| @slack/web-api | 8.0.0 | MIT |
+| @slack/socket-mode | 3.0.1 | MIT |
+| @slack/types | 3.1.0 | MIT |
+| @slack/web-api | 8.1.1 | MIT |
 | @standard-schema/spec | 1.1.0 | MIT |
 | @standard-schema/utils | 0.3.0 | MIT |
 | @stryker-mutator/api | 9.6.1 | Apache-2.0 |
@@ -223,8 +223,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @tailwindcss/node | 4.3.3 | MIT |
 | @tailwindcss/oxide | 4.3.3 | MIT |
 | @tailwindcss/vite | 4.3.3 | MIT |
-| @tanstack/query-core | 5.102.3 | MIT |
-| @tanstack/react-query | 5.102.3 | MIT |
+| @tanstack/query-core | 5.102.8 | MIT |
+| @tanstack/react-query | 5.102.8 | MIT |
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.2 | MIT |
@@ -260,7 +260,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/qs | 6.15.1 | MIT |
 | @types/react | 19.2.18 | MIT |
 | @types/react-dom | 19.2.5 | MIT |
-| @types/retry | 0.12.0 | MIT |
+| @types/retry | 0.12.0, 0.12.5 | MIT |
 | @types/sanitize-html | 2.16.1 | MIT |
 | @types/unist | 2.0.11, 3.0.3 | MIT |
 | @types/use-sync-external-store | 0.0.6 | MIT |
@@ -290,7 +290,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ansi-escapes | 7.3.0 | MIT |
 | ansi-regex | 5.0.1, 6.2.2 | MIT |
 | ansi-styles | 5.2.0, 6.2.3 | MIT |
-| antd | 6.6.1 | MIT |
+| antd | 6.6.2 | MIT |
 | any-promise | 1.3.0 | MIT |
 | argparse | 1.0.10 | MIT |
 | aria-query | 5.3.0, 5.3.2 | Apache-2.0 |
@@ -298,7 +298,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ast-v8-to-istanbul | 1.0.5 | MIT |
 | asynckit | 0.4.0 | MIT |
 | atomic-sleep | 1.0.0 | MIT |
-| axios | 1.19.0 | MIT |
+| axios | 1.20.0 | MIT |
 | bail | 2.0.2 | MIT |
 | balanced-match | 4.0.4 | MIT |
 | base64-js | 1.5.1 | MIT |
@@ -464,7 +464,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | hast-util-to-jsx-runtime | 2.3.6 | MIT |
 | hast-util-whitespace | 3.0.0 | MIT |
 | help-me | 5.0.0 | MIT |
-| hono | 4.13.4 | MIT |
+| hono | 4.13.5 | MIT |
 | html-encoding-sniffer | 4.0.0 | MIT |
 | html-escaper | 2.0.2 | MIT |
 | html-parse-stringify | 3.1.0 | MIT |
@@ -507,7 +507,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | istanbul-lib-report | 3.0.1 | BSD-3-Clause |
 | istanbul-reports | 3.2.0 | BSD-3-Clause |
 | jiti | 2.7.0 | MIT |
-| jose | 5.10.0, 6.2.3, 6.2.8, 6.2.10 | MIT |
+| jose | 5.10.0, 6.2.8, 6.2.10, 6.2.12 | MIT |
 | joycon | 3.1.1 | MIT |
 | js-md4 | 0.3.2 | MIT |
 | js-tokens | 4.0.0, 10.0.0 | MIT |
@@ -676,19 +676,19 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | process-warning | 5.1.0 | MIT |
 | progress | 2.0.3 | MIT |
 | property-information | 7.1.0 | MIT |
-| protobufjs | 7.6.5 | BSD-3-Clause |
+| protobufjs | 7.6.6 | BSD-3-Clause |
 | proxy-addr | 2.0.7 | MIT |
 | proxy-from-env | 2.1.0 | MIT |
 | pump | 3.0.3 | MIT |
 | punycode | 2.3.1 | MIT |
-| qs | 6.15.3 | BSD-3-Clause |
+| qs | 6.16.0 | BSD-3-Clause |
 | quick-format-unescaped | 4.0.4 | MIT |
 | range-parser | 1.3.0 | MIT |
 | raw-body | 3.0.2 | MIT |
 | rc | 1.2.8 | (BSD-2-Clause OR MIT OR Apache-2.0) |
 | react | 19.2.8 | MIT |
 | react-dom | 19.2.8 | MIT |
-| react-hook-form | 7.86.0 | MIT |
+| react-hook-form | 7.87.0 | MIT |
 | react-i18next | 16.6.6 | MIT |
 | react-innertext | 1.1.5 | MIT |
 | react-is | 17.0.2, 19.2.8 | MIT |
@@ -696,8 +696,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | react-markdown | 10.1.0 | MIT |
 | react-redux | 9.3.0 | MIT |
 | react-refresh | 0.17.0 | MIT |
-| react-router | 7.18.2 | MIT |
-| react-router-dom | 7.18.2 | MIT |
+| react-router | 7.18.3 | MIT |
+| react-router-dom | 7.18.3 | MIT |
 | readable-stream | 3.6.2 | MIT |
 | readdirp | 4.1.2 | MIT |
 | real-require | 0.2.0, 1.0.0 | MIT |
@@ -829,7 +829,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | update-browserslist-db | 1.3.2 | MIT |
 | use-sync-external-store | 1.6.0 | MIT |
 | util-deprecate | 1.0.2 | MIT |
-| uuid | 14.0.0 | MIT |
 | vary | 1.1.2 | MIT |
 | vfile | 6.0.3 | MIT |
 | vfile-message | 4.0.3 | MIT |
