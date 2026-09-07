@@ -104,7 +104,11 @@ To keep accumulated run records from slowing down the database, the platform cle
 ## Operating on a Run
 
 - **Rerun**: execute again based on an existing Run.
+- **Retry all failed**: next to the refresh button on the Agent's "Runs" tab. After you confirm, every `failed` Run **on the page you are looking at** is resubmitted one by one, oldest first; the button is disabled when the page holds no failed Run. This is the bulk recovery path after a one-off outage such as an expired Provider credential — it only covers the current page, so page through and click again for the next one. Runs already resubmitted are remembered and will not be replayed a second time when they reappear on a later page (unless the resubmission itself failed).
 - **Cancel**: `POST /api/runs/:id/cancel` (or the gateway cancel endpoint); **only `running` / `queued` can be cancelled**.
+
+> [!WARNING]
+> "Retry all failed" really runs each failed Run again, with real token spend and real side effects (commits, comments, notifications). Make sure the cause of the failures is gone before retrying in bulk.
 
 ## Artifacts
 

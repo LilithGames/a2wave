@@ -7,7 +7,7 @@ import { providerCatalog } from '../engine/index.js'
 import { createId } from '../lib/id.js'
 import { jsonArrayContainsKeyValue } from '../lib/json-sql.js'
 import { logger } from '../lib/logger.js'
-import { UnsafeUrlError, resolveProviderUrl } from '../lib/url-safety.js'
+import { resolveProviderUrl, UnsafeUrlError } from '../lib/url-safety.js'
 import { requireAdmin } from '../middleware/auth-middleware.js'
 import { rateLimit } from '../middleware/rate-limit.js'
 
@@ -82,11 +82,16 @@ app.get('/login-status/:engineType', async (c) => {
     return c.json({ data: status })
   } catch (e) {
     logger.warn({ err: e, engineType }, 'checkLoginStatus failed')
+    // The engine's own "CLI not found" verdict has this exact shape, so the
+    // failure is tagged: without it the config page reports a broken probe as a
+    // missing CLI and sends the operator off installing something that is
+    // already there.
     return c.json({
       data: {
         installed: false,
         loggedIn: false,
         error: e instanceof Error ? e.message : String(e),
+        code: 'PROBE_FAILED',
       },
     })
   }

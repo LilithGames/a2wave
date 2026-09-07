@@ -69,7 +69,9 @@ Choose the credential injection method on the Agent that references the Provider
 
 - **apiKey**: injects an API Key (e.g. `ANTHROPIC_API_KEY` or the equivalent for each CLI; for Qoder this is a Personal Access Token, for Trae a CLI login token generated in the enterprise console). Codex and Pi also accept an optional per-Agent Base URL for an OpenAI-compatible proxy.
 - **oauth**: injects `CLAUDE_CODE_OAUTH_TOKEN` (only effective for Claude Code).
-- **localSession**: uses the deployment-level shared CLI session in the **server or container running a2wave** (**not the computer where your browser is open**) and injects no credentials. All Agents selecting localSession for the same Provider share this identity.
+- **localSession**: uses the deployment-level shared CLI session in the **server or container running a2wave** (**not the computer where your browser is open**) and injects no credentials. All Agents selecting localSession for the same Provider share this identity. The "i" icon next to the option explains how to establish that session on the server — and, if you hold no server access yourself, those steps can simply be handed to an Agent that has a shell on that machine.
+
+Expanding a localSession Provider in the Agent config **probes the server session once** and reports "Logged in / Not logged in / CLI not installed / Check failed" together with the installed CLI version; after logging in on the server, click "Re-check" next to it to confirm on the spot. The session is shared by the whole deployment, so when it expires every Agent depending on it starts failing at once — a page full of failed Runs usually points here first.
 
 Claude Code apiKey mode has an explicit **API Key header** choice; a2wave does not infer authentication from the Key prefix:
 

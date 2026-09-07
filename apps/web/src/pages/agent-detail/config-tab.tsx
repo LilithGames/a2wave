@@ -52,6 +52,7 @@ import {
   visibleCredentialFieldsFor,
 } from './provider-capabilities'
 import { applyProviderEntryPatch } from './provider-chain'
+import { LocalSessionGuideIcon, ProviderLoginSessionStatus } from './provider-login-status'
 import { RouteSection } from './route-section'
 import type { AgentFormMethods, EnvEntry, ProviderChainEntry, RemoteEntry } from './types'
 import { WorkspaceSection } from './workspace-section'
@@ -1061,20 +1062,33 @@ export function ConfigTab({
                         >
                           {visibleAuthModes.map((authMode) => (
                             <Radio key={authMode} value={authMode}>
-                              {authMode === 'apiKey'
-                                ? t('agentDetail.authModeApiKey')
-                                : authMode === 'oauth'
-                                  ? t('agentDetail.authModeOauth')
-                                  : t('agentDetail.authModeLocalSession')}
+                              {authMode === 'apiKey' ? (
+                                t('agentDetail.authModeApiKey')
+                              ) : authMode === 'oauth' ? (
+                                t('agentDetail.authModeOauth')
+                              ) : (
+                                <span className="inline-flex items-center gap-1">
+                                  {t('agentDetail.authModeLocalSession')}
+                                  <LocalSessionGuideIcon loginCommand={loginCommand} />
+                                </span>
+                              )}
                             </Radio>
                           ))}
                         </Radio.Group>
                       </div>
 
                       {entry.authMode === 'localSession' ? (
-                        <p className="rounded-md border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground">
-                          {t('agentDetail.authModeLocalSessionHint', { command: loginCommand })}
-                        </p>
+                        <div className="space-y-2">
+                          {provider && (
+                            <ProviderLoginSessionStatus
+                              providerKind={provider.kind}
+                              loginCommand={loginCommand}
+                            />
+                          )}
+                          <p className="rounded-md border border-border/60 bg-muted/25 px-3 py-2 text-xs text-muted-foreground">
+                            {t('agentDetail.authModeLocalSessionHint', { command: loginCommand })}
+                          </p>
+                        </div>
                       ) : credentialFields.includes('oauthToken') ? (
                         <div className="space-y-2">
                           <Label

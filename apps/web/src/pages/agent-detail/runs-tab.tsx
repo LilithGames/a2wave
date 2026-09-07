@@ -1,7 +1,7 @@
 import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
 import { Activity, CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react'
 import type React from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { RunCallerPrefix } from '@/components/run-caller-prefix'
@@ -44,9 +44,20 @@ interface RunsTabProps {
   agentId: string | undefined
   refetchRef?: React.MutableRefObject<(() => void) | undefined>
   onFetchingChange?: (isFetching: boolean) => void
+  /**
+   * Reports the failed Runs of the page currently on screen, in display order.
+   * The bulk-retry action lives in the tab bar (outside this component), and it
+   * must act on exactly the Runs the operator can see.
+   */
+  onFailedRunIdsChange?: (runIds: string[]) => void
 }
 
-export function RunsTab({ agentId, refetchRef, onFetchingChange }: RunsTabProps) {
+export function RunsTab({
+  agentId,
+  refetchRef,
+  onFetchingChange,
+  onFailedRunIdsChange,
+}: RunsTabProps) {
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
   const page = Math.max(1, Number.parseInt(searchParams.get('runsPage') ?? '1') || 1)
@@ -97,6 +108,22 @@ export function RunsTab({ agentId, refetchRef, onFetchingChange }: RunsTabProps)
 
   const runs = runsData?.data
   const pagination = runsData?.pagination
+
+  // Joined into a string so the effect below compares by value: `filter()`
+  // returns a fresh array on every render and would otherwise re-notify the
+  // parent forever.
+  const failedRunIdsKey = useMemo(
+    () =>
+      (runs ?? [])
+        .filter((run) => run.status === 'failed')
+        .map((run) => run.id)
+        .join(','),
+    [runs],
+  )
+
+  useEffect(() => {
+    onFailedRunIdsChange?.(failedRunIdsKey ? failedRunIdsKey.split(',') : [])
+  }, [failedRunIdsKey, onFailedRunIdsChange])
 
   if (isLoading) {
     return (

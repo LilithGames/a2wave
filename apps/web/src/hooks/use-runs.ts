@@ -304,3 +304,39 @@ export function useRerunRun() {
     onSuccess: () => qc.invalidateQueries({ queryKey: RUNS_KEY }),
   })
 }
+
+export type BulkRerunResult = {
+  succeeded: number
+  failed: number
+  /** The Runs whose replay was rejected, so a caller can offer them again. */
+  failedRunIds: string[]
+}
+
+/**
+ * Replays several Runs, one after another.
+ *
+ * Sequential on purpose: a bulk retry after a Provider outage would otherwise
+ * fire a whole page of Runs at the executor at once, and each rerun enqueues
+ * real Agent work. One rejection must not abandon the rest — the caller is
+ * recovering from an outage, so a partial result is reported rather than
+ * thrown.
+ */
+export function useRerunRuns() {
+  const qc = useQueryClient()
+  return useMutation<BulkRerunResult, Error, string[]>({
+    mutationFn: async (runIds) => {
+      let succeeded = 0
+      const failedRunIds: string[] = []
+      for (const runId of runIds) {
+        try {
+          await api.post<Run>(`/runs/${runId}/rerun`, {})
+          succeeded += 1
+        } catch {
+          failedRunIds.push(runId)
+        }
+      }
+      return { succeeded, failed: failedRunIds.length, failedRunIds }
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: RUNS_KEY }),
+  })
+}

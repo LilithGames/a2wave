@@ -69,7 +69,9 @@ Provider 只是「配置」，真正干活的是它背后的 CLI。**镜像不�
 
 - **apiKey**：注入 API Key（如 `ANTHROPIC_API_KEY` 或各 CLI 等价物；Qoder 为 Personal Access Token，Trae 为企业控制台生成的 CLI 登录令牌）。Codex 与 Pi 还可为每个 Agent 配置可选的 Base URL，以连接 OpenAI 兼容代理。
 - **oauth**：注入 `CLAUDE_CODE_OAUTH_TOKEN`（仅 Claude Code 生效）。
-- **localSession**：使用「运行 a2wave 的服务器或容器」中 CLI 的部署级共享登录态（**非你当前浏览器所在的电脑**），不注入任何凭证。所有选择同一 Provider localSession 的 Agent 共用这套身份。
+- **localSession**：使用「运行 a2wave 的服务器或容器」中 CLI 的部署级共享登录态（**非你当前浏览器所在的电脑**），不注入任何凭证。所有选择同一 Provider localSession 的 Agent 共用这套身份。选项后的「i」图标会说明如何在服务器上建立这套登录态——没有服务器权限时，也可以把这几步交给一个拥有该服务器 Shell 权限的 Agent 去执行。
+
+在 Agent 配置里展开一个使用 localSession 的 Provider 时，界面会**自动检测一次**服务器上的登录态，并给出「已登录 / 未登录 / CLI 未安装 / 检测失败」以及已安装的 CLI 版本；在服务器上补登录之后，点旁边的「重新检测」即可当场确认。整个部署共用一套登录态，它一旦过期，所有依赖它的 Agent 会同时开始失败——运行记录里成片的失败通常先到这里检查。
 
 Claude Code 使用 apiKey 模式时，需要显式选择「API Key 请求头」；a2wave 不会根据 Key 前缀猜测鉴权方式：
 
