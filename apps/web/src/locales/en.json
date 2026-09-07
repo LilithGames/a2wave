@@ -107,6 +107,7 @@
     "agentThinking": "Agent is thinking…",
     "cancel": "Cancel run",
     "rerun": "Rerun",
+    "retry": "Retry",
     "executionFailed": "Execution failed"
   },
   "runLog": {
@@ -2410,6 +2411,7 @@
       "run.create": "Create run",
       "run.execute": "Execute run",
       "run.rerun": "Rerun",
+      "run.retry": "Retry in place",
       "run.auto_retry": "Auto-Retry",
       "scm_source.codegraph.reindex": "Rebuild code graph index",
       "scm_source.create": "Create SCM source",

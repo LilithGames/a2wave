@@ -108,9 +108,9 @@ describe('RunsRetryAllButton', () => {
   })
 
   it('never replays a Run it already resubmitted, even after it reappears', async () => {
-    // A rerun creates a *new* Run and leaves the original `failed`, so page 1's
-    // failures get pushed onto page 2. Without this the documented "page
-    // through and click again" recovery would replay them a second time.
+    // The list keeps reporting a row as failed until the refetch that follows
+    // the retry lands. Without this guard that stale snapshot replays work
+    // already submitted — twice the token spend, twice the side effects.
     const { rerender } = renderWithProviders(<Harness failedRunIds={['run_a']} />)
     await clickRetryAll()
     await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1))

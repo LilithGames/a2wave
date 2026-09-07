@@ -38,10 +38,11 @@ export function useRunsRetryAll(failedRunIds: string[], canRetry: boolean): Runs
   const { t } = useTranslation()
   const rerunRuns = useRerunRuns()
   const [replaying, setReplaying] = useState(false)
-  // A rerun creates a new Run and leaves the original `failed`, so the Runs a
-  // click just replayed get pushed onto the following pages. Remembering them
-  // for as long as this recovery lasts is what keeps "page through and click
-  // again" from replaying the same work twice.
+  // A retried Run leaves the failed set on its own (it is re-executed on its
+  // own row), but not instantly: the list refetch lands after the retry, and
+  // between the two the page still reports the row as failed. Remembering what
+  // this recovery already submitted is what stops that stale snapshot — or a
+  // page turn taken during it — from replaying the same work twice.
   const alreadyReplayed = useRef(new Set<string>())
   const [replayedCount, setReplayedCount] = useState(0)
   const pendingRunIds = useMemo(

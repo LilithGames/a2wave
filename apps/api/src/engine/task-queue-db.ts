@@ -524,6 +524,9 @@ export const taskQueueDb: TaskQueueDb = {
         triggerSource: r.triggerSource ?? null,
         triggerSessionId: r.triggerSessionId ?? null,
         hasNativeChatContext: hasSendableNativeChatContext(nativeChatContext),
+        // Distinguishes a retried row from the native event whose session id it
+        // still carries; see the restart-safety predicate in task-queue.ts.
+        retryAttempt: r.executionMetadata?.retryAttempt,
       }
     })
   },

@@ -787,6 +787,89 @@ describe('recoverOnStartup', () => {
     expect(onExecute).toHaveBeenCalledWith('run_feishu_rerun_q', 'agt_1')
   })
 
+  it('preserves a queued in-place retry of a native Feishu run across a restart', async () => {
+    // The `!triggerSessionId` half of the restart-safe predicate assumes any
+    // Feishu run carrying a session id is a native event that pending-message
+    // replay will rebuild. An in-place retry keeps the original event's session
+    // id while the event itself was consumed long ago — so replay never comes,
+    // and without the retry marker the retry a human just asked for is quietly
+    // failed instead of promoted.
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'run_feishu_retry_q', initiatorAgentId: 'agt_1' })
+        .mockResolvedValueOnce(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'queued'
+          ? [
+              {
+                id: 'run_feishu_retry_q',
+                triggerSource: 'feishu',
+                triggerSessionId: 'msg_1',
+                hasNativeChatContext: true,
+                retryAttempt: 1,
+              },
+              {
+                id: 'run_feishu_event_q',
+                triggerSource: 'feishu',
+                triggerSessionId: 'msg_2',
+                hasNativeChatContext: true,
+              },
+            ]
+          : [],
+      ),
+    })
+    const onExecute = vi.fn()
+
+    const stats = await recoverOnStartup(db, onExecute, () => ['agt_1'])
+
+    expect(db.failRunWithStructuredReason).not.toHaveBeenCalledWith(
+      'run_feishu_retry_q',
+      expect.anything(),
+    )
+    // The untouched native event still resets for replay.
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledWith(
+      'run_feishu_event_q',
+      FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY,
+    )
+    expect(stats.feishuQueuedReset).toBe(1)
+    expect(onExecute).toHaveBeenCalledWith('run_feishu_retry_q', 'agt_1')
+  })
+
+  it('still resets a retried Feishu run that kept no sendable reply target', async () => {
+    // The retry marker says "no replay is coming", not "a reply can be sent".
+    // Without a persisted chat target the run would finish silently, which is
+    // the case FEISHU_QUEUED_RESET_FOR_REPLAY exists to prevent.
+    const db = createMockDb({
+      countRunsByStatus: vi.fn().mockResolvedValue(0),
+      getAgentMaxConcurrency: vi.fn().mockResolvedValue(1),
+      getOldestQueuedRun: vi.fn().mockResolvedValue(undefined),
+      getRunsByStatus: vi.fn(async (_, status) =>
+        status === 'queued'
+          ? [
+              {
+                id: 'run_feishu_retry_blind',
+                triggerSource: 'feishu',
+                triggerSessionId: 'msg_1',
+                hasNativeChatContext: false,
+                retryAttempt: 2,
+              },
+            ]
+          : [],
+      ),
+    })
+
+    const stats = await recoverOnStartup(db, vi.fn(), () => ['agt_1'])
+
+    expect(db.failRunWithStructuredReason).toHaveBeenCalledWith(
+      'run_feishu_retry_blind',
+      FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY,
+    )
+    expect(stats.feishuQueuedReset).toBe(1)
+  })
+
   it('fails a running Feishu run for replay instead of resuming it into a silent promotion', async () => {
     // Stateful fake, wired end to end: getRunsByStatus reflects every write and
     // getOldestQueuedRun serves whatever is queued, so this pass's own

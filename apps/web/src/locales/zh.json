@@ -107,6 +107,7 @@
     "agentThinking": "Agent 正在处理…",
     "cancel": "取消运行",
     "rerun": "重新运行",
+    "retry": "重试",
     "executionFailed": "执行失败"
   },
   "runLog": {
@@ -2437,6 +2438,7 @@
       "run.create": "创建运行",
       "run.execute": "执行运行",
       "run.rerun": "重新运行",
+      "run.retry": "原地重试",
       "run.auto_retry": "自动重试",
       "scm_source.codegraph.reindex": "重建代码图索引",
       "scm_source.create": "创建代码源",

@@ -103,12 +103,16 @@ To keep accumulated run records from slowing down the database, the platform cle
 
 ## Operating on a Run
 
-- **Rerun**: execute again based on an existing Run.
-- **Retry all failed**: next to the refresh button on the Agent's "Runs" tab. After you confirm, every `failed` Run **on the page you are looking at** is resubmitted one by one, oldest first; the button is disabled when the page holds no failed Run. This is the bulk recovery path after a one-off outage such as an expired Provider credential — it only covers the current page, so page through and click again for the next one. Runs already resubmitted are remembered and will not be replayed a second time when they reappear on a later page (unless the resubmission itself failed).
+- **Rerun** (completed / cancelled): executes again as a **new** Run row; the original and its result are kept intact.
+- **Retry** (failed): re-executes **on the original row** — no second row. The status goes from failed back to queued/running, and on success the row simply reads completed, so the Runs list never fills with pairs of identical intents and "which failures are still open" stays readable. The failed attempt is not erased: its step, output and logs stay where they were; only the run's final outcome now reflects the latest attempt.
+- **Retry all failed**: next to the refresh button on the Agent's "Runs" tab. After you confirm, every `failed` Run **on the page you are looking at** is retried in place, oldest first; the button is disabled when the page holds no failed Run. This is the bulk recovery path after a one-off outage such as an expired Provider credential — runs already submitted are remembered, so a list that has not refreshed yet cannot replay them twice.
 - **Cancel**: `POST /api/runs/:id/cancel` (or the gateway cancel endpoint); **only `running` / `queued` can be cancelled**.
 
 > [!WARNING]
-> "Retry all failed" really runs each failed Run again, with real token spend and real side effects (commits, comments, notifications). Make sure the cause of the failures is gone before retrying in bulk.
+> Retrying really runs the failed Run again, with real token spend and real side effects (commits, comments, notifications). Make sure the cause of the failures is gone before retrying in bulk.
+
+> [!NOTE]
+> In-place retry applies to **failed** runs only. Re-running a completed run in place would destroy a good result, and a cancelled run was stopped on purpose — both keep the new-row rerun. **Automatic retries** (the Agent's `maxJobRetries`) also still file a new row each time: they run unattended, and erasing the failure would leave nothing to diagnose afterwards.
 
 ## Artifacts
 

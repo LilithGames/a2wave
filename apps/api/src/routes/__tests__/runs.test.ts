@@ -1342,6 +1342,8 @@ describe('POST /runs/:id/rerun', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    setCalls.length = 0
+    whereCalls.length = 0
     const mod = await import('../runs.js')
     // Mount onError + an admin identity: rerun now runs through requireAgentWrite,
     // whose typed errors need the global handler, and admin resolves to 'owner'
@@ -1454,6 +1456,126 @@ describe('POST /runs/:id/rerun', () => {
     expect(res.status).toBe(202)
     expect(mockExecuteChatRun).not.toHaveBeenCalled()
     expect(mockRegisterPendingContext).toHaveBeenCalledWith(expect.any(String), { key: 'value' })
+  })
+
+  /**
+   * A failed run is retried ON ITS OWN ROW. Filing a new row for a failure is
+   * what leaves a Runs list where an outage's failures never go away and
+   * nothing distinguishes "already recovered" from "still broken".
+   */
+  describe('failed run: retried in place', () => {
+    const FAILED_RUN = {
+      ...ORIGINAL_RUN,
+      status: 'failed',
+      result: { error: 'refresh token was revoked' },
+      workDir: '/ws/old',
+      ownerInstanceId: 'inst_dead',
+      queuedAt: new Date('2025-01-01'),
+      executionMetadata: {
+        liveChatId: 'sess_dead',
+        resumeAttempts: 2,
+        oauthCallerId: 'caller_1',
+      },
+    }
+
+    function arrangeFailedRun() {
+      mockDb.select
+        .mockReturnValueOnce(makeSelectChain(FAILED_RUN))
+        .mockReturnValueOnce(makeSelectChain(FIRST_STEP))
+        .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+      mockDb.update.mockReturnValue(makeUpdateChain())
+    }
+
+    it('reuses the run id instead of filing a new row', async () => {
+      arrangeFailedRun()
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(201)
+      const json = (await res.json()) as Json
+      expect((json.data as Json).id).toBe('run_1')
+      expect(json.retriedInPlace).toBe(true)
+      expect(mockDb.insert).not.toHaveBeenCalled()
+      expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', 'run_1', { key: 'value' })
+    })
+
+    it('clears what the failed attempt left behind', async () => {
+      arrangeFailedRun()
+
+      await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      const claim = setCalls.find(
+        (call) => (call as { status?: string }).status === 'pending',
+      ) as Record<string, unknown>
+      expect(claim).toBeDefined()
+      expect(claim.result).toBeNull()
+      expect(claim.workDir).toBeNull()
+      expect(claim.ownerInstanceId).toBeNull()
+      expect(claim.queuedAt).toBeNull()
+      // The dead provider session above all: left in place it turns the retry
+      // into a resume that asks the Agent to continue instead of replaying.
+      const metadata = claim.executionMetadata as Record<string, unknown>
+      expect(metadata.liveChatId).toBeUndefined()
+      expect(metadata.resumeAttempts).toBeUndefined()
+      expect(metadata.oauthCallerId).toBe('caller_1')
+      expect(metadata.retryAttempt).toBe(1)
+      expect(metadata.queuedTurn).toBe(true)
+    })
+
+    it('records the retry as its own audit action', async () => {
+      arrangeFailedRun()
+
+      await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(logAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'run.retry', resource: 'run', resourceId: 'run_1' }),
+      )
+    })
+
+    it('loses the race gracefully when the row is no longer failed', async () => {
+      mockDb.select
+        .mockReturnValueOnce(makeSelectChain(FAILED_RUN))
+        .mockReturnValueOnce(makeSelectChain(FIRST_STEP))
+        .mockReturnValueOnce(makeSelectChain(ACTIVE_AGENT))
+      // CAS matched no row: a concurrent retry (or a cancel) got there first.
+      mockDb.update.mockReturnValue(makeUpdateChain(0))
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(409)
+      expect(mockExecuteChatRun).not.toHaveBeenCalled()
+      expect(logAudit).not.toHaveBeenCalled()
+    })
+
+    it('puts the failure back when the queue refuses the retry', async () => {
+      arrangeFailedRun()
+      mockTryAcquireSlot.mockReturnValueOnce('queue_full')
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(429)
+      // Without the restore the row is stranded in `pending` with no queue
+      // entry and no error — the operator's failure record just vanishes.
+      const restored = setCalls.find(
+        (call) => (call as { status?: string }).status === 'failed',
+      ) as Record<string, unknown>
+      expect(restored).toBeDefined()
+      expect(restored.result).toEqual({ error: 'refresh token was revoked' })
+      expect(mockExecuteChatRun).not.toHaveBeenCalled()
+      expect(logAudit).not.toHaveBeenCalled()
+    })
+
+    it('queues in place through the shared limiter', async () => {
+      arrangeFailedRun()
+      mockTryAcquireSlot.mockReturnValueOnce('queued')
+
+      const res = await app.request('/runs/run_1/rerun', { method: 'POST' })
+
+      expect(res.status).toBe(202)
+      expect(mockRegisterPendingContext).toHaveBeenCalledWith('run_1', { key: 'value' })
+      expect(mockExecuteChatRun).not.toHaveBeenCalled()
+    })
   })
 
   it('enriches Feishu context with receive_id when triggerSource is feishu', async () => {
