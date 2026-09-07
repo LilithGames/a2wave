@@ -76,6 +76,39 @@ describe('ProviderLoginSessionStatus', () => {
     expect(apiGet).toHaveBeenCalledTimes(2)
   })
 
+  it('reports a rejected credential as an expired session, not as a missing login', async () => {
+    // The distinction is the whole point: nothing needs installing and nothing
+    // is missing — a credential is there and the vendor refused it, so the only
+    // useful instruction is "log in again on the server".
+    resolveStatus({
+      installed: true,
+      loggedIn: false,
+      verified: true,
+      code: 'CREDENTIALS_REJECTED',
+      error: 'refresh token was revoked',
+    })
+    renderStatus()
+
+    await screen.findByText(i18n.t('agentDetail.loginStatusInvalid'))
+    expect(screen.queryByText(i18n.t('agentDetail.loginStatusNotInstalled'))).toBeNull()
+    expect(screen.getByText('refresh token was revoked')).toBeInTheDocument()
+    expect(
+      screen.getByText(i18n.t('agentDetail.loginStatusRunHint', { command: 'claude login' })),
+    ).toBeInTheDocument()
+  })
+
+  it('separates a session proven against the vendor from one merely present on disk', async () => {
+    resolveStatus({ installed: true, loggedIn: true, verified: true })
+    const { unmount } = renderStatus()
+    await screen.findByText(i18n.t('agentDetail.loginStatusVerified'))
+    unmount()
+
+    resolveStatus({ installed: true, loggedIn: true })
+    renderStatus()
+    await screen.findByText(i18n.t('agentDetail.loginStatusUnverified'))
+    expect(screen.queryByText(i18n.t('agentDetail.loginStatusVerified'))).toBeNull()
+  })
+
   it('reports a server-side probe failure as a failed check, not a missing CLI', async () => {
     // The route answers 200 with installed:false when the probe itself throws —
     // the same shape the engine uses for "CLI not found". Only `code` tells

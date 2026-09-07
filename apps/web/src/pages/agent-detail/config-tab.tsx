@@ -36,6 +36,7 @@ import { useProbeModels } from '@/hooks/use-providers'
 import { resolveCollectionIcon } from '@/lib/collection-icons'
 import { selectFilterOption } from '@/lib/select-filter'
 import { findUndefinedVariables } from '@/lib/template-utils'
+import { AgentRecentFailureNotice } from './agent-recent-failure'
 import { EnvSection } from './env-section'
 import { McpServerTools, mcpServerHasToolPreview } from './mcp-server-tools'
 import {
@@ -733,6 +734,8 @@ export function ConfigTab({
               {t('common.add')}
             </Button>
           </div>
+
+          <AgentRecentFailureNotice agentId={agentId} />
 
           {mcpUnsupportedProviderNames.length > 0 && (
             <div

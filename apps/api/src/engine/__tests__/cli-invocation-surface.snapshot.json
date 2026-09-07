@@ -73,6 +73,7 @@
         "-c=openai_base_url=${}",
         "-c=service_tier=${}",
         "debug",
+        "doctor",
         "exec",
         "login",
         "models",

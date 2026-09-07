@@ -71,7 +71,12 @@ Choose the credential injection method on the Agent that references the Provider
 - **oauth**: injects `CLAUDE_CODE_OAUTH_TOKEN` (only effective for Claude Code).
 - **localSession**: uses the deployment-level shared CLI session in the **server or container running a2wave** (**not the computer where your browser is open**) and injects no credentials. All Agents selecting localSession for the same Provider share this identity. The "i" icon next to the option explains how to establish that session on the server — and, if you hold no server access yourself, those steps can simply be handed to an Agent that has a shell on that machine.
 
-Expanding a localSession Provider in the Agent config **probes the server session once** and reports "Logged in / Not logged in / CLI not installed / Check failed" together with the installed CLI version; after logging in on the server, click "Re-check" next to it to confirm on the spot. The session is shared by the whole deployment, so when it expires every Agent depending on it starts failing at once — a page full of failed Runs usually points here first.
+Expanding a localSession Provider in the Agent config **probes the server session once** and reports "Logged in / Session expired / Not logged in / CLI not installed / Check failed" together with the installed CLI version; after logging in on the server, click "Re-check" next to it to confirm on the spot. The session is shared by the whole deployment, so when it expires every Agent depending on it starts failing at once — a page full of failed Runs usually points here first.
+
+> [!IMPORTANT]
+> "Logged in" is qualified as either **"Verified" or "Credential on disk only"**, and the difference matters: most CLIs answer the login question from a local credential file and never ask the vendor whether that credential is still accepted — so a revoked or expired token still reads as logged in while every run dies on a 401. Codex additionally runs `codex doctor`, which does ask the vendor, so it can report "Verified"; the other Providers report "Credential on disk only", and validity is proven at run time.
+>
+> For the same reason the Provider section also shows the Agent's **most recent run failure**. When that error looks like a 401 / 403 / revoked token, the page says so outright — one real run's error beats any local probe.
 
 Claude Code apiKey mode has an explicit **API Key header** choice; a2wave does not infer authentication from the Key prefix:
 

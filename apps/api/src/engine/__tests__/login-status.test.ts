@@ -23,6 +23,20 @@ class MockChildProcess extends EventEmitter {
   kill = vi.fn()
 }
 
+/**
+ * Hands out one child per spawn call, in order.
+ *
+ * Codex probes twice — `login status` for "are there credentials" and `doctor`
+ * for "are they still accepted" — so a single shared child would leave the
+ * second probe listening to an emitter that already closed.
+ */
+function queueChildren(count: number): MockChildProcess[] {
+  const children = Array.from({ length: count }, () => new MockChildProcess())
+  let next = 0
+  mockSpawn.mockImplementation(() => children[Math.min(next++, children.length - 1)])
+  return children
+}
+
 /** 便捷：一次性给子进程喂 stdout，然后 close(exitCode) */
 function settle(child: MockChildProcess, stdout: string, exitCode = 0) {
   child.stdout.write(stdout)
@@ -45,10 +59,11 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
   })
 
   it('logged in via ChatGPT', async () => {
-    const child = new MockChildProcess()
-    mockSpawn.mockReturnValue(child)
+    const [statusChild, doctorChild] = queueChildren(2)
     const promise = engine.checkLoginStatus()
-    settle(child, 'Logged in using ChatGPT\n', 0)
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
     const status = await promise
     expect(status.installed).toBe(true)
     expect(status.loggedIn).toBe(true)
@@ -81,25 +96,107 @@ describe('CodexAgentEngine.checkLoginStatus', () => {
   })
 
   it('handles leading/trailing whitespace + exit 0', async () => {
-    const child = new MockChildProcess()
-    mockSpawn.mockReturnValue(child)
+    const [statusChild, doctorChild] = queueChildren(2)
     const promise = engine.checkLoginStatus()
-    settle(child, '\n\n  Logged in using ChatGPT  \n\n', 0)
+    settle(statusChild, '\n\n  Logged in using ChatGPT  \n\n', 0)
+    await Promise.resolve()
+    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
     const status = await promise
     expect(status.loggedIn).toBe(true)
     expect(status.method).toBe('ChatGPT')
   })
 
   it('falls back to stderr when stdout is empty', async () => {
-    const child = new MockChildProcess()
-    mockSpawn.mockReturnValue(child)
+    const [statusChild, doctorChild] = queueChildren(2)
     const promise = engine.checkLoginStatus()
-    child.stderr.write('Logged in using ChatGPT\n')
-    child.stderr.end()
-    child.stdout.end()
-    child.emit('close', 0)
+    statusChild.stderr.write('Logged in using ChatGPT\n')
+    statusChild.stderr.end()
+    statusChild.stdout.end()
+    statusChild.emit('close', 0)
+    await Promise.resolve()
+    settle(doctorChild, '   ✓ auth         credentials accepted\n', 0)
     const status = await promise
     expect(status.loggedIn).toBe(true)
+  })
+
+  /**
+   * `codex login status` only reports whether a credential FILE exists. A
+   * revoked refresh token still reads "Logged in using ChatGPT" there, and
+   * every run then dies on a 401 — which is exactly how a deployment ends up
+   * with a green config page and a Runs list that is entirely failures. Only
+   * `codex doctor` asks OpenAI.
+   */
+  it('reports a revoked credential as invalid, not as logged in', async () => {
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(
+      doctorChild,
+      'Notes\n   ✗ auth         no Codex credentials were found - Run codex login\n',
+      1,
+    )
+    const status = await promise
+    expect(status.installed).toBe(true)
+    expect(status.loggedIn).toBe(false)
+    expect(status.verified).toBe(true)
+    expect(status.code).toBe('CREDENTIALS_REJECTED')
+    expect(status.error).toMatch(/no Codex credentials were found/)
+  })
+
+  it('marks a confirmed session as verified', async () => {
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    settle(doctorChild, 'Notes\n   ✓ auth         signed in as someone\n', 0)
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(true)
+  })
+
+  it('keeps the local verdict when the verifier itself cannot answer', async () => {
+    // A doctor run that never completes says nothing about the credential, so
+    // downgrading to "not logged in" would invent an outage. The verdict stays
+    // local and is reported as unverified.
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    const err = new Error('not found') as NodeJS.ErrnoException
+    err.code = 'ENOENT'
+    doctorChild.emit('error', err)
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(false)
+  })
+
+  it('keeps the local verdict on a codex too old to know the doctor subcommand', async () => {
+    // codex declares no minVersion floor, so a deployment may run a build
+    // without `doctor`. Its "unrecognized subcommand" reply must degrade to the
+    // pre-verification behaviour rather than report the session as gone.
+    const [statusChild, doctorChild] = queueChildren(2)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Logged in using ChatGPT\n', 0)
+    await Promise.resolve()
+    doctorChild.stderr.write("error: unrecognized subcommand 'doctor'\n")
+    doctorChild.stderr.end()
+    doctorChild.stdout.end()
+    doctorChild.emit('close', 2)
+    const status = await promise
+    expect(status.loggedIn).toBe(true)
+    expect(status.verified).toBe(false)
+    expect(status.code).toBeUndefined()
+  })
+
+  it('does not spend a verification probe when there is no credential at all', async () => {
+    const [statusChild] = queueChildren(1)
+    const promise = engine.checkLoginStatus()
+    settle(statusChild, 'Not logged in\n', 1)
+    const status = await promise
+    expect(status.loggedIn).toBe(false)
+    expect(status.verified).toBeUndefined()
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
   })
 
   it('explicit "Please run codex login" is treated as not logged in even with exit 0', async () => {

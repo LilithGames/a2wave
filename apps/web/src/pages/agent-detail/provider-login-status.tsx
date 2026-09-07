@@ -41,9 +41,14 @@ export function ProviderLoginSessionStatus({
   // thing an outage does not have.
   const probeFailed = isError || data?.code === 'PROBE_FAILED'
   const settled = !checking && !probeFailed
-  const notInstalled = settled && data?.installed === false
+  // A credential the vendor refused is neither "missing CLI" nor "never logged
+  // in": nothing needs installing, and the only useful instruction is to log in
+  // again on the server. Reported as its own state so the copy can say that.
+  const credentialsRejected = settled && data?.code === 'CREDENTIALS_REJECTED'
+  const notInstalled = settled && !credentialsRejected && data?.installed === false
   const loggedIn = settled && data?.loggedIn === true
-  const notLoggedIn = settled && data?.installed !== false && data?.loggedIn !== true
+  const notLoggedIn =
+    settled && !credentialsRejected && data?.installed !== false && data?.loggedIn !== true
   // Whatever the server said about *why*: the verdict alone ("not logged in")
   // is not actionable, and this line is where a version floor warning or a
   // spawn error becomes visible.
@@ -66,6 +71,12 @@ export function ProviderLoginSessionStatus({
           {t('agentDetail.loginStatusError')}
         </span>
       )}
+      {credentialsRejected && (
+        <span className={`${CHIP_BASE} bg-destructive/10 text-destructive`}>
+          <XCircle className="size-3" aria-hidden="true" />
+          {t('agentDetail.loginStatusInvalid')}
+        </span>
+      )}
       {notInstalled && (
         <span className={`${CHIP_BASE} bg-warning/10 text-warning`}>
           <AlertTriangle className="size-3" aria-hidden="true" />
@@ -84,10 +95,24 @@ export function ProviderLoginSessionStatus({
           {t('agentDetail.loginStatusNotLoggedIn')}
         </span>
       )}
+      {loggedIn && (
+        <span
+          className="text-[11px] text-muted-foreground"
+          title={
+            data?.verified
+              ? t('agentDetail.loginStatusVerifiedHint')
+              : t('agentDetail.loginStatusUnverifiedHint')
+          }
+        >
+          {data?.verified
+            ? t('agentDetail.loginStatusVerified')
+            : t('agentDetail.loginStatusUnverified')}
+        </span>
+      )}
       {data?.version && (
         <span className="font-mono text-[11px] text-muted-foreground">{data.version}</span>
       )}
-      {notLoggedIn && loginCommand && (
+      {(notLoggedIn || credentialsRejected) && loginCommand && (
         <span className="text-xs text-muted-foreground">
           {t('agentDetail.loginStatusRunHint', { command: loginCommand })}
         </span>
