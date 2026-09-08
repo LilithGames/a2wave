@@ -54,6 +54,46 @@ exception; see `AUTH_SECRET`.
 > active session can persist indefinitely; `tokenVersion` revocation (logout / password
 > change / `pnpm set-admin-password`) remains the way to end one on demand.
 
+## Container resource budgets
+
+The repository Compose deployment, newly generated `a2wave setup` installs, and
+`scripts/deploy-remote.sh` apply the same defaults to the application container:
+
+| Variable | Default | Meaning |
+|------|------|------|
+| `A2WAVE_CPUS` | `2` | CPU quota in cores |
+| `A2WAVE_MEMORY_LIMIT` | `3g` | Hard RAM ceiling (3 GiB) |
+| `A2WAVE_MEMORY_SWAP_LIMIT` | `3584m` | RAM plus swap ceiling (3.5 GiB total) |
+| `A2WAVE_PIDS_LIMIT` | `512` | Maximum processes and threads |
+
+These budgets include the API, all concurrent Agents, browsers, and tool children.
+They are not per-Agent reservations: a heavy task may fail at a limit. Size the
+combined budgets of all services to leave room for the OS; a PostgreSQL sidecar or
+another application needs its own budget. Raising RAM also requires a sufficient
+RAM-plus-swap limit; setting the two equal disables container swap.
+
+For Compose, set overrides in the installation's `.env`; for the remote deployment
+script, export the same variables in the invoking shell. Native/PM2 deployments
+need equivalent systemd/cgroup limits; these variables alone do not constrain a
+native API process.
+
+**Existing installations:** a CLI image upgrade preserves the existing Compose
+file, so older generated installs must add these fields under `services.a2wave`
+once (retain any explicit operator budgets):
+
+```yaml
+    cpus: ${A2WAVE_CPUS:-2}
+    mem_limit: ${A2WAVE_MEMORY_LIMIT:-3g}
+    memswap_limit: ${A2WAVE_MEMORY_SWAP_LIMIT:-3584m}
+    pids_limit: ${A2WAVE_PIDS_LIMIT:-512}
+```
+
+After draining active tasks, validate the merged configuration with
+`docker compose config`, then recreate the service with `docker compose up -d`.
+Check the actual container's `HostConfig.NanoCpus`, `Memory`, `MemorySwap`, and
+`PidsLimit` with `docker inspect`; an image pull or API restart alone does not
+apply Docker settings. Keep these fields in deployment overrides and rollbacks.
+
 ## macOS Docker Desktop
 
 CLI-generated installs use a Docker named volume and need no macOS file-sharing

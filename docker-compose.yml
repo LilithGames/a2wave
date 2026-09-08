@@ -134,6 +134,11 @@ services:
       - https_proxy
       - http_proxy
     restart: unless-stopped
+    # One budget covers the API and every Agent/tool descendant in this container.
+    cpus: ${A2WAVE_CPUS:-2}
+    mem_limit: ${A2WAVE_MEMORY_LIMIT:-3g}
+    memswap_limit: ${A2WAVE_MEMORY_SWAP_LIMIT:-3584m}
+    pids_limit: ${A2WAVE_PIDS_LIMIT:-512}
 
   # Optional PostgreSQL backend — EXPERIMENTAL, see docs/agent/postgresql.md.
   # Not yet recommended for production: no production soak time, and no

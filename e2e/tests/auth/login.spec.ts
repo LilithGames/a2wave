@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { loginAsAdmin } from '../../utils/auth'
-import { ROUTES, getE2ePassword } from '../../utils/test-constants'
+import { getE2ePassword, ROUTES } from '../../utils/test-constants'
 
 test.describe('Auth: login page', () => {
   test('login page renders with brand and form', async ({ page }) => {
@@ -18,7 +17,10 @@ test.describe('Auth: login page', () => {
 
   test('unauthenticated access redirects to /login', async ({ page }) => {
     await page.goto(ROUTES.dashboard)
-    await page.waitForURL('**/login')
+    await page.waitForURL(
+      (url) =>
+        url.pathname === ROUTES.login && url.searchParams.get('returnTo') === ROUTES.dashboard,
+    )
     await expect(page.getByRole('heading', { name: '登录' })).toBeVisible()
   })
 

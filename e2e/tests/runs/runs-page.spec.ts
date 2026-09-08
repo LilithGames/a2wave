@@ -6,6 +6,7 @@ import {
   getAdminToken,
   getRunDetail,
   listRuns,
+  type RunSummary,
 } from '../../utils/api-helpers'
 import { loginAsAdmin } from '../../utils/auth'
 import { ROUTES } from '../../utils/test-constants'
@@ -38,19 +39,24 @@ test.describe('Runs 页面结构', () => {
   })
 
   test('页面加载后显示运行列表或空状态', async ({ page }) => {
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/runs' && response.request().method() === 'GET',
+    )
     await page.goto(ROUTES.runs)
-    await page.waitForLoadState('networkidle')
-
-    const hasEmpty = await page
-      .getByText('还没有任何运行记录')
-      .isVisible({ timeout: 3000 })
-      .catch(() => false)
-    const hasRuns = await page
-      .locator('[class*="cursor-pointer"]')
-      .first()
-      .isVisible({ timeout: 3000 })
-      .catch(() => false)
-    expect(hasEmpty || hasRuns).toBeTruthy()
+    const response = await responsePromise
+    expect(response.ok()).toBe(true)
+    const { data: runs } = (await response.json()) as { data: RunSummary[] }
+    const main = page.locator('#main-content')
+    if (runs.length === 0) {
+      await expect(
+        main.getByRole('heading', { name: '还没有任何运行记录', exact: true }),
+      ).toBeVisible()
+    } else {
+      await expect(
+        main.getByRole('button').filter({ hasText: runs[0].intent }).first(),
+      ).toBeVisible()
+    }
   })
 })
 

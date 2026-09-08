@@ -65,18 +65,12 @@ test.describe('Smoke: providers page interactions', () => {
     const content = page.locator('#main-content')
     await expect(content).toBeVisible()
 
-    // 列表项以 /providers/prv_* 链接渲染；空态则命中 emptyTitle/emptyDesc 文案
-    const hasProvider = await page
-      .locator('a[href^="/providers/prv_"]')
-      .first()
-      .isVisible({ timeout: 3000 })
-      .catch(() => false)
-    const hasEmpty = await page
-      .getByText(/没有|暂无|empty|No providers/i)
-      .first()
-      .isVisible({ timeout: 3000 })
-      .catch(() => false)
-    expect(hasProvider || hasEmpty).toBeTruthy()
+    const providerLink = content.locator('a[href^="/providers/prv_"]').first()
+    const emptyHeading = content.getByRole('heading', {
+      name: '还没有任何 Provider',
+      exact: true,
+    })
+    await expect(providerLink.or(emptyHeading).first()).toBeVisible()
   })
 })
 

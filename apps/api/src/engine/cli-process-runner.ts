@@ -3,14 +3,15 @@ import { mkdirSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
 import { logger } from '../lib/logger.js'
+import {
+  isCliProcessGroupAlive,
+  type SignalProcess,
+  signalCliProcessTree,
+} from './cli-process-tree.js'
 import { type CliSpawnOptions, spawnCli } from './cli-spawn.js'
 import { getExecutionAbortSignal } from './execution-lease-registry.js'
 import { emitExecutionProcessLogLine } from './execution-process-log.js'
-import {
-  type KillWindowsProcessTree,
-  killWindowsProcessTree,
-  terminateCliProcess,
-} from './windows-process-tree.js'
+import { type KillWindowsProcessTree, killWindowsProcessTree } from './windows-process-tree.js'
 
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024
 /**
@@ -55,8 +56,6 @@ export interface CliProcessRunOptions {
 }
 
 type SpawnProcess = (command: string, args: string[], options: CliSpawnOptions) => ChildProcess
-
-type SignalProcess = (pid: number, signal: NodeJS.Signals | 0) => boolean
 
 export interface CliProcessRunnerOptions {
   spawnProcess?: SpawnProcess
@@ -495,34 +494,18 @@ export class CliProcessRunner {
     child: ChildProcess,
     signal: NodeJS.Signals,
   ): Promise<void> | undefined {
-    const pid = child.pid
-    if (this.useProcessGroups && typeof pid === 'number' && pid > 0) {
-      try {
-        this.signalProcess(-pid, signal)
-        return undefined
-      } catch (error) {
-        logger.warn(
-          { pid, signal, error },
-          'Failed to signal CLI process group; falling back to direct child',
-        )
-      }
-    }
-    if (this.platform === 'win32') {
-      return terminateCliProcess(child, signal, this.platform, this.killWindowsProcessTree)
-    }
-    child.kill(signal)
-    return undefined
+    return signalCliProcessTree(child, signal, {
+      platform: this.platform,
+      signalProcess: this.signalProcess,
+      killWindowsProcessTree: this.killWindowsProcessTree,
+    })
   }
 
   private isProcessGroupAlive(child: ChildProcess): boolean {
-    const pid = child.pid
-    if (!this.useProcessGroups || typeof pid !== 'number' || pid <= 0) return false
-    try {
-      this.signalProcess(-pid, 0)
-      return true
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code !== 'ESRCH'
-    }
+    return isCliProcessGroupAlive(child, {
+      platform: this.platform,
+      signalProcess: this.signalProcess,
+    })
   }
 }
 

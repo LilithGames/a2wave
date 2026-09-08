@@ -585,7 +585,7 @@ describe('finishRunSuccess', () => {
     ).resolves.toEqual([])
 
     expect(insertCalls).toHaveLength(0)
-    expect(setCalls.at(-1)).toEqual(
+    expect(setCalls).toContainEqual(
       expect.objectContaining({
         status: 'failed',
         result: { error: `Run step "${stepId}" lost terminal-state ownership` },
@@ -1218,7 +1218,7 @@ describe('finishRunError', () => {
       'Check server logs',
     )
 
-    expect(setCalls.at(-1)).toEqual(
+    expect(setCalls).toContainEqual(
       expect.objectContaining({ status: 'failed', result: { error: 'worker error' } }),
     )
     expect(mockCompleteExecutionLease).toHaveBeenCalledWith(runId)

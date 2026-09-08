@@ -339,6 +339,10 @@ export function buildComposeFile(input: ComposeFileInput): string {
     // rebuild wipes those logins.
     '      - a2wave-cli-home:/home/appuser',
     '    restart: unless-stopped',
+    `    cpus: \${A2WAVE_CPUS:-2}`,
+    `    mem_limit: \${A2WAVE_MEMORY_LIMIT:-3g}`,
+    `    memswap_limit: \${A2WAVE_MEMORY_SWAP_LIMIT:-3584m}`,
+    `    pids_limit: \${A2WAVE_PIDS_LIMIT:-512}`,
     ...(input.withPostgres
       ? [
           '',
