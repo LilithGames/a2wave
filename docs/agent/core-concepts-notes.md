@@ -49,10 +49,38 @@ They are different layers and both exist; do not collapse them.
   tool for a flaky subprocess — but it inherits whatever dirty state the failed
   attempt left in the workspace.
 - **`maxJobRetries` (0–3, default 0 = off)** — replays the *whole job* as a
-  **new `runs` row** (`lib/job-retry-scheduler.ts`), which is exactly what the
-  manual **Rerun** button builds. Fresh workspace, fresh session, re-admitted
-  through `tryAcquireSlot`; the failed run keeps its `failed` status so every
-  attempt stays its own auditable record.
+  **new `runs` row** (`lib/job-retry-scheduler.ts`). Fresh workspace, fresh
+  session, re-admitted through `tryAcquireSlot`; the failed run keeps its
+  `failed` status so every attempt stays its own auditable record.
+
+There is a third thing that is not a retry layer but is easily mistaken for one:
+the manual **Rerun / Retry** button. It branches on the source run's status
+(`routes/runs.ts` + `lib/run-retry-in-place.ts`):
+
+- `completed` / `cancelled` → a **new `runs` row**, like the job-retry chain.
+  Replaying a successful run in place would overwrite a good `result`, and a
+  cancelled run was stopped deliberately.
+- `failed` → **re-executed on its own row** (`status` CAS `failed → pending`,
+  then normal admission; the attempt lands as another `run_steps` row, which
+  `executeChatRun` already numbers by `MAX(order)+1` for multi-turn chat). The
+  failed attempt's step, output and logs stay; only the run's terminal status
+  now reflects the newest attempt. This exists because filing a second row per
+  failure makes a Provider outage unreadable: the Runs list fills with pairs of
+  identical intents and nothing distinguishes "already recovered" from "still
+  broken".
+
+  `executionMetadata` is rebuilt from an **allowlist**, not merged. Carrying
+  `liveChatId` (or `resumePending` / `executionStarted`) forward would make
+  `resolveQueuedChatId` read the retry as a *resume*: the Agent would be sent a
+  continuation prompt instead of the intent, and no chat message would be
+  recorded. `gitTriggerOrigin.queued` is forced to `false` so the staleness
+  probe cannot cancel a retry a human just asked for, and `retryAttempt` marks
+  the row so restart recovery does not mistake a retried native-Feishu run for
+  an event still awaiting replay. Each retry writes a `run.retry` audit entry.
+
+The automatic chain deliberately does **not** use the in-place path: it fires
+unattended, and erasing the failure it is recovering from would leave nothing to
+diagnose.
 
 Both layers multiply, and both are bounded by `totalTimeoutMinutes`.
 
@@ -89,7 +117,11 @@ Recovery therefore fails these running rows outright
 and lets pending-message replay rebuild the full reply context.
 
 **API-created Feishu reruns can resume.** They have no `triggerSessionId` or
-pending event to replay. Their sendable reply target is persisted in
+pending event to replay. An in-place retry is the same case wearing the wrong
+clothes: it *keeps* the original event's `triggerSessionId`, but that event was
+consumed by the first attempt, so no replay is coming — `retryAttempt` is what
+tells the recovery gate apart, and the sendable-context requirement still
+applies. Their sendable reply target is persisted in
 `executionMetadata.nativeChatContext`, or restored from the interrupted step
 by `requeueForResume`. The queued recovery gate preserves these reruns only
 when that context is available; legacy rows without a reply target fail instead

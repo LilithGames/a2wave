@@ -19,7 +19,10 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { agents, chatMessages, runSteps, runs } from '../db/schema.js'
-import { reserveExecutionLease } from '../engine/execution-lease-registry.js'
+import {
+  isRunExecutionSettling,
+  reserveExecutionLease,
+} from '../engine/execution-lease-registry.js'
 import { allTaskIdVariants, buildTaskId } from '../engine/task-id.js'
 import { scheduleNext, tryAcquireSlot } from '../engine/task-queue.js'
 import { countOccupiedRunSlots, taskQueueDb } from '../engine/task-queue-db.js'
@@ -45,6 +48,11 @@ import {
   runLogFileExists,
 } from '../lib/run-log-file.js'
 import { stopLogCollector } from '../lib/run-log-registry.js'
+import {
+  buildRetryMetadata,
+  claimRunForRetry,
+  restoreFailedRun,
+} from '../lib/run-retry-in-place.js'
 import { activateScmWorkload, withScmWorkloadAdmission } from '../lib/scm-workload-lifecycle.js'
 import { streamFileDownload } from '../lib/stream-file-download.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
@@ -1018,8 +1026,8 @@ app.post('/:id/rerun', async (c) => {
     'Rerun context resolution',
   )
 
-  const newRunId = createId('run')
   const userId = getCurrentUserId(c)
+
   // Feishu and A2A reruns need their channel/reference context after a queue wait or
   // process restart. executeChatRun consumes this field after it has persisted
   // the new step, using the same durable handoff as native chat channels.
@@ -1027,6 +1035,78 @@ app.post('/:id/rerun', async (c) => {
     (originalRun.triggerSource === 'feishu' || originalRun.triggerSource === 'a2a') && rerunContext
       ? rerunContext
       : undefined
+
+  // A FAILED run is replayed on its own row. Filing a new row (which is what
+  // the rest of this handler does) is right for a run that worked — its result
+  // must survive — but for a failure it leaves the original `failed` forever,
+  // so one Provider outage turns the Runs list into pairs of identical intents
+  // where nothing says which failures are already handled.
+  if (originalRun.status === 'failed') {
+    // `failed` is written before the previous attempt has finished unwinding,
+    // and everything it holds is keyed by run id. Re-admitting the same id
+    // inside that window hands the dying owner's cleanup the NEW attempt's
+    // bindings — tearing down its cancellation wiring, and (because the durable
+    // SCM release is fire-and-forget with retries) releasing the SCM lease the
+    // retry is holding. A retry a second later is the whole cost of avoiding
+    // that.
+    if (isRunExecutionSettling(id)) {
+      return c.json({ error: 'The previous attempt is still finishing; retry in a moment' }, 409)
+    }
+
+    const retryMetadata = buildRetryMetadata(originalRun.executionMetadata, {
+      userId,
+      attachments: rerunAttachments,
+      attachmentConsumerId: rerunConsumerId,
+      nativeChatContext: durableRerunContext,
+      // The failed attempt's step belongs to the PREVIOUS turn, and stays that
+      // way until execute-chat-run persists this one. Until then any attachment
+      // replay must read this turn's metadata, not that step.
+      queuedTurn: true,
+    })
+    if (!(await claimRunForRetry(id, retryMetadata))) {
+      // Lost the CAS: a concurrent retry, or a cancel, moved the row first.
+      return c.json({ error: 'Run is no longer failed; it may already be retrying' }, 409)
+    }
+
+    let retrySlot: Awaited<ReturnType<typeof tryAcquireSlot>>
+    try {
+      retrySlot = await tryAcquireSlot(taskQueueDb, agentId, id, agent.maxConcurrency ?? 1)
+    } catch (error) {
+      // A full queue is a return value, but admission can also throw (a
+      // worktree teardown, an SCM arbitration error). Either way the row has
+      // already been claimed: leaving it `pending` with its error erased and
+      // nothing scheduled destroys the failure record and strands the run.
+      await restoreFailedRun(originalRun)
+      throw error
+    }
+    if (retrySlot === 'queue_full') {
+      await restoreFailedRun(originalRun)
+      return c.json({ error: 'Queue is full' }, 429)
+    }
+
+    logAudit(c, {
+      action: 'run.retry',
+      resource: 'run',
+      resourceId: id,
+      details: { agentId, attempt: retryMetadata.retryAttempt },
+    })
+
+    const retriedRun = {
+      ...originalRun,
+      result: null,
+      executionMetadata: retryMetadata,
+      status: retrySlot === 'queued' ? 'queued' : 'running',
+    }
+    if (retrySlot === 'queued') {
+      if (rerunContext) registerPendingContext(id, rerunContext)
+      return c.json({ data: retriedRun, retriedInPlace: true }, 202)
+    }
+
+    void executeChatRun(agentId, id, rerunContext)
+    return c.json({ data: retriedRun, retriedInPlace: true }, 201)
+  }
+
+  const newRunId = createId('run')
   const newRun = (
     await db
       .insert(runs)

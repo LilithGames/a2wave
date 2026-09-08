@@ -1,4 +1,3 @@
-import { api } from '@/lib/api'
 import type {
   ProbeModelsRequest,
   ProbeModelsResponse,
@@ -9,6 +8,7 @@ import type {
   UnsupportedProviderDto,
 } from '@a2wave/shared'
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 
 const PROVIDERS_KEY = ['providers'] as const
 const fetchProviderList = () => api.get<ProviderListItem[]>('/providers')
@@ -61,6 +61,18 @@ export interface ProviderLoginStatus {
   method?: string
   raw?: string
   error?: string
+  /**
+   * `PROBE_FAILED` means the probe itself broke server-side. The engine's own
+   * "CLI not found" verdict carries the same installed:false shape, so only
+   * this distinguishes a broken check from a missing CLI.
+   * `CREDENTIALS_REJECTED` means a credential exists and the vendor refused it.
+   */
+  code?: string
+  /**
+   * The verdict was proven against the vendor rather than read off a local
+   * credential file. Absent = credential present, validity unknown.
+   */
+  verified?: boolean
 }
 
 /** Checks the server-side CLI session for a stable Provider kind. */

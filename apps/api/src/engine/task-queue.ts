@@ -34,12 +34,36 @@ export function parsePendingOrphanTimeoutMs(value: string | undefined): number {
   return parsed
 }
 
+/**
+ * Whether a native Feishu event is still waiting to be replayed for this run.
+ *
+ * A `triggerSessionId` normally means exactly that: the row came from a Feishu
+ * event whose pending message can rebuild the reply closure a restart
+ * destroyed. An in-place retry breaks the equivalence — it keeps the original
+ * event's session id, but that event was consumed by the first attempt, so no
+ * replay is coming and treating the row as "replay will handle it" silently
+ * discards the retry.
+ */
+export function awaitsFeishuEventReplay(run: {
+  triggerSessionId: string | null
+  retryAttempt?: number
+}): boolean {
+  return !!run.triggerSessionId && run.retryAttempt == null
+}
+
 export interface RunRow {
   id: string
   triggerSource: string | null
   triggerSessionId: string | null
   /** Whether the run carries a persisted, sendable chat target for restart-safe promotion. */
   hasNativeChatContext?: boolean
+  /**
+   * Manual in-place retries this row has had. Present = the row is a replay of
+   * a failed attempt, not a delivery still waiting to be replayed from the
+   * channel — which is what separates it from the native event it inherited
+   * its `triggerSessionId` from.
+   */
+  retryAttempt?: number
 }
 
 /**
@@ -414,7 +438,7 @@ export async function recoverOnStartup(
         // with persisted context, including the interrupted-step fallback in
         // requeueForResume. The queued gate below still rejects any rerun whose
         // context could not be restored.
-        if (run.triggerSource === 'feishu' && run.triggerSessionId) {
+        if (run.triggerSource === 'feishu' && awaitsFeishuEventReplay(run)) {
           await applyFailure(run, FAILURE_REASONS.SERVER_RESTART_DURING_EXEC)
           stats.runningAborted++
           continue
@@ -476,9 +500,19 @@ export async function recoverOnStartup(
       // replay: preserve them only when their reply context was persisted (or
       // restored from the interrupted step by requeueForResume). Legacy reruns
       // without a sendable context must fail instead of finishing silently.
+      //
+      // A retried run is the third case, and the reason `!triggerSessionId` is
+      // not sufficient on its own: retrying in place keeps the original event's
+      // session id, but that event was consumed when the first attempt ran, so
+      // no replay will ever rebuild this row. Judged by the session id alone it
+      // would be failed on the assumption of a replay that never comes —
+      // silently discarding the retry an operator explicitly asked for. The
+      // sendable-context requirement still applies: the marker says "no replay
+      // is coming", not "a reply can be sent".
       const queuedRuns = await db.getRunsByStatus(agentId, 'queued')
       for (const run of queuedRuns) {
-        const isRestartSafeFeishuRerun = !run.triggerSessionId && run.hasNativeChatContext === true
+        const isRestartSafeFeishuRerun =
+          !awaitsFeishuEventReplay(run) && run.hasNativeChatContext === true
         if (run.triggerSource === 'feishu' && !isRestartSafeFeishuRerun) {
           await applyFailure(run, FAILURE_REASONS.FEISHU_QUEUED_RESET_FOR_REPLAY)
           stats.feishuQueuedReset++

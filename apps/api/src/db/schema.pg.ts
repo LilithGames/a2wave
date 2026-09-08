@@ -757,6 +757,15 @@ export const runs = pgTable(
       jobRetryOf?: string
       jobRetryAttempt?: number
       /**
+       * Manual in-place retries this row has been given (see
+       * lib/run-retry-in-place.ts). Distinct from `jobRetryAttempt`: that
+       * counts the automatic chain, which files a NEW row per attempt, while
+       * this counts replays of THIS row. Also the marker that tells restart
+       * recovery a native-chat run in the queue is a retry rather than a
+       * delivery awaiting replay.
+       */
+      retryAttempt?: number
+      /**
        * The merge/pull request a `glab` / `gh` run was fired for.
        *
        * Persisted (rather than left in the in-memory channel context) because

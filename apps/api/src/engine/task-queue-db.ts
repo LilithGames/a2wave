@@ -200,9 +200,16 @@ export const taskQueueDb: TaskQueueDb = {
         | null
         | undefined
       let restoredNativeChatContext: Record<string, unknown> | undefined
+      // `triggerSessionId == null` stands for "no pending Feishu event will
+      // rebuild this row". An in-place retry keeps the original event's id
+      // while that event was consumed by the first attempt, so it needs the
+      // same step-context restore — without it the queued recovery gate fails
+      // the retry for missing reply context.
+      const awaitsEventReplay =
+        current?.triggerSessionId != null && currentMetadata?.retryAttempt == null
       const shouldRestoreFeishuContext =
         current?.triggerSource === 'feishu' &&
-        current.triggerSessionId == null &&
+        !awaitsEventReplay &&
         !hasSendableNativeChatContext(currentMetadata?.nativeChatContext)
       const shouldRestoreA2AContext =
         current?.triggerSource === 'a2a' &&
@@ -524,6 +531,9 @@ export const taskQueueDb: TaskQueueDb = {
         triggerSource: r.triggerSource ?? null,
         triggerSessionId: r.triggerSessionId ?? null,
         hasNativeChatContext: hasSendableNativeChatContext(nativeChatContext),
+        // Distinguishes a retried row from the native event whose session id it
+        // still carries; see the restart-safety predicate in task-queue.ts.
+        retryAttempt: r.executionMetadata?.retryAttempt,
       }
     })
   },

@@ -71,6 +71,7 @@ import { MembersDialog } from './members-dialog'
 import { MemoryTab } from './memory-tab'
 import { OverviewTab } from './overview-tab'
 import { PublishTab } from './publish-tab'
+import { RunsRetryAllButton, useRunsRetryAll } from './runs-retry-all-button'
 import { RunsTab } from './runs-tab'
 import { TestDrawer } from './test-drawer'
 import { useAgentForm } from './use-agent-form'
@@ -230,6 +231,15 @@ export function AgentDetailPage() {
   const [runsIsFetching, setRunsIsFetching] = useState(false)
   const [runsSpinning, setRunsSpinning] = useState(false)
   const handleRunsFetchingChange = useCallback((v: boolean) => setRunsIsFetching(v), [])
+  const [failedRunIds, setFailedRunIds] = useState<string[]>([])
+  const [failedRunsUpdatedAt, setFailedRunsUpdatedAt] = useState(0)
+  const handleFailedRunIdsChange = useCallback((ids: string[], listUpdatedAt: number) => {
+    setFailedRunIds(ids)
+    setFailedRunsUpdatedAt(listUpdatedAt)
+  }, [])
+  // Mounted at page level, not inside the tab bar: the button unmounts on a tab
+  // switch, and the recovery must not forget what it already replayed.
+  const runsRetryAll = useRunsRetryAll(failedRunIds, canWrite, failedRunsUpdatedAt)
   const handleRunsRefresh = useCallback(() => {
     runsRefetchRef.current?.()
     setRunsSpinning(true)
@@ -497,6 +507,7 @@ export function AgentDetailPage() {
                 agentId={id}
                 refetchRef={runsRefetchRef}
                 onFetchingChange={handleRunsFetchingChange}
+                onFailedRunIdsChange={handleFailedRunIdsChange}
               />
             ),
           },
@@ -813,17 +824,25 @@ export function AgentDetailPage() {
             activeTab === 'runs'
               ? {
                   right: (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 text-muted-foreground hover:text-foreground"
-                      disabled={runsSpinning}
-                      onClick={handleRunsRefresh}
-                      aria-label={t('common.refresh')}
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${runsSpinning ? 'animate-spin' : ''}`} />
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <RunsRetryAllButton controller={runsRetryAll} />
+                      {/* The two controls act on different things (one page of
+                          Runs vs. the whole list), so they are not one group. */}
+                      <span className="h-4 w-px bg-border" aria-hidden="true" />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 text-muted-foreground hover:text-foreground"
+                        disabled={runsSpinning}
+                        onClick={handleRunsRefresh}
+                        aria-label={t('common.refresh')}
+                      >
+                        <RefreshCw
+                          className={`h-3.5 w-3.5 ${runsSpinning ? 'animate-spin' : ''}`}
+                        />
+                      </Button>
+                    </div>
                   ),
                 }
               : undefined

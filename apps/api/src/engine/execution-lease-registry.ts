@@ -17,6 +17,15 @@ const leasesByRunId = new Map<string, ExecutionLeaseEntry>()
 const leasesByTaskId = new Map<string, ExecutionLeaseEntry>()
 let durableReleaseHandler: ((runId: string, agentId?: string) => Promise<void>) | undefined
 const pendingDurableReleases = new Set<Promise<void>>()
+/**
+ * Run ids whose durable SCM release is still in flight.
+ *
+ * The in-memory lease is dropped the moment lifecycle cleanup finishes, but the
+ * release below is fire-and-forget and retries with backoff until it lands.
+ * Between the two, a caller that re-admits the SAME run id (an in-place retry)
+ * takes a fresh SCM lease that the previous attempt's straggler then releases.
+ */
+const settlingRunIds = new Set<string>()
 const durableReleaseErrors: unknown[] = []
 
 /** Composition-root hook keeps this process primitive independent of the DB. */
@@ -115,6 +124,17 @@ export function hasExecutionLease(runId: string): boolean {
   return leasesByRunId.has(runId)
 }
 
+/**
+ * Whether anything of a previous execution of this run is still unwinding —
+ * the lease itself, or the durable release that outlives it.
+ *
+ * Re-executing a run id (rather than filing a new one) is only safe once this
+ * is false.
+ */
+export function isRunExecutionSettling(runId: string): boolean {
+  return leasesByRunId.has(runId) || settlingRunIds.has(runId)
+}
+
 /** Every unfinished lifecycle lease consumes capacity, including terminal cleanup. */
 export function countActiveExecutionLeases(agentId: string): number {
   let count = 0
@@ -173,11 +193,16 @@ function finishExecutionLeaseEntry(entry: ExecutionLeaseEntry): void {
   entry.resolveCompletion()
   const release = durableReleaseHandler?.(entry.runId, entry.agentId)
   if (release) {
+    const runId = entry.runId
+    settlingRunIds.add(runId)
     const tracked = release
       .catch((error) => {
         durableReleaseErrors.push(error)
       })
-      .finally(() => pendingDurableReleases.delete(tracked))
+      .finally(() => {
+        pendingDurableReleases.delete(tracked)
+        settlingRunIds.delete(runId)
+      })
     pendingDurableReleases.add(tracked)
   }
 }
@@ -188,6 +213,7 @@ export function _resetExecutionLeasesForTests(): void {
   leasesByTaskId.clear()
   durableReleaseHandler = undefined
   pendingDurableReleases.clear()
+  settlingRunIds.clear()
   durableReleaseErrors.length = 0
 }
 

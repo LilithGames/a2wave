@@ -217,9 +217,17 @@ describe('GET /login-status/:engineType', () => {
     const res = await buildApp().request('/providers/login-status/cursor')
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
-      data: { installed: boolean; loggedIn: boolean; error: string }
+      data: { installed: boolean; loggedIn: boolean; error: string; code: string }
     }
-    expect(body.data).toEqual({ installed: false, loggedIn: false, error: 'cli missing' })
+    // `code` is what separates "the probe itself broke" from the engine's own
+    // verdict that the CLI is absent: both shapes carry installed:false, and
+    // the config page must not report an internal failure as a missing CLI.
+    expect(body.data).toEqual({
+      installed: false,
+      loggedIn: false,
+      error: 'cli missing',
+      code: 'PROBE_FAILED',
+    })
   })
 })
 

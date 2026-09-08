@@ -346,13 +346,106 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       '[codex] checkLoginStatus parsed',
     )
 
+    if (!loggedIn) {
+      return {
+        installed: true,
+        loggedIn: false,
+        error: combined || `exit ${result.exitCode}`,
+        raw: truncateForRaw(combined),
+      }
+    }
+
+    // `codex login status` answered from ~/.codex/auth.json alone. That file
+    // survives a revoked refresh token, so it is not evidence that a run will
+    // work — ask the vendor before calling this a session.
+    const verdict = await this.verifyCredentials()
+    if (verdict?.valid === false) {
+      return {
+        installed: true,
+        loggedIn: false,
+        verified: true,
+        code: 'CREDENTIALS_REJECTED',
+        error: verdict.message || 'Codex rejected the stored credentials',
+        ...(method ? { method } : {}),
+        raw: truncateForRaw(combined),
+      }
+    }
+
     return {
       installed: true,
-      loggedIn,
-      ...(loggedIn ? { detail: combined || 'Logged in', ...(method ? { method } : {}) } : {}),
-      ...(!loggedIn ? { error: combined || `exit ${result.exitCode}` } : {}),
+      loggedIn: true,
+      // A verifier that could not answer (not installed, timed out, output it
+      // does not recognise) leaves the local verdict standing — inventing an
+      // outage from a broken probe is worse than admitting it is unproven.
+      verified: verdict?.valid === true,
+      detail: combined || 'Logged in',
+      ...(method ? { method } : {}),
       raw: truncateForRaw(combined),
     }
+  }
+
+  /**
+   * Asks `codex doctor` whether the stored credentials are still accepted.
+   *
+   * Doctor is the only Codex subcommand that reaches OpenAI, and the reading is
+   * deliberately split across its two rows:
+   *
+   * - `auth` reports on the LOCAL credential — a healthy line literally says
+   *   "auth is configured". On its own it proves no more than `login status`
+   *   does, so it can only ever REFUSE (`✗` = no usable credential present).
+   * - `websocket` opens a Responses socket WITH that credential. `✓ connected
+   *   (HTTP 101)` is the only evidence the vendor still accepts it, and a
+   *   revoked token shows up here as `handshake transport error http 401`.
+   *
+   * Treating `✓ auth` as confirmation would rebuild the false green this probe
+   * exists to remove.
+   *
+   * Returns `null` for "cannot say" — a missing CLI, a timeout, or output with
+   * no auth line at all. That is deliberately different from `{valid: false}`:
+   * only the vendor's refusal may take a session away. This is also why codex
+   * needs no minVersion floor for `doctor`: a build that predates the
+   * subcommand answers "unrecognized subcommand", which parses as "cannot say"
+   * and leaves the pre-verification behaviour exactly as it was.
+   */
+  private async verifyCredentials(): Promise<{ valid: boolean; message?: string } | null> {
+    // Doctor probes DNS and opens a socket, so it is slower than the disk-only
+    // status call it complements; measured ~4s locally.
+    const result = await runStatusProbe(this.config.path, ['doctor'], {
+      logTag: 'codex-doctor',
+      timeoutMs: 30_000,
+    })
+    if (result.notFound || result.timedOut) return null
+
+    const combined = `${result.stdout}\n${result.stderr}`
+    // Only a line carrying a status glyph counts: doctor also prints detail
+    // rows such as "auth storage mode" / "auth file" that state nothing about
+    // validity.
+    const authLine = combined.match(/([✓✗⚠])\s+auth\b[ \t]*(.*)/)
+    if (!authLine) return null
+    const [, authGlyph, authRest] = authLine
+    if (authGlyph === '✗') return { valid: false, message: authRest?.trim() || undefined }
+
+    // The vendor's own answer. A 401/403 on the handshake is the credential
+    // being refused; any other transport failure (proxy, DNS, blocked
+    // WebSocket policy) says nothing about the token, and reporting it as an
+    // expired login would send the operator to re-authenticate over a network
+    // problem.
+    const rejection = combined.match(/handshake transport error[^\n]*\b40[13]\b[^\n]*/i)
+    if (rejection) return { valid: false, message: rejection[0].trim() }
+
+    // A green row is not enough: doctor also reports success when the transport
+    // was skipped (disabled by configuration), and a handshake that never
+    // happened confirms nothing. The connected wording — `connected (HTTP 101
+    // Switching Protocols)` — is the evidence that one did.
+    const websocketLine = combined.match(/([✓✗⚠])\s+websocket\b[ \t]*(.*)/)
+    const handshakeMessage = websocketLine?.[2]?.trim()
+    const handshakeCompleted = !!handshakeMessage && /\b101\b|connected/i.test(handshakeMessage)
+    if (authGlyph === '✓' && websocketLine?.[1] === '✓' && handshakeCompleted) {
+      return { valid: true, message: handshakeMessage }
+    }
+    // Everything else is doctor hedging: a credential is present, and nothing
+    // here either confirms or refutes that the vendor still takes it.
+    return null
   }
 
   /**

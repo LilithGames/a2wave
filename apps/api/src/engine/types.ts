@@ -198,6 +198,23 @@ export interface LoginStatus {
   minVersion?: string
   /** Whether version >= minVersion; omitted when no minVersion or the version is unparsable */
   versionOk?: boolean
+  /**
+   * Whether the verdict was proven against the vendor rather than read off a
+   * local credential file.
+   *
+   * Most CLIs answer "am I logged in" from disk, so a revoked or expired token
+   * still reports a session — and every run then fails on a 401 while the
+   * config page stays green. An engine that can actually ask the vendor sets
+   * this; absent means "credential present, validity unknown", which the UI
+   * must not present as a confirmed session.
+   */
+  verified?: boolean
+  /**
+   * `CREDENTIALS_REJECTED`: a credential exists on the server but the vendor
+   * refused it. Distinct from having none at all — the operator must re-login,
+   * not install anything.
+   */
+  code?: 'CREDENTIALS_REJECTED'
 }
 
 /**

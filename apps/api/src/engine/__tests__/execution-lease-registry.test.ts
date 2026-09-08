@@ -10,6 +10,7 @@ import {
   drainDurableExecutionLeaseReleases,
   getExecutionAbortSignal,
   hasExecutionLease,
+  isRunExecutionSettling,
   reserveExecutionLease,
   setDurableExecutionLeaseReleaseHandler,
 } from '../execution-lease-registry.js'
@@ -38,6 +39,26 @@ describe('execution lease registry', () => {
     lease.finish()
     await expect(cancellation).resolves.toBeUndefined()
     expect(countActiveExecutionLeases('agt_1')).toBe(0)
+  })
+
+  it('reports a run as settling until its durable release has landed', async () => {
+    // The in-memory lease is dropped the instant cleanup finishes, but the
+    // durable SCM release is fire-and-forget and RETRIES on failure. Anything
+    // that re-admits the same run id in that window (an in-place retry) gets
+    // its fresh SCM lease released by the previous attempt's straggler.
+    let releaseDone!: () => void
+    setDurableExecutionLeaseReleaseHandler(
+      () => new Promise<void>((resolve) => (releaseDone = resolve)),
+    )
+    const lease = reserveExecutionLease('run_1', 'agt_1')
+
+    lease.finish()
+    expect(hasExecutionLease('run_1')).toBe(false)
+    expect(isRunExecutionSettling('run_1')).toBe(true)
+
+    releaseDone()
+    await drainDurableExecutionLeaseReleases()
+    expect(isRunExecutionSettling('run_1')).toBe(false)
   })
 
   it('keeps a terminal run in the concurrency count through lifecycle cleanup', async () => {

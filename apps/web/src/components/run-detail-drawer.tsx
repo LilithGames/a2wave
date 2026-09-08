@@ -159,10 +159,19 @@ export function RunDetailDrawer({
                   variant="ghost"
                   size="icon"
                   className="size-8"
-                  onClick={() => rerunRun.mutate(run.id, { onSuccess: handleClose })}
+                  // A failed run is retried ON THIS ROW, so the drawer must stay
+                  // where it is: the run the operator is looking at is the run
+                  // that starts running. Replaying a completed or cancelled run
+                  // files a separate row instead, and closing hands them back to
+                  // the list where that new row is.
+                  onClick={() =>
+                    run.status === 'failed'
+                      ? rerunRun.mutate(run.id)
+                      : rerunRun.mutate(run.id, { onSuccess: handleClose })
+                  }
                   disabled={rerunRun.isPending}
-                  aria-label={t('runDetail.rerun')}
-                  title={t('runDetail.rerun')}
+                  aria-label={run.status === 'failed' ? t('runDetail.retry') : t('runDetail.rerun')}
+                  title={run.status === 'failed' ? t('runDetail.retry') : t('runDetail.rerun')}
                 >
                   <RotateCcw className="h-4 w-4" />
                 </Button>
