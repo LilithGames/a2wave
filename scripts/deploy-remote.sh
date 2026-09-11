@@ -24,6 +24,10 @@
 # Advanced (optional):
 #   DEPLOY_REMOTE_ENV_FILE   remote path for the container env file
 #                            (default /home/<user>/a2wave.env; written 0600, removed after start)
+#   A2WAVE_CPUS              container CPU quota (default 2)
+#   A2WAVE_MEMORY_LIMIT      container RAM limit (default 3g)
+#   A2WAVE_MEMORY_SWAP_LIMIT combined RAM + swap limit (default 3584m)
+#   A2WAVE_PIDS_LIMIT        container processes/threads limit (default 512)
 #
 # 企业 OIDC（可选；ISSUER + CLIENT_ID 要么全设、要么全不设，不设即不启用）:
 #   DEPLOY_OIDC_ISSUER             IdP issuer（discovery = {issuer}/.well-known/openid-configuration）
@@ -95,6 +99,60 @@ if [[ -z "${REMOTE_USER}" ]]; then echo "❌ Set DEPLOY_USER or pass --user"; ex
 if [[ -z "${REMOTE_PASS}" ]]; then echo "❌ Set DEPLOY_PASS or pass --pass"; exit 1; fi
 if [[ -z "${AUTH_SECRET}" ]]; then echo "❌ Set DEPLOY_AUTH_SECRET or pass --secret"; exit 1; fi
 if [[ -z "${ADMIN_PASS}" ]]; then echo "❌ Set DEPLOY_ADMIN_PASS or pass --admin-pass"; exit 1; fi
+
+# Validate resource overrides before contacting the host or removing its running service.
+# Docker's CPU quota minimum is 1ms per 100ms period, and its RAM minimum is 6 MiB.
+RESOURCE_CPUS="${A2WAVE_CPUS:-2}"
+RESOURCE_MEMORY="${A2WAVE_MEMORY_LIMIT:-3g}"
+RESOURCE_MEMORY_SWAP="${A2WAVE_MEMORY_SWAP_LIMIT:-3584m}"
+RESOURCE_PIDS="${A2WAVE_PIDS_LIMIT:-512}"
+if ! awk -v value="$RESOURCE_CPUS" 'BEGIN {
+  exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0.01 && value <= 9223372036)
+}'; then
+  echo "❌ A2WAVE_CPUS must be a finite CPU quota of at least 0.01"
+  exit 1
+fi
+if ! awk -v value="$RESOURCE_PIDS" 'BEGIN {
+  exit !(value ~ /^[0-9]+$/ && value >= 1 && value <= 2147483647)
+}'; then
+  echo "❌ A2WAVE_PIDS_LIMIT must be a positive 32-bit integer"
+  exit 1
+fi
+
+resource_bytes() {
+  awk -v value="$1" 'BEGIN {
+    value = tolower(value)
+    if (value !~ /^[0-9]+([.][0-9]+)?([bkmgtp]|[kmgtp]b)?$/) exit 1
+    amount = value
+    sub(/[a-z].*$/, "", amount)
+    unit = value
+    sub(/^[0-9]+([.][0-9]+)?/, "", unit)
+    power = index("kmgtp", substr(unit, 1, 1))
+    if (unit == "" || unit == "b") power = 0
+    bytes = amount * (1024 ^ power)
+    # Stay below the signed int64 boundary used by Docker, even after float rounding.
+    if (bytes < 6291456 || bytes > 9223372036854774784) exit 1
+    printf "%.0f", bytes
+  }'
+}
+if ! MEMORY_BYTES="$(resource_bytes "$RESOURCE_MEMORY")"; then
+  echo "❌ A2WAVE_MEMORY_LIMIT must be a Docker byte size of at least 6 MiB"
+  exit 1
+fi
+if ! MEMORY_SWAP_BYTES="$(resource_bytes "$RESOURCE_MEMORY_SWAP")"; then
+  echo "❌ A2WAVE_MEMORY_SWAP_LIMIT must be a finite Docker byte size of at least 6 MiB"
+  exit 1
+fi
+if ! awk -v memory="$MEMORY_BYTES" -v swap="$MEMORY_SWAP_BYTES" 'BEGIN { exit !(swap >= memory) }'; then
+  echo "❌ A2WAVE_MEMORY_SWAP_LIMIT must be greater than or equal to A2WAVE_MEMORY_LIMIT"
+  exit 1
+fi
+DOCKER_RESOURCE_ARGS=(
+  --cpus "$RESOURCE_CPUS"
+  --memory "$RESOURCE_MEMORY"
+  --memory-swap "$RESOURCE_MEMORY_SWAP"
+  --pids-limit "$RESOURCE_PIDS"
+)
 
 # ── IdP OAuth: issuer / audiences / publicKey are all-or-nothing ──────────────
 # Setting only some of them yields an instance that looks configured but can
@@ -222,6 +280,28 @@ scp_upload "${TMP_IMAGE}" "${REMOTE_USER}@${REMOTE_HOST}:${TMP_IMAGE}"
 echo "   加载镜像..."
 remote "${SUDO} docker load -i ${TMP_IMAGE}"
 
+quote_remote_arg() {
+  local value=${1//\'/\'\\\'\'}
+  printf "'%s'" "$value"
+}
+
+# Ask the target daemon to validate its own hardware/cgroup constraints without
+# starting the image, mounting application data, or touching the existing service.
+DOCKER_CREATE_ARGS=(docker create "${DOCKER_RESOURCE_ARGS[@]}" "$IMAGE_TAG")
+DOCKER_CREATE_COMMAND=""
+for arg in "${DOCKER_CREATE_ARGS[@]}"; do
+  DOCKER_CREATE_COMMAND+="$(quote_remote_arg "$arg") "
+done
+echo "   校验目标机器的容器资源配置..."
+remote "preflight_id=\$(${SUDO} ${DOCKER_CREATE_COMMAND})
+create_status=\$?
+if [ \$create_status -ne 0 ]; then exit \$create_status; fi
+case \$preflight_id in
+  ''|*[!0-9a-f]*) echo 'Invalid resource preflight container ID' >&2; exit 1 ;;
+esac
+if [ \${#preflight_id} -ne 64 ]; then echo 'Invalid resource preflight container ID' >&2; exit 1; fi
+${SUDO} docker rm -- \"\$preflight_id\""
+
 echo "   重启容器..."
 remote "${SUDO} docker rm -f ${CONTAINER_NAME} 2>/dev/null || true"
 
@@ -281,6 +361,7 @@ DOCKER_RUN_ARGS=(
   docker run -d
   --name "${CONTAINER_NAME}"
   --restart unless-stopped
+  "${DOCKER_RESOURCE_ARGS[@]}"
   -p "${HOST_PORT}:3502"
   -v "${DATA_DIR}:/app/data"
   -v "${DATA_DIR}/cli-home:/home/appuser"
@@ -290,11 +371,6 @@ DOCKER_RUN_ARGS=(
   --env-file "${REMOTE_ENV_FILE}"
   "${IMAGE_TAG}"
 )
-
-quote_remote_arg() {
-  local value=${1//\'/\'\\\'\'}
-  printf "'%s'" "$value"
-}
 
 DOCKER_RUN_COMMAND=""
 for arg in "${DOCKER_RUN_ARGS[@]}"; do

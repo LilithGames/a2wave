@@ -215,12 +215,24 @@ async function attemptTerminalTransition(
       'Atomic run terminal transition failed; attempting run-level recovery',
     )
     try {
-      const recovery = await db
-        .update(runs)
-        .set({ status: 'failed', result: { error: recoveryError }, updatedAt: new Date() })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
-        .returning({ id: runs.id })
-      if (didTransition(recovery)) return 'recovered'
+      const recovered = await withTransaction(async (tx) => {
+        const recovery = await tx
+          .update(runs)
+          .set({ status: 'failed', result: { error: recoveryError }, updatedAt: new Date() })
+          .where(and(eq(runs.id, runId), eq(runs.status, 'running')))
+          .returning({ id: runs.id })
+        if (!didTransition(recovery)) return false
+
+        // The original transaction may have rolled back a running step. Settle
+        // it with its Run: a failed Run is no longer visited by startup recovery.
+        // If this write also fails, rollback keeps both rows recoverable.
+        await tx
+          .update(runSteps)
+          .set({ status: 'failed', output: { error: recoveryError } })
+          .where(and(eq(runSteps.id, stepId), eq(runSteps.status, 'running')))
+        return true
+      })
+      if (recovered) return 'recovered'
     } catch (recoveryFailure) {
       logger.error(
         { err: recoveryFailure, taskId, runId, stepId },

@@ -79,6 +79,10 @@ API, a schema, a Skill), never a form.
 * **Runtime** — queueing, concurrency, credential injection, workspace isolation, per-binding execution controls (model, reasoning effort, fast mode) whose legal values are discovered from the credential rather than declared by the platform
 * **Observability** — Run records, execution traces, diagnosis, token spend, audit
 * **Fault tolerance** — retry with backoff, ordered provider fallback chains, restart recovery
+  and container-wide resource budgets. Standard Docker deployments bound the API
+  and its Agent/tool descendants together; operators size CPU, RAM, swap, and
+  process limits for their host. Limits reduce accidental resource contention,
+  but are not per-Agent isolation or a guarantee that every task succeeds.
 * **Skills & tools** — hosting, discovery, permissions, progressive disclosure for MCP
 * **Channels** — every way an Agent gets called, under one authentication contract (§5)
 * **Permissions & audit** — SSO, per-Agent owner/editor/viewer, an entry behind every write

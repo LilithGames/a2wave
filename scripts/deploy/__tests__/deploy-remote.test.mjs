@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
@@ -17,14 +17,40 @@ function writeExecutable(path, body) {
 }
 
 function createFakeCommands(directory) {
-  writeExecutable(join(directory, 'docker'), `if [[ "\${1:-}" == "save" ]]; then printf image; fi`)
+  writeExecutable(
+    join(directory, 'docker'),
+    `
+if [[ "\${1:-}" == "save" ]]; then printf image; fi
+if [[ "\${1:-}" == "create" || "\${1:-}" == "rm" ]]; then
+  printf '%s\\n' "$*" >> "\${CAPTURED_DOCKER_HISTORY:-/dev/null}"
+fi
+if [[ "\${1:-}" == "create" ]]; then
+  if [[ "\${PREFLIGHT_REJECT:-}" == "1" ]]; then echo 'CPU quota exceeds target capacity' >&2; exit 125; fi
+  printf '%s\\n' "\${PREFLIGHT_ID:-${'a'.repeat(64)}}"
+elif [[ "\${1:-}" == "rm" && "\${PREFLIGHT_CLEANUP_REJECT:-}" == "1" ]]; then
+  exit 1
+fi
+`,
+  )
+  writeExecutable(
+    join(directory, 'sudo'),
+    `
+while [[ "\${1:-}" == -* ]]; do
+  if [[ "$1" == "-p" ]]; then shift 2; else shift; fi
+done
+exec "$@"
+`,
+  )
   writeExecutable(
     join(directory, 'sshpass'),
     `
 last="\${!#}"
+if [[ -n "\${CAPTURED_REMOTE_HISTORY:-}" ]]; then printf '%s\\n' "$last" >> "$CAPTURED_REMOTE_HISTORY"; fi
 printf '%s\\0' "$@" > "\${CAPTURED_SSH_ARGV:-/dev/null}"
 if [[ "$last" == *"docker --version"* ]]; then
   printf 'Docker version 27.0.0\\n'
+elif [[ "$last" == *"'docker' 'create'"* ]]; then
+  bash -c "$last"
 elif [[ "$last" == *"docker run -d"* || "$last" == *"'docker' 'run' '-d'"* ]]; then
   printf '%s' "$last" > "$CAPTURED_REMOTE_COMMAND"
   cat > "$CAPTURED_REMOTE_STDIN"
@@ -131,9 +157,11 @@ const OIDC_ENV = {
 
 function runDeploy(env) {
   const directory = mkdtempSync(join(tmpdir(), 'a2wave-deploy-test-'))
+  const remoteHistory = join(directory, 'remote-history')
+  const dockerHistory = join(directory, 'docker-history')
   createFakeCommands(directory)
 
-  return spawnSync('bash', [deployScript, '--skip-build'], {
+  const result = spawnSync('bash', [deployScript, '--skip-build'], {
     cwd: projectRoot,
     encoding: 'utf8',
     env: {
@@ -142,6 +170,8 @@ function runDeploy(env) {
       CAPTURED_REMOTE_COMMAND: join(directory, 'remote-command'),
       CAPTURED_REMOTE_STDIN: join(directory, 'remote-stdin'),
       CAPTURED_SSH_ARGV: join(directory, 'ssh-argv'),
+      CAPTURED_REMOTE_HISTORY: remoteHistory,
+      CAPTURED_DOCKER_HISTORY: dockerHistory,
       DEPLOY_REMOTE_ENV_FILE: join(directory, 'a2wave.env'),
       TMP_IMAGE: join(directory, 'image.tar.gz'),
       DEPLOY_HOST: '192.0.2.10',
@@ -152,6 +182,11 @@ function runDeploy(env) {
       ...env,
     },
   })
+  return {
+    ...result,
+    remoteHistory: existsSync(remoteHistory) ? readFileSync(remoteHistory, 'utf8') : '',
+    dockerHistory: existsSync(dockerHistory) ? readFileSync(dockerHistory, 'utf8') : '',
+  }
 }
 
 test('OIDC config is injected into the container', () => {
@@ -378,5 +413,122 @@ test('docker compose passes through upper- and lowercase proxy variables', () =>
   const compose = readFileSync(composeFile, 'utf8')
   for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
     assert.match(compose, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
+  }
+})
+
+test('remote deployment applies default CPU, memory, swap and PID budgets', () => {
+  const { command, directory } = captureRemoteDockerCommand({
+    A2WAVE_CPUS: '',
+    A2WAVE_MEMORY_LIMIT: '',
+    A2WAVE_MEMORY_SWAP_LIMIT: '',
+    A2WAVE_PIDS_LIMIT: '',
+  })
+  const { args } = parseRemoteDockerArgs(command, directory)
+  for (const [flag, value] of Object.entries({
+    '--cpus': '2',
+    '--memory': '3g',
+    '--memory-swap': '3584m',
+    '--pids-limit': '512',
+  })) {
+    assert.ok(args.includes(flag), `${flag} must bound the application and its children`)
+    assert.equal(args[args.indexOf(flag) + 1], value)
+  }
+})
+
+test('remote deployment preserves operator resource budgets', () => {
+  const { command, directory } = captureRemoteDockerCommand({
+    A2WAVE_CPUS: '1.5',
+    A2WAVE_MEMORY_LIMIT: '2g',
+    A2WAVE_MEMORY_SWAP_LIMIT: '2560m',
+    A2WAVE_PIDS_LIMIT: '256',
+  })
+  const { args } = parseRemoteDockerArgs(command, directory)
+  for (const [flag, value] of Object.entries({
+    '--cpus': '1.5',
+    '--memory': '2g',
+    '--memory-swap': '2560m',
+    '--pids-limit': '256',
+  })) {
+    assert.ok(args.includes(flag))
+    assert.equal(args[args.indexOf(flag) + 1], value)
+  }
+})
+
+test('invalid resource budgets fail before removing the existing remote container', () => {
+  for (const [name, value] of [
+    ['A2WAVE_CPUS', 'bad'],
+    ['A2WAVE_CPUS', '0'],
+    ['A2WAVE_CPUS', 'Infinity'],
+    ['A2WAVE_CPUS', '0.001'],
+    ['A2WAVE_MEMORY_LIMIT', '0'],
+    ['A2WAVE_MEMORY_LIMIT', '1m'],
+    ['A2WAVE_MEMORY_LIMIT', 'four-gigabytes'],
+    ['A2WAVE_MEMORY_LIMIT', '4g'],
+    ['A2WAVE_MEMORY_SWAP_LIMIT', '-1'],
+    ['A2WAVE_MEMORY_SWAP_LIMIT', '2g'],
+    ['A2WAVE_PIDS_LIMIT', '-1'],
+    ['A2WAVE_PIDS_LIMIT', '0'],
+    ['A2WAVE_PIDS_LIMIT', '1.5'],
+  ]) {
+    const result = runDeploy({
+      A2WAVE_CPUS: '2',
+      A2WAVE_MEMORY_LIMIT: '3g',
+      A2WAVE_MEMORY_SWAP_LIMIT: '3584m',
+      A2WAVE_PIDS_LIMIT: '512',
+      [name]: value,
+    })
+    assert.doesNotMatch(
+      result.remoteHistory,
+      /docker rm/,
+      `${name}=${value} removed the old service`,
+    )
+    assert.notEqual(result.status, 0, `${name}=${value} must be rejected`)
+    assert.match(result.stdout + result.stderr, new RegExp(name))
+  }
+})
+
+test('remote deployment accepts Docker byte units and a disabled swap budget', () => {
+  const { command, directory } = captureRemoteDockerCommand({
+    A2WAVE_CPUS: '0.5',
+    A2WAVE_MEMORY_LIMIT: '1.5G',
+    A2WAVE_MEMORY_SWAP_LIMIT: '1536mb',
+    A2WAVE_PIDS_LIMIT: '128',
+  })
+  const { args } = parseRemoteDockerArgs(command, directory)
+  assert.equal(args[args.indexOf('--memory') + 1], '1.5G')
+  assert.equal(args[args.indexOf('--memory-swap') + 1], '1536mb')
+})
+
+test('daemon resource rejection leaves the existing remote container running', () => {
+  const result = runDeploy({ PREFLIGHT_REJECT: '1' })
+  assert.equal(result.status, 125)
+  assert.match(result.stdout + result.stderr, /CPU quota exceeds target capacity/)
+  assert.doesNotMatch(result.remoteHistory, /docker rm -f a2wave/)
+  assert.doesNotMatch(result.dockerHistory, /^rm /m)
+})
+
+test('successful resource preflight removes only its returned ID before replacing the service', () => {
+  const result = runDeploy({})
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.deepEqual(result.dockerHistory.trim().split('\n'), [
+    'create --cpus 2 --memory 3g --memory-swap 3584m --pids-limit 512 a2wave:latest',
+    `rm -- ${'a'.repeat(64)}`,
+  ])
+  assert.ok(
+    result.remoteHistory.indexOf("'docker' 'create'") <
+      result.remoteHistory.indexOf('docker rm -f a2wave'),
+  )
+  assert.ok(
+    result.remoteHistory.indexOf('docker rm -f a2wave') <
+      result.remoteHistory.indexOf("'docker' 'run'"),
+  )
+})
+
+test('uncertain preflight ID or failed cleanup cannot remove the existing service', () => {
+  for (const env of [{ PREFLIGHT_ID: 'a2wave' }, { PREFLIGHT_CLEANUP_REJECT: '1' }]) {
+    const result = runDeploy(env)
+    assert.notEqual(result.status, 0)
+    assert.doesNotMatch(result.remoteHistory, /docker rm -f a2wave/)
+    if (env.PREFLIGHT_ID) assert.doesNotMatch(result.dockerHistory, /^rm /m)
   }
 })

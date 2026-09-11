@@ -52,6 +52,15 @@ test.describe('Wiki: user manual page', () => {
     await expect(page.getByText('Neo Yellow', { exact: true }).first()).toBeVisible()
   })
 
+  test('FAQ explains shared resource budgets and existing deployment upgrades', async ({
+    page,
+  }) => {
+    await page.goto(`${ROUTES.wiki}/faq`)
+    await expect(page.getByRole('heading', { name: '重型任务影响同机服务怎么办？' })).toBeVisible()
+    await expect(page.getByText(/不是每个 Agent 各有一份/)).toBeVisible()
+    await expect(page.getByText(/已有部署不会仅因拉取新镜像而自动获得限额/)).toBeVisible()
+  })
+
   test('content cross-links navigate in-place (no new tab)', async ({ page, context }) => {
     await page.goto(ROUTES.wiki)
     await expect(page.locator('#main-content')).toBeVisible()
@@ -162,6 +171,9 @@ test.describe('Sign out confirmation', () => {
 
     // The session cookie is genuinely revoked, not just navigated away from.
     await page.goto(ROUTES.dashboard)
-    await page.waitForURL(`**${ROUTES.login}`)
+    await page.waitForURL(
+      (url) =>
+        url.pathname === ROUTES.login && url.searchParams.get('returnTo') === ROUTES.dashboard,
+    )
   })
 })

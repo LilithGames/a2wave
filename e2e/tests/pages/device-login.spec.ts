@@ -5,7 +5,7 @@
 import { expect, test } from '@playwright/test'
 import { pollDeviceToken, startDeviceLogin } from '../../utils/api-helpers'
 import { loginAsAdmin } from '../../utils/auth'
-import { API_BASE } from '../../utils/test-constants'
+import { API_BASE, ROUTES } from '../../utils/test-constants'
 
 test.describe('Device login', () => {
   test('approving in the browser issues a token to the waiting CLI', async ({ page }) => {
@@ -60,6 +60,8 @@ test.describe('Device login', () => {
   test('the approve page requires a session', async ({ page }) => {
     // Lending a session to a device presupposes having one.
     await page.goto('/device')
-    await page.waitForURL('**/login')
+    await page.waitForURL(
+      (url) => url.pathname === ROUTES.login && url.searchParams.get('returnTo') === '/device',
+    )
   })
 })

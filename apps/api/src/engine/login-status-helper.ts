@@ -7,10 +7,14 @@
  * - stdout / stderr / exitCode 的统一聚合
  */
 
+import { StringDecoder } from 'node:string_decoder'
 import { logger } from '../lib/logger.js'
+import { isCliProcessGroupAlive, signalCliProcessTree } from './cli-process-tree.js'
 import { spawnCli } from './cli-spawn.js'
 import { buildSafeAgentProcessEnv } from './runtime-context.js'
-import { terminateCliProcess } from './windows-process-tree.js'
+
+const PROBE_OUTPUT_LIMIT_BYTES = 1024 * 1024
+const PROBE_FORCE_KILL_DELAY_MS = 2_000
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequence stripping requires \x1B/\x07 control chars
 const ANSI_PATTERN = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*\x07|[PX^_][^\x1B]*\x1B\\|.)/g
@@ -62,12 +66,14 @@ export function runStatusProbe(
 ): Promise<StatusProbeResult> {
   const timeoutMs = options.timeoutMs ?? 15_000
   const tag = options.logTag ?? command
+  const platform = process.platform
   return new Promise((resolve) => {
     logger.info({ tag, cmd: command, args, timeoutMs }, '[login-status] probing')
     let child: ReturnType<typeof spawnCli>
     try {
       child = spawnCli(command, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: platform !== 'win32',
         env: options.completeEnv ?? { ...buildSafeAgentProcessEnv(), ...options.env },
       })
     } catch (err) {
@@ -97,14 +103,70 @@ export function runStatusProbe(
       return
     }
 
-    let stdout = ''
-    let stderr = ''
+    const output = {
+      stdout: { text: '', bytes: 0, decoder: new StringDecoder('utf8') },
+      stderr: { text: '', bytes: 0, decoder: new StringDecoder('utf8') },
+    }
     let settled = false
     let timedOut = false
+    let closed = false
+    let terminating = false
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+    let terminationAttempt: Promise<void> | undefined
+
+    const clearCompletedTermination = () => {
+      if (!closed || terminationAttempt || !forceKillTimer) return
+      if (isCliProcessGroupAlive(child, { platform })) return
+      clearTimeout(forceKillTimer)
+      forceKillTimer = undefined
+    }
+
+    const signal = (signalName: NodeJS.Signals) => {
+      try {
+        const attempt = signalCliProcessTree(child, signalName, { platform })
+        if (!attempt) return
+        terminationAttempt = attempt
+        void attempt
+          .catch((error) => {
+            logger.warn({ tag, error }, '[login-status] probe tree termination failed')
+          })
+          .finally(() => {
+            if (terminationAttempt !== attempt) return
+            terminationAttempt = undefined
+            clearCompletedTermination()
+          })
+      } catch (error) {
+        logger.warn({ tag, error }, '[login-status] probe termination failed')
+      }
+    }
+
+    const terminate = () => {
+      if (terminating) return
+      terminating = true
+      // Keep this timer independent of result settlement and the leader's exit.
+      // A surviving descendant still owns the group after its parent is gone.
+      forceKillTimer = setTimeout(() => {
+        forceKillTimer = undefined
+        signal('SIGKILL')
+      }, PROBE_FORCE_KILL_DELAY_MS)
+      signal('SIGTERM')
+      clearCompletedTermination()
+    }
+
+    const readOutput = (stream: keyof typeof output) =>
+      stripAnsi(output[stream].text + output[stream].decoder.end())
 
     const settle = (result: StatusProbeResult) => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
+      child.stdout?.removeListener('data', onStdout)
+      child.stderr?.removeListener('data', onStderr)
+      // Drain without retaining late output while the process tree is stopping.
+      child.stdout?.resume()
+      child.stderr?.resume()
+      output.stdout.text = ''
+      output.stderr.text = ''
       resolve(result)
     }
 
@@ -112,29 +174,39 @@ export function runStatusProbe(
       timedOut = true
       settle({
         exitCode: null,
-        stdout: stripAnsi(stdout),
-        stderr: stripAnsi(stderr),
+        stdout: readOutput('stdout'),
+        stderr: readOutput('stderr'),
         timedOut: true,
         notFound: false,
       })
-      void terminateCliProcess(child, 'SIGTERM')
-      const killTimer = setTimeout(() => terminateCliProcess(child, 'SIGKILL'), 2000)
-      killTimer.unref()
-      child.once('exit', () => clearTimeout(killTimer))
+      terminate()
     }, timeoutMs)
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf-8')
-    })
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf-8')
-    })
+    const collect = (stream: keyof typeof output, chunk: Buffer) => {
+      if (settled) return
+      const target = output[stream]
+      if (target.bytes + chunk.length > PROBE_OUTPUT_LIMIT_BYTES) {
+        const error = `${stream} exceeded the ${PROBE_OUTPUT_LIMIT_BYTES} byte probe output limit`
+        logger.warn({ tag, stream }, '[login-status] probe output limit exceeded')
+        // Discard incomplete output: a valid prefix must never be parsed as a
+        // successful login/model result after the probe has exceeded its budget.
+        settle({ exitCode: null, stdout: '', stderr: error, timedOut: false, notFound: false })
+        terminate()
+        return
+      }
+      target.bytes += chunk.length
+      target.text += target.decoder.write(chunk)
+    }
+    const onStdout = (chunk: Buffer) => collect('stdout', chunk)
+    const onStderr = (chunk: Buffer) => collect('stderr', chunk)
+    child.stdout?.on('data', onStdout)
+    child.stderr?.on('data', onStderr)
 
     child.on('error', (err) => {
-      clearTimeout(timer)
+      if (settled) return
       const isNotFound = true
-      const cleanStdout = stripAnsi(stdout)
-      const cleanStderr = stripAnsi(stderr) || err.message
+      const cleanStdout = readOutput('stdout')
+      const cleanStderr = readOutput('stderr') || err.message
       logger.warn(
         {
           tag,
@@ -155,9 +227,11 @@ export function runStatusProbe(
     })
 
     child.on('close', (code) => {
-      clearTimeout(timer)
-      const cleanStdout = stripAnsi(stdout)
-      const cleanStderr = stripAnsi(stderr)
+      closed = true
+      clearCompletedTermination()
+      if (settled) return
+      const cleanStdout = readOutput('stdout')
+      const cleanStderr = readOutput('stderr')
       logger.info(
         {
           tag,

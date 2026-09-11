@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import {
   buildComposeFile,
   buildEnvFile,
@@ -21,6 +23,33 @@ describe('generateAuthSecret', () => {
     expect(a).toMatch(/^[0-9a-f]{64}$/)
     expect(a).not.toBe(b)
   })
+})
+
+describe('deployment resource budgets', () => {
+  const sources = {
+    repository: () =>
+      readFileSync(new URL('../../../../../docker-compose.yml', import.meta.url), 'utf8'),
+    generated: () => buildComposeFile({ image: 'ghcr.io/lilithgames/a2wave:latest', port: 3502 }),
+    postgres: () =>
+      buildComposeFile({
+        image: 'ghcr.io/lilithgames/a2wave:latest',
+        port: 3502,
+        withPostgres: true,
+      }),
+  }
+
+  it.each(Object.entries(sources))(
+    '%s bounds the entire application container by default',
+    (_name, render) => {
+      const service = parse(render()).services.a2wave
+      expect(service).toMatchObject({
+        cpus: `\${A2WAVE_CPUS:-2}`,
+        mem_limit: `\${A2WAVE_MEMORY_LIMIT:-3g}`,
+        memswap_limit: `\${A2WAVE_MEMORY_SWAP_LIMIT:-3584m}`,
+        pids_limit: `\${A2WAVE_PIDS_LIMIT:-512}`,
+      })
+    },
+  )
 })
 
 describe('generateProjectName', () => {
