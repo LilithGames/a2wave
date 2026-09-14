@@ -17,6 +17,13 @@ pinned versions and SHA-256/SRI verification the build once performed — there 
 **no floating `curl | bash` path**. Upgrading a version means editing the lock
 (reviewed via MR), not typing one into the UI.
 
+A pin may deliberately **trail the latest release**. kimi is held at 0.31.x: from
+0.32.0 its `-p` mode skips the project-level `.kimi-code/mcp.json` in a folder it
+has not marked trusted, with no headless opt-out, so a bump would silently strip
+every Agent's MCP tools. `cli-invocation-surface.test.ts` fails if the pin
+reaches 0.32.0, and the adapter strips `KIMI_CODE_EXPERIMENTAL_FLAG`, which opts
+0.31.x into the same engine.
+
 Tracked in `cli_installations`, keyed by **lock identity, not Provider id** —
 a managed CLI need not be a Provider.
 
@@ -89,8 +96,9 @@ Notes on reading its output:
   branch the classifier depends on.
 - Only **npm-distributed** CLIs are candidates (qoder / kimi / pi / codex);
   `curl | bash` installers publish no enumerable versions. Codex declares no floor,
-  and **qoder fails the sentinel self-test — it is not probeable by this method at
-  all**. Today's actually-verifiable set is therefore **kimi and pi**.
+  and **qoder fails the sentinel self-test at its 1.0.0 floor — it is not
+  probeable by this method** (1.1.x builds do reject unknown flags, so raising the
+  floor would make it probeable). Today's actually-verifiable set is therefore **kimi and pi**.
 - It exits non-zero **only** for a flag the floor genuinely rejects. **Exit 0 does
   not mean "all floors verified"**: a withheld Provider yields no evidence, which
   is not a failure but is not a pass either, so the report names the verified and

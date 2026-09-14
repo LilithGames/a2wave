@@ -2,8 +2,8 @@
  * Claude-Code style NDJSON event stream parser (shared by the qoder / trae engines).
  *
  * With `--output-format stream-json`, both qodercli and traecli emit an event
- * stream isomorphic to Claude Code's (observed with qodercli 1.0.48 /
- * traecli 0.120.42):
+ * stream isomorphic to Claude Code's (observed with qodercli 1.1.51 /
+ * traecli 0.120.52):
  * - `{"type":"system","subtype":"init","session_id":...}`
  * - `{"type":"assistant","message":{"content":[{type:'text'|'tool_use',...}]}}`
  * - `{"type":"user","message":{"content":[{type:'tool_result',...}]}}`

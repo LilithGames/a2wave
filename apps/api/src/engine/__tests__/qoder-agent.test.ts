@@ -53,7 +53,7 @@ function line(obj: Record<string, unknown>): string {
   return `${JSON.stringify(obj)}\n`
 }
 
-/** Minimal success replay (event shape observed with qodercli 1.0.48): init → assistant → result → close 0 */
+/** Minimal success replay (event shape observed with qodercli 1.1.51): init → assistant → result → close 0 */
 function finishOk(child: MockChildProcess, sessionId = 'ses_q1', text = 'PONG') {
   child.stdout.write(line({ type: 'system', subtype: 'init', session_id: sessionId }))
   child.stdout.write(

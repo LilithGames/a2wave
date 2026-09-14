@@ -242,4 +242,27 @@ describe('CursorAgentEngine auth mode', () => {
     expect(env.SAFE_VALUE).toBe('kept')
     expect(env.CURSOR_API_KEY).toBe('cur-agent')
   })
+
+  // `--approve-mcps` is a boolean commander option: a trailing `true` is not
+  // consumed as its value but joined into the variadic prompt ("true hi").
+  it('passes --approve-mcps as a bare flag so no stray token leaks into the prompt', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+
+    const engine = new CursorAgentEngine({ ...engineConfig, approveMcps: true })
+    const p = getExecuteStream(engine)(
+      { taskId: 't-approve-mcps', workDir: '/tmp', prompt: 'hi' },
+      'composer-1',
+    )
+    finishRunSuccessfully(child)
+    await p
+
+    const call = mockSpawn.mock.calls.at(-1)
+    if (!call) throw new Error('spawn was not called')
+    const args = call[1] as string[]
+    const flagIndex = args.indexOf('--approve-mcps')
+    expect(flagIndex).toBeGreaterThanOrEqual(0)
+    expect(args).not.toContain('true')
+    expect(args.at(-1)).toBe('hi')
+  })
 })

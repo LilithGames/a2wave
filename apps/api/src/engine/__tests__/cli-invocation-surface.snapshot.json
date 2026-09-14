@@ -13,7 +13,7 @@
       "sourceFile": "apps/api/src/engine/cursor-agent.ts",
       "minVersion": null,
       "surface": [
-        "--approve-mcps=true",
+        "--approve-mcps",
         "--force",
         "--list-models",
         "--mode=ask",
@@ -134,8 +134,9 @@
     },
     "pi": {
       "sourceFile": "apps/api/src/engine/pi-agent.ts",
-      "minVersion": "0.83.0",
+      "minVersion": "0.84.3",
       "surface": [
+        "--",
         "--fork",
         "--list-models",
         "--mode=json",

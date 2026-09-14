@@ -69,7 +69,7 @@ function line(obj: Record<string, unknown>): string {
   return `${JSON.stringify(obj)}\n`
 }
 
-/** Minimal success replay (event shape observed with traecli 0.120.42): init → assistant → result → close 0 */
+/** Minimal success replay (event shape observed with traecli 0.120.52): init → assistant → result → close 0 */
 function finishOk(child: MockChildProcess, sessionId = 'ses_t1', text = 'PONG') {
   child.stdout.write(line({ type: 'system', subtype: 'init', session_id: sessionId }))
   child.stdout.write(line({ type: 'assistant', message: { content: [{ type: 'text', text }] } }))

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -310,6 +310,21 @@ describe('PiAgentEngine execution', () => {
     )
   })
 
+  it('ends option parsing before a prompt that begins with a dash', async () => {
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new PiAgentEngine(baseConfig)
+    const promise = getExecuteStream(engine)(
+      { taskId: 'task-dash', workDir: '/tmp/ws', prompt: '- summarize these points' },
+      'openai/gpt-5.4',
+    )
+    await new Promise((resolvePromise) => setImmediate(resolvePromise))
+    finishOk(child)
+    await promise
+
+    expect(lastSpawnArgs().slice(-2)).toEqual(['--', '- summarize these points'])
+  })
+
   it('isolates an Agent API key and proxy URL in an ephemeral provider override', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'deployment-key-must-not-win')
     const child = new MockChildProcess()
@@ -616,6 +631,7 @@ describe('PiAgentEngine execution', () => {
     vi.stubEnv('HOME', '/deployment/home')
     vi.stubEnv('XDG_CONFIG_HOME', '/deployment/config')
     vi.stubEnv('OPENAI_API_KEY', 'trusted-openai-key')
+    vi.stubEnv('BASETEN_API_KEY', 'trusted-baseten-key')
     vi.stubEnv('PI_CODING_AGENT_SESSION_DIR', '/deployment/pi-sessions')
     vi.stubEnv('PI_PACKAGE_DIR', '/deployment/pi-package')
     const child = new MockChildProcess()
@@ -632,6 +648,7 @@ describe('PiAgentEngine execution', () => {
           providerBaseUrl: 'https://agent-proxy-must-be-ignored.example',
           agentEnv: {
             OPENAI_API_KEY: 'attacker-key',
+            BASETEN_API_KEY: 'attacker-baseten-key',
             PI_CODING_AGENT_DIR: '/attacker/pi',
             PI_CODING_AGENT_SESSION_DIR: '/attacker/pi-sessions',
             PI_PACKAGE_DIR: '/attacker/pi-package',
@@ -670,6 +687,7 @@ describe('PiAgentEngine execution', () => {
     expect(env.PI_CODING_AGENT_SESSION_DIR).toBe('/deployment/pi-sessions')
     expect(env.PI_PACKAGE_DIR).toBe('/deployment/pi-package')
     expect(env.OPENAI_API_KEY).toBe('trusted-openai-key')
+    expect(env.BASETEN_API_KEY).toBe('trusted-baseten-key')
     expect(env.HTTPS_PROXY).not.toBe('https://attacker.example')
     expect(env.PI_OFFLINE).toBe('1')
     expect(env.PI_SKIP_VERSION_CHECK).toBe('1')

@@ -58,17 +58,20 @@ test('lock contains one exact installation source for every built-in Provider', 
 
 test('archive-installed Providers are architecture-specific and checksum locked', () => {
   const lock = loadAndValidateLock(lockPath)
-  for (const [kind, version] of [
-    ['cursor', '2026.07.16-899851b'],
-    ['trae', '0.120.42'],
-  ]) {
+  for (const kind of ['cursor', 'trae']) {
     const provider = lock.providers.find((candidate) => candidate.kind === kind)
     assert.ok(provider)
     assert.equal(provider.install.type, 'archive')
+    // Every target URL must embed the pinned version, so a bump cannot leave a
+    // stale download behind the new `version`.
     for (const arch of ['amd64', 'arm64']) {
       const target = resolveArchiveTarget(provider, 'linux', arch)
       assert.match(target.sha256, /^[a-f0-9]{64}$/)
-      assert.match(target.url, new RegExp(version.replaceAll('.', '\\.')))
+      assert.ok(
+        target.url.includes(`/${provider.version}/`) ||
+          target.url.includes(`_${provider.version}_`),
+        target.url,
+      )
     }
   }
 })
