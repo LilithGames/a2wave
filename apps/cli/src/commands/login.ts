@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline/promises'
 import { defineCommand } from 'citty'
+import { fetchOrConnectionError } from '../client.js'
 import { clearConfig, loadConfig, resolveUrl, saveConfig, saveCredential } from '../config.js'
 import { CliError } from '../errors.js'
 import { readSecret } from '../lib/prompt.js'
@@ -157,7 +158,7 @@ export const loginCommand = defineCommand({
       console.warn('Warning: using an HTTP connection; the password will be sent in plain text')
     }
 
-    const res = await fetch(`${url}/api/auth/login`, {
+    const res = await fetchOrConnectionError(url, `${url}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // remember: true — /auth/login defaults it to false for browsers, where an

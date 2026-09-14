@@ -11,9 +11,12 @@
  *   workspace.{type, source} → {workspaceType, scmSourceId}
  *
  * Sensitive fields can use `${ENV_VAR}` placeholders that the CLI expands at
- * apply-time from the calling shell — keeps secrets out of yaml-on-disk.
+ * apply-time from the calling shell, or `file:<path>` to read the secret from a
+ * file next to the YAML — both keep secrets out of yaml-on-disk.
  */
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { CliError } from '../errors.js'
 
@@ -218,42 +221,206 @@ export interface AgentYaml {
 
 export type AgentYamlDoc = AgentYaml & AgentYamlRefs
 
+/** Top-level YAML fields that hold a credential. */
+const TOP_LEVEL_SECRET_FIELDS: readonly string[] = [
+  'providerApiKey',
+  'providerOauthToken',
+  'embeddingApiKey',
+]
+/** Credential fields on a `config.providerChain[]` entry. */
+const CHAIN_ENTRY_SECRET_FIELDS: readonly string[] = ['providerApiKey', 'providerOauthToken']
+
+/** True when `path` (object keys / array indexes from the root) names a credential field. */
+function isCredentialPath(path: readonly string[]): boolean {
+  if (path.length === 1) return TOP_LEVEL_SECRET_FIELDS.includes(path[0])
+  return (
+    path.length === 4 &&
+    path[0] === 'config' &&
+    path[1] === 'providerChain' &&
+    CHAIN_ENTRY_SECRET_FIELDS.includes(path[3])
+  )
+}
+
+export interface ExpandEnvVarsOptions {
+  /**
+   * Treat an exported-but-empty variable as unset. Only credential fields opt
+   * in: `export TOKEN=` is the shell's way of forgetting a secret, and an empty
+   * secret is the exact "configured but useless" state worth refusing. For
+   * every other field an empty value is a legitimate value (an empty `env:`
+   * entry, a cleared description) and expands to '' as it always has.
+   */
+  rejectEmpty?: boolean
+}
+
 /**
  * Replace `${VAR}` and `${VAR:-default}` with values from `env`. Throws when a
  * referenced variable is missing and has no default — silent empty-string would
  * masquerade as "configured" and burn the user later.
  */
-export function expandEnvVars(value: string, env: NodeJS.ProcessEnv = process.env): string {
+export function expandEnvVars(
+  value: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ExpandEnvVarsOptions = {},
+): string {
   return value.replace(
     /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/g,
     (_, name: string, fallback?: string) => {
       const v = env[name]
-      if (v !== undefined) return v
+      if (v !== undefined && (v !== '' || !options.rejectEmpty)) return v
       if (fallback !== undefined) return fallback
       throw new CliError(
-        `Environment variable not set: ${name} (referenced in yaml as \${${name}}). Export it and retry, or write \${${name}:-default} in the yaml.`,
+        `Environment variable ${name} referenced by the YAML is not set. Export it and retry, or write \${${name}:-default} in the yaml.`,
+        { type: 'validation' },
       )
     },
   )
 }
 
-/** Recursively walk a JSON-like value and expand strings via `expandEnvVars`. */
-function deepExpand<T>(value: T, env: NodeJS.ProcessEnv = process.env): T {
-  if (typeof value === 'string') return expandEnvVars(value, env) as unknown as T
-  if (Array.isArray(value)) return value.map((v) => deepExpand(v, env)) as unknown as T
+/**
+ * Recursively walk a JSON-like value and expand strings via `expandEnvVars`.
+ * `path` tracks where the walk is so credential fields get the stricter
+ * empty-is-unset rule and nothing else does.
+ */
+function deepExpand<T>(value: T, env: NodeJS.ProcessEnv = process.env, path: string[] = []): T {
+  if (typeof value === 'string') {
+    return expandEnvVars(value, env, { rejectEmpty: isCredentialPath(path) }) as unknown as T
+  }
+  if (Array.isArray(value)) {
+    return value.map((v, i) => deepExpand(v, env, [...path, String(i)])) as unknown as T
+  }
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = deepExpand(v, env)
+      out[k] = deepExpand(v, env, [...path, k])
     }
     return out as unknown as T
   }
   return value
 }
 
+export interface ParseAgentYamlOptions {
+  /** Base for `file:~/...` secret references; defaults to the real home directory. */
+  homeDir?: string
+}
+
+/** Prefix that marks a secret value as "read me from this file". */
+const FILE_REF_PREFIX = 'file:'
+
+/** Top-level fields resolved by `resolveSecretInputs` (typed view of `TOP_LEVEL_SECRET_FIELDS`). */
+const TOP_LEVEL_SECRET_KEYS = ['providerApiKey', 'providerOauthToken', 'embeddingApiKey'] as const
+
+function expandHome(path: string, homeDir: string): string {
+  if (path === '~') return homeDir
+  if (path.startsWith('~/')) return join(homeDir, path.slice(2))
+  return path
+}
+
+/**
+ * Read a `file:<path>` secret. The file must hold the secret on exactly one
+ * line: surrounding blank lines and the trailing newline every editor adds are
+ * ignored, and that one line is trimmed. Anything else (a header line, a token
+ * wrapped across lines by a chat pane) is rejected rather than guessed at —
+ * fusing lines or dropping "prose" silently produced garbage for tokens whose
+ * shape the CLI does not know, and stored it.
+ */
+function readSecretFile(field: string, ref: string, yamlDir: string, homeDir: string): string {
+  const rawPath = ref.slice(FILE_REF_PREFIX.length).trim()
+  if (!rawPath) {
+    throw new CliError(`${field}: 'file:' reference has no path`, { type: 'validation' })
+  }
+  const expanded = expandHome(rawPath, homeDir)
+  const path = isAbsolute(expanded) ? expanded : resolve(yamlDir, expanded)
+  let content: string
+  try {
+    content = readFileSync(path, 'utf-8')
+  } catch (err) {
+    throw new CliError(`${field}: cannot read secret file ${path} (${(err as Error).message})`, {
+      type: 'validation',
+    })
+  }
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+  if (lines.length === 0) {
+    throw new CliError(`${field}: secret file ${path} is empty`, { type: 'validation' })
+  }
+  if (lines.length > 1) {
+    throw new CliError(
+      `${field}: secret file ${path} has ${lines.length} non-empty lines; it must contain only the secret on a single line. Remove any header text, and if the token was line-wrapped when pasted, join it back into one line.`,
+      { type: 'validation' },
+    )
+  }
+  return lines[0]
+}
+
+/**
+ * A credential is one opaque printable token. Whitespace inside it means a
+ * paste went wrong (a header line, a wrapped token, a trailing newline the
+ * shell kept), and a control character means the same — either way the
+ * server would store it and the Agent would fail its first request.
+ */
+function assertCleanSecret(field: string, value: string): void {
+  if (/\s/.test(value)) {
+    throw new CliError(
+      `${field}: secret contains whitespace or a line break; a credential must be a single unbroken token`,
+      { type: 'validation' },
+    )
+  }
+  if (/\p{C}/u.test(value)) {
+    throw new CliError(`${field}: secret contains non-printable characters`, {
+      type: 'validation',
+    })
+  }
+}
+
+function resolveSecretValue(
+  field: string,
+  value: unknown,
+  yamlDir: string,
+  homeDir: string,
+): unknown {
+  if (typeof value !== 'string') return value
+  const resolved = value.startsWith(FILE_REF_PREFIX)
+    ? readSecretFile(field, value, yamlDir, homeDir)
+    : value
+  // An explicitly empty literal is "not set", not a malformed token.
+  if (resolved !== '') assertCleanSecret(field, resolved)
+  return resolved
+}
+
+/**
+ * Resolve `file:<path>` references and validate every credential field the
+ * YAML can carry — top level and inside `config.providerChain[]`. Runs after
+ * `${ENV}` expansion so a path may itself be an environment variable, and the
+ * value an environment variable produced is validated the same way.
+ */
+function resolveSecretInputs(doc: AgentYamlDoc, yamlDir: string, homeDir: string): void {
+  for (const field of TOP_LEVEL_SECRET_KEYS) {
+    if (doc[field] === undefined) continue
+    doc[field] = resolveSecretValue(field, doc[field], yamlDir, homeDir) as string
+  }
+  const chain = doc.config?.providerChain
+  if (!Array.isArray(chain)) return
+  chain.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
+    const record = entry as Record<string, unknown>
+    for (const field of CHAIN_ENTRY_SECRET_FIELDS) {
+      if (record[field] === undefined) continue
+      record[field] = resolveSecretValue(
+        `config.providerChain[${index}].${field}`,
+        record[field],
+        yamlDir,
+        homeDir,
+      )
+    }
+  })
+}
+
 export function parseAgentYaml(
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: ParseAgentYamlOptions = {},
 ): AgentYamlDoc {
   let raw: string
   try {
@@ -274,6 +441,7 @@ export function parseAgentYaml(
   if (!expanded.name || typeof expanded.name !== 'string') {
     throw new CliError(`yaml is missing required field 'name' (${filePath})`)
   }
+  resolveSecretInputs(expanded, dirname(resolve(filePath)), options.homeDir ?? homedir())
   return expanded
 }
 
@@ -582,6 +750,14 @@ commandReplyLanguage: auto                # /status reply language: auto | en | 
 #     - providerId: prv_yyyyyyyy          # Fallback: used when the entry above fails
 #       model: claude-opus-4-8
 #       reasoningEffort: high
+#       # Chain-entry credentials take precedence over the Agent-level ones at
+#       # runtime; omit them to inherit authMode / providerApiKey /
+#       # providerOauthToken / providerBaseUrl from the Agent. Same value forms
+#       # as the Agent-level fields: literal, \${ENV}, or file:<path>.
+#       authMode: oauth                   # apiKey | oauth | localSession
+#       providerOauthToken: file:~/.secrets/claude-oauth.txt
+#       # providerApiKey: \${FALLBACK_API_KEY}
+#       providerBaseUrl: https://api.anthropic.com
 
 # Agent-level environment variables; \${ENV} placeholders are expanded by the CLI at apply time
 env:
@@ -589,9 +765,20 @@ env:
     value: \${LARK_APP_ID}
     sensitive: true
 
-# Provider credentials (when authMode=apiKey)
+# Provider credentials. Every credential field accepts three value forms:
+#   literal            — the token itself (avoid; it lands in the yaml on disk)
+#   \${ENV}             — expanded from the calling shell at apply time; an unset variable is
+#                        an error, and for credential fields so is an exported-but-empty one
+#   file:<path>        — read from a file: relative paths resolve against this yaml's
+#                        directory, ~ expands to $HOME. The file must hold only the secret
+#                        on a single line (blank lines and the trailing newline are ignored);
+#                        a header line or a token wrapped across lines is rejected — join a
+#                        wrapped token back into one line before pointing the yaml at it.
+# A value that contains whitespace or control characters is rejected before any API
+# call — it would be stored and fail the Agent's first request.
 # authMode: apiKey                         # apiKey | oauth | localSession
-# providerApiKey: \${ANTHROPIC_API_KEY}
+# providerApiKey: \${ANTHROPIC_API_KEY}     # or file:~/.secrets/anthropic-key.txt
+# providerOauthToken: file:./oauth.txt      # when authMode=oauth
 # providerBaseUrl: https://api.anthropic.com
 # embeddingApiKey: \${EMBEDDING_API_KEY}   # Dedicated memory embedding credential (inherits Provider credential when unset)
 

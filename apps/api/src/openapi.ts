@@ -845,6 +845,116 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/agents/{agentId}/schedules': {
+      get: {
+        operationId: 'listAgentSchedules',
+        summary: 'List an Agent’s schedule entries',
+        description:
+          'The Agent’s `scheduleConfig` as a flat list: each entry carries an `id` (the persisted per-schedule id, or the positional `<agentId>:<index>` fallback for legacy entries without one — `stable` is false for those, and the run endpoint refuses them), its `cron`, `timezone`, the raw `intent` template (placeholders `{{date}}` / `{{time}}` / `{{iso}}` unrendered) and `nextRun` — the next firing time as ISO 8601 evaluated in the entry’s timezone, or null when the cron cannot be registered (invalid cron or unknown timezone). Requires read access.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/agentId' }],
+        responses: {
+          '200': {
+            description: 'The schedule entries (empty when the Agent has none).',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: [
+                          'id',
+                          'index',
+                          'cron',
+                          'timezone',
+                          'intent',
+                          'nextRun',
+                          'stable',
+                        ],
+                        properties: {
+                          id: { type: 'string' },
+                          index: { type: 'integer' },
+                          cron: { type: 'string' },
+                          timezone: { type: 'string' },
+                          intent: { type: 'string' },
+                          nextRun: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
+                            description:
+                              'Null when the cron registrar skips the entry; such an entry never fires and cannot be rehearsed.',
+                          },
+                          stable: {
+                            type: 'boolean',
+                            description:
+                              'True when the entry has a persisted `id`. False means `id` is the positional fallback, which re-targets another entry once the array is edited.',
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '404': { description: 'Agent not found, or the caller cannot read it.' },
+        },
+      },
+    },
+    '/agents/{agentId}/schedules/{scheduleId}/run': {
+      post: {
+        operationId: 'runAgentSchedule',
+        summary: 'Fire one schedule entry now',
+        description:
+          'Rehearses a schedule by creating the run exactly as its cron firing would: `triggerSource: schedule`, the schedule channel context, the `scheduleRunAsOwner` identity and the same queue admission. Placeholders are rendered at call time. Deliberately strict — the Agent must be published with the `schedule` channel enabled and be active, otherwise 409. Requires write access (owner or editor). Audited as `agent.schedule_run`.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/agentId' },
+          {
+            name: 'scheduleId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+            description:
+              'A persisted schedule `id` as returned by `GET /agents/{agentId}/schedules` (`stable: true`). Positional `<agentId>:<index>` ids are refused.',
+          },
+        ],
+        responses: {
+          '202': {
+            description: 'Run created; `status` is `pending` (executing) or `queued`.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      required: ['runId', 'status', 'intent'],
+                      properties: {
+                        runId: { type: 'string' },
+                        status: { type: 'string', enum: ['pending', 'queued'] },
+                        intent: { type: 'string', description: 'The rendered intent.' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '403': { description: 'Caller cannot edit the Agent.' },
+          '404': { description: 'Agent or schedule entry not found.' },
+          '409': {
+            description:
+              'Refused, with `code`: `AGENT_NOT_PUBLISHED`, `SCHEDULE_CHANNEL_DISABLED`, `AGENT_INACTIVE`; `SCHEDULE_ID_REQUIRED` (the id is the positional fallback — give the entry an `id` in `scheduleConfig`); `SCHEDULE_NOT_REGISTERED` (invalid cron or unknown timezone, so the cron registrar skips it and it never fires); `QUEUE_FULL` (the run was created and recorded as failed; its `runId` is in the message).',
+          },
+        },
+      },
+    },
     '/agents/{agentId}/qq-official/registration': {
       post: {
         operationId: 'registerQQOfficialBot',

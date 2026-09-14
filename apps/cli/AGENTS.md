@@ -25,7 +25,7 @@ src/
 │   ├── memory.ts     # memory files list/get/put/delete + topics list/recall/remember
 │   ├── scm.ts        # scm list/get/create/update/delete/sync/check/status + workspaces/codegraph
 │   ├── kb.ts         # kb (knowledge base) list/get/create/upload/update/delete/sync/content
-│   ├── providers.ts  # providers list/get/login-status/dependents (read-only)
+│   ├── providers.ts  # providers list/get/login-status/dependents + cli status/install/uninstall
 │   ├── runs.ts       # runs list / get / logs / cancel / rerun / trigger
 │   └── update.ts     # update / upgrade (upgrades the npm package)
 ├── client.ts         # HTTP client (fetch + Bearer auth) + all resolveXId name resolvers
@@ -419,13 +419,16 @@ Cases file format (YAML or JSON — a bare list, or `cases:` wrapping one):
 
 ### Provider
 
-Providers are preset entities (no create; delete always returns 403). The CLI is mostly read-only plus allowlist editing:
+Providers are preset entities (no create; delete always returns 403). The Provider records themselves are read-only from the CLI; the `cli` subgroup manages the runtime CLIs (Claude Code, Codex, …) on the server through the admin-only `/api/provider-clis` endpoints:
 
 | Command | Description |
 |------|------|
 | `a2wave providers list` / `get <id\|name>` | List / view Providers (models are probed per Agent credential, not stored) |
 | `a2wave providers login-status <cursor\|claude-code\|codex\|opencode\|qoder\|trae\|kimi\|pi>` | Check local CLI login state |
 | `a2wave providers dependents <id\|name>` | Agents that depend on this Provider |
+| `a2wave providers cli status [kind]` | Installed / locked version, lock drift and install job state per Provider CLI |
+| `a2wave providers cli install <kind> [--wait] [--timeout <s>]` | Install (or reinstall) at the locked version. `--wait` polls every 3s and exits 1 when the job ends in `error`; `--timeout` (default 600) **implies `--wait`**, so a value is never validated and then ignored. A bad `--timeout` fails before the POST |
+| `a2wave providers cli uninstall <kind> [--yes]` | Remove the CLI from the server (`high-risk-write`; every Agent bound to it fails until reinstalled) |
 
 #### YAML Format (full field overview)
 
@@ -643,7 +646,7 @@ then `Hint: <hint>` on its own line when there is one.
 | `not_found` (404) · `conflict` (409) · `rate_limit` (429) | As named |
 | `validation` | Bad input, caught client-side or as a 4xx |
 | `server` | 5xx |
-| `network` | Could not reach the instance at all |
+| `network` | Could not reach the instance at all, or the instance URL is not a URL `fetch` can parse (`subtype` is the errno — `ECONNREFUSED`, `ENOTFOUND`, `timeout`, `ERR_INVALID_URL` — and the message names the URL that was dialled). Handled in `client.ts` (`toConnectionError`); password login goes through the same wrapper |
 | `confirmation` | Needs `--force` / `--yes`. The most likely error an agent hits, since it never has a TTY |
 | `cli` | Any other deliberate CLI failure |
 | `internal` | A bug in this CLI |
@@ -655,7 +658,10 @@ that lands in a CI log or a context window.
 `internal` deserves its own note: an unexpected `TypeError` used to be
 re-thrown, surfacing as a full Node stack dump. It is now reported in the same
 shape as everything else, with the stack behind `A2WAVE_DEBUG=1` for whoever is
-actually debugging it.
+actually debugging it. A `TypeError` **from the transport** — `fetch failed`,
+`Failed to parse URL from …`, or any with a coded `cause` — is not one of these:
+it is converted to `network` before it can reach the `internal` branch, so an
+unreachable or malformed instance URL never asks the user to file a bug.
 
 **Structured fields are additive.** `new CliError('...')` still works, so the
 ~60 existing throw sites needed no edit; enrich them as each is shown to matter.

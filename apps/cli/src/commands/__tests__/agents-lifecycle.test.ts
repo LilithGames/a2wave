@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockPost = vi.fn()
+// Publish consults GET /diagnose first; a clean report keeps these tests about
+// the publish body itself. The preflight has its own file.
+const mockGet = vi.fn(async () => ({ data: { ok: true, checks: [] } }))
 const mockResolveAgentId = vi.fn(async (n: string) =>
   n.startsWith('agt_') ? n : `agt_resolved_${n}`,
 )
@@ -8,6 +11,7 @@ const mockResolveAgentId = vi.fn(async (n: string) =>
 vi.mock('../../client.js', () => ({
   urlArg: {},
   createClient: () => ({
+    get: mockGet,
     post: mockPost,
     resolveAgentId: mockResolveAgentId,
   }),
@@ -57,6 +61,7 @@ describe('agents lifecycle commands', () => {
       mockPost.mockResolvedValueOnce({ data: {} })
       await subs.publish.run({ args: { id: 'my-bot' } })
       expect(mockResolveAgentId).toHaveBeenCalledWith('my-bot')
+      expect(mockGet).toHaveBeenCalledWith('/api/agents/agt_resolved_my-bot/diagnose')
       expect(mockPost).toHaveBeenCalledWith('/api/agents/agt_resolved_my-bot/publish', {})
     })
   })

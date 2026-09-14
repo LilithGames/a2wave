@@ -43,6 +43,11 @@ export const AUDIT_ACTIONS = {
   AGENT_API_KEY_UPDATED: 'agent_api_key.updated',
   AGENT_API_KEY_REVOKED: 'agent_api_key.revoked',
 
+  // Agent schedules — a manual "fire this schedule now" rehearsal. Creates a real
+  // schedule-sourced run, so it is a write; the cron firing itself is not audited
+  // (per-turn execution belongs to the runs table).
+  AGENT_SCHEDULE_RUN: 'agent.schedule_run',
+
   // Auth — 「SSO 验证即可看」分享访客（不建 a2wave 账号）
   AUTH_SHARE_ACCESS_GRANTED: 'auth.share.access_granted',
   AUTH_SHARE_ACCESS_DENIED: 'auth.share.access_denied',
