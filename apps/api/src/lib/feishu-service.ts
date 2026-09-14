@@ -68,7 +68,10 @@ import {
   supportsFeishuReplyMention,
   warnFeishuTopicCreatorUnavailable,
 } from './feishu-reply-mention.js'
-import { lookupPreviousChatId } from './feishu-session-lookup.js'
+import {
+  lookupPreviousFeishuSession,
+  resolveFeishuConversationId,
+} from './feishu-session-lookup.js'
 import {
   buildFeishuFileHint,
   mergeFeishuTopicRootText,
@@ -1730,10 +1733,9 @@ class FeishuConnectionManager {
       },
       'Feishu: extracted text and image keys',
     )
-
     // Agent 早加载：router 需要 engineType 做 capability 校验
     const agent = (await db.select().from(agents).where(eq(agents.id, agentId)).limit(1))[0]
-    if (!agent || agent.publishStatus !== 'published') return
+    if (agent?.publishStatus !== 'published') return
 
     // Provider 配置不可用（链全禁用 / 指向已删除 Provider / 超长）时，buildAgentConfig
     // 抛错。这里必须捕获并回执：异常若冒泡到 dispatcher 只会被 logger.error 吞掉，
@@ -1862,16 +1864,21 @@ class FeishuConnectionManager {
     const triggerSessionId = options.cardResume
       ? options.cardResume.sessionId
       : buildTriggerSessionId(message)
+    const previousSession = triggerSessionId
+      ? await lookupPreviousFeishuSession(
+          agentId,
+          triggerSessionId,
+          options.cardResume ? Number.POSITIVE_INFINITY : resolveSessionTimeoutMs(message),
+          options.cardResume?.previousChatId
+            ? { chatId: options.cardResume.previousChatId }
+            : undefined,
+        )
+      : null
     const previousChatId: string | null | undefined = options.cardResume
       ? // 优先用发卡时快照的 chatId；缺失（极端：发卡那轮无 chatId）再按 sessionId 兜底查最近一轮，
         // 避免续跑时新开一个引擎会话、丢掉发卡那轮上下文。
-        (options.cardResume.previousChatId ??
-        (triggerSessionId
-          ? await lookupPreviousChatId(agentId, triggerSessionId, Number.POSITIVE_INFINITY)
-          : undefined))
-      : triggerSessionId
-        ? await lookupPreviousChatId(agentId, triggerSessionId, resolveSessionTimeoutMs(message))
-        : undefined
+        (options.cardResume.previousChatId ?? previousSession?.chatId)
+      : previousSession?.chatId
     // chatIdOverride 和 preAck 由 commandsPlugin.onBeforeRun 在 runCtx 上设置；
     // 必须在 executeJob 内 emit('onBeforeRun') 之后再 apply，因为 runId/taskId/payload
     // 此时尚未构建。
@@ -2013,6 +2020,11 @@ class FeishuConnectionManager {
         status: 'pending',
         triggerSource: 'feishu',
         triggerSessionId: triggerSessionId ?? null,
+        conversationId: resolveFeishuConversationId({
+          runId: newRunId,
+          matchedCommand,
+          previous: previousSession,
+        }),
       })
 
       return { status: 'reserved' as const, runId: newRunId }

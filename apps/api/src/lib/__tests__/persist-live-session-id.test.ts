@@ -21,6 +21,7 @@ vi.mock('../../db/client.js', async () => {
       execution_metadata text,
       trigger_source text,
       trigger_session_id text,
+      conversation_id text,
       trigger_event_id text,
       work_dir text,
       owner_instance_id text,

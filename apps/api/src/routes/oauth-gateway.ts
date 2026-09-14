@@ -37,7 +37,7 @@ import {
   buildOAuthTriggerSessionId,
   findActiveOAuthSessionRun,
   isOAuthActiveSessionConflict,
-  lookupPreviousOAuthSessionChatId,
+  resolveOAuthConversation,
 } from '../lib/oauth-session.js'
 import { registerPendingContext, takePendingContext } from '../lib/pending-job-registry.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
@@ -348,12 +348,13 @@ app.post('/:agentId/invoke', async (c) => {
     )
   }
 
-  const previousChatId =
-    triggerSessionId && !parsed.data.resetSession
-      ? await lookupPreviousOAuthSessionChatId(agentId, triggerSessionId)
-      : null
-
   const runId = createId('run')
+  const { previousChatId, conversationId } = await resolveOAuthConversation({
+    agentId,
+    triggerSessionId,
+    runId,
+    resetSession: parsed.data.resetSession,
+  })
   // 排队路径把附件 refs 藏进 pending-context 的内部保留键 __attachments，供 executeChatRun
   // 出队时 materialize；即时路径不走这里、在下方内联落盘。
   const attachmentRefs = parsed.data.attachments
@@ -384,6 +385,7 @@ app.post('/:agentId/invoke', async (c) => {
       initiatorAgentId: agentId,
       status: 'pending',
       triggerSource: 'oauth',
+      conversationId,
       triggerUserName: channelResult.displayName,
       ...(triggerSessionId ? { triggerSessionId } : {}),
       // oauthEngineType 恒在 → executionMetadata 恒非空，直接写入。

@@ -162,6 +162,28 @@ Two workable options:
   idempotent `git config --global ...` commands (user, credential helper) at the
   beginning of each run.
 
+## Run — conversation identity and grouped reads
+
+`runs.conversation_id` identifies one a2wave-managed generation of an actual Provider/CLI
+conversation across independently actionable Runs. Ingress creates it from the first Run id and
+continuations inherit it; a reset creates a new value. Do not reuse `trigger_session_id` for this:
+that field belongs to transport deduplication and previous-turn lookup, and some channels retain it
+across `/new`.
+
+The effective grouping key is `COALESCE(conversation_id, runs.id)`, additionally partitioned by
+`initiator_agent_id` and `trigger_source`. The extra partition columns are security and correctness
+boundaries because an external session identifier need not be globally unique. They also provide a
+legacy bridge: when the first pre-migration Run has NULL conversation id, a newer continuation can
+point at that Run id and both resolve to the same effective key. Consequently, never add raw
+`conversation_id` to the SQL `GROUP BY`, and never treat a NULL detail anchor as unconditionally
+singleton without checking the effective key.
+
+Both `GET /runs/sessions` and `GET /runs/:id/session` apply `getRunReadFilter` before reading any
+members. The detail endpoint repeats the filter after resolving its anchor so the anchor cannot act
+as a capability URL if access changes between queries. Session summaries surface aggregate status:
+an active member wins in `running > queued > pending` order; otherwise the latest Run's terminal
+status is used. The legacy `GET /runs` endpoint remains execution-granular.
+
 ## Evaluation
 
 An Evaluation Set groups Cases (each an ordered list of

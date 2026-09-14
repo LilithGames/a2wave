@@ -869,6 +869,13 @@
       "when": 1788342026051,
       "tag": "0123_opposite_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "6",
+      "when": 1789352709110,
+      "tag": "0124_open_vindicator",
+      "breakpoints": true
     }
   ]
 }

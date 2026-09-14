@@ -1,50 +1,22 @@
-import { RunCallerPrefix } from '@/components/run-caller-prefix'
-import { RunDetailDrawer } from '@/components/run-detail-drawer'
-import { Badge } from '@/components/ui/badge'
+import { CalendarOutlined } from '@ant-design/icons'
+import { DatePicker, Select } from 'antd'
+import type { Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
+import { Activity, CircleAlert, Plus, RefreshCw } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { RunSessionDetailDrawer } from '@/components/run-session-detail-drawer'
+import { RunSessionRow } from '@/components/run-session-row'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Pagination } from '@/components/ui/pagination'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAllAgents } from '@/hooks/use-agents'
-import { useRuns } from '@/hooks/use-runs'
+import { useRunSessions } from '@/hooks/use-runs'
 import { DATE_PRESETS_WITH_ALL, type DatePreset, getPresetDateRange } from '@/lib/date-presets'
-import { formatRelativeTime } from '@/lib/utils'
-import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
-import { CalendarOutlined } from '@ant-design/icons'
-import { DatePicker, Select } from 'antd'
-import dayjs from 'dayjs'
-import type { Dayjs } from 'dayjs'
-import { Activity, CheckCircle2, Circle, Loader2, Plus, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { useNavigate, useSearchParams } from 'react-router-dom'
 
 const { RangePicker } = DatePicker
-
-const STATUS_BADGE: Record<
-  RunStatus,
-  { variant: 'default' | 'secondary' | 'destructive' | 'success' | 'warning'; label: string }
-> = {
-  running: { variant: 'warning', label: 'dashboard.statusRunning' },
-  completed: { variant: 'success', label: 'dashboard.statusCompleted' },
-  failed: { variant: 'destructive', label: 'dashboard.statusFailed' },
-  pending: { variant: 'secondary', label: 'dashboard.statusPending' },
-  queued: { variant: 'secondary', label: 'dashboard.statusQueued' },
-  cancelled: { variant: 'secondary', label: 'dashboard.statusCancelled' },
-}
-
-function RunStatusIcon({ status }: { status: RunStatus }) {
-  switch (status) {
-    case 'running':
-      return <Loader2 className="h-4 w-4 shrink-0 animate-spin text-warning" aria-hidden="true" />
-    case 'completed':
-      return <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-hidden="true" />
-    case 'failed':
-      return <XCircle className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-    default:
-      return <Circle className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
-  }
-}
 
 const PAGE_SIZE = 20
 
@@ -58,7 +30,7 @@ export function RunsPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const page = Math.max(1, Number.parseInt(searchParams.get('page') ?? '1') || 1)
+  const page = Math.max(1, Number.parseInt(searchParams.get('page') ?? '1', 10) || 1)
 
   const [agentFilter, setAgentFilter] = useState<string | undefined>()
   const [datePreset, setDatePreset] = useState<DatePreset>('all')
@@ -79,7 +51,12 @@ export function RunsPage() {
 
   // Data fetching
   const { data: agentsResult } = useAllAgents()
-  const { data: runsData, isLoading } = useRuns({
+  const {
+    data: sessionsData,
+    isLoading,
+    isError,
+    refetch,
+  } = useRunSessions({
     agentId: agentFilter,
     startDate: dateRange.start,
     endDate: dateRange.end,
@@ -87,8 +64,8 @@ export function RunsPage() {
     pageSize: PAGE_SIZE,
   })
 
-  const runs = runsData?.data
-  const pagination = runsData?.pagination
+  const sessions = sessionsData?.data
+  const pagination = sessionsData?.pagination
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const agentOptions = useMemo<AgentFilterOption[]>(
@@ -109,10 +86,7 @@ export function RunsPage() {
   )
 
   useEffect(() => {
-    const runId = searchParams.get('runId')
-    if (runId) {
-      setSelectedRunId(runId)
-    }
+    setSelectedRunId(searchParams.get('runId'))
   }, [searchParams])
 
   const handleCloseDetail = () => {
@@ -219,7 +193,21 @@ export function RunsPage() {
             ))}
           </CardContent>
         </Card>
-      ) : runs?.length === 0 ? (
+      ) : isError && !sessionsData ? (
+        <Card>
+          <CardContent
+            className="flex flex-col items-center justify-center gap-3 px-8 py-20 text-center"
+            role="alert"
+          >
+            <CircleAlert className="h-7 w-7 text-destructive" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">{t('runs.loadFailed')}</p>
+            <Button variant="outline" size="sm" onClick={() => void refetch()}>
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+              {t('runs.retryLoad')}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : sessions?.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-20 px-8">
             <div className="flex size-14 items-center justify-center rounded-2xl bg-brand-gradient-subtle text-interactive-foreground mb-5">
@@ -242,39 +230,15 @@ export function RunsPage() {
         <>
           <Card>
             <CardContent className="p-0">
-              {runs?.map((run, idx) => {
-                const badgeCfg = STATUS_BADGE[run.status as RunStatus] ?? STATUS_BADGE.pending
-                const showBorder = idx < (runs?.length ?? 0) - 1
-                return (
-                  <button
-                    key={run.id}
-                    type="button"
-                    className={`flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 transition-colors ${showBorder ? 'border-b border-border/50' : ''}`}
-                    onClick={() => setSelectedRunId(run.id)}
-                  >
-                    <RunStatusIcon status={run.status as RunStatus} />
-                    <div className="min-w-0 flex-1">
-                      <span className="text-sm font-medium text-foreground truncate block">
-                        {run.agentName || t('runs.noAgent')}
-                      </span>
-                      <span className="text-xs text-muted-foreground truncate block">
-                        <RunCallerPrefix
-                          name={run.triggerUserName}
-                          callerAgentName={run.triggerAgentName}
-                          source={run.triggerSource as RunTriggerSource | null}
-                        />
-                        {run.intent}
-                      </span>
-                    </div>
-                    <Badge variant={badgeCfg.variant} className="text-[10px] shrink-0">
-                      {t(badgeCfg.label)}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {formatRelativeTime(run.createdAt)}
-                    </span>
-                  </button>
-                )
-              })}
+              {sessions?.map((session, idx) => (
+                <RunSessionRow
+                  key={session.id}
+                  session={session}
+                  showAgent
+                  showBorder={idx < sessions.length - 1}
+                  onSelect={setSelectedRunId}
+                />
+              ))}
             </CardContent>
           </Card>
 
@@ -283,7 +247,7 @@ export function RunsPage() {
               className="mt-4"
               pagination={pagination}
               onPageChange={setPage}
-              totalLabel={t('runs.paginationTotal', { total: pagination.total })}
+              totalLabel={t('runs.sessionPaginationTotal', { total: pagination.total })}
               previousLabel={t('runs.prevPage')}
               nextLabel={t('runs.nextPage')}
             />
@@ -291,7 +255,11 @@ export function RunsPage() {
         </>
       )}
 
-      <RunDetailDrawer runId={selectedRunId} open={!!selectedRunId} onClose={handleCloseDetail} />
+      <RunSessionDetailDrawer
+        runId={selectedRunId}
+        open={!!selectedRunId}
+        onClose={handleCloseDetail}
+      />
     </div>
   )
 }

@@ -46,14 +46,20 @@ export async function findActiveOAuthSessionRun(agentId: string, triggerSessionI
   )[0]
 }
 
-export async function lookupPreviousOAuthSessionChatId(
+export interface PreviousOAuthSession {
+  runId: string
+  chatId: string
+  conversationId: string
+}
+
+export async function lookupPreviousOAuthSession(
   agentId: string,
   triggerSessionId: string,
   opts: { beforeCreatedAt?: Date } = {},
-): Promise<string | null> {
+): Promise<PreviousOAuthSession | null> {
   const row = (
     await db
-      .select({ result: runs.result })
+      .select({ id: runs.id, result: runs.result, conversationId: runs.conversationId })
       .from(runs)
       .where(
         and(
@@ -69,5 +75,38 @@ export async function lookupPreviousOAuthSessionChatId(
   )[0]
 
   const result = row?.result as Record<string, unknown> | undefined
-  return typeof result?.chatId === 'string' ? result.chatId : null
+  if (!row || typeof result?.chatId !== 'string') return null
+  return {
+    runId: row.id,
+    chatId: result.chatId,
+    conversationId: row.conversationId ?? row.id,
+  }
+}
+
+/** Preserve the established chat-id-only API for queued-run recovery. */
+export async function lookupPreviousOAuthSessionChatId(
+  agentId: string,
+  triggerSessionId: string,
+  opts: { beforeCreatedAt?: Date } = {},
+): Promise<string | null> {
+  return (await lookupPreviousOAuthSession(agentId, triggerSessionId, opts))?.chatId ?? null
+}
+
+/**
+ * Resolve both halves of an OAuth turn atomically from the same prior row.
+ * A reset, missing key, or non-resumable prior result starts at this Run.
+ */
+export async function resolveOAuthConversation(input: {
+  agentId: string
+  triggerSessionId?: string
+  runId: string
+  resetSession: boolean
+}): Promise<{ previousChatId: string | null; conversationId: string }> {
+  if (!input.triggerSessionId || input.resetSession) {
+    return { previousChatId: null, conversationId: input.runId }
+  }
+
+  const previous = await lookupPreviousOAuthSession(input.agentId, input.triggerSessionId)
+  if (!previous) return { previousChatId: null, conversationId: input.runId }
+  return { previousChatId: previous.chatId, conversationId: previous.conversationId }
 }

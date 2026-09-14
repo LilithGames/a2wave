@@ -1,3 +1,4 @@
+import type { Run } from '@a2wave/shared'
 import { Drawer } from 'antd'
 import {
   Bot,
@@ -226,7 +227,7 @@ export function RunDetailDrawer({
                 {t('runDetail.selectRun')}
               </div>
             ) : (
-              <ChatContent run={run} isLoading={isLoading} t={t} language={i18n.language} />
+              <RunChatContent run={run} isLoading={isLoading} t={t} language={i18n.language} />
             )}
           </div>
         </div>
@@ -236,13 +237,17 @@ export function RunDetailDrawer({
 }
 
 // ─── Chat Messages ────────────────────────────────────────────
-function ChatContent({
+export type RunChatContentRun = Pick<Run, 'status' | 'result'> & {
+  messages?: ChatMessageWithAttachments[]
+}
+
+export function RunChatContent({
   run,
   isLoading,
   t,
   language,
 }: {
-  run: ReturnType<typeof useRun>['data']
+  run: RunChatContentRun | undefined
   isLoading: boolean
   t: (key: string) => string
   language: string
@@ -316,6 +321,7 @@ function ChatContent({
                           const att = historyRefToSentAttachment(ref)
                           return (
                             <AttachmentChip
+                              // biome-ignore lint/suspicious/noArrayIndexKey: persisted attachment order is stable, and A2A refs may have no unique token.
                               key={`${att.name}-${i}`}
                               name={att.name}
                               previewUrl={att.previewUrl}

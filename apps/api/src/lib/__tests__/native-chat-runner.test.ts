@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockAgentGet = vi.hoisted(() => vi.fn())
 const mockReservedRunGet = vi.hoisted(() => vi.fn())
+const mockPreviousConversationGet = vi.hoisted(() => vi.fn())
 const mockInsertRun = vi.hoisted(() => vi.fn())
 const mockUpdateRun = vi.hoisted(() => vi.fn())
 const mockUpdateReturning = vi.hoisted(() => vi.fn())
@@ -15,13 +16,24 @@ vi.mock('../../db/client.js', () => ({
   // still stands for "the agent this lookup finds"; the store asks for
   // `.limit(1)` and destructures the resulting array.
   db: {
-    select: () => ({
+    select: (fields?: Record<string, unknown>) => ({
       from: (table: { __kind?: string }) => ({
         where: () => ({
           limit: () => {
-            const row = table.__kind === 'runs' ? mockReservedRunGet() : mockAgentGet()
+            const row =
+              table.__kind !== 'runs'
+                ? mockAgentGet()
+                : fields && 'conversationId' in fields
+                  ? mockPreviousConversationGet()
+                  : mockReservedRunGet()
             return Promise.resolve(row === undefined || row === null ? [] : [row])
           },
+          orderBy: () => ({
+            limit: () => {
+              const row = mockPreviousConversationGet()
+              return Promise.resolve(row === undefined || row === null ? [] : [row])
+            },
+          }),
         }),
       }),
     }),
@@ -52,11 +64,18 @@ vi.mock('../../db/schema.js', () => ({
     id: {},
     initiatorAgentId: {},
     triggerSource: {},
+    triggerSessionId: {},
     triggerEventId: {},
+    conversationId: {},
+    createdAt: {},
   },
 }))
 
-vi.mock('drizzle-orm', () => ({ and: vi.fn(() => ({})), eq: vi.fn(() => ({})) }))
+vi.mock('drizzle-orm', () => ({
+  and: vi.fn(() => ({})),
+  desc: vi.fn(() => ({})),
+  eq: vi.fn(() => ({})),
+}))
 
 vi.mock('../../engine/task-queue.js', () => ({
   tryAcquireSlot: mockTryAcquireSlot,
@@ -91,6 +110,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   insertedRunValues.length = 0
   mockReservedRunGet.mockReturnValue(undefined)
+  mockPreviousConversationGet.mockReturnValue(undefined)
   mockAgentGet.mockReturnValue({
     id: 'agt_1',
     userId: 'usr_1',
@@ -133,6 +153,194 @@ describe('preflightNativeChatRun', () => {
 })
 
 describe('reserveNativeChatRun', () => {
+  it('starts a new persisted conversation when the transport session has no prior run', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'slack',
+      eventId: 'Ev-first',
+      conversationId: 'T1:D1',
+      intent: 'hello',
+      channel: slackChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_native')
+  })
+
+  it('continues the most recent persisted conversation for the same transport session', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_previous',
+      conversationId: 'run_first',
+      createdAt: new Date(),
+    })
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'slack',
+      eventId: 'Ev-next',
+      conversationId: 'T1:D1',
+      intent: 'follow up',
+      channel: slackChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_first')
+  })
+
+  it('uses the legacy prior run id when its conversation id has not been backfilled', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_legacy',
+      conversationId: null,
+      createdAt: new Date(),
+    })
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'slack',
+      eventId: 'Ev-legacy-next',
+      conversationId: 'T1:D1',
+      intent: 'follow up',
+      channel: slackChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_legacy')
+  })
+
+  it('starts a new persisted conversation on an explicit session reset', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_previous',
+      conversationId: 'run_first',
+      createdAt: new Date(),
+    })
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'slack',
+      eventId: 'Ev-reset',
+      conversationId: 'T1:D1',
+      intent: 'start over',
+      channel: slackChannel,
+      resetSession: true,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_native')
+  })
+
+  it('starts a new QQ C2C conversation after the two-hour inactivity boundary', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockAgentGet.mockReturnValue({
+      id: 'agt_1',
+      userId: 'usr_1',
+      publishStatus: 'published',
+      publishChannels: ['qq_official'],
+      maxConcurrency: 2,
+    })
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_previous',
+      conversationId: 'run_first',
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000 - 1),
+    })
+    const qqChannel = {
+      channel_type: 'qq_official' as const,
+      channel_info: {
+        app_id: 'app',
+        message_id: 'msg',
+        sender_open_id: 'user',
+        scene: 'c2c' as const,
+      },
+      user_info: null,
+    }
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'qq_official',
+      eventId: 'qq:next',
+      conversationId: 'app:c2c:user',
+      intent: 'hello again',
+      channel: qqChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_native')
+  })
+
+  it('continues a QQ C2C conversation while activity is inside the two-hour boundary', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockAgentGet.mockReturnValue({
+      id: 'agt_1',
+      userId: 'usr_1',
+      publishStatus: 'published',
+      publishChannels: ['qq_official'],
+      maxConcurrency: 2,
+    })
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_previous',
+      conversationId: 'run_first',
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000 + 1_000),
+    })
+    const qqChannel = {
+      channel_type: 'qq_official' as const,
+      channel_info: {
+        app_id: 'app',
+        message_id: 'msg',
+        sender_open_id: 'user',
+        scene: 'c2c' as const,
+      },
+      user_info: null,
+    }
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'qq_official',
+      eventId: 'qq:inside-timeout',
+      conversationId: 'app:c2c:user',
+      intent: 'continue',
+      channel: qqChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_first')
+  })
+
+  it('uses the eight-hour inactivity boundary for a shared QQ group conversation', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    mockAgentGet.mockReturnValue({
+      id: 'agt_1',
+      userId: 'usr_1',
+      publishStatus: 'published',
+      publishChannels: ['qq_official'],
+      maxConcurrency: 2,
+    })
+    mockPreviousConversationGet.mockReturnValue({
+      id: 'run_previous',
+      conversationId: 'run_first',
+      createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000 - 1),
+    })
+    const qqChannel = {
+      channel_type: 'qq_official' as const,
+      channel_info: {
+        app_id: 'app',
+        message_id: 'msg',
+        sender_open_id: 'member',
+        group_open_id: 'group',
+        scene: 'group' as const,
+      },
+      user_info: null,
+    }
+
+    await reserveNativeChatRun({
+      agentId: 'agt_1',
+      source: 'qq_official',
+      eventId: 'qq:group-next',
+      conversationId: 'app:group:group',
+      intent: 'hello again',
+      channel: qqChannel,
+    })
+
+    expect(insertedRunValues[0]?.conversationId).toBe('run_native')
+  })
+
   it('marks the durable Run failed when scheduling throws after insertion', async () => {
     mockTryAcquireSlot.mockRejectedValue(new Error('queue database unavailable'))
 
