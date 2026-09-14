@@ -477,6 +477,33 @@ describe('agentsCommand', () => {
         expect(out).not.toContain('--- Provider Chain ---')
       })
 
+      // GET masks every secret as the literal '********'. Rendering that string
+      // told a reader nothing: "configured but masked" and "never set" looked
+      // identical, which is exactly the question a broken Agent raises first.
+      it('shows chain-entry credentials as configured (masked) / not set, never the value', async () => {
+        mockResolveAgentId.mockResolvedValueOnce('agt_1')
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            {
+              providerId: 'prv_a',
+              model: 'opus',
+              authMode: 'oauth',
+              providerApiKey: null,
+              providerOauthToken: '********',
+              enabled: true,
+            },
+          ]),
+        )
+
+        await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+        const out = consoleSpy.mock.calls.flat().join('\n')
+        expect(out).toContain(
+          '1. prv_a  model=opus  auth=oauth  apiKey=not set  oauthToken=configured (masked)',
+        )
+        expect(out).not.toContain('********')
+      })
+
       it('still lists the remaining config keys without their values', async () => {
         mockResolveAgentId.mockResolvedValueOnce('agt_1')
         mockGet.mockResolvedValueOnce(
@@ -492,6 +519,68 @@ describe('agentsCommand', () => {
         expect(out).toContain('timeoutMinutes')
         expect(out).not.toContain('timeoutMinutes: 10')
       })
+    })
+  })
+
+  describe('get: credential fields', () => {
+    function agentWithCredentials(fields: Record<string, unknown>) {
+      return {
+        data: {
+          id: 'agt_1',
+          name: 'Bot A',
+          type: 'cursor',
+          status: 'active',
+          publishStatus: 'draft',
+          description: null,
+          skills: [],
+          ...fields,
+        },
+      }
+    }
+
+    it('renders a masked secret as "configured (masked)" instead of the asterisks', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce(
+        agentWithCredentials({
+          authMode: 'apiKey',
+          providerApiKey: '********',
+          providerOauthToken: null,
+          embeddingApiKey: '',
+        }),
+      )
+
+      await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+      const out = consoleSpy.mock.calls.flat().join('\n')
+      expect(out).toContain('API Key:       configured (masked)')
+      expect(out).toContain('OAuth Token:   not set')
+      expect(out).toContain('Embedding Key: not set')
+      expect(out).not.toContain('********')
+    })
+
+    it('never echoes a plaintext secret the server happened to return', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce(
+        agentWithCredentials({ providerApiKey: 'sk-live-plain', providerOauthToken: undefined }),
+      )
+
+      await getSubCommand('get').run({ args: { id: 'agt_1' } })
+
+      const out = consoleSpy.mock.calls.flat().join('\n')
+      expect(out).toContain('API Key:       configured (masked)')
+      expect(out).toContain('OAuth Token:   not set')
+      expect(out).not.toContain('sk-live-plain')
+    })
+
+    it('--json output is untouched by the human rendering', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce(agentWithCredentials({ providerApiKey: '********' }))
+
+      await getSubCommand('get').run({ args: { id: 'agt_1', json: true } })
+
+      const written = consoleSpy.mock.calls.flat().join('\n')
+      expect(written).toContain('"providerApiKey":"********"')
+      expect(written).not.toContain('configured (masked)')
     })
   })
 

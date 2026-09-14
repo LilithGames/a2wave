@@ -20,6 +20,7 @@ import {
 } from '../lib/args.js'
 import { emit, jsonArg, redactSecrets } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
+import { agentScheduleCommand } from './agent-schedule.js'
 
 /**
  * The filename to write a downloaded body to, derived from Content-Disposition.
@@ -75,6 +76,9 @@ interface AgentDetail extends Agent {
   maxConcurrency?: number
   authMode?: string
   providerId?: string | null
+  providerApiKey?: string | null
+  providerOauthToken?: string | null
+  embeddingApiKey?: string | null
   showLocalChildOutput?: boolean
   showRemoteChildOutput?: boolean
   feishuConfig?: unknown
@@ -106,6 +110,20 @@ interface ProviderChainEntryView {
   reasoningEffort?: string | null
   fastMode?: boolean | null
   enabled?: boolean
+  authMode?: string | null
+  providerApiKey?: string | null
+  providerOauthToken?: string | null
+}
+
+/**
+ * What the human output says about a credential field. The value itself is
+ * never rendered: the server masks it as `********`, and printing that told a
+ * reader nothing — "configured but masked" and "never set" looked the same,
+ * which is the first question a broken Agent raises. Should a route ever
+ * return plaintext, the same rule keeps it out of terminal scrollback.
+ */
+function describeCredential(value: unknown): string {
+  return typeof value === 'string' && value !== '' ? 'configured (masked)' : 'not set'
 }
 
 function readProviderChain(config: Record<string, unknown> | null | undefined) {
@@ -122,6 +140,13 @@ function formatProviderChainEntry(entry: ProviderChainEntryView, index: number):
     // Only an explicit `true` is worth a line: fast mode is off by default, and
     // the level it was requested at is what a reader is scanning for.
     entry.fastMode === true ? 'fastMode=true' : null,
+    // Credentials appear only when the entry declares them: an entry that
+    // inherits the Agent-level credential has nothing to report here.
+    entry.authMode ? `auth=${entry.authMode}` : null,
+    'providerApiKey' in entry ? `apiKey=${describeCredential(entry.providerApiKey)}` : null,
+    'providerOauthToken' in entry
+      ? `oauthToken=${describeCredential(entry.providerOauthToken)}`
+      : null,
     entry.enabled === false ? '[disabled]' : null,
   ].filter(Boolean)
   return parts.join('  ')
@@ -236,6 +261,55 @@ function assertMemberRole(role: unknown): asserts role is (typeof MEMBER_ROLES)[
   }
 }
 
+const SKIP_DIAGNOSE_HINT = 'Fix the errors above, or pass --skip-diagnose to publish anyway.'
+
+const skipDiagnoseArg = {
+  'skip-diagnose': {
+    type: 'boolean' as const,
+    description:
+      'Skip the diagnose preflight (GET /agents/:id/diagnose) that blocks publish on error-level findings',
+  },
+}
+
+/**
+ * Publish preflight: consult GET /agents/:id/diagnose and refuse to publish
+ * while it reports an error-level finding.
+ *
+ * Publish itself only flips a status; it does not prove the Agent can run. A
+ * missing Provider CLI or a rejected credential publishes fine and then fails
+ * the first turn, which the caller discovers later and elsewhere. The diagnose
+ * route already knows, so it is asked first. Warn-level items are shown but do
+ * not block, and a preflight that cannot run (network, 5xx) is reported and
+ * skipped rather than turning a diagnostics outage into a publish outage.
+ */
+async function assertPublishPreflight(
+  client: ReturnType<typeof createClient>,
+  agentId: string,
+  skip: boolean,
+): Promise<void> {
+  if (skip) return
+  let checks: DiagnoseCheck[]
+  try {
+    const result = await client.get<{ data: DiagnoseResult }>(`/api/agents/${agentId}/diagnose`)
+    checks = result.data.checks ?? []
+  } catch (err) {
+    console.warn(
+      `Warning: publish preflight could not run (${(err as Error).message}); publishing without it`,
+    )
+    return
+  }
+  for (const c of checks) {
+    if (c.severity === 'warn') console.warn(`! [warn] ${c.id}: ${c.message}`)
+  }
+  const errors = checks.filter((c) => c.severity === 'error')
+  if (errors.length === 0) return
+  for (const c of errors) console.error(`✗ [error] ${c.id}: ${c.message}`)
+  throw new CliError(
+    `Publish preflight found ${errors.length} error${errors.length === 1 ? '' : 's'} for ${agentId}; the Agent would publish but could not run`,
+    { type: 'validation', subtype: 'publish_preflight', hint: SKIP_DIAGNOSE_HINT },
+  )
+}
+
 export const agentsCommand = defineCommand({
   meta: { name: 'agents', description: 'Manage Agents' },
   subCommands: {
@@ -289,6 +363,9 @@ export const agentsCommand = defineCommand({
         console.log('\n--- Runtime Config ---')
         console.log(`Provider:      ${a.providerId || '(builtin/unspecified)'}`)
         console.log(`Auth Mode:     ${a.authMode ?? 'apiKey'}`)
+        console.log(`API Key:       ${describeCredential(a.providerApiKey)}`)
+        console.log(`OAuth Token:   ${describeCredential(a.providerOauthToken)}`)
+        console.log(`Embedding Key: ${describeCredential(a.embeddingApiKey)}`)
         const workspace =
           a.workspaceType === 'scm'
             ? `scm${a.scmSourceId ? ` (${a.scmSourceId})` : ''}`
@@ -661,6 +738,7 @@ export const agentsCommand = defineCommand({
           default: true,
           description: 'Apply the publish block in the yaml. Use --no-publish to stay in draft',
         },
+        ...skipDiagnoseArg,
         // Only consulted when the diff actually removes something; an additive
         // apply never asks, so this flag is inert on the common path.
         ...forceArgs,
@@ -680,6 +758,7 @@ export const agentsCommand = defineCommand({
         }
         const dryRun = !!args['dry-run']
         const noPublish = args.publish === false
+        const skipDiagnose = !!args['skip-diagnose']
 
         const yaml = parseAgentYaml(filePath)
         const client = createClient({ url: args.url as string | undefined })
@@ -702,6 +781,7 @@ export const agentsCommand = defineCommand({
           const created = await client.post<{ data: { id: string } }>('/api/agents', payload)
           console.log(`Created ${created.data.id} (${yaml.name})`)
           if (publishBody) {
+            await assertPublishPreflight(client, created.data.id, skipDiagnose)
             await client.post(`/api/agents/${created.data.id}/publish`, publishBody)
             console.log(
               `Published ${created.data.id} (channels: ${(publishBody.channels as string[] | undefined)?.join(', ') ?? 'default'})`,
@@ -745,6 +825,7 @@ export const agentsCommand = defineCommand({
           }
         }
         if (publishBody && !dryRun) {
+          await assertPublishPreflight(client, existing.id, skipDiagnose)
           await client.post(`/api/agents/${existing.id}/publish`, publishBody)
           console.log(
             `Published ${existing.id} (channels: ${(publishBody.channels as string[] | undefined)?.join(', ') ?? 'default'})`,
@@ -774,11 +855,13 @@ export const agentsCommand = defineCommand({
           type: 'boolean',
           description: 'Also regenerate endpointApiKey (rotate)',
         },
+        ...skipDiagnoseArg,
         ...urlArg,
       },
       run: async ({ args }) => {
         const client = createClient({ url: args.url as string | undefined })
         const agentId = await client.resolveAgentId(args.id as string)
+        await assertPublishPreflight(client, agentId, !!args['skip-diagnose'])
 
         const body: Record<string, unknown> = {}
         if (args.channels)
@@ -877,6 +960,7 @@ export const agentsCommand = defineCommand({
       },
     }),
 
+    schedule: agentScheduleCommand,
     members: defineCommand({
       meta: { name: 'members', description: 'Manage Agent members' },
       subCommands: {

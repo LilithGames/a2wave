@@ -36,6 +36,78 @@ function clipErrorBody(body: string): string {
   return `${body.slice(0, MAX_ERROR_BODY_CHARS)}… (${body.length - MAX_ERROR_BODY_CHARS} more chars truncated)`
 }
 
+/**
+ * Read the errno code (`ECONNREFUSED`, `ENOTFOUND`, …) off a fetch failure.
+ *
+ * Node's undici rejects with `TypeError: fetch failed` and puts the socket
+ * error on `cause`. A dual-stack host tries every resolved address and reports
+ * them as an `AggregateError`, whose own `code` may be absent even though each
+ * member carries one — so the first member is consulted as well.
+ */
+function extractErrnoCode(cause: unknown): string | undefined {
+  if (!cause || typeof cause !== 'object') return undefined
+  const code = (cause as { code?: unknown }).code
+  if (typeof code === 'string' && code.length > 0) return code
+  const errors = (cause as { errors?: unknown }).errors
+  if (Array.isArray(errors) && errors.length > 0) return extractErrnoCode(errors[0])
+  return undefined
+}
+
+function isFetchFailure(err: unknown): err is TypeError & { cause?: unknown } {
+  return err instanceof TypeError && err.message === 'fetch failed'
+}
+
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')
+}
+
+/**
+ * Turn a failed connection into an error the user can act on, or `null` when
+ * the value is anything else.
+ *
+ * The socket never reaching the server is a network or configuration problem,
+ * not a bug in this CLI — but it arrives as a bare `TypeError`, which is the
+ * shape `handleError` reserves for bugs. Left alone it printed "Internal error:
+ * fetch failed … This is a bug in the a2wave CLI" for a mistyped instance URL.
+ * The errno is kept as `subtype` because it is the one stable token an agent
+ * can branch on; the message names the URL that was actually dialled so a
+ * `--url` typo is visible in the failure itself.
+ */
+export function toConnectionError(err: unknown, baseUrl: string): CliError | null {
+  let reason: string
+  let subtype: string | undefined
+  if (isAbort(err)) {
+    reason = 'timed out'
+    subtype = 'timeout'
+  } else if (isFetchFailure(err)) {
+    subtype = extractErrnoCode(err.cause)
+    reason =
+      subtype ?? (err.cause instanceof Error && err.cause.message ? err.cause.message : err.message)
+  } else {
+    return null
+  }
+  return new CliError(
+    [
+      `Cannot reach a2wave at ${baseUrl} (${reason}).`,
+      'Check the instance URL: a2wave config get / a2wave config set-url <url>, or pass --url.',
+    ].join('\n'),
+    { type: 'network', ...(subtype ? { subtype } : {}), hint: 'a2wave status' },
+  )
+}
+
+/** `fetch`, with a connection failure rethrown as a network CliError. */
+async function fetchOrConnectionError(
+  baseUrl: string,
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch (err) {
+    throw toConnectionError(err, baseUrl) ?? err
+  }
+}
+
 export class ApiError extends CliError {
   constructor(
     public status: number,
@@ -108,19 +180,11 @@ function needsIdaasExchange(token: string): boolean {
 
 /** POST IDaaS JWT to /api/auth/oauth/exchange and return the a2wave-signed token. */
 async function exchangeIdaasToken(baseUrl: string, idaasJwt: string): Promise<string> {
-  let res: Response
-  try {
-    res = await fetch(`${baseUrl}/api/auth/oauth/exchange`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'a2wave-cli' },
-      body: JSON.stringify({ idaasToken: idaasJwt }),
-    })
-  } catch (err) {
-    throw new CliError(`Cannot connect to ${baseUrl}: ${(err as Error).message}`, {
-      type: 'network',
-      hint: 'a2wave status',
-    })
-  }
+  const res = await fetchOrConnectionError(baseUrl, `${baseUrl}/api/auth/oauth/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'a2wave-cli' },
+    body: JSON.stringify({ idaasToken: idaasJwt }),
+  })
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -187,7 +251,7 @@ export function createClient(opts: ClientOptions = {}) {
 
   async function request(path: string, init?: RequestInit): Promise<Response> {
     const token = await getSessionToken()
-    const res = await fetch(`${url}${path}`, {
+    const res = await fetchOrConnectionError(url, `${url}${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${token}`,

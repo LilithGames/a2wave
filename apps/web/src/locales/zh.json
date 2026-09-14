@@ -2366,6 +2366,7 @@
       "agent.create": "创建 Agent",
       "agent.delete": "删除 Agent",
       "agent.diagnose": "诊断 Agent",
+      "agent.schedule_run": "手动触发 Agent 定时任务",
       "agent.export": "导出 Agent",
       "agent.import": "导入 Agent",
       "agent.import-url": "从链接导入 Agent",

@@ -2339,6 +2339,7 @@
       "agent.create": "Create Agent",
       "agent.delete": "Delete Agent",
       "agent.diagnose": "Diagnose Agent",
+      "agent.schedule_run": "Rehearse Agent schedule",
       "agent.export": "Export Agent",
       "agent.import": "Import Agent",
       "agent.import-url": "Import Agent from URL",

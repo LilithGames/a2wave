@@ -133,6 +133,35 @@ to it — and side effects can be repeated. A repeated turn is recoverable; a si
 one is not. Removing the carve-out requires teaching the replay path to carry the
 interrupted run's `liveChatId` into the run it creates.
 
+## Run — runtime HOME
+
+Every run gets a per-Agent runtime home at `data/agent-homes/<agentId>`
+(`engine/runtime-context.ts`): `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
+`CODEX_HOME` and `TMPDIR` all point inside it. One exception, applied by every
+engine: **`authMode = localSession` keeps the service process HOME** (the engine
+drops `HOME` from the runtime env), because that mode reads the CLI's own login
+state from the service user's `~/.claude`, `~/.cursor`, `~/.codex`, and so on.
+`apiKey` and `oauth` modes get the per-Agent HOME.
+
+Consequence: any external CLI logged in under the service user's HOME — `glab`,
+`gh`, `git` (`~/.gitconfig`, `~/.git-credentials`, `~/.config/glab-cli`) — is
+**not authenticated** inside an `apiKey` / `oauth` run, even though `a2wave`
+itself runs fine. Agent-level env vars starting with `GIT_CONFIG_` are stripped
+by `sanitizeAgentRuntimeEnv` (process-injection guard), so `GIT_CONFIG_GLOBAL`
+cannot redirect git to the service user's config; `GLAB_CONFIG_DIR` is allowed.
+
+Two workable options:
+
+- **Seed the Agent's runtime home.** Put a `.gitconfig` in
+  `data/agent-homes/<agentId>/` that declares
+  `credential.helper = store --file=<service user's .git-credentials>`, and
+  symlink `data/agent-homes/<agentId>/.config/glab-cli` to the service user's
+  `~/.config/glab-cli`.
+- **Configure at run start.** In the Agent's system prompt, instruct it to
+  `export GLAB_CONFIG_DIR=<service user's ~/.config/glab-cli>` and to run
+  idempotent `git config --global ...` commands (user, credential helper) at the
+  beginning of each run.
+
 ## Evaluation
 
 An Evaluation Set groups Cases (each an ordered list of

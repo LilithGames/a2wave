@@ -19,11 +19,69 @@ export type ScheduleConfig = {
 }
 export type ScheduleConfigInput = ScheduleConfig | ScheduleConfig[]
 
-function normalizeScheduleConfigs(
+const DEFAULT_SCHEDULE_TIMEZONE = 'Asia/Shanghai'
+
+type AgentRow = typeof agents.$inferSelect
+
+export function normalizeScheduleConfigs(
   config: ScheduleConfigInput | null | undefined,
 ): ScheduleConfig[] {
   if (!config) return []
   return Array.isArray(config) ? config : [config]
+}
+
+/**
+ * Stable identifier of one schedule entry. Prefer the persisted per-schedule id
+ * so audit logs stay stable when the array is edited; legacy configs without
+ * ids fall back to the entry's position.
+ */
+export function resolveScheduleId(
+  agentId: string,
+  schedule: ScheduleConfig,
+  index: number,
+): string {
+  return schedule.id ?? `${agentId}:${index}`
+}
+
+/**
+ * Next firing time as an ISO string, evaluated in the schedule's timezone.
+ * Null when croner cannot register the expression (invalid cron or unknown
+ * timezone) — the same entries `start` skips.
+ */
+export function computeNextRun(cron: string, timezone: string): string | null {
+  if (!isValidCron(cron)) return null
+  try {
+    return new Cron(cron, { timezone }).nextRun()?.toISOString() ?? null
+  } catch {
+    return null
+  }
+}
+
+export interface ScheduleEntry {
+  id: string
+  index: number
+  cron: string
+  timezone: string
+  intent: string
+  nextRun: string | null
+}
+
+/** The Agent's schedule config as a flat, addressable list. */
+export function listSchedules(
+  agentId: string,
+  config: ScheduleConfigInput | null | undefined,
+): ScheduleEntry[] {
+  return normalizeScheduleConfigs(config).map((schedule, index) => {
+    const timezone = schedule.timezone || DEFAULT_SCHEDULE_TIMEZONE
+    return {
+      id: resolveScheduleId(agentId, schedule, index),
+      index,
+      cron: schedule.cron,
+      timezone,
+      intent: schedule.intent,
+      nextRun: computeNextRun(schedule.cron, timezone),
+    }
+  })
 }
 
 export function renderIntent(template: string, timezone: string): string {
@@ -154,95 +212,128 @@ class ScheduleTriggerManager {
       return
     }
 
-    const timezone = config.timezone || 'Asia/Shanghai'
-    const intent = renderIntent(config.intent, timezone)
-    const runId = createId('run')
-
-    // Resolve the authorized run-as identity when the agent opted into
-    // scheduleRunAsOwner. The identity is the user who enabled it
-    // (agents.scheduleRunAsUserId, pinned server-side at publish time), resolved
-    // live here so disabling/unbinding that user takes effect immediately. If they
-    // have no active bound SSO identity we leave it null and the run executes
-    // without an attributed SSO identity.
-    // The id is server-controlled: a client can flip the boolean but can't point it
-    // at someone else (scheduleRunAsUserId is not writable via the agent input schemas).
-    let scheduleUser: { email: string; name?: string; sourceId?: string } | null = null
-    const channels = (agent.publishChannels as string[]) ?? []
-    if (agent.scheduleRunAsOwner && channels.includes('schedule') && agent.scheduleRunAsUserId) {
-      const runAsUser = (
-        await db.select().from(users).where(eq(users.id, agent.scheduleRunAsUserId)).limit(1)
-      )[0]
-      // Require a *bound* SSO identity (idaasSub), not just any email — otherwise a
-      // legacy/partial row with an email but no binding would attribute the run to an
-      // idaas-sourced identity that was never actually bound.
-      if (runAsUser?.isActive && runAsUser.email && runAsUser.idaasSub) {
-        scheduleUser = {
-          email: runAsUser.email,
-          name: runAsUser.displayName ?? undefined,
-          sourceId: runAsUser.idaasSub,
-        }
-      } else {
-        logger.warn(
-          { agentId, runAsUserId: agent.scheduleRunAsUserId },
-          'scheduleRunAsOwner set but run-as user has no active bound SSO identity — schedule run will be anonymous',
-        )
-      }
-    }
-
-    // Prefer the persisted per-schedule id so audit logs stay stable when the
-    // schedule array is edited. Legacy configs without ids fall back to index.
-    const scheduleResult = buildScheduleChannel({
-      scheduleId: config.id ?? `${agentId}:${scheduleIndex}`,
-      cron: config.cron,
-      user: scheduleUser,
-    })
-
-    // Assign userId so non-admin users can see schedule runs in their run list.
-    // Attribute to the run-as user ONLY when their identity actually resolved
-    // (scheduleUser != null); if resolution failed (inactive/unbound → anonymous run),
-    // fall back to the agent owner so the run isn't misattributed to someone it never
-    // ran as. Keeps "displayed owner" consistent with "actual run identity".
-    const runUserId = (scheduleUser ? agent.scheduleRunAsUserId : agent.userId) ?? undefined
-
-    await db.insert(runs).values({
-      id: runId,
-      intent,
-      initiatorAgentId: agentId,
-      userId: runUserId,
-      status: 'pending',
-      triggerSource: 'schedule',
-      triggerUserName: scheduleResult.displayName, // owner name when scheduleRunAsOwner, else null
-    })
-
-    // Register the unified schedule channel context so executeChatRun (whether
-    // dispatched immediately or after queueing) can attach it to the runSteps row.
-    registerPendingContext(runId, { channel: scheduleResult.ctx })
-
-    const slotResult = await tryAcquireSlot(taskQueueDb, agentId, runId, agent.maxConcurrency ?? 1)
-
-    if (slotResult === 'queue_full') {
-      await db
-        .update(runs)
-        .set({
-          status: 'failed',
-          result: { error: 'Agent queue is full at schedule trigger time' },
-          updatedAt: new Date(),
-        })
-        .where(eq(runs.id, runId))
-      logger.warn({ agentId, runId }, 'Schedule trigger: queue full, run marked failed')
-      return
-    }
-
-    if (slotResult === 'queued') {
-      logger.info({ agentId, runId }, 'Schedule trigger: run queued')
-      return
-    }
-
-    executeChatRun(agentId, runId).catch((err) =>
-      logger.error({ err, agentId, runId }, 'Schedule triggered run execution failed'),
-    )
-    logger.info({ agentId, runId }, 'Schedule trigger: run acquired and executing')
+    await fireSchedule(agent, config, scheduleIndex)
   }
+}
+
+export interface FireScheduleResult {
+  runId: string
+  /** `queue_full` means the run row was created and immediately marked failed. */
+  status: 'pending' | 'queued' | 'queue_full'
+  /** The intent after `{{date}}` / `{{time}}` / `{{iso}}` rendering. */
+  intent: string
+}
+
+/**
+ * Create and dispatch the run a schedule entry produces when it fires.
+ *
+ * Shared by the cron callback and the manual "run this schedule now" route so a
+ * rehearsal goes through exactly the same path — `triggerSource: 'schedule'`,
+ * the schedule channel context, the run-as identity, and slot acquisition.
+ * Callers decide whether the agent is eligible (published, schedule channel
+ * enabled, active); this only fires.
+ */
+export async function fireSchedule(
+  agent: AgentRow,
+  config: ScheduleConfig,
+  scheduleIndex: number,
+): Promise<FireScheduleResult> {
+  const agentId = agent.id
+  const timezone = config.timezone || DEFAULT_SCHEDULE_TIMEZONE
+  const intent = renderIntent(config.intent, timezone)
+  const runId = createId('run')
+
+  const scheduleUser = await resolveScheduleRunAsUser(agent)
+
+  const scheduleResult = buildScheduleChannel({
+    scheduleId: resolveScheduleId(agentId, config, scheduleIndex),
+    cron: config.cron,
+    user: scheduleUser,
+  })
+
+  // Assign userId so non-admin users can see schedule runs in their run list.
+  // Attribute to the run-as user ONLY when their identity actually resolved
+  // (scheduleUser != null); if resolution failed (inactive/unbound → anonymous run),
+  // fall back to the agent owner so the run isn't misattributed to someone it never
+  // ran as. Keeps "displayed owner" consistent with "actual run identity".
+  const runUserId = (scheduleUser ? agent.scheduleRunAsUserId : agent.userId) ?? undefined
+
+  await db.insert(runs).values({
+    id: runId,
+    intent,
+    initiatorAgentId: agentId,
+    userId: runUserId,
+    status: 'pending',
+    triggerSource: 'schedule',
+    triggerUserName: scheduleResult.displayName, // owner name when scheduleRunAsOwner, else null
+  })
+
+  // Register the unified schedule channel context so executeChatRun (whether
+  // dispatched immediately or after queueing) can attach it to the runSteps row.
+  registerPendingContext(runId, { channel: scheduleResult.ctx })
+
+  const slotResult = await tryAcquireSlot(taskQueueDb, agentId, runId, agent.maxConcurrency ?? 1)
+
+  if (slotResult === 'queue_full') {
+    await db
+      .update(runs)
+      .set({
+        status: 'failed',
+        result: { error: 'Agent queue is full at schedule trigger time' },
+        updatedAt: new Date(),
+      })
+      .where(eq(runs.id, runId))
+    logger.warn({ agentId, runId }, 'Schedule trigger: queue full, run marked failed')
+    return { runId, status: 'queue_full', intent }
+  }
+
+  if (slotResult === 'queued') {
+    logger.info({ agentId, runId }, 'Schedule trigger: run queued')
+    return { runId, status: 'queued', intent }
+  }
+
+  executeChatRun(agentId, runId).catch((err) =>
+    logger.error({ err, agentId, runId }, 'Schedule triggered run execution failed'),
+  )
+  logger.info({ agentId, runId }, 'Schedule trigger: run acquired and executing')
+  return { runId, status: 'pending', intent }
+}
+
+type ScheduleRunAsUser = { email: string; name?: string; sourceId?: string }
+
+/**
+ * Resolve the authorized run-as identity when the agent opted into
+ * scheduleRunAsOwner. The identity is the user who enabled it
+ * (agents.scheduleRunAsUserId, pinned server-side at publish time), resolved
+ * live here so disabling/unbinding that user takes effect immediately. If they
+ * have no active bound SSO identity we return null and the run executes
+ * without an attributed SSO identity.
+ * The id is server-controlled: a client can flip the boolean but can't point it
+ * at someone else (scheduleRunAsUserId is not writable via the agent input schemas).
+ */
+async function resolveScheduleRunAsUser(agent: AgentRow): Promise<ScheduleRunAsUser | null> {
+  const channels = (agent.publishChannels as string[]) ?? []
+  if (!agent.scheduleRunAsOwner || !channels.includes('schedule') || !agent.scheduleRunAsUserId) {
+    return null
+  }
+  const runAsUser = (
+    await db.select().from(users).where(eq(users.id, agent.scheduleRunAsUserId)).limit(1)
+  )[0]
+  // Require a *bound* SSO identity (idaasSub), not just any email — otherwise a
+  // legacy/partial row with an email but no binding would attribute the run to an
+  // idaas-sourced identity that was never actually bound.
+  if (runAsUser?.isActive && runAsUser.email && runAsUser.idaasSub) {
+    return {
+      email: runAsUser.email,
+      name: runAsUser.displayName ?? undefined,
+      sourceId: runAsUser.idaasSub,
+    }
+  }
+  logger.warn(
+    { agentId: agent.id, runAsUserId: agent.scheduleRunAsUserId },
+    'scheduleRunAsOwner set but run-as user has no active bound SSO identity — schedule run will be anonymous',
+  )
+  return null
 }
 
 export const scheduleTriggerManager = new ScheduleTriggerManager()

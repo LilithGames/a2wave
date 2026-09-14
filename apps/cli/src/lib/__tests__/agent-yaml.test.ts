@@ -2,14 +2,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { parse as parseYaml } from 'yaml'
 import { CliError } from '../../errors.js'
 import {
   type AgentYamlDoc,
-  EXAMPLE_AGENT_YAML,
-  type ResolveClient,
   computeDiff,
+  EXAMPLE_AGENT_YAML,
   expandEnvVars,
   parseAgentYaml,
+  type ResolveClient,
   resolveRefs,
   toCreatePayload,
 } from '../agent-yaml.js'
@@ -159,6 +160,25 @@ describe('EXAMPLE_AGENT_YAML', () => {
     expect(EXAMPLE_AGENT_YAML).toContain('providerChain:')
     expect(EXAMPLE_AGENT_YAML).toContain('reasoningEffort:')
     expect(EXAMPLE_AGENT_YAML).toContain('fastMode:')
+  })
+})
+
+describe('EXAMPLE_AGENT_YAML credentials', () => {
+  it('shows chain-entry credentials and states they take precedence at runtime', () => {
+    expect(EXAMPLE_AGENT_YAML).toContain('authMode: oauth')
+    expect(EXAMPLE_AGENT_YAML).toMatch(/providerChain:[\s\S]*providerOauthToken:/)
+    expect(EXAMPLE_AGENT_YAML).toMatch(/providerChain:[\s\S]*providerBaseUrl:/)
+    expect(EXAMPLE_AGENT_YAML).toMatch(/precedence over the Agent-level/)
+  })
+
+  it('documents the file:<path> syntax beside the credential fields', () => {
+    expect(EXAMPLE_AGENT_YAML).toContain('file:')
+    expect(EXAMPLE_AGENT_YAML).toMatch(/file:<path>/)
+  })
+
+  it('remains valid YAML that parses to a mapping with the demo name', () => {
+    const doc = parseYaml(EXAMPLE_AGENT_YAML) as Record<string, unknown>
+    expect(doc.name).toBe('my-bot')
   })
 })
 

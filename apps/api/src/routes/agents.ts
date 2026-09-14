@@ -178,6 +178,7 @@ import {
   preserveA2ARouteTargetSecrets,
   preserveSensitiveEnvSecrets,
 } from './agent-route-secrets.js'
+import { registerAgentScheduleRoutes } from './agent-schedules.js'
 import { maskAgentSecrets } from './agent-secret-masking.js'
 import { feishuConfigBodySchema } from './publish-feishu-config.js'
 
@@ -398,6 +399,7 @@ app.get('/chat-connections', (c) => {
 })
 
 app.get('/:id/git-trigger/status', (c) => handleGitTriggerStatus(c, requireAgentWrite))
+registerAgentScheduleRoutes(app, { read: requireAgentRead, write: requireAgentWrite })
 
 app.post('/:id/qq-official/registration', (c) => handleQQOfficialRegistration(c, requireAgentWrite))
 

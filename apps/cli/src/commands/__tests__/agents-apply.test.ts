@@ -159,6 +159,7 @@ publish:
 `)
     mockFindAgentByName.mockResolvedValueOnce(null)
     mockPost.mockResolvedValueOnce({ data: { id: 'agt_p' } }) // create
+    mockGet.mockResolvedValueOnce({ data: { ok: true, checks: [] } }) // publish preflight
     mockPost.mockResolvedValueOnce({ data: {} }) // publish
 
     await apply.run({ args: { file: yamlPath } })

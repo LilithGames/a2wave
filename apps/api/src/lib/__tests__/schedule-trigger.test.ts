@@ -577,3 +577,77 @@ describe('triggerRun (via cron callback)', () => {
     scheduleTriggerManager.stopAll()
   })
 })
+
+describe('fireSchedule', () => {
+  const agent = {
+    id: 'agt_1',
+    userId: 'usr_owner',
+    publishStatus: 'published',
+    publishChannels: ['schedule'],
+    status: 'active',
+    maxConcurrency: 1,
+    scheduleRunAsOwner: false,
+    scheduleRunAsUserId: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('creates a schedule-sourced run and executes it when a slot is acquired', async () => {
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    const { fireSchedule } = await import('../schedule-trigger.js')
+
+    const result = await fireSchedule(
+      agent as never,
+      { cron: '0 9 * * *', intent: 'Hi {{date}}' },
+      2,
+    )
+
+    expect(result).toEqual({
+      runId: 'run_test123',
+      status: 'pending',
+      intent: expect.stringMatching(/^Hi \d{4}-\d{2}-\d{2}$/),
+    })
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'run_test123',
+        initiatorAgentId: 'agt_1',
+        userId: 'usr_owner',
+        status: 'pending',
+        triggerSource: 'schedule',
+      }),
+    )
+    expect(mockRegisterPendingContext).toHaveBeenCalledWith(
+      'run_test123',
+      expect.objectContaining({
+        channel: expect.objectContaining({
+          channel_type: 'schedule',
+          channel_info: { schedule_id: 'agt_1:2', cron: '0 9 * * *' },
+        }),
+      }),
+    )
+    expect(mockExecuteChatRun).toHaveBeenCalledWith('agt_1', 'run_test123')
+  })
+
+  it('reports queued without executing when the slot is taken', async () => {
+    mockTryAcquireSlot.mockReturnValue('queued')
+    const { fireSchedule } = await import('../schedule-trigger.js')
+
+    const result = await fireSchedule(agent as never, { cron: '0 9 * * *', intent: 'x' }, 0)
+
+    expect(result.status).toBe('queued')
+    expect(mockExecuteChatRun).not.toHaveBeenCalled()
+  })
+
+  it('marks the run failed and reports queue_full when the queue is full', async () => {
+    mockTryAcquireSlot.mockReturnValue('queue_full')
+    const { fireSchedule } = await import('../schedule-trigger.js')
+
+    const result = await fireSchedule(agent as never, { cron: '0 9 * * *', intent: 'x' }, 0)
+
+    expect(result.status).toBe('queue_full')
+    expect(mockDbUpdateRun).toHaveBeenCalled()
+    expect(mockExecuteChatRun).not.toHaveBeenCalled()
+  })
+})

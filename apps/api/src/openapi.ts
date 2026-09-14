@@ -845,6 +845,96 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/agents/{agentId}/schedules': {
+      get: {
+        operationId: 'listAgentSchedules',
+        summary: 'List an Agent’s schedule entries',
+        description:
+          'The Agent’s `scheduleConfig` as a flat list: each entry carries a stable `id` (the persisted per-schedule id, or `<agentId>:<index>` for legacy entries without one), its `cron`, `timezone`, the raw `intent` template (placeholders `{{date}}` / `{{time}}` / `{{iso}}` unrendered) and `nextRun` — the next firing time as ISO 8601 evaluated in the entry’s timezone, or null when the cron cannot be registered. Requires read access.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/agentId' }],
+        responses: {
+          '200': {
+            description: 'The schedule entries (empty when the Agent has none).',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['id', 'index', 'cron', 'timezone', 'intent', 'nextRun'],
+                        properties: {
+                          id: { type: 'string' },
+                          index: { type: 'integer' },
+                          cron: { type: 'string' },
+                          timezone: { type: 'string' },
+                          intent: { type: 'string' },
+                          nextRun: { type: 'string', format: 'date-time', nullable: true },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '404': { description: 'Agent not found, or the caller cannot read it.' },
+        },
+      },
+    },
+    '/agents/{agentId}/schedules/{scheduleId}/run': {
+      post: {
+        operationId: 'runAgentSchedule',
+        summary: 'Fire one schedule entry now',
+        description:
+          'Rehearses a schedule by creating the run exactly as its cron firing would: `triggerSource: schedule`, the schedule channel context, the `scheduleRunAsOwner` identity and the same queue admission. Placeholders are rendered at call time. Deliberately strict — the Agent must be published with the `schedule` channel enabled and be active, otherwise 409. Requires write access (owner or editor). Audited as `agent.schedule_run`.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/agentId' },
+          {
+            name: 'scheduleId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+            description: 'A schedule `id` as returned by `GET /agents/{agentId}/schedules`.',
+          },
+        ],
+        responses: {
+          '202': {
+            description: 'Run created; `status` is `pending` (executing) or `queued`.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'object',
+                      required: ['runId', 'status', 'intent'],
+                      properties: {
+                        runId: { type: 'string' },
+                        status: { type: 'string', enum: ['pending', 'queued'] },
+                        intent: { type: 'string', description: 'The rendered intent.' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '403': { description: 'Caller cannot edit the Agent.' },
+          '404': { description: 'Agent or schedule entry not found.' },
+          '409': {
+            description:
+              'Agent not published, schedule channel disabled, Agent inactive, or the queue is full (`QUEUE_FULL`, with the failed `runId`).',
+          },
+        },
+      },
+    },
     '/agents/{agentId}/qq-official/registration': {
       post: {
         operationId: 'registerQQOfficialBot',

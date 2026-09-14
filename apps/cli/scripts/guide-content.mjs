@@ -23,6 +23,10 @@ const GROUPS = [
       '`agents update` changes SINGLE fields (name, description, one skill). Full config changes go to `agents apply` with a YAML — a sequence of `update` calls is not equivalent and will not converge.',
       '`agents get` is not a health check. For "why does this fail", use `agents diagnose`.',
       '`agents stats` returns the object directly, NOT wrapped in `{data}` — the one endpoint that differs.',
+      '`agents apply` (with a `publish:` block) and `agents publish` run `agents diagnose` first and REFUSE to publish on any error-severity finding. `--skip-diagnose` publishes anyway; do not reach for it before reading the findings.',
+      'YAML secrets (`providerApiKey`, `providerOauthToken`, `embeddingApiKey`, and the same keys inside `config.providerChain[]`) accept a literal, an environment placeholder (a dollar sign followed by `{NAME}`; unset or empty → error naming the variable), or `file:<path>` (whitespace stripped, text before `sk-ant-` dropped). Prefer `file:` over pasting a token that may be line-wrapped.',
+      '`agents get` prints credentials as `configured (masked)` or `not set`; it never shows the value.',
+      '`agents schedule run <agent> <scheduleId>` fires ONE schedule entry through the real `schedule` channel (same `triggerSource`, same channel context as cron). `--dry-run` only renders the intent. Do not rehearse a schedule with `chat send`: that runs through the `debug` channel.',
     ],
   },
   {
@@ -80,9 +84,10 @@ const GROUPS = [
   },
   {
     prefix: 'providers',
-    title: 'providers — read-only preset entities',
+    title: 'providers — preset entities and their managed CLIs',
     notFor: [
       'There is no `providers create` or `update`. Providers have no editable field; model catalogs are probed per credential, never stored.',
+      '`providers cli install <kind>` answers 202 and installs in the background; add `--wait` to block until it settles and to exit 1 on failure. `lockDrift: above` means the installed build is NEWER than the lock pin and the engine accepts it — reinstalling would downgrade it.',
     ],
   },
   {
