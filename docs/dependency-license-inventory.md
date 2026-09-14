@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-09-07 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-09-14 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -279,7 +279,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @vitest/utils | 4.1.11 | MIT |
 | @vladfrangu/async_event_emitter | 2.4.7 | MIT |
 | @xmldom/is-dom-node | 1.0.1 | MIT |
-| @xmldom/xmldom | 0.8.13 | MIT |
+| @xmldom/xmldom | 0.8.15 | MIT |
 | accepts | 2.0.0 | MIT |
 | acorn | 8.15.0 | MIT |
 | adm-zip | 0.6.0 | MIT |
@@ -511,7 +511,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | joycon | 3.1.1 | MIT |
 | js-md4 | 0.3.2 | MIT |
 | js-tokens | 4.0.0, 10.0.0 | MIT |
-| js-yaml | 3.15.1 | MIT |
+| js-yaml | 3.15.2 | MIT |
 | jsdom | 25.0.1 | MIT |
 | jsesc | 3.1.0 | MIT |
 | json-rpc-2.0 | 1.7.1 | MIT |
