@@ -14,7 +14,7 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 
-import { useRun, useRuns } from '../use-runs'
+import { useRun, useRunSession, useRunSessions, useRuns } from '../use-runs'
 
 function makeRun(status: RunWithAgent['status'], id = `run_${status}`): RunWithAgent {
   return {
@@ -110,6 +110,94 @@ describe('run status polling', () => {
 
     await vi.advanceTimersByTimeAsync(2_000)
 
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('requests the session list with the same filters as the run list', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [],
+        pagination: { total: 0, page: 2, pageSize: 15, totalPages: 0 },
+      }),
+    })
+
+    const { result } = renderHook(
+      () =>
+        useRunSessions({
+          agentId: 'agt_1',
+          startDate: '2026-08-01T00:00:00.000Z',
+          endDate: '2026-08-31T23:59:59.999Z',
+          page: 2,
+          pageSize: 15,
+        }),
+      { wrapper: makeWrapper() },
+    )
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/runs/sessions?agentId=agt_1&startDate=2026-08-01T00%3A00%3A00.000Z&endDate=2026-08-31T23%3A59%3A59.999Z&page=2&pageSize=15',
+      { credentials: 'include' },
+    )
+  })
+
+  it('polls the session list while any session has an active run', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'run_1',
+            conversationId: 'cvs_1',
+            status: 'running',
+            latestRun: makeRun('running', 'run_1'),
+            runCount: 1,
+            turnCount: 1,
+            failedCount: 0,
+            failedRunIds: [],
+            hasActiveRun: true,
+            activeRunId: 'run_1',
+            createdAt: '2026-08-14T00:00:00.000Z',
+            updatedAt: '2026-08-14T00:00:00.000Z',
+          },
+        ],
+        pagination: { total: 1, page: 1, pageSize: 20, totalPages: 1 },
+      }),
+    })
+
+    const { result } = renderHook(() => useRunSessions(), { wrapper: makeWrapper() })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await vi.advanceTimersByTimeAsync(2_000)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('loads a whole session through any member run id and keeps polling while active', async () => {
+    getMock.mockResolvedValue({
+      data: {
+        summary: {
+          id: 'run_2',
+          conversationId: 'cvs_1',
+          status: 'queued',
+          latestRun: makeRun('queued', 'run_2'),
+          runCount: 2,
+          turnCount: 2,
+          failedCount: 0,
+          failedRunIds: [],
+          hasActiveRun: true,
+          activeRunId: 'run_2',
+          createdAt: '2026-08-14T00:00:00.000Z',
+          updatedAt: '2026-08-14T00:01:00.000Z',
+        },
+        runs: [],
+      },
+    })
+
+    const { result } = renderHook(() => useRunSession('run_1'), { wrapper: makeWrapper() })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(getMock).toHaveBeenCalledWith('/runs/run_1/session')
+    await vi.advanceTimersByTimeAsync(2_000)
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2))
   })
 })

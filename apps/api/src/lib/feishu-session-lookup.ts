@@ -1,6 +1,7 @@
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { runs } from '../db/schema.js'
+import { jsonExtractText } from './json-sql.js'
 import { logger } from './logger.js'
 
 /**
@@ -19,24 +20,44 @@ const SESSION_TIE_BREAK_SCAN = 4
  * - sessionTimeoutMs bounds it: past the timeout this returns null and the engine opens a
  *   fresh session. Callers derive the value with resolveSessionTimeoutMs.
  */
-export async function lookupPreviousChatId(
+export interface PreviousFeishuSession {
+  runId: string
+  chatId: string
+  conversationId: string
+}
+
+/**
+ * Return the same completed row used for provider-session resumption together
+ * with its durable UI conversation. A stale row or one without a provider
+ * chat id cannot be resumed and therefore cannot belong to the next session.
+ */
+export async function lookupPreviousFeishuSession(
   agentId: string,
   triggerSessionId: string,
   sessionTimeoutMs: number,
-): Promise<string | null> {
+  opts: { chatId?: string } = {},
+): Promise<PreviousFeishuSession | null> {
   // Ordering on created_at alone keeps the entire ORDER BY servable by
   // (initiator_agent_id, trigger_session_id, status, created_at), so the scan stops after
   // a few rows. Adding updatedAt as a second sort key would forfeit that: PostgreSQL only
   // gained incremental sort in 13 and the supported floor is 9.6, where the planner would
   // instead sort every completed run of the session on every incoming message.
   const rows = await db
-    .select({ result: runs.result, createdAt: runs.createdAt, updatedAt: runs.updatedAt })
+    .select({
+      id: runs.id,
+      result: runs.result,
+      conversationId: runs.conversationId,
+      createdAt: runs.createdAt,
+      updatedAt: runs.updatedAt,
+    })
     .from(runs)
     .where(
       and(
         eq(runs.initiatorAgentId, agentId),
+        eq(runs.triggerSource, 'feishu'),
         eq(runs.triggerSessionId, triggerSessionId),
         eq(runs.status, 'completed'),
+        opts.chatId ? eq(jsonExtractText(runs.result, ['chatId']), opts.chatId) : undefined,
       ),
     )
     .orderBy(desc(runs.createdAt))
@@ -66,5 +87,31 @@ export async function lookupPreviousChatId(
 
   const result = row.result as Record<string, unknown> | undefined
   const chatId = result?.chatId
-  return typeof chatId === 'string' ? chatId : null
+  if (typeof chatId !== 'string') return null
+  return {
+    runId: row.id,
+    chatId,
+    conversationId: row.conversationId ?? row.id,
+  }
+}
+
+/** Preserve the established chat-id-only API for existing callers. */
+export async function lookupPreviousChatId(
+  agentId: string,
+  triggerSessionId: string,
+  sessionTimeoutMs: number,
+): Promise<string | null> {
+  return (
+    (await lookupPreviousFeishuSession(agentId, triggerSessionId, sessionTimeoutMs))?.chatId ?? null
+  )
+}
+
+/** The `/new` command starts a generation even when an old one is resumable. */
+export function resolveFeishuConversationId(input: {
+  runId: string
+  matchedCommand?: string
+  previous: PreviousFeishuSession | null
+}): string {
+  if (input.matchedCommand === 'new') return input.runId
+  return input.previous?.conversationId ?? input.runId
 }

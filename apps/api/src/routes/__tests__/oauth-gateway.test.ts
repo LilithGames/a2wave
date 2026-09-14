@@ -233,6 +233,7 @@ function asyncQuery(term: Record<string, unknown>): any {
     }
     return []
   }
+  // biome-ignore lint/suspicious/noExplicitAny: recursive stand-in for drizzle builders with varying chain shapes.
   const make = (): any => {
     // Compose rather than choose: the test's own chain methods run first (so a
     // nested `where`/`orderBy` it defined still drives the data), and whatever
@@ -828,9 +829,15 @@ describe('OAuth Gateway routes', () => {
       expect((json.data as Json).status).toBe('queued')
       expect((json.data as Json).sessionId).toBe('sess_cli_123')
       const runInsert = insertedValues.find(
-        (v): v is { executionMetadata?: Record<string, unknown>; triggerSource?: string } =>
-          typeof v === 'object' && v !== null && 'triggerSource' in v,
+        (
+          v,
+        ): v is {
+          conversationId?: string
+          executionMetadata?: Record<string, unknown>
+          triggerSource?: string
+        } => typeof v === 'object' && v !== null && 'triggerSource' in v,
       )
+      expect(runInsert?.conversationId).toBe('run_previous')
       expect(runInsert?.executionMetadata).toEqual({
         oauthEngineType: 'cursor',
         oauthCallerId: 'oauth:https://idaas.example.com/:sub-test',
@@ -923,10 +930,16 @@ describe('OAuth Gateway routes', () => {
       expect((json.data as Json).chatId).toBeUndefined()
 
       const runInsert = insertedValues.find(
-        (v): v is { triggerSessionId?: string; triggerSource?: string } =>
-          typeof v === 'object' && v !== null && 'triggerSource' in v,
+        (
+          v,
+        ): v is {
+          conversationId?: string
+          triggerSessionId?: string
+          triggerSource?: string
+        } => typeof v === 'object' && v !== null && 'triggerSource' in v,
       )
       expect(runInsert?.triggerSessionId).toMatch(/^oauth:[a-f0-9]{32}$/)
+      expect(runInsert?.conversationId).toBe('run_previous')
       expect(runWithLifecycle).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ chatId: 'chat_previous' }),

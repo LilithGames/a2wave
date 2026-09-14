@@ -42,6 +42,8 @@ export type RunTriggerSource = z.infer<typeof runTriggerSourceEnum>
 
 export const runSchema = z.object({
   id: z.string(),
+  /** Stable a2wave conversation identifier; null means this Run is its own session. */
+  conversationId: z.string().nullable().optional(),
   intent: z.string().min(1),
   status: runStatusEnum,
   result: z.record(z.unknown()).nullable().optional(),
@@ -103,6 +105,57 @@ export const chatMessageSchema = z.object({
 })
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>
+
+/** Public chat message shape after the API has paired persisted attachment references. */
+export const runSessionAttachmentRefSchema = z
+  .object({
+    token: z.string().optional(),
+    name: z.string(),
+    mimeType: z.string(),
+    size: z.number().finite().nonnegative().optional(),
+  })
+  .strict()
+
+export const runSessionMessageSchema = chatMessageSchema.extend({
+  attachments: z.array(runSessionAttachmentRefSchema).optional(),
+})
+
+export type RunSessionMessage = z.infer<typeof runSessionMessageSchema>
+
+/** One independently actionable Run within a multi-turn conversation. */
+export const runSessionRunSchema = z.object({
+  run: runWithAgentSchema,
+  messages: z.array(runSessionMessageSchema),
+  hasFullLog: z.boolean(),
+})
+
+export type RunSessionRun = z.infer<typeof runSessionRunSchema>
+
+/** Session-level list item. `id` is the latest Run id and is safe to use as a detail anchor. */
+export const runSessionSummarySchema = z.object({
+  id: z.string(),
+  conversationId: z.string().nullable(),
+  latestRun: runWithAgentSchema,
+  status: runStatusEnum,
+  runCount: z.number().int().nonnegative(),
+  turnCount: z.number().int().nonnegative(),
+  failedCount: z.number().int().nonnegative(),
+  failedRunIds: z.array(z.string()),
+  hasActiveRun: z.boolean(),
+  activeRunId: z.string().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+})
+
+export type RunSessionSummary = z.infer<typeof runSessionSummarySchema>
+
+/** Complete retained transcript and Run metadata for one conversation. */
+export const runSessionDetailSchema = z.object({
+  summary: runSessionSummarySchema,
+  runs: z.array(runSessionRunSchema),
+})
+
+export type RunSessionDetail = z.infer<typeof runSessionDetailSchema>
 
 // ============================================================
 // Worktree call parameters

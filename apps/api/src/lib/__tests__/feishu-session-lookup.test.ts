@@ -49,7 +49,8 @@ vi.mock('../../db/client.js', async () => {
 const { sqliteDatabase } = (await import('../../db/client.js')) as unknown as {
   sqliteDatabase: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown } }
 }
-const { lookupPreviousChatId } = await import('../feishu-session-lookup.js')
+const { lookupPreviousChatId, lookupPreviousFeishuSession, resolveFeishuConversationId } =
+  await import('../feishu-session-lookup.js')
 
 const AGENT = 'agt_001'
 const SESSION = 'oc_92a7d70d'
@@ -64,19 +65,23 @@ function insertRun(run: {
   updatedAt: Date
   status?: string
   sessionId?: string
+  conversationId?: string | null
+  triggerSource?: string
 }) {
   sqliteDatabase
     .prepare(
-      `INSERT INTO runs (id, intent, status, result, trigger_session_id, initiator_agent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO runs (id, intent, status, result, trigger_source, trigger_session_id, initiator_agent_id, conversation_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       run.id,
       'feishu',
       run.status ?? 'completed',
       JSON.stringify(run.chatId ? { chatId: run.chatId } : {}),
+      run.triggerSource ?? 'feishu',
       run.sessionId ?? SESSION,
       AGENT,
+      run.conversationId ?? null,
       seconds(run.createdAt),
       seconds(run.updatedAt),
     )
@@ -87,6 +92,117 @@ beforeEach(() => {
 })
 
 describe('lookupPreviousChatId', () => {
+  it('starts a new persisted conversation when no resumable session exists', () => {
+    expect(
+      resolveFeishuConversationId({ runId: 'run_new', matchedCommand: undefined, previous: null }),
+    ).toBe('run_new')
+  })
+
+  it('continues the persisted conversation of the resumable session', () => {
+    expect(
+      resolveFeishuConversationId({
+        runId: 'run_new',
+        matchedCommand: undefined,
+        previous: {
+          runId: 'run_previous',
+          chatId: 'chat_previous',
+          conversationId: 'run_first',
+        },
+      }),
+    ).toBe('run_first')
+  })
+
+  it('starts a new persisted conversation for /new even when an old session is resumable', () => {
+    expect(
+      resolveFeishuConversationId({
+        runId: 'run_new',
+        matchedCommand: 'new',
+        previous: {
+          runId: 'run_previous',
+          chatId: 'chat_previous',
+          conversationId: 'run_first',
+        },
+      }),
+    ).toBe('run_new')
+  })
+
+  it('returns the prior run and persisted conversation with the resumable chat id', async () => {
+    insertRun({
+      id: 'run_previous',
+      chatId: 'chat_previous',
+      conversationId: 'run_first',
+      createdAt: ago(10 * 60 * 1000),
+      updatedAt: ago(9 * 60 * 1000),
+    })
+
+    await expect(
+      lookupPreviousFeishuSession(AGENT, SESSION, P2P_SESSION_TIMEOUT_MS),
+    ).resolves.toEqual({
+      runId: 'run_previous',
+      chatId: 'chat_previous',
+      conversationId: 'run_first',
+    })
+  })
+
+  it('returns the prior run id as the conversation fallback for legacy rows', async () => {
+    insertRun({
+      id: 'run_legacy',
+      chatId: 'chat_legacy',
+      createdAt: ago(10 * 60 * 1000),
+      updatedAt: ago(9 * 60 * 1000),
+    })
+
+    await expect(
+      lookupPreviousFeishuSession(AGENT, SESSION, P2P_SESSION_TIMEOUT_MS),
+    ).resolves.toEqual({
+      runId: 'run_legacy',
+      chatId: 'chat_legacy',
+      conversationId: 'run_legacy',
+    })
+  })
+
+  it('does not return a conversation after the same timeout that blocks chat resumption', async () => {
+    const finishedAt = ago(P2P_SESSION_TIMEOUT_MS * 1.5)
+    insertRun({
+      id: 'run_stale',
+      chatId: 'chat_stale',
+      conversationId: 'run_first',
+      createdAt: finishedAt,
+      updatedAt: finishedAt,
+    })
+
+    await expect(
+      lookupPreviousFeishuSession(AGENT, SESSION, P2P_SESSION_TIMEOUT_MS),
+    ).resolves.toBeNull()
+  })
+
+  it('resolves the exact snapshotted chat for a delayed interactive-card callback', async () => {
+    insertRun({
+      id: 'run_card_origin',
+      chatId: 'chat_card_origin',
+      conversationId: 'run_card_conversation',
+      createdAt: ago(20 * 60 * 1000),
+      updatedAt: ago(19 * 60 * 1000),
+    })
+    insertRun({
+      id: 'run_newer',
+      chatId: 'chat_newer',
+      conversationId: 'run_newer_conversation',
+      createdAt: ago(10 * 60 * 1000),
+      updatedAt: ago(9 * 60 * 1000),
+    })
+
+    await expect(
+      lookupPreviousFeishuSession(AGENT, SESSION, Number.POSITIVE_INFINITY, {
+        chatId: 'chat_card_origin',
+      }),
+    ).resolves.toEqual({
+      runId: 'run_card_origin',
+      chatId: 'chat_card_origin',
+      conversationId: 'run_card_conversation',
+    })
+  })
+
   // Both insertion orders are asserted on purpose. Nothing in the query pins which member
   // of a created_at tie comes back first — with the composite index it tracks rowid order,
   // which simply flips between these two arrangements. Testing one arrangement would leave
@@ -165,6 +281,18 @@ describe('lookupPreviousChatId', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       status: 'running',
+    })
+
+    expect(await lookupPreviousChatId(AGENT, SESSION, P2P_SESSION_TIMEOUT_MS)).toBeNull()
+  })
+
+  it('ignores a colliding trigger session id from another source', async () => {
+    insertRun({
+      id: 'run_api',
+      chatId: 'chat_api',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      triggerSource: 'api',
     })
 
     expect(await lookupPreviousChatId(AGENT, SESSION, P2P_SESSION_TIMEOUT_MS)).toBeNull()

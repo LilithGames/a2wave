@@ -201,6 +201,121 @@ export const openApiSpec: OpenAPIV3.Document = {
     schemas: {
       GatewayError: gatewayErrorSchema,
       OAuthGatewayError: oauthGatewayErrorSchema,
+      RunSummary: {
+        type: 'object',
+        required: ['id', 'intent', 'status', 'createdAt', 'updatedAt'],
+        properties: {
+          id: { type: 'string' },
+          conversationId: { type: 'string', nullable: true },
+          intent: { type: 'string' },
+          status: {
+            type: 'string',
+            enum: ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'],
+          },
+          result: { type: 'object', nullable: true, additionalProperties: true },
+          triggerSource: { type: 'string', nullable: true },
+          triggerUserName: { type: 'string', nullable: true },
+          triggerAgentName: { type: 'string', nullable: true },
+          initiatorAgentId: { type: 'string', nullable: true },
+          inputTokens: { type: 'number', nullable: true },
+          outputTokens: { type: 'number', nullable: true },
+          reasoningTokens: { type: 'number', nullable: true },
+          cacheReadTokens: { type: 'number', nullable: true },
+          cacheWriteTokens: { type: 'number', nullable: true },
+          agentName: { type: 'string', nullable: true },
+          agentIcon: { type: 'string', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      RunSessionSummary: {
+        type: 'object',
+        required: [
+          'id',
+          'conversationId',
+          'latestRun',
+          'status',
+          'runCount',
+          'turnCount',
+          'failedCount',
+          'failedRunIds',
+          'hasActiveRun',
+          'activeRunId',
+          'createdAt',
+          'updatedAt',
+        ],
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Latest Run id; use it as the stable detail endpoint anchor.',
+          },
+          conversationId: {
+            type: 'string',
+            nullable: true,
+            description: 'Persisted AI/CLI conversation id. Null denotes a singleton legacy Run.',
+          },
+          latestRun: { $ref: '#/components/schemas/RunSummary' },
+          status: {
+            type: 'string',
+            enum: ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'],
+            description:
+              'Running, queued, or pending while any member is active (in that priority order); otherwise the latest Run status.',
+          },
+          runCount: { type: 'integer' },
+          turnCount: { type: 'integer' },
+          failedCount: { type: 'integer' },
+          failedRunIds: { type: 'array', items: { type: 'string' } },
+          hasActiveRun: { type: 'boolean' },
+          activeRunId: { type: 'string', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      RunSessionMessage: {
+        type: 'object',
+        required: ['id', 'runId', 'role', 'content', 'createdAt'],
+        properties: {
+          id: { type: 'string' },
+          runId: { type: 'string' },
+          role: { type: 'string', enum: ['user', 'agent'] },
+          content: { type: 'string' },
+          createdAt: { type: 'string', format: 'date-time' },
+          attachments: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['name', 'mimeType'],
+              additionalProperties: false,
+              properties: {
+                token: { type: 'string' },
+                name: { type: 'string' },
+                mimeType: { type: 'string' },
+                size: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+      RunSessionRun: {
+        type: 'object',
+        required: ['run', 'messages', 'hasFullLog'],
+        properties: {
+          run: { $ref: '#/components/schemas/RunSummary' },
+          messages: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/RunSessionMessage' },
+          },
+          hasFullLog: { type: 'boolean' },
+        },
+      },
+      RunSessionDetail: {
+        type: 'object',
+        required: ['summary', 'runs'],
+        properties: {
+          summary: { $ref: '#/components/schemas/RunSessionSummary' },
+          runs: { type: 'array', items: { $ref: '#/components/schemas/RunSessionRun' } },
+        },
+      },
       InvokeRequest: {
         type: 'object',
         required: ['message'],
@@ -571,6 +686,83 @@ export const openApiSpec: OpenAPIV3.Document = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    '/runs/sessions': {
+      get: {
+        operationId: 'listRunSessions',
+        summary: 'List visible Runs grouped by AI/CLI conversation',
+        description:
+          'Applies Run visibility before grouping, then paginates sessions by latest update time with a stable tie-break. Legacy Runs without a conversation id remain singleton sessions unless newer turns point back to their Run id.',
+        tags: ['Runs'],
+        security: [{ sessionCookie: [] }],
+        parameters: [
+          { name: 'agentId', in: 'query', schema: { type: 'string' } },
+          { name: 'startDate', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'endDate', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          {
+            name: 'pageSize',
+            in: 'query',
+            schema: { type: 'integer', default: 20 },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Paginated visible conversation summaries.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['data', 'pagination'],
+                  properties: {
+                    data: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/RunSessionSummary' },
+                    },
+                    pagination: {
+                      type: 'object',
+                      required: ['total', 'page', 'pageSize', 'totalPages'],
+                      properties: {
+                        total: { type: 'integer' },
+                        page: { type: 'integer' },
+                        pageSize: { type: 'integer' },
+                        totalPages: { type: 'integer' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid date filter.' },
+        },
+      },
+    },
+    '/runs/{runId}/session': {
+      get: {
+        operationId: 'getRunSession',
+        summary: 'Get a complete retained AI/CLI conversation',
+        description:
+          'Returns each visible Run as an independently actionable block with its chat messages, public attachment metadata, and log availability. Internal Run step input is not returned. The visibility predicate is reapplied to all conversation members.',
+        tags: ['Runs'],
+        security: [{ sessionCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/runId' }],
+        responses: {
+          '200': {
+            description: 'Conversation detail.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['data'],
+                  properties: { data: { $ref: '#/components/schemas/RunSessionDetail' } },
+                },
+              },
+            },
+          },
+          '404': { description: 'Run not found or not visible.' },
+        },
+      },
+    },
     '/scm-sources': {
       get: {
         operationId: 'listScmSources',
