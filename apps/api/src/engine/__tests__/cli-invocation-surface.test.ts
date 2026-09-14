@@ -130,6 +130,16 @@ describe('Provider CLI lock pins', () => {
     expect(presetOf('claude-code')?.minVersion).toBe('2.1.208')
   })
 
+  it('holds kimi below the project-MCP workspace-trust gate', () => {
+    // kimi 0.32+ silently skips the project-level `.kimi-code/mcp.json` in a
+    // folder it has not marked trusted, and offers no flag/env/config to grant
+    // trust headlessly — a run still exits 0, just without its MCP tools. Until
+    // the adapter handles workspace trust, the pin must stay below 0.32.0.
+    const kimi = lock.providers.find((entry) => entry.kind === 'kimi')
+    expect(kimi).toBeDefined()
+    expect(isVersionAtLeast(kimi?.version ?? '', '0.32.0')).toBe(false)
+  })
+
   it('never pins a version below the Provider minVersion floor', () => {
     for (const preset of PRESET_PROVIDERS) {
       const pinned = lock.providers.find((entry) => entry.kind === preset.kind)

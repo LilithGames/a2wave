@@ -30,6 +30,7 @@ import {
 
 /** Heartbeat interval for in-flight tool calls (ms). */
 const TOOL_HEARTBEAT_INTERVAL_MS = 20_000
+
 import type {
   ExecuteRequest,
   ExecuteResult,
@@ -141,8 +142,9 @@ export class CursorAgentEngine extends BaseCliAgentEngine {
   }
 
   /**
-   * Probes host login state via `cursor-agent about` (purely local, no
-   * network, returns instantly). The output is a multi-line table with a key
+   * Probes host login state via `cursor-agent about` (fast; since 2026.09 it
+   * also looks up the latest CLI version and prints a `Latest` row). The
+   * output is a multi-line table with a key
    * line like `User Email          alice@example.com`; when not logged in that
    * line reads `User Email          Not logged in`.
    */
@@ -619,7 +621,8 @@ export class CursorAgentEngine extends BaseCliAgentEngine {
       args.push('--force')
     }
     if (this.config.approveMcps) {
-      args.push('--approve-mcps', 'true')
+      // Boolean option: a trailing value would be joined into the prompt.
+      args.push('--approve-mcps')
     }
     if (chatId) {
       args.push('--resume', chatId)

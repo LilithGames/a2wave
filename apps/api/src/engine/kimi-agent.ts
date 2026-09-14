@@ -68,6 +68,10 @@ const TOOL_HEARTBEAT_INTERVAL_MS = 20_000
  *   provider (key + base URL) in memory and outranks `default_model`, so it can
  *   silently redirect every request off the operator's account;
  * - `KIMI_WEB_SEARCH_*` / `KIMI_WEB_FETCH_*` — service endpoint + key overrides;
+ * - `KIMI_CODE_EXPERIMENTAL_FLAG` — not a credential, but it moves `-p` onto the
+ *   workspace-trust engine, which silently skips the project-level
+ *   `.kimi-code/mcp.json` a2wave writes (verified on 0.31.1), stripping the
+ *   Agent's MCP tools while the run still exits 0;
  * - `HOME` — resolves the default data path when `KIMI_CODE_HOME` is unset;
  * - `PATH` / `NODE_OPTIONS` and the dynamic-linker family — subprocess
  *   injection vectors (Kimi spawns bash/git/node for its tools).
@@ -91,6 +95,7 @@ const PROTECTED_KIMI_ENV_NAMES = [
   'KIMI_WEB_SEARCH_API_KEY',
   'KIMI_WEB_FETCH_BASE_URL',
   'KIMI_WEB_FETCH_API_KEY',
+  'KIMI_CODE_EXPERIMENTAL_FLAG',
 ] as const
 
 /**

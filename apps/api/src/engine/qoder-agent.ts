@@ -2,7 +2,7 @@
  * Qoder execution engine
  *
  * Wraps qodercli (https://qoder.com/cli) as a standard a2wave AgentEngine.
- * The headless protocol is isomorphic to Claude Code's (observed with 1.0.48):
+ * The headless protocol is isomorphic to Claude Code's (observed with 1.1.51):
  * `-p <prompt> --output-format stream-json` emits a CC-style NDJSON event
  * stream; sessions resume via `--resume <session_id>`. Stream parsing is
  * shared with trae via cc-stream-parser; process/env mechanics come from
@@ -85,7 +85,7 @@ export class QoderAgentEngine extends BaseCliAgentEngine {
   /**
    * Probes host login state via `qodercli status` (available since 1.0.x).
    * Output looks like:
-   *   Version: 1.0.48
+   *   Version: 1.1.51
    *   Username: Alice
    *   Email: alice@example.com
    * When not logged in, the line is `Account: Not logged in`.

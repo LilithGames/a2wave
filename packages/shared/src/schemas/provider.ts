@@ -347,6 +347,9 @@ const PRESET_PROVIDER_DEFS: PresetProvider[] = [
     // shape), merged over the user-level `$KIMI_CODE_HOME/mcp.json`.
     mcpConfigPath: '.kimi-code/mcp.json',
     // `--output-format stream-json` and `provider list --json` verified on 0.30.0.
+    // The lock pin is held at 0.31.x: from 0.32.0 kimi skips project-level MCP
+    // servers in an untrusted folder (no headless opt-out), which would silently
+    // strip every Agent's MCP tools.
     minVersion: '0.30.0',
   },
   {
@@ -363,8 +366,10 @@ const PRESET_PROVIDER_DEFS: PresetProvider[] = [
     // Pi deliberately has no built-in MCP client. Extensions can add one, but
     // a2wave does not install or trust an arbitrary extension implicitly.
     mcpConfigPath: null,
-    // JSON mode, exact session IDs and `--list-models` are verified on 0.83.0.
-    minVersion: '0.83.0',
+    // JSON mode, exact session IDs and `--list-models` are verified on 0.83.0;
+    // `--` (end of options, so a prompt starting with `-` is not parsed as a
+    // flag) only works from 0.84.3.
+    minVersion: '0.84.3',
   },
   {
     kind: 'trae',

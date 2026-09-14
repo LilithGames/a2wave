@@ -518,6 +518,33 @@ describe('KimiAgentEngine.executeStreamWithModel', () => {
     expect(env.SAFE_VAR).toBe('kept')
   })
 
+  it('strips KIMI_CODE_EXPERIMENTAL_FLAG supplied through agentEnv', async () => {
+    // The flag moves `-p` onto kimi's workspace-trust engine, which silently
+    // skips the project-level `.kimi-code/mcp.json` a2wave writes (verified on
+    // 0.31.1): the run still exits 0, just without the Agent's MCP tools.
+    const child = new MockChildProcess()
+    mockSpawn.mockReturnValue(child)
+    const engine = new KimiAgentEngine(baseConfig)
+    const promise = getExecuteStream(engine)(
+      {
+        taskId: 'task_experimental_flag',
+        workDir: '/tmp/ws',
+        prompt: 'ping',
+        agentConfig: {
+          agentEnv: { KIMI_CODE_EXPERIMENTAL_FLAG: '1', SAFE_VAR: 'kept' },
+        },
+      },
+      'kimi-code/k3',
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    finishOk(child)
+    await promise
+
+    const env = lastSpawnEnv()
+    expect(env.KIMI_CODE_EXPERIMENTAL_FLAG).toBeUndefined()
+    expect(env.SAFE_VAR).toBe('kept')
+  })
+
   it('keeps the operator KIMI_CODE_HOME while blocking an agentEnv redirect', async () => {
     // `KIMI_CODE_HOME` is the load-bearing member of AGENT_ENV_ONLY_KIMI_NAMES:
     // it is the only one this list alone protects. (`HOME` is redundant —

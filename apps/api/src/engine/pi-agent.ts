@@ -81,6 +81,7 @@ const AGENT_ENV_ONLY_PI_NAMES = [
   'AZURE_OPENAI_RESOURCE_NAME',
   'AZURE_OPENAI_API_VERSION',
   'AZURE_OPENAI_DEPLOYMENT_NAME_MAP',
+  'BASETEN_API_KEY',
   'DEEPSEEK_API_KEY',
   'NVIDIA_API_KEY',
   'GEMINI_API_KEY',
@@ -674,7 +675,9 @@ export class PiAgentEngine extends BaseCliAgentEngine {
     else if (chatId) args.push('--session-id', chatId)
     if (readOnly) args.push('--tools', 'read,grep,find,ls')
     if (model) args.push('--model', model)
-    args.push(prompt)
+    // `--` (Pi >= 0.84.3) keeps a prompt that begins with a dash from being
+    // parsed as an option.
+    args.push('--', prompt)
     return args
   }
 }

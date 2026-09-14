@@ -117,6 +117,31 @@ describe('createKimiStreamParser', () => {
     expect(parser.state.outputBuffer).toBe('')
   })
 
+  it('ignores meta rows that carry no session id (version banner, retry notice)', async () => {
+    // 0.42.0 opens every stream-json run with a `system.version` meta row and
+    // may emit `turn.step.retrying` mid-run; neither is prose or a session hint.
+    const { parser, entries } = setup({ initialSessionId: 'session_prev' })
+
+    parser.parseLine('{"role":"meta","type":"system.version","version":"0.42.0"}')
+    parser.parseLine(
+      JSON.stringify({
+        role: 'meta',
+        type: 'turn.step.retrying',
+        failed_attempt: 1,
+        next_attempt: 2,
+        max_attempts: 3,
+        delay_ms: 1000,
+        error_name: 'APIConnectionError',
+        error_message: 'socket hang up',
+      }),
+    )
+
+    expect(parser.state.sessionId).toBe('session_prev')
+    expect(parser.state.outputBuffer).toBe('')
+    expect(parser.state.resultIsError).toBe(false)
+    expect(entries).toEqual([])
+  })
+
   it('keeps the initial session id when the stream carries no hint', async () => {
     const { parser } = setup({ initialSessionId: 'session_prev' })
 
