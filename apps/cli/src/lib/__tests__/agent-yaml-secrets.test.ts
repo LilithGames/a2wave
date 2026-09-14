@@ -55,21 +55,36 @@ describe('agent yaml secret inputs', () => {
       expect(parseAgentYaml(p, {}, { homeDir: home }).providerApiKey).toBe('sk-ant-home')
     })
 
-    it('strips all whitespace including newlines and a leading header line', () => {
-      // A token copied from a chat window: prose header, then the token wrapped
-      // across two lines by the pane width.
-      writeFileSync(
-        join(dir, 'oauth.txt'),
-        'Your OAuth token is:\n  sk-ant-oat01-AAAA\n  BBBB-CCCC\n',
-      )
-      const p = writeYaml('name: bot\nproviderOauthToken: file:oauth.txt\n')
-      expect(parseAgentYaml(p, {}).providerOauthToken).toBe('sk-ant-oat01-AAAABBBB-CCCC')
+    it('accepts a single-line token surrounded by blank lines and a trailing newline', () => {
+      writeFileSync(join(dir, 'k.txt'), '\n\n   sk-ant-oat01-AAAA-BBBB  \n\n')
+      const p = writeYaml('name: bot\nproviderOauthToken: file:k.txt\n')
+      expect(parseAgentYaml(p, {}).providerOauthToken).toBe('sk-ant-oat01-AAAA-BBBB')
     })
 
-    it('keeps a non-Anthropic token whole after whitespace stripping', () => {
+    it('keeps a non-Anthropic token whole', () => {
       writeFileSync(join(dir, 'k.txt'), '  gsk_live_123\n')
       const p = writeYaml('name: bot\nproviderApiKey: file:k.txt\n')
       expect(parseAgentYaml(p, {}).providerApiKey).toBe('gsk_live_123')
+    })
+
+    it('rejects a header line before the token, naming the file and the field', () => {
+      writeFileSync(join(dir, 'oauth.txt'), 'Your OAuth token is:\nsk-ant-oat01-AAAA\n')
+      const p = writeYaml('name: bot\nproviderOauthToken: file:oauth.txt\n')
+      expect(() => parseAgentYaml(p, {})).toThrow(CliError)
+      expect(() => parseAgentYaml(p, {})).toThrow(/providerOauthToken.*oauth\.txt.*single line/s)
+      expect(() => parseAgentYaml(p, {})).toThrow(/join/i)
+    })
+
+    it('rejects a token wrapped across two lines instead of fusing it', () => {
+      writeFileSync(join(dir, 'oauth.txt'), 'sk-ant-oat01-AAAA\nBBBB-CCCC\n')
+      const p = writeYaml('name: bot\nproviderOauthToken: file:oauth.txt\n')
+      expect(() => parseAgentYaml(p, {})).toThrow(/single line/)
+    })
+
+    it('rejects a single-line token with an internal space', () => {
+      writeFileSync(join(dir, 'k.txt'), 'sk-ant api03-abc\n')
+      const p = writeYaml('name: bot\nproviderApiKey: file:k.txt\n')
+      expect(() => parseAgentYaml(p, {})).toThrow(/providerApiKey.*whitespace/)
     })
 
     it('resolves chain-entry credentials inside config.providerChain[]', () => {
@@ -128,8 +143,40 @@ config:
       )
     })
 
-    it('fails on an empty-string variable rather than storing an empty secret', () => {
-      expect(() => expandEnvVars(`\${EMPTY}`, { EMPTY: '' })).toThrow(/EMPTY/)
+    it('fails when a credential references an exported-but-empty variable', () => {
+      const p = writeYaml(`name: bot\nproviderApiKey: \${EMPTY}\n`)
+      expect(() => parseAgentYaml(p, { EMPTY: '' })).toThrow(/EMPTY/)
+    })
+
+    it('fails when a chain-entry credential references an exported-but-empty variable', () => {
+      const p = writeYaml(`name: bot
+config:
+  providerChain:
+    - providerId: prv_a
+      providerOauthToken: \${EMPTY}
+`)
+      expect(() => parseAgentYaml(p, { EMPTY: '' })).toThrow(/EMPTY/)
+    })
+
+    it('expands an exported-but-empty variable to "" for a non-credential field', () => {
+      const p = writeYaml(`name: bot
+env:
+  OPTIONAL_FLAG:
+    value: \${EMPTY}
+description: "prefix-\${EMPTY}-suffix"
+`)
+      const doc = parseAgentYaml(p, { EMPTY: '' })
+      expect((doc.env as Record<string, { value: string }>).OPTIONAL_FLAG.value).toBe('')
+      expect(doc.description).toBe('prefix--suffix')
+    })
+
+    it('still fails on a truly unset variable in a non-credential field', () => {
+      const p = writeYaml(`name: bot\nenv:\n  X:\n    value: \${A2WAVE_UNSET_FLAG}\n`)
+      expect(() => parseAgentYaml(p, {})).toThrow(/A2WAVE_UNSET_FLAG/)
+    })
+
+    it('expandEnvVars by itself keeps the empty-is-a-value contract', () => {
+      expect(expandEnvVars(`\${EMPTY}`, { EMPTY: '' })).toBe('')
     })
   })
 

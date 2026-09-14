@@ -45,16 +45,25 @@ describe('listSchedules', () => {
         timezone: 'Asia/Shanghai',
         intent: 'one',
         nextRun: expect.any(String),
+        stable: false,
       },
     ])
     const rows = listSchedules('agt_1', [
       { id: 'sch_a', cron: '0 9 * * *', intent: 'a', timezone: 'UTC' },
       { cron: 'bad', intent: 'b' },
     ])
-    expect(rows.map((r) => [r.id, r.index, r.timezone, r.nextRun === null])).toEqual([
-      ['sch_a', 0, 'UTC', false],
-      ['agt_1:1', 1, 'Asia/Shanghai', true],
+    expect(rows.map((r) => [r.id, r.index, r.timezone, r.nextRun === null, r.stable])).toEqual([
+      ['sch_a', 0, 'UTC', false, true],
+      ['agt_1:1', 1, 'Asia/Shanghai', true, false],
     ])
+  })
+
+  it('marks an entry unregistrable for an unknown timezone even when the cron is fine', () => {
+    const [row] = listSchedules('agt_1', [
+      { id: 'sch_tz', cron: '0 9 * * *', intent: 'a', timezone: 'Asia/Shangai' },
+    ])
+    expect(row.nextRun).toBeNull()
+    expect(row.stable).toBe(true)
   })
 
   it('returns an empty list for a missing config', () => {

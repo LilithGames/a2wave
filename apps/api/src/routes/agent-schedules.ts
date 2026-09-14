@@ -11,10 +11,10 @@ import { logAudit } from '../lib/audit.js'
 import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { AppError, NotFoundError } from '../lib/errors.js'
 import {
+  describeUnregistrable,
   fireSchedule,
   listSchedules,
   normalizeScheduleConfigs,
-  resolveScheduleId,
   type ScheduleConfigInput,
 } from '../lib/schedule-trigger.js'
 
@@ -65,13 +65,34 @@ export async function handleRunAgentSchedule(
     throw new AppError(409, 'Agent is inactive; schedules do not fire', 'AGENT_INACTIVE')
   }
 
-  const schedules = normalizeScheduleConfigs(agent.scheduleConfig as ScheduleConfigInput)
-  const index = schedules.findIndex(
-    (schedule, i) => resolveScheduleId(agent.id, schedule, i) === scheduleId,
-  )
-  if (index < 0) throw new NotFoundError('Schedule')
+  const config = agent.scheduleConfig as ScheduleConfigInput
+  const entry = listSchedules(agent.id, config).find((s) => s.id === scheduleId)
+  if (!entry) throw new NotFoundError('Schedule')
+  // A positional `<agentId>:<index>` id points at whichever entry currently sits
+  // at that index, so a rehearsal addressed by it can silently fire a different
+  // entry once the array is edited. Only a persisted id is safe to act on.
+  if (!entry.stable) {
+    throw new AppError(
+      409,
+      `Schedule ${scheduleId} has no persisted id; give the entry an \`id\` in scheduleConfig (the web publish tab mints one automatically, the CLI YAML accepts \`id:\`) and address it by that`,
+      'SCHEDULE_ID_REQUIRED',
+    )
+  }
+  // Fire only what the cron registrar would: an entry it skips must not produce
+  // a run here, and an unknown timezone would otherwise throw from rendering.
+  if (entry.nextRun === null) {
+    throw new AppError(
+      409,
+      `Schedule ${scheduleId} is not registered and never fires: ${describeUnregistrable(entry)}`,
+      'SCHEDULE_NOT_REGISTERED',
+    )
+  }
 
-  const result = await fireSchedule(agent, schedules[index], index)
+  const result = await fireSchedule(
+    agent,
+    normalizeScheduleConfigs(config)[entry.index],
+    entry.index,
+  )
 
   logAudit(c, {
     action: AUDIT_ACTIONS.AGENT_SCHEDULE_RUN,
@@ -80,14 +101,14 @@ export async function handleRunAgentSchedule(
     details: { scheduleId, runId: result.runId, status: result.status },
   })
 
+  // Through the AppError envelope like the other 409s, so the CLI's ApiError
+  // carries the body; the run id lives in the message because AppError has no
+  // details payload.
   if (result.status === 'queue_full') {
-    return c.json(
-      {
-        error: 'Agent queue is full; the run was recorded as failed',
-        code: 'QUEUE_FULL',
-        runId: result.runId,
-      },
+    throw new AppError(
       409,
+      `Agent queue is full; run ${result.runId} was recorded as failed`,
+      'QUEUE_FULL',
     )
   }
   return c.json({ data: result }, 202)

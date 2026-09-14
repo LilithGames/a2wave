@@ -53,13 +53,28 @@ function extractErrnoCode(cause: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * Is this the transport rejecting, rather than our own code throwing?
+ *
+ * undici's usual shape is `TypeError: fetch failed` with the socket error on
+ * `cause`. But a URL fetch cannot even parse — `http://exa mple`, a port above
+ * 65535 — rejects as `TypeError: Failed to parse URL from …` whose cause is
+ * `ERR_INVALID_URL`, and the message check alone let that one through as a raw
+ * TypeError. A coded `cause` is the reliable marker: a genuine programming
+ * error (`x.y is not a function`) never carries one.
+ */
 function isFetchFailure(err: unknown): err is TypeError & { cause?: unknown } {
-  return err instanceof TypeError && err.message === 'fetch failed'
+  if (!(err instanceof TypeError)) return false
+  if (err.message === 'fetch failed' || err.message.startsWith('Failed to parse URL')) return true
+  return extractErrnoCode(err.cause) !== undefined
 }
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')
 }
+
+const URL_FIX_HINT =
+  'Check the instance URL: a2wave config get / a2wave config set-url <url>, or pass --url.'
 
 /**
  * Turn a failed connection into an error the user can act on, or `null` when
@@ -72,6 +87,10 @@ function isAbort(err: unknown): boolean {
  * The errno is kept as `subtype` because it is the one stable token an agent
  * can branch on; the message names the URL that was actually dialled so a
  * `--url` typo is visible in the failure itself.
+ *
+ * An unparseable URL (`ERR_INVALID_URL`) gets its own sentence: nothing was
+ * dialled, so "cannot reach" would send the user checking the network when the
+ * fix is the stored value itself.
  */
 export function toConnectionError(err: unknown, baseUrl: string): CliError | null {
   let reason: string
@@ -81,22 +100,32 @@ export function toConnectionError(err: unknown, baseUrl: string): CliError | nul
     subtype = 'timeout'
   } else if (isFetchFailure(err)) {
     subtype = extractErrnoCode(err.cause)
+    if (subtype === 'ERR_INVALID_URL') {
+      return new CliError(
+        [`The a2wave instance URL is not a valid URL: ${baseUrl}`, URL_FIX_HINT].join('\n'),
+        { type: 'network', subtype, hint: 'a2wave config set-url <url>' },
+      )
+    }
     reason =
       subtype ?? (err.cause instanceof Error && err.cause.message ? err.cause.message : err.message)
   } else {
     return null
   }
-  return new CliError(
-    [
-      `Cannot reach a2wave at ${baseUrl} (${reason}).`,
-      'Check the instance URL: a2wave config get / a2wave config set-url <url>, or pass --url.',
-    ].join('\n'),
-    { type: 'network', ...(subtype ? { subtype } : {}), hint: 'a2wave status' },
-  )
+  return new CliError([`Cannot reach a2wave at ${baseUrl} (${reason}).`, URL_FIX_HINT].join('\n'), {
+    type: 'network',
+    ...(subtype ? { subtype } : {}),
+    hint: 'a2wave status',
+  })
 }
 
-/** `fetch`, with a connection failure rethrown as a network CliError. */
-async function fetchOrConnectionError(
+/**
+ * `fetch`, with a connection failure rethrown as a network CliError.
+ *
+ * Exported so the one fetch outside `createClient` — password login, which
+ * runs before any credential exists — reports an unreachable or malformed
+ * instance URL the same way every other command does.
+ */
+export async function fetchOrConnectionError(
   baseUrl: string,
   input: string,
   init?: RequestInit,

@@ -14,8 +14,10 @@ const mockRegisterPendingContext = vi.hoisted(() => vi.fn())
 vi.mock('croner', () => {
   class FakeCron {
     callback: (() => void) | undefined
+    timezone: string | undefined
     stopped = false
     constructor(pattern: string, opts: { timezone?: string } | undefined, cb?: () => void) {
+      this.timezone = opts?.timezone
       if (!pattern || !/^(\S+\s+){4}\S+$/.test(pattern.trim())) {
         throw new Error(`Invalid cron pattern: ${pattern}`)
       }
@@ -240,6 +242,21 @@ describe('ScheduleTriggerManager', () => {
     scheduleTriggerManager.stopAll()
   })
 
+  it('start registers an entry without a timezone under the default schedule timezone', async () => {
+    const { DEFAULT_SCHEDULE_TIMEZONE, scheduleTriggerManager } = await import(
+      '../schedule-trigger.js'
+    )
+    scheduleTriggerManager.stopAll()
+
+    scheduleTriggerManager.start('agt_1', [{ cron: '0 9 * * *', intent: 'no tz' }])
+
+    const [job] = await getInternalJobs('agt_1')
+    expect(DEFAULT_SCHEDULE_TIMEZONE).toBe('Asia/Shanghai')
+    expect(job.timezone).toBe(DEFAULT_SCHEDULE_TIMEZONE)
+
+    scheduleTriggerManager.stopAll()
+  })
+
   it('restoreAll keeps restoring later agents when one agent throws', async () => {
     const { scheduleTriggerManager } = await import('../schedule-trigger.js')
     scheduleTriggerManager.stopAll()
@@ -274,7 +291,7 @@ describe('ScheduleTriggerManager', () => {
   })
 })
 
-type InternalJob = { callback: () => void | Promise<void>; stopped: boolean }
+type InternalJob = { callback: () => void | Promise<void>; stopped: boolean; timezone?: string }
 
 /**
  * Fire a cron callback and wait for the run it kicks off to finish.

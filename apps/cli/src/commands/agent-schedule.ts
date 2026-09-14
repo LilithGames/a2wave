@@ -20,6 +20,8 @@ interface ScheduleEntry {
   timezone: string
   intent: string
   nextRun: string | null
+  /** False when the id is the positional `<agentId>:<index>` fallback — not safe to rehearse. */
+  stable: boolean
 }
 
 interface ScheduleRunResult {
@@ -91,8 +93,11 @@ export const agentScheduleCommand = defineCommand({
         }
         console.log('ID  CRON  TIMEZONE  NEXT RUN  INTENT')
         for (const s of result.data) {
+          // A positional id re-targets another entry once the array is edited,
+          // so the server refuses to rehearse it; say so where the id is read.
+          const id = s.stable ? s.id : `${s.id} (positional)`
           console.log(
-            `${s.id}  ${s.cron}  ${s.timezone}  ${s.nextRun ?? '-'}  ${previewIntent(s.intent)}`,
+            `${id}  ${s.cron}  ${s.timezone}  ${s.nextRun ?? '-'}  ${previewIntent(s.intent)}`,
           )
         }
       },
@@ -142,6 +147,15 @@ export const agentScheduleCommand = defineCommand({
               type: 'not_found',
               hint: `a2wave agents schedule list ${agentId}`,
             })
+          }
+          // The server skips this entry at registration (bad cron or unknown
+          // timezone); rendering it here would throw on the timezone instead of
+          // saying why it never fires.
+          if (schedule.nextRun === null) {
+            throw new CliError(
+              `Schedule ${scheduleId} cannot be registered (cron "${schedule.cron}", timezone "${schedule.timezone}") and never fires; fix the entry before rehearsing it`,
+              { type: 'conflict', hint: `a2wave agents schedule list ${agentId}` },
+            )
           }
           const intent = renderScheduleIntent(schedule.intent, schedule.timezone, new Date())
           if (emit(args, { data: { ...schedule, intent, dryRun: true } })) return

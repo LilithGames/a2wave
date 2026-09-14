@@ -850,7 +850,7 @@ export const openApiSpec: OpenAPIV3.Document = {
         operationId: 'listAgentSchedules',
         summary: 'List an Agent’s schedule entries',
         description:
-          'The Agent’s `scheduleConfig` as a flat list: each entry carries a stable `id` (the persisted per-schedule id, or `<agentId>:<index>` for legacy entries without one), its `cron`, `timezone`, the raw `intent` template (placeholders `{{date}}` / `{{time}}` / `{{iso}}` unrendered) and `nextRun` — the next firing time as ISO 8601 evaluated in the entry’s timezone, or null when the cron cannot be registered. Requires read access.',
+          'The Agent’s `scheduleConfig` as a flat list: each entry carries an `id` (the persisted per-schedule id, or the positional `<agentId>:<index>` fallback for legacy entries without one — `stable` is false for those, and the run endpoint refuses them), its `cron`, `timezone`, the raw `intent` template (placeholders `{{date}}` / `{{time}}` / `{{iso}}` unrendered) and `nextRun` — the next firing time as ISO 8601 evaluated in the entry’s timezone, or null when the cron cannot be registered (invalid cron or unknown timezone). Requires read access.',
         tags: ['Agents'],
         security: [{ sessionCookie: [] }],
         parameters: [{ $ref: '#/components/parameters/agentId' }],
@@ -866,14 +866,33 @@ export const openApiSpec: OpenAPIV3.Document = {
                       type: 'array',
                       items: {
                         type: 'object',
-                        required: ['id', 'index', 'cron', 'timezone', 'intent', 'nextRun'],
+                        required: [
+                          'id',
+                          'index',
+                          'cron',
+                          'timezone',
+                          'intent',
+                          'nextRun',
+                          'stable',
+                        ],
                         properties: {
                           id: { type: 'string' },
                           index: { type: 'integer' },
                           cron: { type: 'string' },
                           timezone: { type: 'string' },
                           intent: { type: 'string' },
-                          nextRun: { type: 'string', format: 'date-time', nullable: true },
+                          nextRun: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
+                            description:
+                              'Null when the cron registrar skips the entry; such an entry never fires and cannot be rehearsed.',
+                          },
+                          stable: {
+                            type: 'boolean',
+                            description:
+                              'True when the entry has a persisted `id`. False means `id` is the positional fallback, which re-targets another entry once the array is edited.',
+                          },
                         },
                       },
                     },
@@ -901,7 +920,8 @@ export const openApiSpec: OpenAPIV3.Document = {
             in: 'path',
             required: true,
             schema: { type: 'string' },
-            description: 'A schedule `id` as returned by `GET /agents/{agentId}/schedules`.',
+            description:
+              'A persisted schedule `id` as returned by `GET /agents/{agentId}/schedules` (`stable: true`). Positional `<agentId>:<index>` ids are refused.',
           },
         ],
         responses: {
@@ -930,7 +950,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           '404': { description: 'Agent or schedule entry not found.' },
           '409': {
             description:
-              'Agent not published, schedule channel disabled, Agent inactive, or the queue is full (`QUEUE_FULL`, with the failed `runId`).',
+              'Refused, with `code`: `AGENT_NOT_PUBLISHED`, `SCHEDULE_CHANNEL_DISABLED`, `AGENT_INACTIVE`; `SCHEDULE_ID_REQUIRED` (the id is the positional fallback — give the entry an `id` in `scheduleConfig`); `SCHEDULE_NOT_REGISTERED` (invalid cron or unknown timezone, so the cron registrar skips it and it never fires); `QUEUE_FULL` (the run was created and recorded as failed; its `runId` is in the message).',
           },
         },
       },

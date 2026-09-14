@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { CliError } from '../../errors.js'
 
 const mockSaveConfig = vi.fn()
 const mockClearConfig = vi.fn()
@@ -245,6 +246,41 @@ describe('loginCommand — --password (legacy)', () => {
     // credential that no longer belonged to it.
     expect(mockSaveCredential).toHaveBeenCalledWith('https://a2wave.test', 'jwt-pw')
     expect(consoleSpy).toHaveBeenCalledWith('Login successful ✓')
+  })
+
+  it('reports an unparseable instance URL as a network error naming the URL, not a CLI bug', async () => {
+    // `a2wave config set-url "http://exa mple"` stores a URL fetch cannot parse.
+    // Node rejects with `TypeError: Failed to parse URL from …` (cause
+    // ERR_INVALID_URL) — not `fetch failed` — and unwrapped it printed
+    // "Internal error … This is a bug in the a2wave CLI".
+    mockResolveUrl.mockReturnValueOnce('http://exa mple')
+    mockQuestion.mockResolvedValueOnce('admin')
+    const cause = Object.assign(new TypeError('Invalid URL'), { code: 'ERR_INVALID_URL' })
+    mockFetch.mockRejectedValueOnce(
+      new TypeError('Failed to parse URL from http://exa mple/api/auth/login', { cause }),
+    )
+
+    const sim = mockPasswordPrompt('pass')
+    let err: unknown
+    try {
+      const promise = (loginCommand.run as (c: { args: Record<string, unknown> }) => Promise<void>)(
+        { args: { password: true } },
+      )
+      await sim.type()
+      err = await promise.then(
+        () => null,
+        (e: unknown) => e,
+      )
+    } finally {
+      sim.restore()
+    }
+
+    expect(err).toBeInstanceOf(CliError)
+    expect((err as CliError).type).toBe('network')
+    expect((err as CliError).subtype).toBe('ERR_INVALID_URL')
+    expect((err as CliError).message).toContain('http://exa mple')
+    expect((err as CliError).message).toContain('a2wave config set-url')
+    expect(mockSaveConfig).not.toHaveBeenCalled()
   })
 
   it('throws on password login failure', async () => {

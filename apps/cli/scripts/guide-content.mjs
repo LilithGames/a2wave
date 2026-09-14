@@ -24,7 +24,7 @@ const GROUPS = [
       '`agents get` is not a health check. For "why does this fail", use `agents diagnose`.',
       '`agents stats` returns the object directly, NOT wrapped in `{data}` — the one endpoint that differs.',
       '`agents apply` (with a `publish:` block) and `agents publish` run `agents diagnose` first and REFUSE to publish on any error-severity finding. `--skip-diagnose` publishes anyway; do not reach for it before reading the findings.',
-      'YAML secrets (`providerApiKey`, `providerOauthToken`, `embeddingApiKey`, and the same keys inside `config.providerChain[]`) accept a literal, an environment placeholder (a dollar sign followed by `{NAME}`; unset or empty → error naming the variable), or `file:<path>` (whitespace stripped, text before `sk-ant-` dropped). Prefer `file:` over pasting a token that may be line-wrapped.',
+      'YAML secrets (`providerApiKey`, `providerOauthToken`, `embeddingApiKey`, and the same keys inside `config.providerChain[]`) accept a literal, an environment placeholder (a dollar sign followed by `{NAME}`; unset or empty → error naming the variable), or `file:<path>` (the file must hold only the secret on one line; surrounding blank lines are ignored, a wrapped or multi-line file is rejected). Prefer `file:` over pasting a token into the YAML.',
       '`agents get` prints credentials as `configured (masked)` or `not set`; it never shows the value.',
       '`agents schedule run <agent> <scheduleId>` fires ONE schedule entry through the real `schedule` channel (same `triggerSource`, same channel context as cron). `--dry-run` only renders the intent. Do not rehearse a schedule with `chat send`: that runs through the `debug` channel.',
     ],

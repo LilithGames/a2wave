@@ -272,15 +272,46 @@ const skipDiagnoseArg = {
 }
 
 /**
+ * Diagnose check ids that mean the Agent cannot run at all, whatever channel it
+ * is published on. Only these block publishing.
+ *
+ * Blocking rule: GET /agents/:id/diagnose returns one flat `checks` list that
+ * merges the execution checks (agent-execution-diagnose) with the Feishu and
+ * native-chat connection checks, so the CLI cannot block "on the execution
+ * section" — it has to name the ids. Every error-level item whose id is NOT in
+ * this set is printed as a warning instead: the remaining error ids describe
+ * the runtime state of an Agent that is already published (`ws_not_registered`,
+ * `<channel>_connection_closed`, a Feishu app id held by a peer) or a
+ * condition the API itself says does not block runs
+ * (`provider_cli_version_below_minimum`). Their remedy is publishing (or
+ * re-publishing), so refusing to publish on them would deadlock the caller.
+ *
+ * The ids come from apps/api/src/lib/agent-execution-diagnose.ts. Add a new id
+ * here only when a run with that finding fails before the first turn.
+ */
+const PUBLISH_BLOCKING_CHECK_IDS: ReadonlySet<string> = new Set([
+  // buildAgentConfig rejected the Provider binding / chain (bad or missing
+  // credentials surface here as ProviderConfigurationError).
+  'provider_binding_invalid',
+  'provider_chain_unusable',
+  // The bound Provider record is gone or of a kind this build cannot drive.
+  'provider_record_missing',
+  'provider_kind_invalid',
+  // No CLI binary: every run fails at spawn.
+  'provider_cli_not_installed',
+])
+
+/**
  * Publish preflight: consult GET /agents/:id/diagnose and refuse to publish
- * while it reports an error-level finding.
+ * while it reports a blocking finding (see `PUBLISH_BLOCKING_CHECK_IDS`).
  *
  * Publish itself only flips a status; it does not prove the Agent can run. A
  * missing Provider CLI or a rejected credential publishes fine and then fails
  * the first turn, which the caller discovers later and elsewhere. The diagnose
- * route already knows, so it is asked first. Warn-level items are shown but do
- * not block, and a preflight that cannot run (network, 5xx) is reported and
- * skipped rather than turning a diagnostics outage into a publish outage.
+ * route already knows, so it is asked first. Warn-level items and non-blocking
+ * error items are shown but do not block, and a preflight that cannot run
+ * (network, 5xx) is reported and skipped rather than turning a diagnostics
+ * outage into a publish outage.
  */
 async function assertPublishPreflight(
   client: ReturnType<typeof createClient>,
@@ -298,10 +329,15 @@ async function assertPublishPreflight(
     )
     return
   }
+  const errors: DiagnoseCheck[] = []
   for (const c of checks) {
-    if (c.severity === 'warn') console.warn(`! [warn] ${c.id}: ${c.message}`)
+    if (c.severity === 'warn') {
+      console.warn(`! [warn] ${c.id}: ${c.message}`)
+    } else if (c.severity === 'error') {
+      if (PUBLISH_BLOCKING_CHECK_IDS.has(c.id)) errors.push(c)
+      else console.warn(`! [warn] ${c.id}: ${c.message} (does not block publishing)`)
+    }
   }
-  const errors = checks.filter((c) => c.severity === 'error')
   if (errors.length === 0) return
   for (const c of errors) console.error(`✗ [error] ${c.id}: ${c.message}`)
   throw new CliError(
@@ -781,7 +817,21 @@ export const agentsCommand = defineCommand({
           const created = await client.post<{ data: { id: string } }>('/api/agents', payload)
           console.log(`Created ${created.data.id} (${yaml.name})`)
           if (publishBody) {
-            await assertPublishPreflight(client, created.data.id, skipDiagnose)
+            try {
+              await assertPublishPreflight(client, created.data.id, skipDiagnose)
+            } catch (err) {
+              // The create already happened: the caller must know a draft now
+              // exists and that the fix is to re-apply, not to apply again from
+              // scratch (which findAgentByName would turn into an update anyway,
+              // but only if they know to expect that).
+              if (err instanceof CliError && err.subtype === 'publish_preflight') {
+                throw new CliError(
+                  `${err.message}. The Agent now exists in draft as ${created.data.id}; re-running \`agents apply\` with the same YAML will update it rather than create a second one`,
+                  { type: err.type, subtype: err.subtype, hint: err.hint },
+                )
+              }
+              throw err
+            }
             await client.post(`/api/agents/${created.data.id}/publish`, publishBody)
             console.log(
               `Published ${created.data.id} (channels: ${(publishBody.channels as string[] | undefined)?.join(', ') ?? 'default'})`,

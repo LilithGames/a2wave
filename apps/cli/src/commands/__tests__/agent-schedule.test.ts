@@ -13,6 +13,7 @@ vi.mock('../../client.js', () => ({
   }),
 }))
 
+const { CliError } = await import('../../errors.js')
 const { agentScheduleCommand, renderScheduleIntent } = await import('../agent-schedule.js')
 
 type SubCmd = {
@@ -29,6 +30,7 @@ const SCHEDULES = [
     timezone: 'UTC',
     intent: 'Morning review for {{date}} at {{time}} ({{iso}})',
     nextRun: '2026-09-15T09:00:00.000Z',
+    stable: true,
   },
   {
     id: 'agt_1:1',
@@ -37,6 +39,18 @@ const SCHEDULES = [
     timezone: 'Asia/Shanghai',
     intent: 'x'.repeat(80),
     nextRun: null,
+    stable: false,
+  },
+  {
+    // Persisted before the timezone refine existed: the server cannot register
+    // it, and a local render would throw a RangeError on the timezone.
+    id: 'sch_badtz',
+    index: 2,
+    cron: '0 9 * * *',
+    timezone: 'Asia/Shangai',
+    intent: 'Stale {{date}}',
+    nextRun: null,
+    stable: true,
   },
 ]
 
@@ -92,6 +106,17 @@ describe('agents schedule', () => {
       expect(legacy).toContain('-')
       expect(legacy).not.toContain('x'.repeat(61))
       expect(legacy).toContain('…')
+    })
+
+    it('marks entries whose id is positional so a caller knows not to rehearse them', async () => {
+      mockGet.mockResolvedValueOnce({ data: SCHEDULES })
+
+      await subs.list.run({ args: { agent: 'agt_1' } })
+
+      const lines = printedLines()
+      expect(lines.find((l) => l.includes('agt_1:1'))).toContain('(positional)')
+      expect(lines.find((l) => l.includes('sch_morning'))).not.toContain('(positional)')
+      expect(lines.find((l) => l.includes('sch_badtz'))).not.toContain('(positional)')
     })
 
     it('says so when there are no schedules', async () => {
@@ -161,6 +186,38 @@ describe('agents schedule', () => {
       const out = JSON.parse(String(consoleSpy.mock.calls[0][0]))
       expect(out.data).toMatchObject({ id: 'sch_morning', dryRun: true })
       expect(out.data.intent).toMatch(/^Morning review for \d{4}-\d{2}-\d{2} at \d{2}:\d{2}/)
+    })
+
+    it('surfaces the server message when the id is positional and the server refuses it', async () => {
+      const serverMessage =
+        'Schedule agt_1:1 has no persisted id; give the entry an `id` in scheduleConfig'
+      mockPost.mockRejectedValueOnce(
+        new CliError(
+          `API Error (409): {"error":"${serverMessage}","code":"SCHEDULE_ID_REQUIRED"}`,
+          {
+            type: 'conflict',
+            subtype: '409',
+          },
+        ),
+      )
+
+      await expect(
+        subs.run.run({ args: { agent: 'agt_1', scheduleId: 'agt_1:1' } }),
+      ).rejects.toMatchObject({ type: 'conflict', message: expect.stringContaining(serverMessage) })
+      expect(consoleSpy).not.toHaveBeenCalled()
+    })
+
+    it('--dry-run fails with a CliError naming the entry when the server cannot register it', async () => {
+      mockGet.mockResolvedValueOnce({ data: SCHEDULES })
+
+      await expect(
+        subs.run.run({ args: { agent: 'agt_1', scheduleId: 'sch_badtz', 'dry-run': true } }),
+      ).rejects.toMatchObject({
+        type: 'conflict',
+        message: expect.stringContaining('sch_badtz'),
+        hint: expect.stringContaining('agents schedule list'),
+      })
+      expect(mockPost).not.toHaveBeenCalled()
     })
 
     it('--dry-run fails with not_found when the schedule id is unknown', async () => {

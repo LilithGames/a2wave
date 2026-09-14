@@ -334,7 +334,7 @@ export const providersCommand = defineCommand({
             },
             timeout: {
               type: 'string',
-              description: 'Seconds to wait with --wait before giving up (default 600)',
+              description: 'Seconds to wait before giving up (default 600); implies --wait',
             },
             ...jsonArg,
             ...urlArg,
@@ -347,13 +347,17 @@ export const providersCommand = defineCommand({
               args.timeout === undefined
                 ? undefined
                 : parseIntFlag(args.timeout, 'timeout', { min: 0 }) * 1000
+            // A timeout only means something while waiting, so giving one is
+            // asking to wait — a value that was validated and then ignored is
+            // the worse surprise.
+            const wait = !!args.wait || timeoutMs !== undefined
             const client = createClient({ url: args.url as string | undefined })
             const started = await client.post<{ data: { kind: string; status: string } }>(
               `${PROVIDER_CLIS_PATH}/${kind}/install`,
               {},
             )
 
-            if (!args.wait) {
+            if (!wait) {
               if (emit(args, started)) return
               console.log(`Install started ✓  ${kind} (${started.data.status})`)
               console.log(`Follow with: a2wave providers cli status ${kind}`)

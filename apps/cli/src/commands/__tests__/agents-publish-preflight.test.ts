@@ -47,9 +47,34 @@ function diagnose(
 }
 
 const PROVIDER_ERRORS = [
-  { id: 'provider.cli', severity: 'error' as const, message: 'claude CLI is not installed' },
-  { id: 'provider.credential', severity: 'error' as const, message: 'API key rejected (401)' },
+  {
+    id: 'provider_cli_not_installed',
+    severity: 'error' as const,
+    message: 'claude CLI is not installed',
+  },
+  {
+    id: 'provider_chain_unusable',
+    severity: 'error' as const,
+    message: 'API key rejected (401)',
+  },
   { id: 'feishu.config', severity: 'warn' as const, message: 'Feishu app secret not set' },
+]
+
+/**
+ * Error-level items that describe the *runtime* state of an already-published
+ * Agent (a Feishu socket not yet registered, a git-trigger poller that closed,
+ * a CLI below its minimum version that the API itself says does not block
+ * runs). Their remedy is publishing, so refusing to publish on them is a
+ * deadlock.
+ */
+const RUNTIME_STATE_ERRORS = [
+  { id: 'ws_not_registered', severity: 'error' as const, message: 'WS not registered' },
+  { id: 'github_connection_closed', severity: 'error' as const, message: 'poller closed' },
+  {
+    id: 'provider_cli_version_below_minimum',
+    severity: 'error' as const,
+    message: 'installed 1.0.0, requires >= 2.0.0. This does not block runs.',
+  },
 ]
 
 /**
@@ -91,8 +116,8 @@ describe('publish preflight (GET /diagnose before POST /publish)', () => {
       expect(mockGet).toHaveBeenCalledWith(DIAGNOSE_URL('agt_1'))
       expect(mockPost).not.toHaveBeenCalled()
       const out = stderr()
-      expect(out).toContain('provider.cli: claude CLI is not installed')
-      expect(out).toContain('provider.credential: API key rejected (401)')
+      expect(out).toContain('provider_cli_not_installed: claude CLI is not installed')
+      expect(out).toContain('provider_chain_unusable: API key rejected (401)')
     })
 
     it('prints warn items as warnings and still publishes', async () => {
@@ -105,6 +130,41 @@ describe('publish preflight (GET /diagnose before POST /publish)', () => {
 
       expect(mockPost).toHaveBeenCalledWith('/api/agents/agt_1/publish', {})
       expect(stderr()).toContain('feishu.config: Feishu app secret not set')
+    })
+
+    it('blocks only on "cannot run at all" ids; runtime-state errors are downgraded to warnings and publish proceeds', async () => {
+      mockGet.mockResolvedValueOnce(diagnose(RUNTIME_STATE_ERRORS))
+      mockPost.mockResolvedValueOnce({ data: {} })
+
+      await subs.publish.run({ args: { id: 'agt_1' } })
+
+      expect(mockPost).toHaveBeenCalledWith('/api/agents/agt_1/publish', {})
+      const out = stderr()
+      for (const c of RUNTIME_STATE_ERRORS) {
+        expect(out).toContain(`${c.id}: ${c.message}`)
+        expect(out).not.toContain(`[error] ${c.id}`)
+      }
+      expect(out).toMatch(/does not block publishing/i)
+    })
+
+    it('blocks when a blocking id is mixed with runtime-state errors, counting only the blocking one', async () => {
+      mockGet.mockResolvedValueOnce(
+        diagnose([
+          ...RUNTIME_STATE_ERRORS,
+          {
+            id: 'provider_cli_not_installed',
+            severity: 'error',
+            message: 'claude CLI is not installed',
+          },
+        ]),
+      )
+
+      const err = await subs.publish.run({ args: { id: 'agt_1' } }).catch((e: unknown) => e)
+
+      expect(err).toBeInstanceOf(CliError)
+      expect((err as CliError).message).toMatch(/found 1 error for agt_1/)
+      expect(mockPost).not.toHaveBeenCalled()
+      expect(stderr()).toContain('[error] provider_cli_not_installed: claude CLI is not installed')
     })
 
     it('publishes silently when diagnose is clean', async () => {
@@ -168,7 +228,40 @@ describe('publish preflight (GET /diagnose before POST /publish)', () => {
       )
       expect(mockGet).toHaveBeenCalledWith(DIAGNOSE_URL('agt_new'))
       expect(logSpy).toHaveBeenCalledWith('Created agt_new (my-bot)')
-      expect(stderr()).toContain('provider.cli: claude CLI is not installed')
+      expect(stderr()).toContain('provider_cli_not_installed: claude CLI is not installed')
+    })
+
+    it('CREATE path: the error says the Agent now exists in draft and that re-applying updates it', async () => {
+      writeFileSync(yamlPath, YAML_WITH_PUBLISH)
+      mockFindAgentByName.mockResolvedValueOnce(null)
+      mockPost.mockResolvedValueOnce({ data: { id: 'agt_new' } })
+      mockGet.mockResolvedValueOnce(diagnose(PROVIDER_ERRORS))
+
+      const err = await subs.apply.run({ args: { file: yamlPath } }).catch((e: unknown) => e)
+
+      expect(err).toBeInstanceOf(CliError)
+      const message = (err as CliError).message
+      expect(message).toContain('agt_new')
+      expect(message).toMatch(/draft/i)
+      expect(message).toMatch(/agents apply/)
+      expect(message).toMatch(/same YAML/i)
+      expect(message).toMatch(/update/i)
+      expect(message).toMatch(/rather than create a second one/i)
+      expect((err as CliError).hint).toBe(
+        'Fix the errors above, or pass --skip-diagnose to publish anyway.',
+      )
+    })
+
+    it('UPDATE path: the error does not mention a draft being left behind', async () => {
+      writeFileSync(yamlPath, `${YAML_WITH_PUBLISH}description: NEW\n`)
+      mockFindAgentByName.mockResolvedValueOnce({ id: 'agt_x', name: 'my-bot' })
+      mockGet.mockResolvedValueOnce({ data: { id: 'agt_x', name: 'my-bot', description: 'OLD' } })
+      mockGet.mockResolvedValueOnce(diagnose(PROVIDER_ERRORS))
+
+      const err = await subs.apply.run({ args: { file: yamlPath } }).catch((e: unknown) => e)
+
+      expect(err).toBeInstanceOf(CliError)
+      expect((err as CliError).message).not.toMatch(/draft/i)
     })
 
     it('UPDATE path: patches, then aborts before /publish on a diagnose error', async () => {

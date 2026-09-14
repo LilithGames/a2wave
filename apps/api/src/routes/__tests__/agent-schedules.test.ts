@@ -89,6 +89,7 @@ describe('GET /agents/:id/schedules', () => {
         timezone: 'UTC',
         intent: 'Morning {{date}}',
         nextRun: expect.stringMatching(/T09:00:00\.000Z$/),
+        stable: true,
       },
       {
         id: 'agt_1:1',
@@ -97,6 +98,7 @@ describe('GET /agents/:id/schedules', () => {
         timezone: 'Asia/Shanghai',
         intent: 'Evening',
         nextRun: expect.stringMatching(/T10:00:00\.000Z$/),
+        stable: false,
       },
     ])
   })
@@ -151,21 +153,51 @@ describe('POST /agents/:id/schedules/:scheduleId/run', () => {
     expect(JSON.stringify(details)).not.toContain('Morning')
   })
 
-  it('addresses legacy entries by their <agentId>:<index> fallback id', async () => {
+  it('refuses a positional <agentId>:<index> id with SCHEDULE_ID_REQUIRED instead of firing', async () => {
+    // The positional fallback silently re-targets a different entry once the
+    // array is edited, so a rehearsal must address a persisted id only.
     const allow = guard({ agent: publishedAgent })
-    mocks.fireSchedule.mockResolvedValue({ runId: 'run_2', status: 'queued', intent: 'Evening' })
 
     const res = await runApp(allow).request('/agents/agt_1/schedules/agt_1:1/run', {
       method: 'POST',
     })
 
-    expect(res.status).toBe(202)
-    expect(mocks.fireSchedule).toHaveBeenCalledWith(
-      publishedAgent,
-      publishedAgent.scheduleConfig[1],
-      1,
-    )
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.code).toBe('SCHEDULE_ID_REQUIRED')
+    expect(body.error).toContain('agt_1:1')
+    expect(body.error).toContain('scheduleConfig')
+    expect(mocks.fireSchedule).not.toHaveBeenCalled()
+    expect(mocks.audit).not.toHaveBeenCalled()
   })
+
+  it.each([
+    [
+      'timezone',
+      { id: 'sch_tz', cron: '0 9 * * *', intent: 'x', timezone: 'Asia/Shangai' },
+      /timezone/,
+    ],
+    ['cron', { id: 'sch_cron', cron: '0 7/12 * * *', intent: 'x', timezone: 'UTC' }, /cron/],
+  ])(
+    '409s with SCHEDULE_NOT_REGISTERED for an entry the cron registrar skips (invalid %s)',
+    async (_label, entry, reason) => {
+      const allow = guard({
+        agent: { ...publishedAgent, scheduleConfig: [entry] } as unknown as AgentRow,
+      })
+
+      const res = await runApp(allow).request(`/agents/agt_1/schedules/${entry.id}/run`, {
+        method: 'POST',
+      })
+
+      expect(res.status).toBe(409)
+      const body = await res.json()
+      expect(body.code).toBe('SCHEDULE_NOT_REGISTERED')
+      expect(body.error).toContain(entry.id)
+      expect(body.error).toMatch(reason)
+      expect(mocks.fireSchedule).not.toHaveBeenCalled()
+      expect(mocks.audit).not.toHaveBeenCalled()
+    },
+  )
 
   it('404s on an unknown schedule id without firing', async () => {
     const allow = guard({ agent: publishedAgent })
@@ -203,7 +235,10 @@ describe('POST /agents/:id/schedules/:scheduleId/run', () => {
     })
 
     expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ code: 'QUEUE_FULL', runId: 'run_3' })
+    // Goes through the AppError envelope so the CLI's ApiError shows the run id.
+    const body = await res.json()
+    expect(body.code).toBe('QUEUE_FULL')
+    expect(body.error).toContain('run_3')
     expect(mocks.audit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ details: expect.objectContaining({ status: 'queue_full' }) }),

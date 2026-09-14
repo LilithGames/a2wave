@@ -215,6 +215,33 @@ describe('providers cli', () => {
       ).rejects.toThrow(/--timeout/)
       expect(mockPost).not.toHaveBeenCalled()
     })
+
+    it('--timeout implies --wait, so a value is never silently ignored', async () => {
+      mockPost.mockResolvedValueOnce({ data: { kind: 'claude-code', status: 'installing' } })
+      mockGet.mockResolvedValueOnce({ data: [state({ installedVersion: '2.1.0' })] })
+
+      await cliSub('install').run({ args: { kind: 'claude-code', timeout: '30' } })
+
+      expect(mockGet).toHaveBeenCalledWith('/api/provider-clis')
+      const out = printed()
+      expect(out).toContain('2.1.0')
+      expect(out).not.toContain('Follow with:')
+    })
+
+    it('a bad --timeout without --wait still fails before any request', async () => {
+      await expect(
+        cliSub('install').run({ args: { kind: 'claude-code', timeout: 'soon' } }),
+      ).rejects.toThrow(/--timeout/)
+      expect(mockPost).not.toHaveBeenCalled()
+      expect(mockGet).not.toHaveBeenCalled()
+    })
+
+    it('documents that --timeout implies --wait', () => {
+      const install = cliSub('install') as unknown as {
+        args: { timeout: { description: string } }
+      }
+      expect(install.args.timeout.description).toMatch(/implies --wait/)
+    })
   })
 
   describe('waitForCliInstall', () => {

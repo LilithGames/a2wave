@@ -33,6 +33,16 @@ function fetchFailed(cause: unknown): TypeError {
   return new TypeError('fetch failed', { cause })
 }
 
+/**
+ * Node's shape for a URL `fetch` cannot even parse (`http://exa mple`, a port
+ * above 65535): a TypeError whose message names the input and whose `cause` is
+ * the `ERR_INVALID_URL` error — NOT `fetch failed`.
+ */
+function invalidUrl(input: string): TypeError {
+  const cause = Object.assign(new TypeError('Invalid URL'), { code: 'ERR_INVALID_URL', input })
+  return new TypeError(`Failed to parse URL from ${input}`, { cause })
+}
+
 function errnoError(code: string): Error & { code: string } {
   return Object.assign(new Error(`connect ${code} 10.3.113.32:3512`), { code })
 }
@@ -92,6 +102,27 @@ describe('toConnectionError', () => {
     expect(err?.subtype).toBeUndefined()
   })
 
+  it('treats a URL that fetch cannot parse as a configuration error, not a CLI bug', () => {
+    const err = toConnectionError(invalidUrl('http://exa mple/api/agents'), 'http://exa mple')
+    expect(err).toBeInstanceOf(CliError)
+    expect(err?.type).toBe('network')
+    expect(err?.subtype).toBe('ERR_INVALID_URL')
+    expect(err?.message).toContain('http://exa mple')
+    expect(err?.message).toContain('a2wave config set-url')
+    expect(err?.message).toContain('--url')
+  })
+
+  it('treats any TypeError from fetch that carries a coded cause as a connection failure', () => {
+    // undici occasionally rethrows with a different top-level message; the
+    // coded cause is the reliable marker that this came from the transport.
+    const err = toConnectionError(
+      new TypeError('something else', { cause: errnoError('ECONNRESET') }),
+      mockUrl,
+    )
+    expect(err?.type).toBe('network')
+    expect(err?.subtype).toBe('ECONNRESET')
+  })
+
   it('treats an abort / timeout as a connection failure', () => {
     const abort = new DOMException('This operation was aborted', 'AbortError')
     const err = toConnectionError(abort, mockUrl)
@@ -135,6 +166,36 @@ describe('createClient — unreachable instance', () => {
     expect(err).toBeInstanceOf(CliError)
     expect(err.type).toBe('network')
     expect(err.message).toContain('(EHOSTUNREACH)')
+  })
+
+  it.each([
+    ['a host with a space', 'http://exa mple'],
+    ['a port above 65535', 'http://localhost:99999'],
+  ])(
+    'reports an unparseable --url (%s) as a network CliError on a data request',
+    async (_, url) => {
+      mockFetch.mockRejectedValueOnce(invalidUrl(`${url}/api/agents`))
+
+      const err = (await captureError(() => createClient({ url }).get('/api/agents'))) as CliError
+      expect(err).toBeInstanceOf(CliError)
+      expect(err.type).toBe('network')
+      expect(err.subtype).toBe('ERR_INVALID_URL')
+      expect(err.message).toContain(url)
+      expect(err.message).toContain('a2wave config set-url')
+    },
+  )
+
+  it('reports an unparseable --url as a network CliError during the IDaaS exchange too', async () => {
+    mockToken = makeJwt('RS256')
+    mockFetch.mockRejectedValueOnce(invalidUrl('http://exa mple/api/auth/oauth/exchange'))
+
+    const err = (await captureError(() =>
+      createClient({ url: 'http://exa mple' }).get('/api/agents'),
+    )) as CliError
+    expect(err).toBeInstanceOf(CliError)
+    expect(err.type).toBe('network')
+    expect(err.subtype).toBe('ERR_INVALID_URL')
+    expect(err.message).toContain('http://exa mple')
   })
 
   it('leaves a genuine programming error alone so it still reports as internal', async () => {

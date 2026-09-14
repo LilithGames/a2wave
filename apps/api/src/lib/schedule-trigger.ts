@@ -19,7 +19,14 @@ export type ScheduleConfig = {
 }
 export type ScheduleConfigInput = ScheduleConfig | ScheduleConfig[]
 
-const DEFAULT_SCHEDULE_TIMEZONE = 'Asia/Shanghai'
+export const DEFAULT_SCHEDULE_TIMEZONE = 'Asia/Shanghai'
+
+/**
+ * The 5-field shape `isSupportedScheduleCron` enforces (croner itself would also
+ * accept 6-field seconds). Checked here so a registration attempt parses the
+ * expression exactly once instead of validating and then parsing again.
+ */
+const FIVE_FIELD_CRON = /^(\S+\s+){4}\S+$/
 
 type AgentRow = typeof agents.$inferSelect
 
@@ -43,18 +50,53 @@ export function resolveScheduleId(
   return schedule.id ?? `${agentId}:${index}`
 }
 
+/** Why croner would refuse an entry: a malformed expression or an unknown IANA name. */
+export type UnregistrableReason = 'cron' | 'timezone'
+
+type CronRegistration =
+  | { job: Cron; reason?: undefined }
+  | { job?: undefined; reason: UnregistrableReason }
+
+/**
+ * Register a cron exactly as `start` does, parsing the expression once. The
+ * reason is classified only on the failure path (a second parse without the
+ * timezone tells a bad expression from a bad timezone), so the happy path stays
+ * a single croner construction.
+ */
+function registerCron(cron: string, timezone: string, callback?: () => void): CronRegistration {
+  if (!FIVE_FIELD_CRON.test(cron.trim())) return { reason: 'cron' }
+  try {
+    return { job: new Cron(cron, { timezone }, callback) }
+  } catch {
+    return { reason: isValidCron(cron) ? 'timezone' : 'cron' }
+  }
+}
+
 /**
  * Next firing time as an ISO string, evaluated in the schedule's timezone.
  * Null when croner cannot register the expression (invalid cron or unknown
  * timezone) — the same entries `start` skips.
  */
 export function computeNextRun(cron: string, timezone: string): string | null {
-  if (!isValidCron(cron)) return null
+  const { job } = registerCron(cron, timezone)
+  if (!job) return null
+  // With no callback croner does not schedule at construction, so an unknown
+  // timezone only surfaces here when the first firing time is computed.
   try {
-    return new Cron(cron, { timezone }).nextRun()?.toISOString() ?? null
+    return job.nextRun()?.toISOString() ?? null
   } catch {
     return null
   }
+}
+
+/**
+ * Human-readable reason an entry with `nextRun === null` will never fire, for
+ * callers that must refuse it rather than fire what the registrar skips.
+ */
+export function describeUnregistrable(entry: Pick<ScheduleEntry, 'cron' | 'timezone'>): string {
+  return isValidCron(entry.cron)
+    ? `timezone "${entry.timezone}" is not a known IANA timezone`
+    : `cron "${entry.cron}" is not a valid 5-field expression`
 }
 
 export interface ScheduleEntry {
@@ -64,6 +106,12 @@ export interface ScheduleEntry {
   timezone: string
   intent: string
   nextRun: string | null
+  /**
+   * True when the entry carries a persisted `id`. A positional `<agentId>:<index>`
+   * id silently re-targets a different entry once the array is edited, so only
+   * stable entries can be rehearsed.
+   */
+  stable: boolean
 }
 
 /** The Agent's schedule config as a flat, addressable list. */
@@ -80,6 +128,7 @@ export function listSchedules(
       timezone,
       intent: schedule.intent,
       nextRun: computeNextRun(schedule.cron, timezone),
+      stable: schedule.id != null,
     }
   })
 }
@@ -111,30 +160,22 @@ class ScheduleTriggerManager {
 
     const jobs: Cron[] = []
     normalizeScheduleConfigs(config).forEach((schedule, index) => {
-      const timezone = schedule.timezone || 'Asia/Shanghai'
-
-      if (!isValidCron(schedule.cron)) {
-        logger.warn(
-          { agentId, cron: schedule.cron, scheduleIndex: index },
-          'Invalid cron expression, skipping schedule registration',
-        )
-        return
-      }
+      const timezone = schedule.timezone || DEFAULT_SCHEDULE_TIMEZONE
 
       // croner throws synchronously on an unknown IANA timezone. Without this guard
       // the throw escaped `start`, which had already called `stop` — losing the
       // agent's *valid* schedules — and aborted `restoreAll` for every later agent.
-      let job: Cron
-      try {
-        job = new Cron(schedule.cron, { timezone }, () => {
-          this.triggerRun(agentId, schedule, index).catch((err) =>
-            logger.error({ err, agentId, scheduleIndex: index }, 'Schedule trigger failed'),
-          )
-        })
-      } catch (err) {
+      const { job, reason } = registerCron(schedule.cron, timezone, () => {
+        this.triggerRun(agentId, schedule, index).catch((err) =>
+          logger.error({ err, agentId, scheduleIndex: index }, 'Schedule trigger failed'),
+        )
+      })
+      if (!job) {
         logger.warn(
-          { err, agentId, cron: schedule.cron, timezone, scheduleIndex: index },
-          'Cron registration rejected (likely an unknown timezone), skipping schedule registration',
+          { agentId, cron: schedule.cron, timezone, scheduleIndex: index, reason },
+          reason === 'cron'
+            ? 'Invalid cron expression, skipping schedule registration'
+            : 'Cron registration rejected (unknown timezone), skipping schedule registration',
         )
         return
       }
