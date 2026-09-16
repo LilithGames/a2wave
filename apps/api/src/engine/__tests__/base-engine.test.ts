@@ -307,6 +307,62 @@ describe('BaseAgentEngine.executeStream — happy path', () => {
     expect(payload.agentConfig?.agentEnv?.A2WAVE_MEMORY_TOKEN).toBe(originalToken)
   })
 
+  // Regression: an ordinary lookup Run leaked "Memory write isn't authorized this
+  // run (no explicit request)" into the final reply of a chat channel. The runtime
+  // correctly issued a read-only token, but never told the Agent — so it attempted
+  // a write, was refused, and dutifully reported the refusal to the user. The
+  // permission decision and the injected instruction must agree.
+  it('tells the Agent it cannot write when the Run got a read-only memory token', async () => {
+    const engine = new TestEngine('claude-code', async () => ({
+      success: true,
+      output: 'ok',
+      durationMs: 0,
+    }))
+
+    await engine.executeStream(
+      makeReq({
+        prompt: '查询这两个账号当前绑定的区服信息。',
+        agentConfig: {
+          agentId: 'agt_runtime',
+          memoryEnabled: true,
+          agentEnv: { A2WAVE_MEMORY_TOKEN: registerAgentToken('agt_runtime') },
+        } as never,
+      }),
+    )
+
+    const parts = vi.mocked(assembleSystemPrompt).mock.calls.at(-1)?.[0] as {
+      recallInstruction?: string
+    }
+    expect(parts.recallInstruction).toContain('本次 Run 未授予记忆写入权限')
+    expect(parts.recallInstruction).toContain('不要在回复中提及记忆写入的授权状态')
+    expect(parts.recallInstruction).not.toContain('memory-write.mjs')
+  })
+
+  it('keeps the write instructions when the Run got a write-capable token', async () => {
+    const engine = new TestEngine('claude-code', async () => ({
+      success: true,
+      output: 'ok',
+      durationMs: 0,
+    }))
+
+    await engine.executeStream(
+      makeReq({
+        prompt: '请把这条规则记到长期记忆中：发布前运行聚焦测试。',
+        agentConfig: {
+          agentId: 'agt_runtime',
+          memoryEnabled: true,
+          agentEnv: { A2WAVE_MEMORY_TOKEN: registerAgentToken('agt_runtime') },
+        } as never,
+      }),
+    )
+
+    const parts = vi.mocked(assembleSystemPrompt).mock.calls.at(-1)?.[0] as {
+      recallInstruction?: string
+    }
+    expect(parts.recallInstruction).toContain('memory-write.mjs')
+    expect(parts.recallInstruction).not.toContain('本次 Run 未授予记忆写入权限')
+  })
+
   it('does not authorize direct memory writes for an ordinary durable statement', async () => {
     let seenRequest: StreamExecuteRequest | undefined
     const engine = new TestEngine('claude-code', async (req) => {

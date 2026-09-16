@@ -16,6 +16,11 @@ vi.mock('../memory-provider.js', () => ({
   isConfigDisabled: (...args: unknown[]) => mockIsConfigDisabled(...args),
 }))
 
+import {
+  clearAgentTokenStoreForTest,
+  RUNTIME_MEMORY_READ_ACTIONS,
+  registerAgentToken,
+} from '../agent-memory-token.js'
 import { buildMemoryContext, buildRecallInstruction } from '../memory-context.js'
 
 describe('buildMemoryContext', () => {
@@ -106,13 +111,13 @@ describe('buildRecallInstruction', () => {
   it('returns medium instruction by default', async () => {
     const result = buildRecallInstruction({})
     expect(result).toBe('## 回想策略（medium）')
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, true)
   })
 
   it('returns weak instruction for memoryRecallLevel=weak', async () => {
     const result = buildRecallInstruction({ memoryRecallLevel: 'weak' })
     expect(result).toBe('## 回想策略（weak）')
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('weak', undefined, true)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('weak', undefined, true, true)
   })
 
   it('returns strong instruction for memoryRecallLevel=strong', async () => {
@@ -123,7 +128,7 @@ describe('buildRecallInstruction', () => {
   it('falls back to medium for unknown recallLevel', async () => {
     const result = buildRecallInstruction({ memoryRecallLevel: 'invalid' })
     expect(result).toBe('## 回想策略（medium）')
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, true)
   })
 
   it('computes scriptPath from skillsDir when provided', async () => {
@@ -131,6 +136,7 @@ describe('buildRecallInstruction', () => {
     expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith(
       'medium',
       '.cursor/skills/a2wave-memory/scripts/memory-search.mjs',
+      true,
       true,
     )
   })
@@ -141,21 +147,63 @@ describe('buildRecallInstruction', () => {
       'strong',
       '.claude/skills/a2wave-memory/scripts/memory-search.mjs',
       true,
+      true,
     )
   })
 
   it('passes memoryInjected=false when contextMode is off', async () => {
     buildRecallInstruction({ memoryContextMode: 'off' })
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, false)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, false, true)
   })
 
   it('passes memoryInjected=false when legacy memoryContextInjection is false', async () => {
     buildRecallInstruction({ memoryContextInjection: false })
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, false)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, false, true)
   })
 
   it('passes memoryInjected=true when contextMode is memory', async () => {
     buildRecallInstruction({ memoryContextMode: 'memory' })
-    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true)
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, true)
+  })
+})
+
+// ── buildRecallInstruction: write authorization derived from the scoped token ──
+
+describe('buildRecallInstruction write authorization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearAgentTokenStoreForTest()
+  })
+
+  it('passes writeAllowed=false when the scoped token has no explicit:write', async () => {
+    const token = registerAgentToken('agt_ctx', {
+      allowedActions: [...RUNTIME_MEMORY_READ_ACTIONS],
+    })
+
+    buildRecallInstruction({ agentEnv: { A2WAVE_MEMORY_TOKEN: token } })
+
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, false)
+  })
+
+  it('passes writeAllowed=true when the scoped token carries explicit:write', async () => {
+    const token = registerAgentToken('agt_ctx', {
+      allowedActions: [...RUNTIME_MEMORY_READ_ACTIONS, 'explicit:write'],
+    })
+
+    buildRecallInstruction({ agentEnv: { A2WAVE_MEMORY_TOKEN: token } })
+
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, true)
+  })
+
+  it('falls back to writeAllowed=true when no scoped token is present', async () => {
+    buildRecallInstruction({})
+
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, true)
+  })
+
+  it('passes writeAllowed=false for an unknown or expired token', async () => {
+    buildRecallInstruction({ agentEnv: { A2WAVE_MEMORY_TOKEN: 'amt_not_a_real_token' } })
+
+    expect(mockGetRecallBehaviorInstruction).toHaveBeenCalledWith('medium', undefined, true, false)
   })
 })

@@ -293,7 +293,7 @@ describe('getRecallBehaviorInstruction', () => {
     expect(instruction).toContain('覆盖 Cursor / Claude Code / Codex')
     expect(instruction).toContain('仅描述“长期”“稳定”“固定”')
     expect(instruction).toContain('交给 Run 结束后的自动洞察提取')
-    expect(instruction).toContain('若写入失败')
+    expect(instruction).toContain('仅当用户本次明确要求写入记忆')
   })
 
   it('derives write command from the search script directory for non-standard search filenames', async () => {
@@ -324,5 +324,57 @@ describe('getRecallBehaviorInstruction', () => {
     expect(instruction).toContain('只根据已保存主题')
     expect(instruction).toContain('无匹配后立即停止')
     expect(instruction).toContain('不得搜索历史')
+  })
+})
+
+describe('getRecallBehaviorInstruction write authorization', () => {
+  const SCRIPT = '.claude/skills/a2wave-memory/scripts/memory-search.mjs'
+
+  it('tells the Agent this Run has no write permission and suppresses the write recipe', async () => {
+    const instruction = getRecallBehaviorInstruction('medium', SCRIPT, true, false)
+
+    expect(instruction).toContain('本次 Run 未授予记忆写入权限')
+    expect(instruction).toContain('不要尝试调用')
+    // No write recipe may be advertised for a Run that cannot write.
+    expect(instruction).not.toContain('memory-write.mjs')
+    expect(instruction).not.toContain('--remember')
+    expect(instruction).not.toContain('--replace')
+    // Recall must stay fully available.
+    expect(instruction).toContain('<memory-recall-command>')
+    expect(instruction).toContain('<memory-read-topic-command>')
+  })
+
+  it('forbids narrating the memory authorization state to the user', async () => {
+    const instruction = getRecallBehaviorInstruction('medium', SCRIPT, true, false)
+
+    expect(instruction).toContain('不要在回复中提及记忆写入的授权状态')
+    expect(instruction).toContain('交给 Run 结束后的自动洞察提取')
+  })
+
+  it('keeps the full write policy when the Run is authorized to write', async () => {
+    const instruction = getRecallBehaviorInstruction('medium', SCRIPT, true, true)
+
+    expect(instruction).toContain('memory-write.mjs')
+    expect(instruction).toContain('--remember')
+    expect(instruction).toContain('<memory-write-command>')
+    expect(instruction).not.toContain('本次 Run 未授予记忆写入权限')
+  })
+
+  it('reports a failed write only when the user explicitly asked for one', async () => {
+    const instruction = getRecallBehaviorInstruction('medium', SCRIPT, true, true)
+
+    expect(instruction).toContain('仅当用户本次明确要求写入记忆')
+    expect(instruction).toContain('不要在回复中提及记忆写入的授权状态')
+    // The old unconditional duty is what leaked the notice into user-facing replies.
+    expect(instruction).not.toContain(
+      '若写入失败或被拒绝，不要重试或声称已保存，必须明确告知用户记忆没有保存成功',
+    )
+  })
+
+  it('defaults to the authorized wording when the flag is omitted', async () => {
+    const instruction = getRecallBehaviorInstruction('medium', SCRIPT, true)
+
+    expect(instruction).toContain('memory-write.mjs')
+    expect(instruction).not.toContain('本次 Run 未授予记忆写入权限')
   })
 })
