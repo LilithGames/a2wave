@@ -141,6 +141,12 @@ An explicit request to add one durable item uses one server-routed write that at
 topic, deduplicates the item, persists it, and rebuilds the catalog. Update and forget operations
 retain the exact read-modify-replace flow because they must preserve unrelated topic content.
 
+Write authorization is scoped per Run and derived from the user's own words. A Run that carries no
+explicit mutation request receives a read-only memory token, and the injected recall strategy says
+so plainly, so the Agent neither attempts a write the server will refuse nor narrates memory
+bookkeeping to the user. Durable facts learned during such a Run are left to post-Run insight
+extraction. A denied write is reported to the user only when the user asked for that write.
+
 ## Gateway API
 
 A public API entry point for external systems (CI/CD, Feishu Bots, etc.) to invoke published Agents. It is a **peer relationship** with CI systems like Jenkins, not an upstream/downstream dependency. It returns the execution result synchronously after invocation; during execution, the Agent completes side-effect operations (such as code comments, message notifications, etc.) via MCP tools, which are configured in the Agent's system prompt and require no additional orchestration.

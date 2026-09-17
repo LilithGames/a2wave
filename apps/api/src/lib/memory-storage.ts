@@ -12,8 +12,8 @@
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -286,6 +286,7 @@ function buildRecallText(
   recallLevel: MemoryRecallLevel,
   scriptPath: string,
   memoryInjected: boolean,
+  writeAllowed: boolean,
 ): string {
   const cmd = `node ${scriptPath}`
   const recallCmd = `${cmd} --recall`
@@ -310,10 +311,19 @@ function buildRecallText(
 - \`<memory-search-command>\` = \`${cmd}\`
 - \`<memory-recall-command>\` = \`${recallCmd} <query>\`
 - \`<memory-topics-command>\` = \`${topicsCmd}\`
-- \`<memory-read-topic-command>\` = \`${readTopicCmd} <topic-id>\`
-- \`<memory-write-command>\` = \`${writeCmd}\``
+- \`<memory-read-topic-command>\` = \`${readTopicCmd} <topic-id>\`${
+    writeAllowed ? `\n- \`<memory-write-command>\` = \`${writeCmd}\`` : ''
+  }`
 
-  const writePolicy = `## 显式记忆指令
+  const noWritePolicy = `## 本次写入权限
+
+本次 Run 未授予记忆写入权限：用户没有提出明确的记忆写入请求，运行时据此只签发了只读凭据。不要尝试调用任何记忆写入命令，调用必然被服务器拒绝。
+
+任务过程中获得的长期事实交给 Run 结束后的自动洞察提取处理，不需要你在本次对话里写入。这是按设计生效的权限约束，不是故障：不要在回复中提及记忆写入的授权状态或失败原因。
+
+不要写 AGENTS.md、CLAUDE.md、.cursorrules 或任何底层 CLI 原生 memory 文件。`
+
+  const authorizedWritePolicy = `## 显式记忆指令
 
 a2wave 平台记忆覆盖 Cursor / Claude Code / Codex 等底层 CLI 的原生 memory 行为。
 当用户明确要求"记住"、"以后都按"、"remember this"、"save to memory"、"忘记"或"更新记忆"时，必须使用 a2wave-memory skill：
@@ -326,7 +336,9 @@ a2wave 平台记忆覆盖 Cursor / Claude Code / Codex 等底层 CLI 的原生 m
 4. 只有服务器报告 \`legacy_single_file\` 时，才使用兼容流程：读取 MEMORY.md、合并修改后用 \`${writeCmd} MEMORY.md\` 完整写回。
 5. MEMORY.md 的目录与披露指引由服务器重建，不得直接改写。
 
-不要写 AGENTS.md、CLAUDE.md、.cursorrules 或任何底层 CLI 原生 memory 文件。仅明确记忆措辞触发写入；普通偏好表达、任务过程和临时想法不主动写入。运行时会按原始用户请求签发最小权限；若写入失败或被拒绝，不要重试或声称已保存，必须明确告知用户记忆没有保存成功。`
+不要写 AGENTS.md、CLAUDE.md、.cursorrules 或任何底层 CLI 原生 memory 文件。仅明确记忆措辞触发写入；普通偏好表达、任务过程和临时想法不主动写入。运行时会按原始用户请求签发最小权限。仅当用户本次明确要求写入记忆、而写入失败或被拒绝时，不要重试或声称已保存，并明确告知用户记忆没有保存成功；用户没有明确要求写入时，写入被拒属于按设计生效的权限约束，静默跳过即可，不要在回复中提及记忆写入的授权状态或失败原因。`
+
+  const writePolicy = writeAllowed ? authorizedWritePolicy : noWritePolicy
 
   const progressiveRecall = `先利用已注入的 MEMORY.md 摘要与目录形成精确查询，优先只运行一次 \`<memory-recall-command>\`。服务器只披露最相关的一个活跃主题；返回无匹配时，或第一个主题揭示具体交叉依赖时，才运行 \`${topicsCmd}\` 或 \`${readTopicCmd} <topic-id>\`。主题无匹配、内容不足或需要原始时间线证据时，才运行 \`${cmd} "<关键词>"\` 搜索历史记录。当用户把回答限定为“只根据已保存主题”，并要求“不要猜测”或“没有就说没有”时，无匹配后立即停止并如实回答；不得搜索历史、列出其他主题或读取其他主题，除非用户另行明确要求历史证据。`
 
@@ -378,8 +390,9 @@ export function getRecallBehaviorInstruction(
   recallLevel: MemoryRecallLevel = 'medium',
   scriptPath: string = DEFAULT_SEARCH_SCRIPT,
   memoryInjected = true,
+  writeAllowed = true,
 ): string {
-  return buildRecallText(recallLevel, scriptPath, memoryInjected)
+  return buildRecallText(recallLevel, scriptPath, memoryInjected, writeAllowed)
 }
 
 // --- CLAUDE.md legacy override removal ---

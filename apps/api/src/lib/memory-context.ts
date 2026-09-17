@@ -6,8 +6,9 @@
  * 工作日志不在此注入，由 agent 按需通过 a2wave-memory skill 主动搜索。
  * 回想策略行为指令由 buildRecallInstruction 单独返回，注入 <recall_strategy> 标签。
  */
+import { agentTokenAllows } from './agent-memory-token.js'
 import { logger } from './logger.js'
-import { type MemoryRecallLevel, getRecallBehaviorInstruction } from './memory-storage.js'
+import { getRecallBehaviorInstruction, type MemoryRecallLevel } from './memory-storage.js'
 import { getValidatedMemoryMain } from './memory-topics.js'
 
 /** Check if a config value is explicitly set to false (handles string "false" from frontend) */
@@ -21,6 +22,28 @@ const MEMORY_MD = 'MEMORY.md'
 
 const SKILL_SLUG = 'a2wave-memory'
 const SEARCH_SCRIPT = 'scripts/memory-search.mjs'
+
+/**
+ * Whether this Run may actually write memory.
+ *
+ * The runtime issues a least-privilege token from the user's own words, but that
+ * decision used to stay inside the runtime. The Agent therefore acted on the
+ * assumption that it could write, attempted a write, was refused, and — per the
+ * write policy — reported the refusal to the user, leaking memory bookkeeping
+ * into the user-facing reply.
+ *
+ * The token is the single source of truth here; deriving from it rather than
+ * from a parallel flag keeps the injected instruction from drifting out of sync
+ * with the permission that is actually enforced. With no token in play, keep the
+ * historical wording instead of restricting callers that never went through
+ * withScopedMemoryToken.
+ */
+function resolveWriteAllowed(agentConfig: Record<string, unknown>): boolean {
+  const agentEnv = agentConfig.agentEnv as Record<string, string> | undefined
+  const token = agentEnv?.A2WAVE_MEMORY_TOKEN
+  if (!token) return true
+  return agentTokenAllows(token, 'explicit:write')
+}
 
 /** 根据 agentConfig 返回当前档位的回想策略指令文本，供独立注入 <recall_strategy> 标签 */
 export function buildRecallInstruction(agentConfig: Record<string, unknown>): string {
@@ -38,7 +61,12 @@ export function buildRecallInstruction(agentConfig: Record<string, unknown>): st
     isConfigDisabled(agentConfig.memoryContextInjection)
   const memoryInjected = rawMode !== 'off' && !legacyDisabled
 
-  return getRecallBehaviorInstruction(recallLevel, scriptPath, memoryInjected)
+  return getRecallBehaviorInstruction(
+    recallLevel,
+    scriptPath,
+    memoryInjected,
+    resolveWriteAllowed(agentConfig),
+  )
 }
 
 type MemoryContextMode = 'off' | 'memory'
