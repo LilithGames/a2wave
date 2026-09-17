@@ -130,8 +130,27 @@ function makeSelectChain(result: unknown) {
       ),
     }),
   )
+  const leftJoinWhere = vi.fn().mockReturnValue(
+    asyncQuery({
+      orderBy: vi.fn().mockReturnValue(
+        asyncQuery({
+          all: vi.fn().mockReturnValue(Array.isArray(result) ? result : result ? [result] : []),
+          limit: vi.fn().mockReturnValue({
+            offset: vi.fn().mockReturnValue(
+              asyncQuery({
+                all: vi
+                  .fn()
+                  .mockReturnValue(Array.isArray(result) ? result : result ? [result] : []),
+              }),
+            ),
+          }),
+        }),
+      ),
+    }),
+  )
 
   return {
+    leftJoinWhere,
     from: vi.fn().mockReturnValue(
       asyncQuery({
         where: vi.fn().mockReturnValue(
@@ -143,21 +162,7 @@ function makeSelectChain(result: unknown) {
         ),
         leftJoin: vi.fn().mockReturnValue(
           asyncQuery({
-            where: vi.fn().mockReturnValue(
-              asyncQuery({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockReturnValue(
-                      asyncQuery({
-                        all: vi
-                          .fn()
-                          .mockReturnValue(Array.isArray(result) ? result : result ? [result] : []),
-                      }),
-                    ),
-                  }),
-                }),
-              }),
-            ),
+            where: leftJoinWhere,
           }),
         ),
         orderBy: orderByFn,
@@ -263,12 +268,10 @@ async function selectByBoundId(fixture: {
 }
 
 import { db } from '../../db/client.js'
-import { engineRegistry } from '../../engine/index.js'
 import { scheduleNext } from '../../engine/task-queue.js'
 import { buildAgentConfig } from '../../lib/agent-helpers.js'
 import { logAudit } from '../../lib/audit.js'
 import { executeChatRun } from '../../lib/execute-chat-run.js'
-import { createId } from '../../lib/id.js'
 import { getCurrentUserId } from '../../lib/owner-filter.js'
 
 import { asyncQuery } from '../../test/async-query.js'
@@ -302,121 +305,6 @@ const SAMPLE_RUN = {
   createdAt: new Date('2025-01-01'),
   updatedAt: new Date('2025-01-01'),
 }
-
-describe('GET /runs', () => {
-  let app: Hono
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    mockTryAcquireSlot.mockReturnValue('acquired')
-    const mod = await import('../runs.js')
-    app = new Hono().route('/runs', mod.default)
-  })
-
-  it('returns paginated runs list', async () => {
-    const countChain = {
-      from: vi.fn().mockReturnValue(
-        asyncQuery({
-          where: vi.fn().mockReturnValue(
-            asyncQuery({
-              get: vi.fn().mockReturnValue({ count: 1 }),
-            }),
-          ),
-        }),
-      ),
-    }
-
-    const dataChain = {
-      from: vi.fn().mockReturnValue(
-        asyncQuery({
-          leftJoin: vi.fn().mockReturnValue(
-            asyncQuery({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockReturnValue(
-                      asyncQuery({
-                        all: vi
-                          .fn()
-                          .mockReturnValue([
-                            { ...SAMPLE_RUN, agentName: 'Agent', agentIcon: '🤖' },
-                          ]),
-                      }),
-                    ),
-                  }),
-                }),
-              }),
-            }),
-          ),
-        }),
-      ),
-    }
-
-    mockDb.select.mockReturnValueOnce(countChain).mockReturnValueOnce(dataChain)
-
-    const res = await app.request('/runs')
-    expect(res.status).toBe(200)
-
-    const json = (await res.json()) as Json
-    expect(json.data).toBeDefined()
-    expect(json.pagination).toBeDefined()
-
-    const pagination = json.pagination as Json
-    expect(pagination.total).toBe(1)
-    expect(pagination.page).toBe(1)
-    expect(mockDb.select).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ triggerAgentName: expect.anything() }),
-    )
-  })
-
-  it('respects page and pageSize query params', async () => {
-    const countChain = {
-      from: vi.fn().mockReturnValue(
-        asyncQuery({
-          where: vi.fn().mockReturnValue(
-            asyncQuery({
-              get: vi.fn().mockReturnValue({ count: 50 }),
-            }),
-          ),
-        }),
-      ),
-    }
-
-    const dataChain = {
-      from: vi.fn().mockReturnValue(
-        asyncQuery({
-          leftJoin: vi.fn().mockReturnValue(
-            asyncQuery({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockReturnValue(
-                      asyncQuery({
-                        all: vi.fn().mockReturnValue([]),
-                      }),
-                    ),
-                  }),
-                }),
-              }),
-            }),
-          ),
-        }),
-      ),
-    }
-
-    mockDb.select.mockReturnValueOnce(countChain).mockReturnValueOnce(dataChain)
-
-    const res = await app.request('/runs?page=2&pageSize=10')
-    expect(res.status).toBe(200)
-
-    const json = (await res.json()) as Json
-    const pagination = json.pagination as Json
-    expect(pagination.page).toBe(2)
-    expect(pagination.pageSize).toBe(10)
-    expect(pagination.totalPages).toBe(5)
-  })
-})
 
 describe('GET /runs/leaderboard', () => {
   let app: Hono
@@ -2552,6 +2440,31 @@ describe('read routes apply the visibility filter', () => {
     const res = await app.request('/runs')
     expect(res.status).toBe(200)
     await assertEveryWhereIsScoped(wheres, 2)
+  })
+
+  it('GET /runs/sessions scopes the aggregate before grouping', async () => {
+    const { chain, wheres } = makeCapturingChain([])
+    mockDb.select.mockReturnValue(chain)
+
+    const res = await app.request('/runs/sessions')
+    expect(res.status).toBe(200)
+    await assertEveryWhereIsScoped(wheres, 1)
+  })
+
+  it('GET /runs/:id/session scopes both the anchor and conversation members', async () => {
+    const anchor = makeCapturingChain({
+      id: 'run_1',
+      conversationId: 'conversation_1',
+      initiatorAgentId: 'agt_1',
+      triggerSource: 'oauth',
+    })
+    const members = makeCapturingChain([])
+    mockDb.select.mockReturnValueOnce(anchor.chain).mockReturnValueOnce(members.chain)
+
+    const res = await app.request('/runs/run_1/session')
+    expect(res.status).toBe(404)
+    await assertEveryWhereIsScoped(anchor.wheres, 1)
+    await assertEveryWhereIsScoped(members.wheres, 1)
   })
 
   it('GET /runs/stats scopes every aggregate', async () => {

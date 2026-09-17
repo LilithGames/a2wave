@@ -9,12 +9,45 @@ interface RoledMessage {
   role: string
 }
 
-/** 从有序 steps 抽出各自的 attachments（可能为空）。 */
-export function extractStepAttachments(steps: { input: unknown }[]): (unknown[] | undefined)[] {
+export interface PublicHistoryAttachmentRef extends Record<string, unknown> {
+  token?: string
+  name: string
+  mimeType: string
+  size?: number
+}
+
+function toPublicHistoryAttachment(value: unknown): PublicHistoryAttachmentRef | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  if (typeof raw.name !== 'string' || typeof raw.mimeType !== 'string') return undefined
+  if (raw.token !== undefined && typeof raw.token !== 'string') return undefined
+  if (
+    raw.size !== undefined &&
+    (typeof raw.size !== 'number' || !Number.isFinite(raw.size) || raw.size < 0)
+  ) {
+    return undefined
+  }
+  return {
+    name: raw.name,
+    mimeType: raw.mimeType,
+    ...(typeof raw.token === 'string' ? { token: raw.token } : {}),
+    ...(typeof raw.size === 'number' ? { size: raw.size } : {}),
+  }
+}
+
+/** 从有序 steps 抽出各自的公开 attachment records（可能为空）。 */
+export function extractStepAttachments(
+  steps: { input: unknown }[],
+): (PublicHistoryAttachmentRef[] | undefined)[] {
   return steps.map((s) => {
     const input = s.input as { attachments?: unknown } | null
     const a = input?.attachments
-    return Array.isArray(a) && a.length > 0 ? a : undefined
+    if (!Array.isArray(a)) return undefined
+    const records = a.flatMap((value) => {
+      const attachment = toPublicHistoryAttachment(value)
+      return attachment ? [attachment] : []
+    })
+    return records.length > 0 ? records : undefined
   })
 }
 
@@ -24,8 +57,8 @@ export function extractStepAttachments(steps: { input: unknown }[]): (unknown[] 
  */
 export function pairAttachmentsToMessages(
   messages: RoledMessage[],
-  stepAttachments: (unknown[] | undefined)[],
-): (unknown[] | undefined)[] {
+  stepAttachments: (PublicHistoryAttachmentRef[] | undefined)[],
+): (PublicHistoryAttachmentRef[] | undefined)[] {
   let userIdx = 0
   return messages.map((m) => {
     if (m.role !== 'user') return undefined

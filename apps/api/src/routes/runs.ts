@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { createRunInput } from '@a2wave/shared'
+import { createRunInput, type RunSessionDetail, type RunSessionSummary } from '@a2wave/shared'
 import {
   and,
   asc,
@@ -10,7 +10,9 @@ import {
   gt,
   gte,
   inArray,
+  isNull,
   lte,
+  or,
   type SQL,
   sql,
 } from 'drizzle-orm'
@@ -53,6 +55,7 @@ import {
   claimRunForRetry,
   restoreFailedRun,
 } from '../lib/run-retry-in-place.js'
+import { runSessionActivityCondition } from '../lib/run-session-sql.js'
 import { activateScmWorkload, withScmWorkloadAdmission } from '../lib/scm-workload-lifecycle.js'
 import { streamFileDownload } from '../lib/stream-file-download.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
@@ -62,6 +65,137 @@ class RunAdmissionLostError extends Error {}
 class RunAtCapacityError extends Error {}
 
 const app = new Hono()
+
+const ACTIVE_RUN_STATUSES = new Set(['pending', 'queued', 'running'])
+const ACTIVE_STATUS_PRIORITY = { pending: 1, queued: 2, running: 3 } as const
+
+const publicRunWithAgentSelect = {
+  id: runs.id,
+  conversationId: runs.conversationId,
+  intent: runs.intent,
+  status: runs.status,
+  result: runs.result,
+  triggerSource: runs.triggerSource,
+  triggerUserName: runs.triggerUserName,
+  triggerAgentName: runs.triggerAgentName,
+  initiatorAgentId: runs.initiatorAgentId,
+  inputTokens: runs.inputTokens,
+  outputTokens: runs.outputTokens,
+  reasoningTokens: runs.reasoningTokens,
+  cacheReadTokens: runs.cacheReadTokens,
+  cacheWriteTokens: runs.cacheWriteTokens,
+  createdAt: runs.createdAt,
+  updatedAt: runs.updatedAt,
+  agentName: agents.name,
+  agentIcon: agents.icon,
+}
+
+type PublicRunWithAgent = {
+  [K in keyof typeof publicRunWithAgentSelect]: (typeof publicRunWithAgentSelect)[K]['_']['data']
+}
+
+type SessionAggregate = {
+  groupKey: string
+  conversationId: string | null
+  initiatorAgentId: string | null
+  triggerSource: (typeof runs.triggerSource)['_']['data']
+  runCount: number
+  failedCount: number
+  createdAt: Date
+  updatedAt: Date
+  total: number
+}
+
+type SessionStateRun = Pick<
+  PublicRunWithAgent,
+  | 'id'
+  | 'conversationId'
+  | 'initiatorAgentId'
+  | 'triggerSource'
+  | 'status'
+  | 'createdAt'
+  | 'updatedAt'
+>
+
+const effectiveConversationId = sql<string>`COALESCE(${runs.conversationId}, ${runs.id})`
+
+function compareRunRecency(a: PublicRunWithAgent, b: PublicRunWithAgent): number {
+  return b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id)
+}
+
+function sessionMemberCondition(group: SessionAggregate): SQL<unknown> {
+  return and(
+    group.initiatorAgentId
+      ? eq(runs.initiatorAgentId, group.initiatorAgentId)
+      : isNull(runs.initiatorAgentId),
+    group.triggerSource ? eq(runs.triggerSource, group.triggerSource) : isNull(runs.triggerSource),
+    eq(effectiveConversationId, group.groupKey),
+  ) as SQL<unknown>
+}
+
+function sessionIdentity(
+  run: Pick<PublicRunWithAgent, 'id' | 'conversationId' | 'initiatorAgentId' | 'triggerSource'>,
+): string {
+  return `session\0${run.initiatorAgentId ?? ''}\0${run.triggerSource ?? ''}\0${run.conversationId ?? run.id}`
+}
+
+function aggregateIdentity(group: SessionAggregate): string {
+  return `session\0${group.initiatorAgentId ?? ''}\0${group.triggerSource ?? ''}\0${group.groupKey}`
+}
+
+function findActiveRun<T extends Pick<PublicRunWithAgent, 'id' | 'status' | 'updatedAt'>>(
+  members: T[],
+): T | undefined {
+  return members
+    .filter((run) => ACTIVE_RUN_STATUSES.has(run.status))
+    .sort((a, b) => {
+      const statusDifference =
+        ACTIVE_STATUS_PRIORITY[b.status as keyof typeof ACTIVE_STATUS_PRIORITY] -
+        ACTIVE_STATUS_PRIORITY[a.status as keyof typeof ACTIVE_STATUS_PRIORITY]
+      return (
+        statusDifference ||
+        b.updatedAt.getTime() - a.updatedAt.getTime() ||
+        b.id.localeCompare(a.id)
+      )
+    })[0]
+}
+
+function buildSessionSummary(
+  conversationId: string | null,
+  members: PublicRunWithAgent[],
+  turnCounts: Map<string, number>,
+  bounds?: { createdAt: Date; updatedAt: Date },
+): RunSessionSummary | undefined {
+  const byRecency = [...members].sort(compareRunRecency)
+  const latestRun = byRecency[0]
+  if (!latestRun) return undefined
+  const failedRuns = members
+    .filter((run) => run.status === 'failed')
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+  const activeRun = findActiveRun(byRecency)
+  const createdAt =
+    bounds?.createdAt ?? new Date(Math.min(...members.map((run) => run.createdAt.getTime())))
+  const updatedAt =
+    bounds?.updatedAt ?? new Date(Math.max(...members.map((run) => run.updatedAt.getTime())))
+
+  return {
+    id: latestRun.id,
+    conversationId,
+    latestRun,
+    status: activeRun?.status ?? latestRun.status,
+    runCount: members.length,
+    // A Run is reserved before its first chat_message is persisted. Count it
+    // as one turn so a newly active request never flashes as an empty session;
+    // chat_app/debug Runs with multiple user messages still report the real count.
+    turnCount: members.reduce((total, run) => total + Math.max(1, turnCounts.get(run.id) ?? 0), 0),
+    failedCount: failedRuns.length,
+    failedRunIds: failedRuns.map((run) => run.id),
+    hasActiveRun: !!activeRun,
+    activeRunId: activeRun?.id ?? null,
+    createdAt,
+    updatedAt,
+  }
+}
 
 /**
  * May the caller act destructively on this run (cancel it, or execute it and
@@ -363,8 +497,8 @@ app.get('/leaderboard', async (c) => {
 app.get('/', async (c) => {
   const { agentId, startDate, endDate, page = '1', pageSize = '20' } = c.req.query()
 
-  const pageNum = Math.max(1, Number.parseInt(page) || 1)
-  const limit = Math.min(100, Math.max(1, Number.parseInt(pageSize) || 20))
+  const pageNum = Math.max(1, Number.parseInt(page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, Number.parseInt(pageSize, 10) || 20))
   const offset = (pageNum - 1) * limit
 
   // 构建查询条件
@@ -424,6 +558,284 @@ app.get('/', async (c) => {
       totalPages: Math.ceil(total / limit),
     },
   })
+})
+
+/** GET /runs/sessions - list Runs grouped by their persisted logical AI/CLI conversation. */
+app.get('/sessions', async (c) => {
+  const { agentId, startDate, endDate, page = '1', pageSize = '20' } = c.req.query()
+  const pageNum = Math.max(1, Number.parseInt(page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, Number.parseInt(pageSize, 10) || 20))
+  const offset = (pageNum - 1) * limit
+
+  const conditions: SQL<unknown>[] = []
+  const visibilityFilter = getRunReadFilter(c)
+  if (visibilityFilter) conditions.push(visibilityFilter)
+  if (agentId) conditions.push(eq(runs.initiatorAgentId, agentId))
+  const sessionActivityConditions: SQL<unknown>[] = []
+  if (startDate) {
+    const value = new Date(startDate)
+    if (Number.isNaN(value.getTime())) return c.json({ error: 'Invalid startDate' }, 400)
+    sessionActivityConditions.push(runSessionActivityCondition('start', value))
+  }
+  if (endDate) {
+    const value = new Date(endDate)
+    if (Number.isNaN(value.getTime())) return c.json({ error: 'Invalid endDate' }, 400)
+    sessionActivityConditions.push(runSessionActivityCondition('end', value))
+  }
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+  const havingClause =
+    sessionActivityConditions.length > 0 ? and(...sessionActivityConditions) : undefined
+
+  // `conversationId` is allocated at ingress and changes after /new. Legacy and
+  // non-conversational Runs keep NULL, so COALESCE makes each of them a singleton.
+  // Agent and source remain in the partition: Provider session ids are not globally
+  // unique, and grouping them alone can join two unrelated callers' transcripts.
+  const firstCreatedAt = sql<Date>`MIN(${runs.createdAt})`.mapWith(runs.createdAt)
+  const lastUpdatedAt = sql<Date>`MAX(${runs.updatedAt})`.mapWith(runs.updatedAt)
+  const loadAggregatePage = async (pageLimit: number, pageOffset: number) =>
+    (await db
+      .select({
+        groupKey: effectiveConversationId,
+        conversationId: sql<string | null>`MAX(${runs.conversationId})`,
+        initiatorAgentId: runs.initiatorAgentId,
+        triggerSource: runs.triggerSource,
+        runCount: count(),
+        failedCount: sql<number>`SUM(CASE WHEN ${runs.status} = 'failed' THEN 1 ELSE 0 END)`,
+        createdAt: firstCreatedAt,
+        updatedAt: lastUpdatedAt,
+        // Windowing happens after GROUP BY, so this is the number of sessions,
+        // not the number of underlying Runs. Both supported dialects implement it.
+        total: sql<number>`COUNT(*) OVER ()`,
+      })
+      .from(runs)
+      .where(whereClause)
+      .groupBy(runs.initiatorAgentId, runs.triggerSource, effectiveConversationId)
+      .having(havingClause)
+      .orderBy(
+        desc(lastUpdatedAt),
+        desc(sql<string>`COALESCE(${runs.initiatorAgentId}, '')`),
+        desc(sql<string>`COALESCE(${runs.triggerSource}, '')`),
+        desc(effectiveConversationId),
+      )
+      .limit(pageLimit)
+      .offset(pageOffset)) as SessionAggregate[]
+
+  const aggregateRows = await loadAggregatePage(limit, offset)
+
+  if (aggregateRows.length === 0) {
+    // A window count has no row to attach to when the requested page is past
+    // the end. Probe the first group so total/totalPages remain truthful.
+    const total = offset > 0 ? Number((await loadAggregatePage(1, 0))[0]?.total ?? 0) : 0
+    return c.json({
+      data: [],
+      pagination: {
+        total,
+        page: pageNum,
+        pageSize: limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    })
+  }
+
+  const selectedGroups = or(...aggregateRows.map(sessionMemberCondition))
+  const representativeConditions = or(
+    ...aggregateRows.map((group) =>
+      // The aggregate and representative reads are intentionally separate for
+      // portability. A Run may finish between them and advance updatedAt; use
+      // the aggregate timestamp as a lower bound so the session cannot vanish
+      // from this response during that race. The recency sort below still picks
+      // exactly one current representative per selected session.
+      and(sessionMemberCondition(group), gte(runs.updatedAt, group.updatedAt)),
+    ),
+  )
+  const representativeWhere = visibilityFilter
+    ? and(visibilityFilter, representativeConditions)
+    : representativeConditions
+  const representativeCandidates = (await db
+    .select(publicRunWithAgentSelect)
+    .from(runs)
+    .leftJoin(agents, eq(runs.initiatorAgentId, agents.id))
+    .where(representativeWhere)
+    .orderBy(desc(runs.updatedAt), desc(runs.id))) as PublicRunWithAgent[]
+
+  // The list only needs failed ids and active state in addition to the latest
+  // representative. Completed history is intentionally not loaded here.
+  const stateWhere = and(
+    selectedGroups,
+    inArray(runs.status, ['failed', 'pending', 'queued', 'running']),
+  )
+  const visibleStateWhere = visibilityFilter ? and(visibilityFilter, stateWhere) : stateWhere
+  const stateRuns = (await db
+    .select({
+      id: runs.id,
+      conversationId: runs.conversationId,
+      initiatorAgentId: runs.initiatorAgentId,
+      triggerSource: runs.triggerSource,
+      status: runs.status,
+      createdAt: runs.createdAt,
+      updatedAt: runs.updatedAt,
+    })
+    .from(runs)
+    .where(visibleStateWhere)
+    .orderBy(asc(runs.createdAt), asc(runs.id))) as SessionStateRun[]
+
+  const singletonIds = aggregateRows
+    .filter((group) => group.conversationId === null)
+    .map((group) => group.groupKey)
+  const turnRows =
+    singletonIds.length > 0
+      ? await db
+          .select({ runId: chatMessages.runId, count: count() })
+          .from(chatMessages)
+          .where(and(inArray(chatMessages.runId, singletonIds), eq(chatMessages.role, 'user')))
+          .groupBy(chatMessages.runId)
+      : []
+  const turnCounts = new Map(turnRows.map((row) => [row.runId, row.count]))
+  const latestBySession = new Map<string, PublicRunWithAgent>()
+  for (const candidate of representativeCandidates) {
+    const key = sessionIdentity(candidate)
+    const current = latestBySession.get(key)
+    if (!current || compareRunRecency(candidate, current) < 0) {
+      latestBySession.set(key, candidate)
+    }
+  }
+  const stateBySession = new Map<string, SessionStateRun[]>()
+  for (const stateRun of stateRuns) {
+    const key = sessionIdentity(stateRun)
+    const current = stateBySession.get(key)
+    if (current) current.push(stateRun)
+    else stateBySession.set(key, [stateRun])
+  }
+
+  const data = aggregateRows.flatMap((group) => {
+    const key = aggregateIdentity(group)
+    const latestRun = latestBySession.get(key)
+    if (!latestRun) return []
+    const stateMembers = stateBySession.get(key) ?? []
+    const failedRuns = stateMembers.filter((run) => run.status === 'failed')
+    const activeRun = findActiveRun(stateMembers)
+    const turnCount =
+      group.conversationId === null
+        ? Math.max(1, turnCounts.get(group.groupKey) ?? 0)
+        : Number(group.runCount)
+    const summary: RunSessionSummary = {
+      id: latestRun.id,
+      conversationId: group.conversationId,
+      latestRun,
+      status: activeRun?.status ?? latestRun.status,
+      runCount: Number(group.runCount),
+      turnCount,
+      failedCount: failedRuns.length,
+      failedRunIds: failedRuns.map((run) => run.id),
+      hasActiveRun: !!activeRun,
+      activeRunId: activeRun?.id ?? null,
+      createdAt: group.createdAt,
+      updatedAt: group.updatedAt,
+    }
+    return [summary]
+  })
+  const total = Number(aggregateRows[0]?.total ?? 0)
+  return c.json({
+    data,
+    pagination: {
+      total,
+      page: pageNum,
+      pageSize: limit,
+      totalPages: Math.ceil(total / limit),
+    },
+  })
+})
+
+/** GET /runs/:id/session - complete retained transcript, partitioned by actionable Run. */
+app.get('/:id/session', async (c) => {
+  const { id } = c.req.param()
+  const visibilityFilter = getRunReadFilter(c)
+  const anchorWhere = visibilityFilter ? and(eq(runs.id, id), visibilityFilter) : eq(runs.id, id)
+  const anchor = (
+    await db
+      .select({
+        id: runs.id,
+        conversationId: runs.conversationId,
+        initiatorAgentId: runs.initiatorAgentId,
+        triggerSource: runs.triggerSource,
+      })
+      .from(runs)
+      .where(anchorWhere)
+      .limit(1)
+  )[0]
+  if (!anchor) return c.json({ error: 'Run not found' }, 404)
+
+  const anchorGroupKey = anchor.conversationId ?? anchor.id
+  const sameSession = and(
+    anchor.initiatorAgentId
+      ? eq(runs.initiatorAgentId, anchor.initiatorAgentId)
+      : isNull(runs.initiatorAgentId),
+    anchor.triggerSource
+      ? eq(runs.triggerSource, anchor.triggerSource)
+      : isNull(runs.triggerSource),
+    eq(effectiveConversationId, anchorGroupKey),
+  ) as SQL<unknown>
+  // Deliberately repeat the visibility predicate on the member query. Permission
+  // may change between the anchor read and this read, and an anchor must never
+  // become a capability URL for rows the caller can no longer see.
+  const memberWhere = visibilityFilter ? and(visibilityFilter, sameSession) : sameSession
+  const members = (await db
+    .select(publicRunWithAgentSelect)
+    .from(runs)
+    .leftJoin(agents, eq(runs.initiatorAgentId, agents.id))
+    .where(memberWhere)
+    .orderBy(asc(runs.createdAt), asc(runs.id))) as PublicRunWithAgent[]
+  if (members.length === 0) return c.json({ error: 'Run not found' }, 404)
+
+  const runIds = members.map((run) => run.id)
+  const steps = await db
+    // Only attachment pairing needs step identity/order/input. Do not hydrate
+    // output.log or other potentially large execution fields into memory.
+    .select({ runId: runSteps.runId, order: runSteps.order, input: runSteps.input })
+    .from(runSteps)
+    .where(inArray(runSteps.runId, runIds))
+    .orderBy(asc(runSteps.runId), asc(runSteps.order))
+  const messages = await db
+    .select()
+    .from(chatMessages)
+    .where(inArray(chatMessages.runId, runIds))
+    .orderBy(asc(chatMessages.createdAt), asc(chatMessages.id))
+
+  const turnCounts = new Map<string, number>()
+  const stepsByRun = new Map<string, typeof steps>()
+  for (const step of steps) {
+    const current = stepsByRun.get(step.runId)
+    if (current) current.push(step)
+    else stepsByRun.set(step.runId, [step])
+  }
+  const messagesByRun = new Map<string, typeof messages>()
+  for (const message of messages) {
+    const current = messagesByRun.get(message.runId)
+    if (current) current.push(message)
+    else messagesByRun.set(message.runId, [message])
+    if (message.role === 'user') {
+      turnCounts.set(message.runId, (turnCounts.get(message.runId) ?? 0) + 1)
+    }
+  }
+  const conversationId = members.find((run) => run.conversationId !== null)?.conversationId ?? null
+  const summary = buildSessionSummary(conversationId, members, turnCounts)
+  if (!summary) return c.json({ error: 'Run not found' }, 404)
+
+  const data = members.map((run) => {
+    const runStepsForTurn = stepsByRun.get(run.id) ?? []
+    const runMessages = messagesByRun.get(run.id) ?? []
+    const paired = pairAttachmentsToMessages(runMessages, extractStepAttachments(runStepsForTurn))
+    return {
+      run,
+      messages: runMessages.map((message, index) =>
+        paired[index] ? { ...message, attachments: paired[index] } : message,
+      ),
+      hasFullLog: runLogFileExists(run.id),
+    }
+  })
+
+  const detail: RunSessionDetail = { summary, runs: data }
+  return c.json({ data: detail })
 })
 
 /** GET /runs/:id - 获取 Run 详情（含步骤） */

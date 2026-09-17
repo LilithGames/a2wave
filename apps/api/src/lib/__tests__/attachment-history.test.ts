@@ -15,6 +15,47 @@ describe('extractStepAttachments', () => {
       ]),
     ).toEqual([refA, undefined, undefined, undefined])
   })
+
+  it('drops malformed non-record attachment values from persisted step input', () => {
+    expect(
+      extractStepAttachments([
+        {
+          input: {
+            attachments: [
+              null,
+              'secret',
+              ['nested'],
+              { name: 'incomplete.pdf' },
+              { name: 'safe.pdf', mimeType: 'application/pdf' },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([[{ name: 'safe.pdf', mimeType: 'application/pdf' }]])
+  })
+
+  it('returns only public history fields and strips local paths and signed URIs', () => {
+    expect(
+      extractStepAttachments([
+        {
+          input: {
+            attachments: [
+              {
+                token: 'att_1',
+                name: 'safe.pdf',
+                mimeType: 'application/pdf',
+                size: 42,
+                path: '/private/runtime/secret.pdf',
+                uri: 'https://example.test/file?signature=secret',
+                isImage: false,
+                message: 'injected prompt',
+              },
+            ],
+          },
+        },
+      ]),
+    ).toEqual([[{ token: 'att_1', name: 'safe.pdf', mimeType: 'application/pdf', size: 42 }]])
+  })
 })
 
 describe('pairAttachmentsToMessages', () => {

@@ -833,6 +833,8 @@ export const runs = sqliteTable(
     }),
     /** Session ID within the trigger source (e.g. Feishu thread_id / p2p chat_id / group message_id) */
     triggerSessionId: text('trigger_session_id'),
+    /** Stable logical AI/CLI conversation. A new value is allocated after an explicit session reset. */
+    conversationId: text('conversation_id'),
     /** Native chat source event id for durable redelivery deduplication. */
     triggerEventId: text('trigger_event_id'),
     /** Actual working directory (worktree path or localPath) */
@@ -899,6 +901,13 @@ export const runs = sqliteTable(
     initiatorAgentSessionStatusCreatedAtIdx: index(
       'runs_agent_trigger_session_status_created_at_idx',
     ).on(table.initiatorAgentId, table.triggerSessionId, table.status, table.createdAt),
+    conversationListIdx: index('runs_conversation_list_idx').on(
+      table.initiatorAgentId,
+      table.triggerSource,
+      table.conversationId,
+      table.updatedAt,
+      table.id,
+    ),
     idempotencyKeyUnique: uniqueIndex('runs_idempotency_key_unique')
       .on(table.initiatorAgentId, table.triggerSource, table.triggerSessionId)
       .where(

@@ -1,6 +1,6 @@
 # Runs
 
-A Run is a single execution record of an Agent. Regardless of the trigger method, every execution generates a Run, viewable in "Runs" — this is the foundation of enterprise-grade auditability.
+A Run is an Agent execution and audit container. Most trigger requests and external-chat turns create a new Run, while continued conversations from the in-product `chat_app` and `debug` surfaces can reuse the same Run for multiple turns. Runs remain the independently actionable records behind status, logs, retries, cancellation, and enterprise auditability.
 
 ## State machine
 
@@ -32,11 +32,13 @@ The Agent in the row title is the **Agent that executed this Run**. The Agent in
 
 ## Viewing runs
 
-- **Run list**: browse all Runs, their sources, and statuses.
-- **Run details**: view this execution's input intent, output result, chat log, and run log; multi-step tasks include Run Steps.
+- **Conversation list**: the main **Runs** page and each Agent's **Runs** tab paginate by logical AI/CLI conversation, with one row per conversation rather than one row per Run. Each row shows the latest question, number of turns, number of failed Runs, aggregate status, and last activity. An active Run takes precedence in the aggregate status; otherwise the latest Run's status is shown.
+- **Conversation details**: click a row to read the complete retained conversation in chronological order. Each underlying Run remains a separate execution block inside the drawer (a reused `chat_app` or `debug` Run can itself contain multiple turns), and can still be opened in the existing Run details view for its chat output, Run Steps, execution log, retry/rerun, or cancellation controls.
+- **Conversation boundaries**: `/new` and explicit in-product reset start a separate conversation. Feishu and QQ also start a separate conversation after their session timeout, so later messages do not merge into an expired conversation.
+- **Run links**: an existing link containing `?runId=...` still opens the conversation that contains that Run and highlights the linked round.
 - **Statistics overview**: counts, success rate, average duration, etc.
 
-Run-list pagination is synced to the address bar (e.g. `/runs?page=2`), so refreshing or sharing the link returns you to the same page. The full-log viewer also records `logPage` in the current link while paging, and clears it automatically after the viewer is closed.
+Conversation-list pagination is synced to the address bar (e.g. `/runs?page=2`), so refreshing or sharing the link returns you to the same page. The full-log viewer also records `logPage` in the current link while paging, and clears it automatically after the viewer is closed.
 
 ## Who can see which runs
 
@@ -105,7 +107,7 @@ To keep accumulated run records from slowing down the database, the platform cle
 
 - **Rerun** (completed / cancelled): executes again as a **new** Run row; the original and its result are kept intact.
 - **Retry** (failed): re-executes **on the original row** — no second row. The status goes from failed back to queued/running, and on success the row simply reads completed, so the Runs list never fills with pairs of identical intents and "which failures are still open" stays readable. The failed attempt is not erased: its step, output and logs stay where they were; only the run's final outcome now reflects the latest attempt.
-- **Retry all failed**: next to the refresh button on the Agent's "Runs" tab. After you confirm, every `failed` Run **on the page you are looking at** is retried in place, oldest first; the button is disabled when the page holds no failed Run. This is the bulk recovery path after a one-off outage such as an expired Provider credential — runs already submitted are remembered, so a list that has not refreshed yet cannot replay them twice.
+- **Retry all failed**: next to the refresh button on the Agent's "Runs" tab. After you confirm, every `failed` Run contained in the conversations **on the page you are looking at** is retried in place, one at a time; the button is disabled when those conversations contain no failed Run. This is the bulk recovery path after a one-off outage such as an expired Provider credential — runs already submitted are remembered, so a list that has not refreshed yet cannot replay them twice.
 - **Cancel**: `POST /api/runs/:id/cancel` (or the gateway cancel endpoint); **only `running` / `queued` can be cancelled**.
 
 > [!WARNING]

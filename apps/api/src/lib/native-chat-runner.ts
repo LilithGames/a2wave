@@ -5,7 +5,7 @@ import type {
   RunChannelContextSlack,
   RunChannelContextTelegram,
 } from '@a2wave/shared'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runs } from '../db/schema.js'
 import { completeExecutionLease } from '../engine/execution-lease-registry.js'
@@ -14,11 +14,9 @@ import { taskQueueDb } from '../engine/task-queue-db.js'
 import { executeChatRun } from './execute-chat-run.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
-import type {
-  NativeChatAttachment,
-  PersistedNativeChatAttachment,
-} from './native-chat-attachments.js'
+import type { PersistedNativeChatAttachment } from './native-chat-attachments.js'
 import type { NativeChatSource } from './native-chat-channel.js'
+import { resolveQQOfficialSessionTimeoutMs } from './native-chat-session.js'
 
 export type { NativeChatSource } from './native-chat-channel.js'
 export interface ReserveNativeChatRunInput {
@@ -83,7 +81,7 @@ export async function preflightNativeChatRun(
 ): Promise<PreflightNativeChatRunResult> {
   const [agent] = await db.select().from(agents).where(eq(agents.id, input.agentId)).limit(1)
   const channels = agent?.publishChannels ?? []
-  if (!agent || agent.publishStatus !== 'published' || !channels.includes(input.source)) {
+  if (agent?.publishStatus !== 'published' || !channels.includes(input.source)) {
     return { status: 'ignored' }
   }
 
@@ -145,11 +143,12 @@ export async function reserveNativeChatRun(
 ): Promise<ReserveNativeChatRunResult> {
   const [agent] = await db.select().from(agents).where(eq(agents.id, input.agentId)).limit(1)
   const channels = agent?.publishChannels ?? []
-  if (!agent || agent.publishStatus !== 'published' || !channels.includes(input.source)) {
+  if (agent?.publishStatus !== 'published' || !channels.includes(input.source)) {
     return { status: 'ignored' }
   }
 
   const runId = createId('run')
+  const conversationId = await resolveNativeChatConversationId(input, runId)
   try {
     await db.insert(runs).values({
       id: runId,
@@ -160,6 +159,7 @@ export async function reserveNativeChatRun(
       triggerSource: input.source,
       triggerSessionId: input.conversationId,
       triggerEventId: input.eventId,
+      conversationId,
       triggerUserName: input.displayName ?? null,
       executionMetadata: {
         nativeChatContext: { channel: input.channel },
@@ -235,4 +235,48 @@ export async function reserveNativeChatRun(
     ),
   )
   return { status: 'started', runId }
+}
+
+/**
+ * Resolve the durable UI conversation before reserving the new turn.
+ *
+ * Transport session ids are stable across turns, while conversation ids mark
+ * actual provider-session generations. A reset or QQ inactivity expiry starts
+ * a generation at this Run; otherwise the latest turn's generation is copied.
+ * Legacy rows predate conversation_id, so their Run id is the stable fallback.
+ */
+async function resolveNativeChatConversationId(
+  input: ReserveNativeChatRunInput,
+  runId: string,
+): Promise<string> {
+  if (input.resetSession) return runId
+
+  const previous = (
+    await db
+      .select({ id: runs.id, conversationId: runs.conversationId, createdAt: runs.createdAt })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.initiatorAgentId, input.agentId),
+          eq(runs.triggerSource, input.source),
+          eq(runs.triggerSessionId, input.conversationId),
+        ),
+      )
+      .orderBy(desc(runs.createdAt))
+      .limit(1)
+  )[0]
+  if (!previous) return runId
+
+  if (input.source === 'qq_official') {
+    const timeoutMs = resolveQQOfficialSessionTimeoutMs({ channel: input.channel })
+    if (
+      timeoutMs !== undefined &&
+      previous.createdAt instanceof Date &&
+      Date.now() - previous.createdAt.getTime() > timeoutMs
+    ) {
+      return runId
+    }
+  }
+
+  return previous.conversationId ?? previous.id
 }

@@ -3,6 +3,8 @@ import {
   isActiveRunStatus,
   type PaginatedResponse,
   type Run,
+  type RunSessionDetail,
+  type RunSessionSummary,
   type RunStep,
   type RunWithAgent,
 } from '@a2wave/shared'
@@ -250,15 +252,18 @@ export type RunsFilter = {
   pageSize?: number
 }
 
-export function useRuns(filter?: RunsFilter) {
+function toRunsQuery(filter?: RunsFilter): string {
   const params = new URLSearchParams()
   if (filter?.agentId) params.set('agentId', filter.agentId)
   if (filter?.startDate) params.set('startDate', filter.startDate)
   if (filter?.endDate) params.set('endDate', filter.endDate)
   if (filter?.page) params.set('page', String(filter.page))
   if (filter?.pageSize) params.set('pageSize', String(filter.pageSize))
+  return params.toString()
+}
 
-  const queryString = params.toString()
+export function useRuns(filter?: RunsFilter) {
+  const queryString = toRunsQuery(filter)
   const url = queryString ? `/runs?${queryString}` : '/runs'
 
   return useQuery({
@@ -270,6 +275,34 @@ export function useRuns(filter?: RunsFilter) {
     },
     refetchInterval: (query) =>
       query.state.data?.data.some((run) => isActiveRunStatus(run.status)) ? 2_000 : false,
+  })
+}
+
+/** Paginate provider/CLI sessions rather than individual Run rows. */
+export function useRunSessions(filter?: RunsFilter) {
+  const queryString = toRunsQuery(filter)
+  const url = queryString ? `/runs/sessions?${queryString}` : '/runs/sessions'
+
+  return useQuery({
+    queryKey: [...RUNS_KEY, 'sessions', filter],
+    queryFn: async () => {
+      const res = await fetch(`/api${url}`, { credentials: 'include' })
+      if (!res.ok) throw new Error('Failed to fetch run sessions')
+      return res.json() as Promise<PaginatedResponse<RunSessionSummary>>
+    },
+    refetchInterval: (query) =>
+      query.state.data?.data.some((session) => session.hasActiveRun) ? 2_000 : false,
+  })
+}
+
+/** Resolve any member Run id to the complete provider/CLI session around it. */
+export function useRunSession(runId: string) {
+  return useQuery({
+    queryKey: [...RUNS_KEY, 'sessions', runId],
+    queryFn: () => api.get<RunSessionDetail>(`/runs/${runId}/session`),
+    select: (res) => res.data,
+    enabled: !!runId,
+    refetchInterval: (query) => (query.state.data?.data.summary.hasActiveRun ? 2_000 : false),
   })
 }
 

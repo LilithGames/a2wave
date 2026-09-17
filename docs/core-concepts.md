@@ -109,11 +109,32 @@ The optional SCM Source field `workspacesPath` customizes the root directory of 
 
 ## Run
 
-Task execution instance (`pending` → `running` → `completed`/`failed`) with ordered run steps. Each agent chat creates a run with associated run steps tracking input, output, status, and duration. A Run also serves as a "conversation" container — chat messages are stored in `chat_messages` table linked via `runId`.
+An independently actionable task execution (`pending` → `running` → `completed`/`failed`) with
+ordered Run steps. External chat and OAuth entry points create a Run for each turn, while the
+first-party `chat_app` and debug flows can accumulate multiple turns in one Run row. Input, output,
+status, duration, messages, and logs remain attached to their Run so cancellation, retry, failure
+diagnosis, and auditing do not lose their original granularity.
+
+Related Runs can also carry a nullable `conversationId`. This is a stable a2wave identifier for one
+logical AI/CLI conversation generation: a continuation inherits it, while an explicit reset such as
+`/new` starts another generation. It is deliberately separate from `triggerSessionId`, which is an
+ingress-specific lookup/deduplication key and may survive a reset. Session reads are grouped by
+Agent, trigger source, and `COALESCE(conversationId, Run.id)`; scoping prevents provider identifiers
+from joining unrelated channels or Agents. The fallback also keeps non-conversational and legacy
+Runs as single rows. For an upgraded legacy conversation, a newer turn may point its
+`conversationId` at the original Run id, which joins the old null row without rewriting history.
+
+`GET /api/runs/sessions` applies Run visibility before aggregation and paginates these conversation
+groups by their latest update time with a stable tie-break. `GET /api/runs/:id/session` reapplies the
+same visibility rule to every member and returns the retained transcript as per-Run blocks. The
+regular `GET /api/runs` contract remains the ungrouped execution view.
 
 ## ChatMessage
 
-Individual chat message within a Run conversation. Has `role` (user/agent), `content`, and `createdAt`. Referenced by `runId`.
+Individual chat message attached to a Run execution container. Has `role` (user/agent), `content`,
+and `createdAt`. Referenced by `runId`; multi-Run conversation reads assemble those messages without
+changing their ownership or audit boundary, while `chat_app` and debug Runs may contain several
+user/agent turns directly.
 
 ## Memory
 

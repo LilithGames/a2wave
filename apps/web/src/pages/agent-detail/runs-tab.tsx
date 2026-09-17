@@ -1,42 +1,15 @@
-import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
-import { Activity, CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react'
+import { Activity, CircleAlert, RefreshCw } from 'lucide-react'
 import type React from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
-import { RunCallerPrefix } from '@/components/run-caller-prefix'
-import { RunDetailDrawer } from '@/components/run-detail-drawer'
-import { Badge } from '@/components/ui/badge'
+import { RunSessionDetailDrawer } from '@/components/run-session-detail-drawer'
+import { RunSessionRow } from '@/components/run-session-row'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Pagination } from '@/components/ui/pagination'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useRuns } from '@/hooks/use-runs'
-import { formatRelativeTime } from '@/lib/utils'
-
-const STATUS_BADGE: Record<
-  RunStatus,
-  { variant: 'default' | 'secondary' | 'destructive' | 'success' | 'warning'; label: string }
-> = {
-  running: { variant: 'warning', label: 'dashboard.statusRunning' },
-  completed: { variant: 'success', label: 'dashboard.statusCompleted' },
-  failed: { variant: 'destructive', label: 'dashboard.statusFailed' },
-  pending: { variant: 'secondary', label: 'dashboard.statusPending' },
-  queued: { variant: 'secondary', label: 'dashboard.statusQueued' },
-  cancelled: { variant: 'secondary', label: 'dashboard.statusCancelled' },
-}
-
-function RunStatusIcon({ status }: { status: RunStatus }) {
-  switch (status) {
-    case 'running':
-      return <Loader2 className="h-4 w-4 text-warning animate-spin shrink-0" aria-hidden="true" />
-    case 'completed':
-      return <CheckCircle2 className="h-4 w-4 text-success shrink-0" aria-hidden="true" />
-    case 'failed':
-      return <XCircle className="h-4 w-4 text-destructive shrink-0" aria-hidden="true" />
-    default:
-      return <Circle className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
-  }
-}
+import { useRunSessions } from '@/hooks/use-runs'
 
 const PAGE_SIZE = 15
 
@@ -60,7 +33,7 @@ export function RunsTab({
 }: RunsTabProps) {
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const page = Math.max(1, Number.parseInt(searchParams.get('runsPage') ?? '1') || 1)
+  const page = Math.max(1, Number.parseInt(searchParams.get('runsPage') ?? '1', 10) || 1)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
 
   const setPage = (nextPage: number) => {
@@ -74,10 +47,7 @@ export function RunsTab({
   }
 
   useEffect(() => {
-    const runId = searchParams.get('runId')
-    if (runId) {
-      setSelectedRunId(runId)
-    }
+    setSelectedRunId(searchParams.get('runId'))
   }, [searchParams])
 
   const handleCloseDetail = () => {
@@ -92,8 +62,9 @@ export function RunsTab({
     dataUpdatedAt,
     isLoading,
     isFetching,
+    isError,
     refetch,
-  } = useRuns({
+  } = useRunSessions({
     agentId,
     page,
     pageSize: PAGE_SIZE,
@@ -107,7 +78,7 @@ export function RunsTab({
     onFetchingChange?.(isFetching)
   }, [isFetching, onFetchingChange])
 
-  const runs = runsData?.data
+  const sessions = runsData?.data
   const pagination = runsData?.pagination
 
   // Joined into a string so the effect below compares by value: `filter()`
@@ -115,11 +86,11 @@ export function RunsTab({
   // parent forever.
   const failedRunIdsKey = useMemo(
     () =>
-      (runs ?? [])
-        .filter((run) => run.status === 'failed')
-        .map((run) => run.id)
+      (sessions ?? [])
+        .flatMap((session) => session.failedRunIds)
+        .filter((runId, index, all) => all.indexOf(runId) === index)
         .join(','),
-    [runs],
+    [sessions],
   )
 
   useEffect(() => {
@@ -151,7 +122,25 @@ export function RunsTab({
     )
   }
 
-  if (!runs || runs.length === 0) {
+  if (isError && !runsData) {
+    return (
+      <Card>
+        <CardContent
+          className="flex flex-col items-center justify-center gap-3 px-8 py-20 text-center"
+          role="alert"
+        >
+          <CircleAlert className="h-7 w-7 text-destructive" aria-hidden="true" />
+          <p className="text-sm text-muted-foreground">{t('runs.loadFailed')}</p>
+          <Button variant="outline" size="sm" onClick={() => void refetch()}>
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            {t('runs.retryLoad')}
+          </Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!sessions || sessions.length === 0) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center justify-center py-20 px-8">
@@ -170,46 +159,14 @@ export function RunsTab({
   return (
     <>
       <div className="rounded-lg border border-border bg-card overflow-hidden">
-        {runs.map((run, idx) => {
-          const badgeCfg = STATUS_BADGE[run.status as RunStatus] ?? STATUS_BADGE.pending
-          const showBorder = idx < runs.length - 1
-          return (
-            <div
-              key={run.id}
-              className={`flex items-center gap-3 px-4 py-3 hover:bg-surface-hover cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${showBorder ? 'border-b border-border/50' : ''}`}
-              // biome-ignore lint/a11y/useSemanticElements: a <button> would impose its own
-              // display/typography reset on this full-width list row and break the flex layout
-              // the surrounding rounded list depends on.
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelectedRunId(run.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setSelectedRunId(run.id)
-                }
-              }}
-            >
-              <RunStatusIcon status={run.status as RunStatus} />
-              <div className="min-w-0 flex-1">
-                <span className="text-sm font-medium text-foreground truncate block">
-                  <RunCallerPrefix
-                    name={run.triggerUserName}
-                    callerAgentName={run.triggerAgentName}
-                    source={run.triggerSource as RunTriggerSource | null}
-                  />
-                  {run.intent}
-                </span>
-              </div>
-              <Badge variant={badgeCfg.variant} className="text-[10px] shrink-0">
-                {t(badgeCfg.label)}
-              </Badge>
-              <span className="text-xs text-muted-foreground shrink-0">
-                {formatRelativeTime(run.createdAt)}
-              </span>
-            </div>
-          )
-        })}
+        {sessions.map((session, idx) => (
+          <RunSessionRow
+            key={session.id}
+            session={session}
+            showBorder={idx < sessions.length - 1}
+            onSelect={setSelectedRunId}
+          />
+        ))}
       </div>
 
       {pagination && (
@@ -217,13 +174,17 @@ export function RunsTab({
           className="mt-4"
           pagination={pagination}
           onPageChange={setPage}
-          totalLabel={t('runs.paginationTotal', { total: pagination.total })}
+          totalLabel={t('runs.sessionPaginationTotal', { total: pagination.total })}
           previousLabel={t('runs.prevPage')}
           nextLabel={t('runs.nextPage')}
         />
       )}
 
-      <RunDetailDrawer runId={selectedRunId} open={!!selectedRunId} onClose={handleCloseDetail} />
+      <RunSessionDetailDrawer
+        runId={selectedRunId}
+        open={!!selectedRunId}
+        onClose={handleCloseDetail}
+      />
     </>
   )
 }
