@@ -395,6 +395,21 @@
     "description": "The application encountered an unexpected error. Please try refreshing the page.",
     "retry": "Retry"
   },
+  "codexQuota": {
+    "title": "Account quota",
+    "scope": "Server Codex account-wide quota, including usage outside a2wave. This is not per-Agent usage.",
+    "weekly": "Weekly quota",
+    "fiveHours": "5-hour quota",
+    "minutes": "{{count}}-minute quota",
+    "window": "Quota window",
+    "remaining": "{{percent}}% remaining",
+    "resetsAt": "Resets at",
+    "resetUnavailable": "Reset time unavailable",
+    "loading": "Loading quota…",
+    "not_logged_in": "Codex is not logged in on the server.",
+    "unsupported": "This Codex CLI version or login method does not support account quota queries.",
+    "unavailable": "Account quota is temporarily unavailable."
+  },
   "providerDetail": {
     "notFound": "Provider not found",
     "backToProviders": "Back to Providers",

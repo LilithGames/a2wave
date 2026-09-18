@@ -1,5 +1,5 @@
-import { renderWithProviders, screen } from '@/test/render'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen } from '@/test/render'
 import { ProviderDetailPage } from '../provider-detail'
 
 /**
@@ -35,6 +35,12 @@ vi.mock('@/hooks/use-provider-clis', () => ({
   useProviderClis: useProviderClisMock,
   useInstallProviderCli: () => ({ mutate: vi.fn(), isPending: false }),
   useUninstallProviderCli: () => ({ mutate: vi.fn(), isPending: false }),
+}))
+
+vi.mock('@/components/codex-quota', () => ({
+  CodexQuotaDisplay: ({ providerId }: { providerId: string }) => (
+    <div data-testid="codex-quota">{providerId}</div>
+  ),
 }))
 
 vi.mock('@/lib/antd-static', () => ({ message: { success: vi.fn(), error: vi.fn() } }))
@@ -83,6 +89,24 @@ describe('ProviderDetailPage — Agent CLI card', () => {
       isError: false,
       refetch: vi.fn(),
     })
+  })
+
+  it('shows account quota only for Codex administrators', () => {
+    const { unmount } = renderWithProviders(<ProviderDetailPage />)
+    expect(screen.getByTestId('codex-quota')).toHaveTextContent('prv_codex')
+    unmount()
+    useCurrentUserMock.mockReturnValue({ data: { role: 'user' } })
+    renderWithProviders(<ProviderDetailPage />)
+    expect(screen.queryByTestId('codex-quota')).not.toBeInTheDocument()
+  })
+
+  it('does not query Codex quota for other providers', () => {
+    useProviderMock.mockReturnValue({
+      data: { id: 'prv_claude', kind: 'claude-code', name: 'Claude Code' },
+    })
+    useProviderClisMock.mockReturnValue({ data: { data: [cliState({ kind: 'claude-code' })] } })
+    renderWithProviders(<ProviderDetailPage />)
+    expect(screen.queryByTestId('codex-quota')).not.toBeInTheDocument()
   })
 
   it('shows the pinned and installed versions for the bound CLI', () => {

@@ -229,6 +229,12 @@ Claude Code 的 OAuth 与服务器登录态模型探测始终连接固定端点 
 > [!CAUTION]
 > 凭证属敏感信息，遵循企业安全规范保管，不要写进系统提示词或公开渠道。
 
+## Codex account quota
+
+Administrators can open **Providers → Codex CLI** to see remaining quota bars and reset times in the **Agent CLI** card. The page loads quota automatically when opened; it displays only the quota windows supplied by Codex. Reset times use your browser’s local time.
+
+This is the overall Codex account logged in on the a2wave server, including usage outside a2wave, rather than usage for an individual Agent. API Key login does not support this account quota view. If the server is not logged in, the CLI does not support quota queries, or the query fails, the page shows that status instead of a zero balance.
+
 ## 相关
 
 - [Agent 管理](/wiki/agents) · [核心理念与架构](/wiki/concepts) · [Skill 技能](/wiki/skills)

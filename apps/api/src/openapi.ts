@@ -763,6 +763,75 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/providers/{id}/quota': {
+      get: {
+        operationId: 'getProviderQuota',
+        summary: 'Read the server Codex login account quota (admin only)',
+        description:
+          'Account-wide quota, including activity outside a2wave. Only Codex Providers are supported. ' +
+          'A short server cache coalesces requests. Missing windows are omitted; unavailable data is never reported as zero usage. ' +
+          'No token history is fetched and no rate-limit resets are consumed.',
+        tags: ['Providers'],
+        security: [{ sessionCookie: [] }, { userSession: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': {
+            description: 'Quota snapshot or an explicit unavailable status.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['data'],
+                  properties: {
+                    data: {
+                      type: 'object',
+                      required: ['status', 'windows'],
+                      properties: {
+                        status: {
+                          type: 'string',
+                          enum: ['available', 'not_logged_in', 'unsupported', 'unavailable'],
+                        },
+                        windows: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            required: [
+                              'id',
+                              'label',
+                              'usedPercent',
+                              'windowDurationMins',
+                              'resetsAt',
+                            ],
+                            properties: {
+                              id: { type: 'string' },
+                              label: { type: 'string', nullable: true },
+                              usedPercent: {
+                                type: 'number',
+                                description: 'Used percentage (0–100).',
+                              },
+                              windowDurationMins: { type: 'number', nullable: true },
+                              resetsAt: {
+                                type: 'number',
+                                nullable: true,
+                                description: 'Next reset as a Unix timestamp in seconds.',
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Provider is not Codex.' },
+          '401': { description: 'Authentication required.' },
+          '403': { description: 'Administrator access required.' },
+          '404': { description: 'Provider not found.' },
+        },
+      },
+    },
     '/scm-sources': {
       get: {
         operationId: 'listScmSources',
