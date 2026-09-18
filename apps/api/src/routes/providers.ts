@@ -1,9 +1,11 @@
 import { PRESET_PROVIDERS, type ProviderListItem, probeModelsRequestSchema } from '@a2wave/shared'
-import { asc, eq, or, sql } from 'drizzle-orm'
+import { asc, eq, or } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { db } from '../db/client.js'
 import { agents, providers } from '../db/schema.js'
+import { getCodexQuota } from '../engine/codex-quota.js'
 import { providerCatalog } from '../engine/index.js'
+import { env } from '../env.js'
 import { createId } from '../lib/id.js'
 import { jsonArrayContainsKeyValue } from '../lib/json-sql.js'
 import { logger } from '../lib/logger.js'
@@ -213,6 +215,23 @@ app.post('/probe-models', probeModelsRateLimit, async (c) => {
       '[probe-models] unexpected error',
     )
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500)
+  }
+})
+
+/** GET /:id/quota - server-side Codex account quota, visible only to administrators. */
+app.get('/:id/quota', requireAdmin, async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { id } = c.req.param()
+  const provider = (await db.select().from(providers).where(eq(providers.id, id)).limit(1))[0]
+  if (!provider) return c.json({ error: 'Provider not found' }, 404)
+  if (provider.kind !== 'codex') {
+    return c.json({ error: 'Account quota is only available for Codex CLI' }, 400)
+  }
+  try {
+    return c.json({ data: await getCodexQuota(env.CODEX_PATH) })
+  } catch {
+    logger.warn({ providerId: id }, 'Codex account quota probe failed')
+    return c.json({ data: { status: 'unavailable', windows: [] } })
   }
 })
 

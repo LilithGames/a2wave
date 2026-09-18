@@ -229,6 +229,12 @@ Claude Code OAuth and server-session model discovery always connects to the fixe
 > [!CAUTION]
 > Credentials are sensitive information; keep them per enterprise security standards, and never write them into system prompts or public channels.
 
+## Codex account quota
+
+Administrators can open **Providers → Codex CLI** to see remaining quota bars and reset times in the **Agent CLI** card. The page loads quota automatically when opened; it displays only the quota windows supplied by Codex. Reset times use your browser’s local time.
+
+This is the overall Codex account logged in on the a2wave server, including usage outside a2wave, rather than usage for an individual Agent. API Key login does not support this account quota view. If the server is not logged in, the CLI does not support quota queries, or the query fails, the page shows that status instead of a zero balance.
+
 ## Related
 
 - [Agent Management](/wiki/agents) · [Core Concepts & Architecture](/wiki/concepts) · [Skills](/wiki/skills)

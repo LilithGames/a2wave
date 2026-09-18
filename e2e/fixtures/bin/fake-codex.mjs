@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { createInterface } from 'node:readline'
+
 const args = process.argv.slice(2)
 
 function line(value) {
@@ -79,6 +81,30 @@ function memoryMaintenanceOutput(prompt) {
   return prompt.includes('---INSIGHTS---')
     ? `## E2E memory worklog\n\n- Completed the deterministic memory chain.\n\n---INSIGHTS---\n${insight}`
     : insight
+}
+
+if (args[0] === 'app-server') {
+  for await (const input of createInterface({ input: process.stdin })) {
+    const request = JSON.parse(input)
+    if (request.method === 'initialize') {
+      line({ id: request.id, result: { userAgent: 'fake-codex' } })
+    } else if (request.method === 'account/read') {
+      line({ id: request.id, result: { account: { type: 'chatgpt' } } })
+    } else if (request.method === 'account/rateLimits/read') {
+      line({
+        id: request.id,
+        result: {
+          rateLimits: {
+            primary: { usedPercent: 24, windowDurationMins: 10080, resetsAt: 1800000000 },
+            secondary: null,
+          },
+        },
+      })
+    } else if (request.id != null) {
+      line({ id: request.id, error: { code: -32601, message: 'Method not found' } })
+    }
+  }
+  process.exit(0)
 }
 
 const prompt = promptFromArgs()

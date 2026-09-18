@@ -1,8 +1,12 @@
+import { AlertTriangle, ArrowLeft, Bot, Shield } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { Link, useParams } from 'react-router-dom'
+import { CodexQuotaDisplay } from '@/components/codex-quota'
 import {
   ProviderCliInstallControl,
   ProviderCliStatusChip,
 } from '@/components/provider-cli-install-control'
-import { PROVIDER_ICON_TILE, getProviderIconSpec } from '@/components/provider-icon'
+import { getProviderIconSpec, PROVIDER_ICON_TILE } from '@/components/provider-icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,9 +14,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useCurrentUser } from '@/hooks/use-auth'
 import { useProviderClis } from '@/hooks/use-provider-clis'
 import { useProvider, useProviderDependents } from '@/hooks/use-providers'
-import { AlertTriangle, ArrowLeft, Bot, Shield } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { Link, useParams } from 'react-router-dom'
 
 /**
  * Provider detail — read-only by design.
@@ -144,7 +145,7 @@ export function ProviderDetailPage() {
           would look identical to a healthy Provider while its Agents fail at
           spawn time with ENOENT, and would hide the install entry that replaced
           the standalone Agent CLI page. */}
-      {isAdmin && (cli || cliError) ? (
+      {isAdmin && (cli || cliError || provider.kind === 'codex') ? (
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">{t('providerDetail.agentCli')}</CardTitle>
@@ -153,7 +154,7 @@ export function ProviderDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {!cli ? (
+            {!cli && cliError ? (
               <div className="flex items-start gap-3" role="alert">
                 <AlertTriangle
                   className="mt-0.5 size-4 shrink-0 text-destructive"
@@ -172,7 +173,7 @@ export function ProviderDetailPage() {
                   </Button>
                 </div>
               </div>
-            ) : (
+            ) : cli ? (
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -193,7 +194,8 @@ export function ProviderDetailPage() {
                 </div>
                 <ProviderCliInstallControl cli={cli} showUninstall />
               </div>
-            )}
+            ) : null}
+            {provider.kind === 'codex' ? <CodexQuotaDisplay providerId={providerId} /> : null}
           </CardContent>
         </Card>
       ) : null}
