@@ -353,13 +353,13 @@ export function extractText(rawContent: string, richPost = false, messageType?: 
         .replace(FEISHU_MENTION_KEY_RE, '')
         .trim()
     }
-    // post 类型消息
     const postRows = getPostContentRows(parsed)
     if (postRows) {
-      // richPost=true：保留段落换行、支持链接节点（用于需要完整结构的场景）
+      // Preserve paragraph boundaries in both modes so adjacent IDs and dates stay separate.
       if (richPost) return extractPostRowsText(postRows)
-      return extractFromElements(postRows, ['text', 'a'], 'text')
-        .join('')
+      return postRows
+        .map((row) => extractFromElements([row], ['text', 'a'], 'text').join(''))
+        .join('\n')
         .replace(FEISHU_MENTION_KEY_RE, '')
         .trim()
     }

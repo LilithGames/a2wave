@@ -814,12 +814,12 @@ describe('extractText', () => {
     expect(extractText(content)).toBe('')
   })
 
-  it('post 消息默认不保留行间换行（兼容旧行为）', () => {
+  it('preserves paragraph breaks in post messages by default', () => {
     const content = JSON.stringify({
       title: '',
       content: [[{ tag: 'text', text: '第一段' }], [{ tag: 'text', text: '第二段' }]],
     })
-    expect(extractText(content)).toBe('第一段第二段')
+    expect(extractText(content)).toBe('第一段\n第二段')
   })
 
   it('post 消息 richPost=true 时行间用换行符分隔', () => {

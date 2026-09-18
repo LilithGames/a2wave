@@ -356,6 +356,43 @@ function makeAgent(overrides: Record<string, any> = {}) {
   }
 }
 
+describe('Feishu post paragraph extraction', () => {
+  it.each(['flat', 'zh_cn', 'en_us', 'ja_jp'])(
+    'keeps player IDs separate from dates in %s post messages',
+    (format) => {
+      const post = {
+        title: '',
+        content: [
+          [{ tag: 'text', text: 'sp_global环境' }],
+          [
+            { tag: 'text', text: '玩家 ' },
+            { tag: 'text', text: '2727456' },
+          ],
+          [{ tag: 'text', text: '2026/9/17 全天的登录情况 有没有异常出现?' }],
+        ],
+      }
+      const content = JSON.stringify(format === 'flat' ? post : { [format]: post })
+      expect(extractText(content, false, 'post')).toBe(
+        'sp_global环境\n玩家 2727456\n2026/9/17 全天的登录情况 有没有异常出现?',
+      )
+    },
+  )
+
+  it('preserves empty paragraphs and inline links after removing bot mentions', () => {
+    const content = JSON.stringify({
+      content: [
+        [{ tag: 'text', text: '@_user_1 player 2727456' }],
+        [],
+        [
+          { tag: 'text', text: 'See ' },
+          { tag: 'a', text: 'logs', href: 'https://example.com' },
+        ],
+      ],
+    })
+    expect(extractText(content, false, 'post')).toBe('player 2727456\n\nSee logs')
+  })
+})
+
 describe('Feishu referenced-message dispatch', () => {
   beforeEach(async () => {
     feishuConnectionManager.stopAll()
@@ -584,5 +621,24 @@ describe('Feishu referenced-message dispatch', () => {
     expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
     expect(mockExecuteWithRetry.mock.calls[0][1].context.referenced_message).toBeUndefined()
     expect(mockExecuteWithRetry.mock.calls[0][1].prompt).toBe('Continue without the quote.')
+  })
+
+  it('preserves post paragraph breaks in the prompt sent to the worker', async () => {
+    mockDbGet.mockReturnValue(makeAgent())
+    const lines = ['sp_global环境', '玩家 2727456', '2026/9/17 全天的登录情况 有没有异常出现?']
+    await dispatch(
+      makeData({
+        chat_type: 'p2p',
+        message_id: 'om_post_paragraphs',
+        message_type: 'post',
+        mentions: [],
+        content: JSON.stringify({
+          title: '',
+          content: lines.map((text) => [{ tag: 'text', text }]),
+        }),
+      }),
+    )
+    expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+    expect(mockExecuteWithRetry.mock.calls[0][1].prompt).toContain(lines.join('\n'))
   })
 })
