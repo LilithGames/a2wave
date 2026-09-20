@@ -1256,7 +1256,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           '404': { description: 'Agent or schedule entry not found.' },
           '409': {
             description:
-              'Refused, with `code`: `AGENT_NOT_PUBLISHED`, `SCHEDULE_CHANNEL_DISABLED`, `AGENT_INACTIVE`; `SCHEDULE_ID_REQUIRED` (the id is the positional fallback — give the entry an `id` in `scheduleConfig`); `SCHEDULE_NOT_REGISTERED` (invalid cron or unknown timezone, so the cron registrar skips it and it never fires); `QUEUE_FULL` (the run was created and recorded as failed; its `runId` is in the message).',
+              'Refused, with `code`: `AGENT_NOT_PUBLISHED`, `SCHEDULE_CHANNEL_DISABLED`, `AGENT_INACTIVE`; `SCHEDULE_ID_REQUIRED` (the id is the positional fallback — give the entry an `id` in `scheduleConfig`); `SCHEDULE_ID_AMBIGUOUS` (more than one entry carries that id — possible only for configs saved before ids had to be unique); `SCHEDULE_NOT_REGISTERED` (invalid cron or unknown timezone, so the cron registrar skips it and it never fires); `QUEUE_FULL` (the run was created and recorded as failed; its `runId` is in the message).',
           },
         },
       },

@@ -153,6 +153,30 @@ describe('POST /agents/:id/schedules/:scheduleId/run', () => {
     expect(JSON.stringify(details)).not.toContain('Morning')
   })
 
+  it('refuses an id shared by two entries with SCHEDULE_ID_AMBIGUOUS instead of firing the first', async () => {
+    // Persisted configs predate the uniqueness rule in the shared schema, so the
+    // route cannot assume an id names exactly one entry.
+    const agent = {
+      ...publishedAgent,
+      scheduleConfig: [
+        { id: 'sch_dup', cron: '0 9 * * *', intent: 'daily report', timezone: 'UTC' },
+        { id: 'sch_dup', cron: '0 18 * * *', intent: 'delete stale branches', timezone: 'UTC' },
+      ],
+    }
+    const allow = guard({ agent })
+
+    const res = await runApp(allow).request('/agents/agt_1/schedules/sch_dup/run', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.code).toBe('SCHEDULE_ID_AMBIGUOUS')
+    expect(body.error).toContain('sch_dup')
+    expect(mocks.fireSchedule).not.toHaveBeenCalled()
+    expect(mocks.audit).not.toHaveBeenCalled()
+  })
+
   it('refuses a positional <agentId>:<index> id with SCHEDULE_ID_REQUIRED instead of firing', async () => {
     // The positional fallback silently re-targets a different entry once the
     // array is edited, so a rehearsal must address a persisted id only.

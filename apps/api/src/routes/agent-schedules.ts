@@ -66,8 +66,19 @@ export async function handleRunAgentSchedule(
   }
 
   const config = agent.scheduleConfig as ScheduleConfigInput
-  const entry = listSchedules(agent.id, config).find((s) => s.id === scheduleId)
+  const matches = listSchedules(agent.id, config).filter((s) => s.id === scheduleId)
+  const entry = matches[0]
   if (!entry) throw new NotFoundError('Schedule')
+  // The shared schema now rejects duplicate ids, but configs persisted before
+  // that rule can still carry them; firing "the first match" would run an intent
+  // the caller did not pick.
+  if (matches.length > 1) {
+    throw new AppError(
+      409,
+      `Schedule id ${scheduleId} is shared by ${matches.length} entries; give each entry a unique \`id\` in scheduleConfig`,
+      'SCHEDULE_ID_AMBIGUOUS',
+    )
+  }
   // A positional `<agentId>:<index>` id points at whichever entry currently sits
   // at that index, so a rehearsal addressed by it can silently fire a different
   // entry once the array is edited. Only a persisted id is safe to act on.

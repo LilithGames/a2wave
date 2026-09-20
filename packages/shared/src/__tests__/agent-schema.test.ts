@@ -308,6 +308,28 @@ describe('agent publishStatus field', () => {
 })
 
 describe('schedule config schema compatibility', () => {
+  it('rejects an array in which two entries share an id, and names the id', () => {
+    const result = scheduleConfigSchema.safeParse([
+      { id: 'sch_dup', cron: '0 9 * * *', intent: 'a' },
+      { id: 'sch_dup', cron: '0 18 * * *', intent: 'b' },
+    ])
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0].message).toContain('sch_dup')
+    }
+  })
+
+  it('accepts several entries without ids, and distinct ids', () => {
+    expect(
+      scheduleConfigSchema.safeParse([
+        { cron: '0 9 * * *', intent: 'a' },
+        { cron: '0 18 * * *', intent: 'b' },
+        { id: 'sch_a', cron: '0 19 * * *', intent: 'c' },
+        { id: 'sch_b', cron: '0 20 * * *', intent: 'd' },
+      ]).success,
+    ).toBe(true)
+  })
+
   it('accepts the legacy single schedule config object', () => {
     const parsed = scheduleConfigSchema.parse({
       cron: '0 9 * * *',

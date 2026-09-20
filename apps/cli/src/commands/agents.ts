@@ -313,6 +313,36 @@ const PUBLISH_BLOCKING_CHECK_IDS: ReadonlySet<string> = new Set([
  * (network, 5xx) is reported and skipped rather than turning a diagnostics
  * outage into a publish outage.
  */
+/**
+ * True when the Agent's provider chain has an enabled entry bound to a Provider
+ * other than the primary one. Conservative on every uncertainty (unreadable
+ * Agent, no chain, malformed entries): it answers false, which keeps the
+ * missing-CLI finding blocking.
+ */
+async function hasFallbackProvider(
+  client: ReturnType<typeof createClient>,
+  agentId: string,
+): Promise<boolean> {
+  try {
+    const result = await client.get<{
+      data: { providerId?: string | null; config?: { providerChain?: unknown } | null }
+    }>(`/api/agents/${agentId}`)
+    const chain = result?.data?.config?.providerChain
+    if (!Array.isArray(chain)) return false
+    const enabled = chain.filter(
+      (e): e is { providerId: string } =>
+        typeof e === 'object' &&
+        e !== null &&
+        (e as { enabled?: unknown }).enabled !== false &&
+        typeof (e as { providerId?: unknown }).providerId === 'string',
+    )
+    const primary = enabled[0]?.providerId ?? result.data.providerId
+    return enabled.some((e) => e.providerId !== primary)
+  } catch {
+    return false
+  }
+}
+
 async function assertPublishPreflight(
   client: ReturnType<typeof createClient>,
   agentId: string,
@@ -329,12 +359,23 @@ async function assertPublishPreflight(
     )
     return
   }
+  // diagnose probes only the PRIMARY Provider's CLI, but execute-with-retry moves
+  // on to the next chain entry after a spawn failure. A missing primary CLI is
+  // therefore fatal only when no enabled fallback uses a different Provider.
+  const cliMissing = checks.some(
+    (c) => c.severity === 'error' && c.id === 'provider_cli_not_installed',
+  )
+  const hasOtherProviderFallback = cliMissing && (await hasFallbackProvider(client, agentId))
   const errors: DiagnoseCheck[] = []
   for (const c of checks) {
     if (c.severity === 'warn') {
       console.warn(`! [warn] ${c.id}: ${c.message}`)
     } else if (c.severity === 'error') {
-      if (PUBLISH_BLOCKING_CHECK_IDS.has(c.id)) errors.push(c)
+      if (c.id === 'provider_cli_not_installed' && hasOtherProviderFallback) {
+        console.warn(
+          `! [warn] ${c.id}: ${c.message} (a fallback Provider is configured in the chain, so this does not block publishing)`,
+        )
+      } else if (PUBLISH_BLOCKING_CHECK_IDS.has(c.id)) errors.push(c)
       else console.warn(`! [warn] ${c.id}: ${c.message} (does not block publishing)`)
     }
   }
