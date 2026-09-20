@@ -29,6 +29,7 @@ import { executeChatRun } from '../lib/execute-chat-run.js'
 import { WorktreeBranchLockedError, WorktreeDirtyError } from '../lib/git-workspace.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
+import { normalizeTraceparent } from '../lib/otel/propagation.js'
 import { registerPendingContext, takePendingContext } from '../lib/pending-job-registry.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildGatewayChannel, stripReservedContextKeys } from '../lib/run-channel.js'
@@ -274,6 +275,13 @@ app.post('/:agentId/invoke', async (c) => {
       : stepContext
   const hasPendingContext = Object.keys(pendingContext).length > 0
   if (hasPendingContext) registerPendingContext(runId, pendingContext)
+  const traceParent = normalizeTraceparent(c.req.header('traceparent'))
+  const executionMetadata = {
+    ...(attachmentRefs && attachmentRefs.length > 0
+      ? { attachments: attachmentRefs, attachmentConsumerId: `agent:${agentId}` }
+      : {}),
+    ...(traceParent ? { traceParent } : {}),
+  }
   try {
     await db.insert(runs).values({
       id: runId,
@@ -286,14 +294,7 @@ app.post('/:agentId/invoke', async (c) => {
       ...(idempotencyKey ? { triggerSessionId: idempotencyKey } : {}),
       // 排队附件持久化：refs + 消费者身份存 run 行，出队时读——不只依赖内存 pending-context
       // （其 1h TTL < run 最长 120min，且重启即丢，review [P1]）。
-      ...(attachmentRefs && attachmentRefs.length > 0
-        ? {
-            executionMetadata: {
-              attachments: attachmentRefs,
-              attachmentConsumerId: `agent:${agentId}`,
-            },
-          }
-        : {}),
+      ...(Object.keys(executionMetadata).length > 0 ? { executionMetadata } : {}),
     })
   } catch (err) {
     if (hasPendingContext) takePendingContext(runId)
@@ -422,6 +423,7 @@ app.post('/:agentId/invoke', async (c) => {
     model: agentConfig.model || undefined,
     workDir: resolvedWorkDir,
     agentConfig,
+    traceParent,
   }
 
   // workDir 必须透传给 lifecycleParams —— finishRunSuccess 靠它决定是否扫描并注册产物。

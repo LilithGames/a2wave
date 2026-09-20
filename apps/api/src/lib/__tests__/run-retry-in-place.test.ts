@@ -8,6 +8,16 @@ import { buildRetryMetadata } from '../run-retry-in-place.js'
  * anyone asked for.
  */
 describe('buildRetryMetadata', () => {
+  it('starts a fresh trace: a manual retry does not inherit the caller traceparent', () => {
+    // The caller's trace ended with the failed attempt, possibly hours ago; a human-initiated
+    // retry is a new operation, not a late child of it.
+    const next = buildRetryMetadata(
+      { traceParent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+      {},
+    ) as Record<string, unknown>
+    expect(next.traceParent).toBeUndefined()
+  })
+
   const previous = {
     runtimeAdminRequesterUserId: 'usr_old',
     oauthCallerId: 'caller_1',

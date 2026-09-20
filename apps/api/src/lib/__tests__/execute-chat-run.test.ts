@@ -886,6 +886,25 @@ describe('executeChatRun', () => {
     )
   })
 
+  it('hands the persisted traceparent to a queued or resumed execution', async () => {
+    const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    setupSelectSequence(
+      baseAgent,
+      { ...baseRun, executionMetadata: { traceParent: TRACEPARENT } },
+      baseScmSource,
+      undefined,
+    )
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockExecuteWithRetry).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ traceParent: TRACEPARENT }),
+      expect.any(Object),
+    )
+  })
+
   it('uses queued OAuth session chat id without exposing the internal key to step context', async () => {
     setupSelectSequence(
       baseAgent,

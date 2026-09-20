@@ -1,14 +1,16 @@
-import { message } from '@/lib/antd-static'
-import { api } from '@/lib/api'
 import {
   ATTACHMENT_ALL_EXTS,
-  ATTACHMENT_MAX_FILES,
   ATTACHMENT_MAX_FILE_SIZE_BYTES,
+  ATTACHMENT_MAX_FILES,
+  type OtelStatus,
+  type OtelTestResult,
   type SettingsMap,
   type UpdateSettingsInput,
 } from '@a2wave/shared'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { message } from '@/lib/antd-static'
+import { api } from '@/lib/api'
 
 const SETTINGS_KEY = ['settings'] as const
 
@@ -214,6 +216,49 @@ export function useUpdateSso() {
       syncSettingsCache(qc, res as SettingsResponse)
       qc.invalidateQueries({ queryKey: SSO_STATUS_KEY })
       qc.invalidateQueries({ queryKey: ['settings', 'sso', 'raw'] })
+      message.success(t('common.saved'))
+    },
+    onError: () => {
+      message.error(t('settings.saveFailed'))
+    },
+  })
+}
+
+// ─────────────────────────────────────────────────────────────
+// OpenTelemetry trace export (Settings → Observability)
+// ─────────────────────────────────────────────────────────────
+const OTEL_STATUS_KEY = ['settings', 'otel', 'status'] as const
+
+/** Export config + this API instance's exporter health (admin; never carries header values). */
+export function useOtelStatus(enabled = true) {
+  return useQuery({
+    queryKey: OTEL_STATUS_KEY,
+    queryFn: () => api.get<OtelStatus>('/settings/otel/status').then((r) => r.data),
+    enabled,
+  })
+}
+
+/** Sends one test span to the SAVED endpoint; the verdict is in `ok`, never an HTTP error. */
+export function useOtelTest() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<OtelTestResult>('/settings/otel/test', {}).then((r) => r.data),
+    onSettled: () => qc.invalidateQueries({ queryKey: OTEL_STATUS_KEY }),
+  })
+}
+
+/** PATCH the `otel` section; separate from useUpdateSettings so its pending state is its own. */
+export function useUpdateOtel() {
+  const qc = useQueryClient()
+  const { t } = useTranslation()
+  // See useUpdateSettings: keeps the versions map loaded rather than hoping it is.
+  useSettings()
+  return useMutation({
+    meta: { handleLocally: true },
+    mutationFn: (otel: Record<string, string>) => patchSettings({ otel }, readSettingsVersions(qc)),
+    onSuccess: (res) => {
+      syncSettingsCache(qc, res as SettingsResponse)
+      qc.invalidateQueries({ queryKey: OTEL_STATUS_KEY })
       message.success(t('common.saved'))
     },
     onError: () => {

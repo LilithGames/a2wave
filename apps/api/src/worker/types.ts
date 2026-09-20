@@ -14,6 +14,11 @@ export interface WorkerTaskPayload {
   referencedPromptContext?: ReferencedPromptContext
   /** Agent 级别环境变量（从 Agent.env 展开） */
   agentEnv?: Record<string, string>
+  /**
+   * W3C `traceparent` of the caller (an upstream Agent's attempt span, or an external client's
+   * span). When OpenTelemetry export is on, this run's `invoke_agent` span joins that trace.
+   */
+  traceParent?: string
 }
 
 /** Options for executeInWorker */

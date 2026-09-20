@@ -2,6 +2,7 @@ import { SETTINGS_DEFAULTS } from '@a2wave/shared'
 import { useMutation } from '@tanstack/react-query'
 import type { LucideIcon } from 'lucide-react'
 import {
+  Activity,
   AtSign,
   Bell,
   Check,
@@ -30,6 +31,7 @@ import { Trans, useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { CliTokensCard } from '@/components/cli-tokens-card'
 import { FaviconUpload } from '@/components/favicon-upload'
+import { OtelExportCard } from '@/components/otel-export-card'
 import { SsoMethodsCard } from '@/components/sso-methods-card'
 import {
   AlertDialog,
@@ -59,6 +61,7 @@ const SETTINGS_TABS = [
   { id: 'webhook', labelKey: 'settings.tabs.webhook', icon: Bell },
   { id: 'auth', labelKey: 'settings.tabs.auth', icon: ShieldCheck },
   { id: 'cli', labelKey: 'settings.tabs.cli', icon: KeyRound },
+  { id: 'observability', labelKey: 'settings.tabs.observability', icon: Activity },
 ] as const satisfies ReadonlyArray<{ id: string; labelKey: string; icon: LucideIcon }>
 
 type SettingsTabId = (typeof SETTINGS_TABS)[number]['id']
@@ -1246,6 +1249,8 @@ export function SettingsPage() {
 
         {/* Auth & Security section */}
         {activeTab === 'cli' && <CliTokensCard />}
+
+        {activeTab === 'observability' && <OtelExportCard />}
 
         {activeTab === 'auth' && (
           <>

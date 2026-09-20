@@ -359,6 +359,9 @@ export async function executeChatRun(
     workDir: resolvedWorkDir,
     chatId: queuedChatId,
     agentConfig: await agentConfig,
+    // Persisted at the channel boundary, so a queued or restart-resumed run still joins the
+    // caller's OpenTelemetry trace.
+    traceParent: run.executionMetadata?.traceParent,
   }
 
   const lifecycleParams = {

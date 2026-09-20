@@ -16,6 +16,7 @@ import type {
 } from '../worker/types.js'
 import { applyProviderBinding, type ResolvedProviderBinding } from './agent-helpers.js'
 import { logger } from './logger.js'
+import { type RunTrace, startRunTrace } from './otel/run-tracer.js'
 import type { RetryRecord } from './run-lifecycle.js'
 import { createLogCollector } from './run-lifecycle.js'
 import { createRunLogFileWriter } from './run-log-file.js'
@@ -349,22 +350,45 @@ export async function executeWithRetry(
     ? bindExecutionLeaseTask(options.runId, taskId, payload.agentConfig?.agentId)
     : null
   try {
+    // OpenTelemetry root span (`invoke_agent`). Started here for the same reason the log tee and
+    // A2WAVE_CHANNEL_B64 injection live here: a2a / evaluation / memory bypass run-launcher.
+    // Inert when export is off; never throws.
+    const trace = startRunTrace(taskId, payload, {
+      runId: options?.runId,
+      classifiers: { isPermanent: isPermanentError, isHardQuota: isHardQuotaError },
+    })
     const runLogFile = options?.runId ? createRunLogFileWriter(options.runId) : null
-    if (!runLogFile) {
-      return await executeWithRetryCore(taskId, payload, options)
-    }
     try {
       // executeWithRetryCore's mergedOnLogEntry forwards every entry generated
       // by retries and provider fallback, so this layer can tee the full stream.
-      return await executeWithRetryCore(taskId, payload, {
-        ...options,
-        onLogEntry: (entry) => {
-          runLogFile.write(entry)
-          options?.onLogEntry?.(entry)
+      const outcome = await executeWithRetryCore(
+        taskId,
+        payload,
+        {
+          ...options,
+          onLogEntry: (entry) => {
+            runLogFile?.write(entry)
+            trace.onLogEntry(entry)
+            options?.onLogEntry?.(entry)
+          },
         },
+        trace,
+      )
+      // Ends the span before the lease is released, so the shutdown drain implies "spans ended".
+      trace.finish({
+        result: outcome.result,
+        retries: outcome.retries.length,
+        cancelled:
+          trace.enabled && !outcome.result.success
+            ? await isRunCancelled(options?.runId).catch(() => false)
+            : false,
       })
+      return outcome
+    } catch (error) {
+      trace.finish({ thrown: error, retries: 0 })
+      throw error
     } finally {
-      await runLogFile.close()
+      await runLogFile?.close()
     }
   } finally {
     if (ownsExecutionLease) executionLease?.finish()
@@ -374,7 +398,8 @@ export async function executeWithRetry(
 async function executeWithRetryCore(
   taskId: string,
   payload: WorkerTaskPayload,
-  options?: ExecuteWithRetryOptions,
+  options: ExecuteWithRetryOptions | undefined,
+  trace: RunTrace,
 ): Promise<ExecuteWithRetryResult> {
   // Inject bounded runtime context into agentEnv and the Agent router MCP at
   // the common execution chokepoint. The router can then forward identity
@@ -562,11 +587,33 @@ async function executeWithRetryCore(
         })
       }
       const workerTimeoutMs = resolveWorkerTimeoutMs()
-      lastResult = await executeInWorker(taskId, attemptPayload, {
+      const attemptTrace = trace.startAttempt({
+        attempt,
+        providerIndex,
+        binding: providerBinding,
+        model: attemptPayload.model,
+        engineType: attemptPayload.agentConfig?.engineType,
+        resetChat,
+      })
+      // The attempt span's id is known before spawn, so it is the parent a downstream Agent
+      // (via the agent-router MCP) or an instrumented tool in the CLI child can join.
+      const traceparent = attemptTrace.traceparent()
+      const tracedPayload =
+        traceparent && attemptPayload.agentConfig
+          ? {
+              ...attemptPayload,
+              agentConfig: injectRouterRuntimeEnvIntoAgentConfig(attemptPayload.agentConfig, {
+                TRACEPARENT: traceparent,
+              }),
+            }
+          : attemptPayload
+      lastResult = await executeInWorker(taskId, tracedPayload, {
         ...workerOptions,
         timeoutMs: workerTimeoutMs,
         onLogEntry: mergedOnLogEntry,
       })
+      // Before accumulation: the attempt span carries this attempt's own usage.
+      attemptTrace.end(lastResult)
       // Accumulate usage across retries and provider fallback attempts.
       if (lastResult.usage) {
         usageAcrossAttempts = accumulateUsage(usageAcrossAttempts, lastResult.usage)

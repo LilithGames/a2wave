@@ -39,6 +39,7 @@ import {
   isOAuthActiveSessionConflict,
   resolveOAuthConversation,
 } from '../lib/oauth-session.js'
+import { normalizeTraceparent } from '../lib/otel/propagation.js'
 import { registerPendingContext, takePendingContext } from '../lib/pending-job-registry.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildOAuthChannel, stripReservedContextKeys } from '../lib/run-channel.js'
@@ -366,6 +367,7 @@ app.post('/:agentId/invoke', async (c) => {
   // executionMetadata 合并 oauth 会话字段（含 main 侧新增的 oauthEngineType，供错误分类/
   // 结果脱敏读取）+ 排队附件持久化（refs + 消费者身份），后者供出队时读取，不只依赖内存
   // pending-context（TTL/重启会丢，review [P1]）。
+  const traceParent = normalizeTraceparent(c.req.header('traceparent'))
   const executionMetadata = {
     oauthEngineType: engineType,
     // Pin the calling IdP identity so run read/cancel can authorize per-caller
@@ -377,6 +379,7 @@ app.post('/:agentId/invoke', async (c) => {
     ...(attachmentRefs && attachmentRefs.length > 0
       ? { attachments: attachmentRefs, attachmentConsumerId: oauthUploaderId(oauthCaller) }
       : {}),
+    ...(traceParent ? { traceParent } : {}),
   }
   try {
     await db.insert(runs).values({
@@ -531,6 +534,7 @@ app.post('/:agentId/invoke', async (c) => {
     workDir: resolvedWorkDir,
     chatId: previousChatId ?? undefined,
     agentConfig,
+    traceParent,
   }
 
   // workDir is what lets the lifecycle collect this run's artifacts and, when it

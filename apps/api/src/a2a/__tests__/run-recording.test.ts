@@ -1,3 +1,4 @@
+import type { Context } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const existingRunResult: { value: { id: string; status: string; result: unknown } | undefined } = {
@@ -274,6 +275,41 @@ describe('createRecordedA2AExecuteFn', () => {
     const runInsertValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
     expect(runInsertValues.workDir).toBe('/tmp')
     expect(mockFinishRunSuccess).toHaveBeenCalledOnce()
+  })
+
+  it('joins the caller trace: a valid traceparent header reaches the run row and the execution', async () => {
+    const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    mockExecuteWithRetry.mockResolvedValue({
+      result: { success: true, output: 'done', durationMs: 100 },
+      retries: [],
+    })
+    const context = {
+      req: { header: (name: string) => (name === 'traceparent' ? TRACEPARENT : undefined) },
+    } as unknown as Context
+
+    const executeFn = await createRecordedA2AExecuteFn(context, fakeAgent)
+    await executeFn('task_1', defaultPayload)
+
+    const runInsertValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
+    expect(runInsertValues.executionMetadata).toEqual({ traceParent: TRACEPARENT })
+    expect(mockExecuteWithRetry.mock.calls[0][1].traceParent).toBe(TRACEPARENT)
+  })
+
+  it('ignores a malformed traceparent header', async () => {
+    mockTryAcquireSlot.mockReturnValue('acquired')
+    mockExecuteWithRetry.mockResolvedValue({
+      result: { success: true, output: 'done', durationMs: 100 },
+      retries: [],
+    })
+    const context = { req: { header: () => 'garbage' } } as unknown as Context
+
+    const executeFn = await createRecordedA2AExecuteFn(context, fakeAgent)
+    await executeFn('task_1', defaultPayload)
+
+    const runInsertValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
+    expect(runInsertValues.executionMetadata).toBeUndefined()
+    expect(mockExecuteWithRetry.mock.calls[0][1].traceParent).toBeUndefined()
   })
 
   it('当 tryAcquireSlot 返回 queue_full 时拒绝请求并清理 run', async () => {

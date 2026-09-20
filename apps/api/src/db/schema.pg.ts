@@ -728,6 +728,12 @@ export const runs = pgTable(
        */
       oauthCallerId?: string
       /**
+       * W3C `traceparent` of the caller, validated at the channel boundary. Persisted so a queued
+       * or restart-resumed execution still joins the caller's OpenTelemetry trace. A correlation
+       * id only — span data itself is never stored.
+       */
+      traceParent?: string
+      /**
        * Authenticated backend requester whose active admin role may authorize
        * admin-only/stdio MCP capabilities. Persist only the user id; execution
        * re-reads role and active state so queued/recovered work cannot retain a

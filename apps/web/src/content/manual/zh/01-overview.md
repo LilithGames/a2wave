@@ -30,12 +30,13 @@
 | 查看每次执行的输入输出与日志 | [运行记录](/wiki/runs) |
 | 把 Agent 产出的网页/报告分享给别人看 | [产物与在线分享](/wiki/artifacts) |
 | 调整浅色、深色或高对比界面 | [外观与主题](/wiki/appearance) |
+| 把 Agent 执行链路接入 APM / OpenTelemetry | [可观测性](/wiki/observability) |
 
 ## 按角色速查
 
 - **使用者 / 业务方**：[快速开始](/wiki/getting-started) → [Agent 管理](/wiki/agents) → [评测](/wiki/evaluation) → [触发方式](/wiki/triggers) → [运行记录](/wiki/runs)
 - **集成开发者**：[触发方式](/wiki/triggers)（含 API / A2A / 定时 的真实调用示例）→ [Agent 管理](/wiki/agents)（API Key）→ [运行记录](/wiki/runs)（轮询与取消）
-- **管理员**：[Provider 执行引擎](/wiki/providers)（**先安装 Agent CLI**）→ [MCP Server](/wiki/mcp-servers)（使用范围 / stdio 专属）→ [成员管理](/wiki/members) → [长期记忆](/wiki/memory)（持久卷）
+- **管理员**：[Provider 执行引擎](/wiki/providers)（**先安装 Agent CLI**）→ [MCP Server](/wiki/mcp-servers)（使用范围 / stdio 专属）→ [成员管理](/wiki/members) → [长期记忆](/wiki/memory)（持久卷）→ [可观测性](/wiki/observability)（OpenTelemetry 导出）
 
 ## 产品边界（一句话）
 

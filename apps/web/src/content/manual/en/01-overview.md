@@ -30,12 +30,13 @@ This page is the entry point of the manual. The table of contents on the left li
 | View the input, output, and logs of each execution | [Runs](/wiki/runs) |
 | Share an Agent's generated web page/report with others | [Artifacts & Online Sharing](/wiki/artifacts) |
 | Choose a light, dark, or high-contrast interface | [Appearance & Themes](/wiki/appearance) |
+| Send Agent execution traces to your APM / OpenTelemetry | [Observability](/wiki/observability) |
 
 ## Quick Lookup by Role
 
 - **Users / business stakeholders**: [Getting Started](/wiki/getting-started) → [Agent Management](/wiki/agents) → [Evaluation](/wiki/evaluation) → [Trigger Methods](/wiki/triggers) → [Runs](/wiki/runs)
 - **Integration developers**: [Trigger Methods](/wiki/triggers) (includes real invocation examples for API / A2A / scheduled) → [Agent Management](/wiki/agents) (API Key) → [Runs](/wiki/runs) (polling and cancellation)
-- **Administrators**: [Provider Execution Engine](/wiki/providers) (**install the Agent CLIs first**) → [MCP Server](/wiki/mcp-servers) (usage scope / stdio-exclusive) → [Member Management](/wiki/members) → [Long-term Memory](/wiki/memory) (persistent volume)
+- **Administrators**: [Provider Execution Engine](/wiki/providers) (**install the Agent CLIs first**) → [MCP Server](/wiki/mcp-servers) (usage scope / stdio-exclusive) → [Member Management](/wiki/members) → [Long-term Memory](/wiki/memory) (persistent volume) → [Observability](/wiki/observability) (OpenTelemetry export)
 
 ## Product Boundary (in one sentence)
 

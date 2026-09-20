@@ -794,6 +794,31 @@ describe('OAuth Gateway routes', () => {
       })
     })
 
+    it('persists a valid inbound traceparent and drops a malformed one', async () => {
+      const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+      for (const [header, expected] of [
+        [TRACEPARENT, TRACEPARENT],
+        ['garbage', undefined],
+      ] as const) {
+        ;(db.select as Mock).mockReturnValue(makeDbChain(oauthAgent))
+        const insertedValues: unknown[] = []
+        ;(db.insert as Mock).mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: unknown) => {
+            insertedValues.push(v)
+            return { run: vi.fn() }
+          }),
+        }))
+
+        await invokeRequest({ message: 'hi', async: true }, { traceparent: header })
+
+        const runInsert = insertedValues.find(
+          (v): v is { executionMetadata?: Record<string, unknown> } =>
+            typeof v === 'object' && v !== null && 'triggerSource' in v,
+        )
+        expect(runInsert?.executionMetadata?.traceParent).toBe(expected)
+      }
+    })
+
     it('queues OAuth session continuation through execution metadata without leaking chat id into context', async () => {
       const previousRun = {
         id: 'run_previous',
