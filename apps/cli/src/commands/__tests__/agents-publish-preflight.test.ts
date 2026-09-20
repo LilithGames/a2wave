@@ -147,6 +147,82 @@ describe('publish preflight (GET /diagnose before POST /publish)', () => {
       expect(out).toMatch(/does not block publishing/i)
     })
 
+    describe('provider_cli_not_installed with a provider chain', () => {
+      const CLI_MISSING = [
+        {
+          id: 'provider_cli_not_installed',
+          severity: 'error' as const,
+          message: 'claude CLI is not installed',
+        },
+      ]
+      const agentWithChain = (chain: Array<Record<string, unknown>>) => ({
+        data: { id: 'agt_1', providerId: 'prv_claude', config: { providerChain: chain } },
+      })
+
+      it('does not block when an enabled fallback entry uses a different Provider', async () => {
+        // diagnose probes only the primary Provider's CLI; execute-with-retry
+        // moves on to the next chain entry after a spawn failure, so this Agent
+        // can still run.
+        mockGet.mockResolvedValueOnce(diagnose(CLI_MISSING))
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            { providerId: 'prv_claude', enabled: true },
+            { providerId: 'prv_codex', enabled: true },
+          ]),
+        )
+        mockPost.mockResolvedValueOnce({ data: {} })
+
+        await subs.publish.run({ args: { id: 'agt_1' } })
+
+        expect(mockGet).toHaveBeenNthCalledWith(2, '/api/agents/agt_1')
+        expect(mockPost).toHaveBeenCalledWith('/api/agents/agt_1/publish', {})
+        const out = stderr()
+        expect(out).toContain('provider_cli_not_installed: claude CLI is not installed')
+        expect(out).toMatch(/fallback Provider/i)
+        expect(out).not.toContain('[error] provider_cli_not_installed')
+      })
+
+      it('still blocks when every fallback entry uses the same Provider', async () => {
+        mockGet.mockResolvedValueOnce(diagnose(CLI_MISSING))
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            { providerId: 'prv_claude', model: 'a', enabled: true },
+            { providerId: 'prv_claude', model: 'b', enabled: true },
+          ]),
+        )
+
+        const err = await subs.publish.run({ args: { id: 'agt_1' } }).catch((e: unknown) => e)
+
+        expect(err).toBeInstanceOf(CliError)
+        expect(mockPost).not.toHaveBeenCalled()
+      })
+
+      it('still blocks when the only other Provider entry is disabled', async () => {
+        mockGet.mockResolvedValueOnce(diagnose(CLI_MISSING))
+        mockGet.mockResolvedValueOnce(
+          agentWithChain([
+            { providerId: 'prv_claude', enabled: true },
+            { providerId: 'prv_codex', enabled: false },
+          ]),
+        )
+
+        const err = await subs.publish.run({ args: { id: 'agt_1' } }).catch((e: unknown) => e)
+
+        expect(err).toBeInstanceOf(CliError)
+        expect(mockPost).not.toHaveBeenCalled()
+      })
+
+      it('still blocks when the Agent cannot be read to inspect its chain', async () => {
+        mockGet.mockResolvedValueOnce(diagnose(CLI_MISSING))
+        mockGet.mockRejectedValueOnce(new Error('boom'))
+
+        const err = await subs.publish.run({ args: { id: 'agt_1' } }).catch((e: unknown) => e)
+
+        expect(err).toBeInstanceOf(CliError)
+        expect(mockPost).not.toHaveBeenCalled()
+      })
+    })
+
     it('blocks when a blocking id is mixed with runtime-state errors, counting only the blocking one', async () => {
       mockGet.mockResolvedValueOnce(
         diagnose([

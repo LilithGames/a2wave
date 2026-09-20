@@ -357,9 +357,33 @@ export const singleScheduleConfigSchema = z.object({
 })
 export type SingleScheduleConfig = z.infer<typeof singleScheduleConfigSchema>
 
+/** First id that appears on more than one entry, or undefined. Entries without an id are ignored. */
+function firstDuplicateScheduleId(entries: ReadonlyArray<{ id?: string }>): string | undefined {
+  const seen = new Set<string>()
+  for (const { id } of entries) {
+    if (id === undefined) continue
+    if (seen.has(id)) return id
+    seen.add(id)
+  }
+  return undefined
+}
+
 export const scheduleConfigSchema = z.union([
   singleScheduleConfigSchema,
-  z.array(singleScheduleConfigSchema).min(1),
+  // An id is how a schedule is addressed (audit trail, manual run), so two
+  // entries sharing one make "which entry" unanswerable.
+  z
+    .array(singleScheduleConfigSchema)
+    .min(1)
+    .superRefine((entries, ctx) => {
+      const duplicate = firstDuplicateScheduleId(entries)
+      if (duplicate !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Schedule id "${duplicate}" is used by more than one entry; ids must be unique within scheduleConfig.`,
+        })
+      }
+    }),
 ])
 export type ScheduleConfig = z.infer<typeof scheduleConfigSchema>
 
