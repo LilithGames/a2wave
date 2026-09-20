@@ -13,10 +13,24 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
+// Only the boot-grace gate is faked: a fresh test process is always inside its
+// own grace window, which would make every liveness branch read as "cannot
+// judge". Death itself is still decided by the real rule against the heartbeat
+// rows each test supplies.
+const { mockCanJudgePeers } = vi.hoisted(() => ({ mockCanJudgePeers: vi.fn(() => false) }))
+vi.mock('../instance-heartbeat.js', async () => {
+  const actual = await vi.importActual<typeof import('../instance-heartbeat.js')>(
+    '../instance-heartbeat.js',
+  )
+  return { ...actual, canJudgePeerLiveness: mockCanJudgePeers }
+})
+
 import { processInstanceId } from '../process-instance.js'
 import {
   clearWorkspaceRemovalsOnStartup,
   drainPendingWorkspaceRemovalReleases,
+  inspectSourceWorkspaceRemovals,
+  releaseSourceWorkspaceRemovals,
   removeOwnedSourceWorkspaceGuarded,
   removeSourceWorkspaceGuarded,
   retryPendingWorkspaceRemovalReleases,
@@ -122,6 +136,7 @@ const scmOf = (
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockCanJudgePeers.mockReturnValue(false)
 })
 
 describe('removeSourceWorkspaceGuarded', () => {
@@ -432,5 +447,140 @@ describe('reservation recovery', () => {
     mockWithMutation.mockImplementation((fn: (tx: never) => Promise<unknown>) => fn(tx as never))
 
     await expect(clearWorkspaceRemovalsOnStartup()).resolves.toBe(2)
+  })
+})
+
+describe('source deletion sweep', () => {
+  /** First select answers the reservation scan, the second the heartbeat table. */
+  function sweepTx(reservations: Row[], heartbeats: Row[] = []) {
+    let selectCall = 0
+    const deletes: unknown[] = []
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => {
+          const rows = selectCall++ === 0 ? reservations : heartbeats
+          return Object.assign(Promise.resolve(rows), {
+            where: vi.fn(() => Promise.resolve(rows)),
+          })
+        }),
+      })),
+      delete: vi.fn(() => ({
+        where: vi.fn((condition: unknown) => ({
+          returning: vi.fn(() => {
+            deletes.push(condition)
+            return Promise.resolve(
+              reservations.map((row) => ({ workspaceName: row.workspaceName })),
+            )
+          }),
+        })),
+      })),
+    }
+    return { tx, deletes }
+  }
+
+  const reservation = (overrides: Row = {}): Row => ({
+    id: 'scm_1:agent-a',
+    workspaceName: 'agent-a',
+    ownerInstanceId: null,
+    attemptToken: 'tok-1',
+    attemptStartedAt: new Date('2026-01-01T00:00:00Z'),
+    ...overrides,
+  })
+
+  describe('inspectSourceWorkspaceRemovals', () => {
+    it('reports no owner when the source has no reservation', async () => {
+      const { tx } = sweepTx([])
+
+      await expect(inspectSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toEqual({
+        pending: 0,
+        live: null,
+      })
+    })
+
+    /**
+     * The reported bug: a worktree whose removal keeps failing (a corrupted
+     * checkout, say) leaves a reservation the reconciler retries forever, and
+     * every counter-party — including source DELETE — refused while it stood.
+     * A handed-off row has nobody working on it, so it must not block.
+     */
+    it('does not report a handed-off reservation as live', async () => {
+      const { tx } = sweepTx([reservation()])
+
+      await expect(inspectSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toEqual({
+        pending: 1,
+        live: null,
+      })
+    })
+
+    it('does not report a reservation whose owner is provably dead', async () => {
+      mockCanJudgePeers.mockReturnValue(true)
+      const { tx } = sweepTx([reservation({ ownerInstanceId: 'inst_gone' })], [])
+
+      await expect(inspectSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toMatchObject({
+        live: null,
+      })
+    })
+
+    /**
+     * A beating owner is mid-`rm`: the source deletion would rename the very
+     * directory it is deleting out from under it.
+     */
+    it('reports a reservation a live owner is still working on', async () => {
+      mockCanJudgePeers.mockReturnValue(true)
+      const { tx } = sweepTx(
+        [
+          reservation(),
+          reservation({
+            id: 'scm_1:agent-b',
+            workspaceName: 'agent-b',
+            ownerInstanceId: 'inst_live',
+          }),
+        ],
+        [{ id: 'inst_live', startedAt: new Date('2025-12-31T00:00:00Z'), heartbeatAt: new Date() }],
+      )
+
+      await expect(inspectSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toEqual({
+        pending: 2,
+        live: { id: 'scm_1:agent-b', workspaceName: 'agent-b' },
+      })
+    })
+
+    /**
+     * Inside the post-boot grace window an owner cannot be proved dead — the
+     * heartbeat table may simply not be populated yet — so an owned row blocks.
+     */
+    it('reports an owned reservation while peer liveness cannot be judged', async () => {
+      mockCanJudgePeers.mockReturnValue(false)
+      const { tx } = sweepTx([reservation({ ownerInstanceId: 'inst_gone' })], [])
+
+      await expect(inspectSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toEqual({
+        pending: 1,
+        live: { id: 'scm_1:agent-a', workspaceName: 'agent-a' },
+      })
+    })
+
+    it('never reads the heartbeat table when every reservation is handed off', async () => {
+      mockCanJudgePeers.mockReturnValue(true)
+      const { tx } = sweepTx([reservation()])
+
+      await inspectSourceWorkspaceRemovals(tx as never, 'scm_1')
+
+      expect(tx.select).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('releaseSourceWorkspaceRemovals', () => {
+    it('drops every reservation of the source being deleted', async () => {
+      const { tx, deletes } = sweepTx([
+        reservation(),
+        reservation({ id: 'scm_1:agent-b', workspaceName: 'agent-b' }),
+      ])
+
+      await expect(releaseSourceWorkspaceRemovals(tx as never, 'scm_1')).resolves.toEqual([
+        'agent-a',
+        'agent-b',
+      ])
+      expect(deletes).toHaveLength(1)
+    })
   })
 })

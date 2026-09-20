@@ -53,6 +53,8 @@ import { isolateManagedScmStorage } from '../lib/scm-storage-reclaim.js'
 import { findDurableScmSourceWorkload } from '../lib/scm-workload-lifecycle.js'
 import {
   findPendingWorkspaceRemoval,
+  inspectSourceWorkspaceRemovals,
+  releaseSourceWorkspaceRemovals,
   removeSourceWorkspaceGuarded,
   WorkspaceRemovalBlockedError,
 } from '../lib/scm-workspace-removal.js'
@@ -527,6 +529,7 @@ app.delete('/:id', async (c) => {
         referencedBy: lockedReferences,
         activeWorkload: undefined,
         pendingRemoval: undefined,
+        releasedRemovals: [],
         row: undefined,
         peers: undefined,
       } as const
@@ -542,19 +545,28 @@ app.delete('/:id', async (c) => {
         referencedBy: [],
         activeWorkload,
         pendingRemoval: undefined,
+        releasedRemovals: [],
         row: undefined,
         peers: undefined,
       } as const
     }
-    // An in-flight worktree removal both reads this row (its re-check) and
-    // holds an FK reference to it; finalizing the source now would fail on
-    // that constraint mid-protocol. Removals are seconds long — retry.
-    const pendingRemoval = await findPendingWorkspaceRemoval(tx, id)
-    if (pendingRemoval) {
+    // A worktree removal that is actually running both reads this row (its
+    // re-check) and holds an FK reference to it; finalizing the source now
+    // would fail on that constraint mid-protocol, and would vacate the very
+    // directory it is deleting. Those are seconds long — retry.
+    //
+    // A reservation nobody owns is a different thing entirely: deleting the
+    // source subsumes that removal, so the sweep releases it here rather than
+    // refusing. Left standing, a worktree that can never be removed (a
+    // corrupted checkout fails every reconciler tick) made its source
+    // permanently undeletable through the API.
+    const removals = await inspectSourceWorkspaceRemovals(tx, id)
+    if (removals.live) {
       return {
         referencedBy: [],
         activeWorkload: undefined,
-        pendingRemoval,
+        pendingRemoval: removals.live,
+        releasedRemovals: [],
         row: undefined,
         peers: undefined,
       } as const
@@ -577,10 +589,16 @@ app.delete('/:id', async (c) => {
         referencedBy: [],
         activeWorkload: undefined,
         pendingRemoval: undefined,
+        releasedRemovals: [],
         row: undefined,
         peers: undefined,
       } as const
     }
+    // Only now that this deletion owns the source: a reservation released for
+    // a deletion that lost its race would leave a failed worktree removal
+    // silently unguarded and unretried on a source that lives on.
+    const releasedRemovals =
+      removals.pending > 0 ? await releaseSourceWorkspaceRemovals(tx, id) : []
     // The reservation is what actually commits here, so that is what this entry
     // records. Reclaim can still fail and leave the row in place; claiming the
     // deletion now would make the trail assert something that never happened.
@@ -591,7 +609,12 @@ app.delete('/:id', async (c) => {
         action: 'scm_source.request_deletion',
         resource: 'scm_source',
         resourceId: id,
-        details: scmSourceAuditDetails(source),
+        details: {
+          ...scmSourceAuditDetails(source),
+          // Releasing another guard is part of what this deletion did; the
+          // trail has to say which worktrees stopped being protected.
+          ...(releasedRemovals.length > 0 ? { releasedWorkspaceRemovals: releasedRemovals } : {}),
+        },
       },
       tx,
     )
@@ -599,6 +622,7 @@ app.delete('/:id', async (c) => {
       referencedBy: [],
       activeWorkload: undefined,
       pendingRemoval: undefined,
+      releasedRemovals,
       row,
       peers,
     } as const
@@ -617,6 +641,12 @@ app.delete('/:id', async (c) => {
         error: `Cannot delete: workspace "${reservation.pendingRemoval.workspaceName}" is being removed; retry`,
       },
       409,
+    )
+  }
+  if (reservation.releasedRemovals.length > 0) {
+    logger.warn(
+      { sourceId: id, workspaces: reservation.releasedRemovals },
+      'Released abandoned workspace removal reservations while deleting the SCM source',
     )
   }
   const pendingSource = reservation?.row ?? source

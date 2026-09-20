@@ -247,7 +247,8 @@ revisiting when this area is next touched:
 - The reservation is recognized by every counter-party: worktree resolution
   refuses to create or reuse a reserved name; run admission rejects a run
   whose explicit `worktreeConfig.name` is reserved; path PATCH, source DELETE,
-  and env bootstrap return 409 / defer while one is pending. A second removal
+  and env bootstrap return 409 / defer while one is pending (source DELETE only
+  for a reservation with a live owner — see the sweep rule below). A second removal
   of the same worktree loses the stable target-id / `(source, workspace)`
   unique conflict. A separate opaque attempt token fences release and recovery,
   so a delayed current-version `finally` cannot delete a newer reservation for
@@ -260,6 +261,24 @@ revisiting when this area is next touched:
   an upgraded replica reads it as dead and would reclaim leases and reservations
   out from under a process that is very much alive. Stop every replica before
   upgrading; do not run mixed versions even briefly.
+- **Deleting a source subsumes its pending worktree removals.** Source DELETE
+  classifies the source's reservations in the same transaction that commits its
+  deletion reservation, and drops them all once that reservation is committed:
+  only a row whose owner is *live* (NULL ownership and a provably dead owner
+  both count as abandoned, by the liveness rule below) still answers 409 — that
+  process is running the `rm` right now, and vacating the source's storage under it is exactly what
+  the reservation prevents. Refusing on an abandoned row instead made a source
+  permanently undeletable through the API whenever its worktree could not be
+  removed at all: a corrupted checkout fails every reconciler tick, and each
+  failed tick re-arms the row that blocks DELETE. The sweep releases nothing on
+  the blocked path, and nothing on a deletion that loses the atomic race for
+  the source row either — a released reservation on a surviving source would
+  leave a failed worktree removal silently unguarded and unretried. The
+  released worktree names go into the `scm_source.request_deletion` audit
+  details, because dropping another guard is part of what the deletion did.
+  Nothing can re-create a reservation afterwards: creation re-reads the source
+  row and refuses once `deletion_requested_at` is set, which keeps the FK safe
+  for phase two.
 - Reservation age is **not** proof of abandonment: multi-repository Git work
   and filesystem cleanup can outlive any per-command timeout, and a slow or
   partitioned peer may still be deleting. **A stopped heartbeat is** — see the
