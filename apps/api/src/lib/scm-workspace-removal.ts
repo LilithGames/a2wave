@@ -5,7 +5,12 @@ import type { db } from '../db/client.js'
 import { runs, scmSources, scmWorkloadLeases, scmWorkspaceRemovals } from '../db/schema.js'
 import type { TransactionHandle } from '../db/transaction.js'
 import { defaultWorkspacesPath } from './git-workspace.js'
-import { hasLostHeartbeatOwnership } from './instance-heartbeat.js'
+import {
+  canJudgePeerLiveness,
+  hasLostHeartbeatOwnership,
+  isInstanceOwnerDead,
+  loadInstanceLiveness,
+} from './instance-heartbeat.js'
 import { logger } from './logger.js'
 import { processInstanceId } from './process-instance.js'
 import { withScmPathMutation } from './scm-path-plan.js'
@@ -102,6 +107,89 @@ export async function findPendingWorkspaceRemoval(
       .limit(1)
   )[0]
   return row ?? null
+}
+
+/** What a source's pending removal reservations mean for deleting it. */
+export interface SourceWorkspaceRemovalState {
+  /** How many reservations the source still has, live or abandoned. */
+  pending: number
+  /** The reservation a live process is still working on, if any. */
+  live: { id: string; workspaceName: string } | null
+}
+
+/**
+ * Decide what a source's pending worktree removals mean for its deletion.
+ *
+ * Deleting a whole source subsumes every worktree removal pending on it: the
+ * checkout, its worktrees and their reservations all go away together. So the
+ * only reservation that may stop a source deletion is one whose owner is
+ * actually running the filesystem removal right now — vacating the source's
+ * storage under it is exactly what the reservation exists to prevent. Those
+ * are seconds long; the caller answers "retry".
+ *
+ * A reservation nobody owns must NOT block. Refusing on one made a source
+ * permanently undeletable through the API whenever its worktree could not be
+ * removed at all: a corrupted checkout fails every reconciler tick, and each
+ * failed tick re-arms the very row that blocks DELETE.
+ *
+ * Liveness follows exactly the reconciler's rule — NULL owner is an explicit
+ * handoff, a named owner must be proved dead, and no owner is judged inside
+ * the post-boot grace window. Call it under the SCM mutation lock so adoption
+ * cannot interleave between the verdict and what the caller does with it.
+ */
+export async function inspectSourceWorkspaceRemovals(
+  tx: TransactionHandle,
+  sourceId: string,
+): Promise<SourceWorkspaceRemovalState> {
+  const rows = await tx
+    .select({
+      id: scmWorkspaceRemovals.id,
+      workspaceName: scmWorkspaceRemovals.workspaceName,
+      ownerInstanceId: scmWorkspaceRemovals.ownerInstanceId,
+      attemptStartedAt: scmWorkspaceRemovals.attemptStartedAt,
+    })
+    .from(scmWorkspaceRemovals)
+    .where(eq(scmWorkspaceRemovals.scmSourceId, sourceId))
+  const owned = rows.filter(
+    (row): row is typeof row & { ownerInstanceId: string } => row.ownerInstanceId !== null,
+  )
+  const pending = rows.length
+  if (owned.length === 0) return { pending, live: null }
+  // Inside the post-boot grace window nobody can be proved dead, so every
+  // owned row blocks whatever the heartbeat table says — no point reading it.
+  if (!canJudgePeerLiveness()) {
+    return { pending, live: { id: owned[0].id, workspaceName: owned[0].workspaceName } }
+  }
+  const liveness = await loadInstanceLiveness(tx)
+  const now = new Date()
+  const live = owned.find(
+    (row) => !isInstanceOwnerDead(liveness, row.ownerInstanceId, row.attemptStartedAt, now),
+  )
+  return { pending, live: live ? { id: live.id, workspaceName: live.workspaceName } : null }
+}
+
+/**
+ * Drop every removal reservation on a source that is being deleted.
+ *
+ * **Only valid once `inspectSourceWorkspaceRemovals` reported no live owner in
+ * the same transaction**, which is what proves no process is mid-removal:
+ * under the SCM mutation lock nothing can adopt a row in between. Deferring the release
+ * until the source's own deletion reservation has committed matters — a
+ * deletion that loses its race must leave the worktree guards exactly as it
+ * found them, or a failed removal is silently forgotten while its source
+ * lives on.
+ *
+ * @returns the workspace names whose reservations were released.
+ */
+export async function releaseSourceWorkspaceRemovals(
+  tx: TransactionHandle,
+  sourceId: string,
+): Promise<string[]> {
+  const released = await tx
+    .delete(scmWorkspaceRemovals)
+    .where(eq(scmWorkspaceRemovals.scmSourceId, sourceId))
+    .returning({ workspaceName: scmWorkspaceRemovals.workspaceName })
+  return released.map((row) => row.workspaceName)
 }
 
 /**

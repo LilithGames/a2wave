@@ -52,6 +52,11 @@ vi.mock('../../db/schema.js', () => ({
     attemptToken: 'scmWorkspaceRemovals.attemptToken',
     createdAt: 'scmWorkspaceRemovals.createdAt',
   },
+  instanceHeartbeats: {
+    id: 'instanceHeartbeats.id',
+    startedAt: 'instanceHeartbeats.startedAt',
+    heartbeatAt: 'instanceHeartbeats.heartbeatAt',
+  },
   users: { id: 'users.id', role: 'users.role', isActive: 'users.isActive' },
   auditLogs: { id: 'auditLogs.id' },
 }))
@@ -1018,6 +1023,72 @@ describe('SCM Sources routes', () => {
       const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
 
       expect(res.status).toBe(409)
+      expect(db.delete).not.toHaveBeenCalled()
+    })
+
+    /**
+     * The reported bug. A worktree whose removal keeps failing — a corrupted
+     * checkout fails every reconciler tick — leaves a reservation nobody is
+     * working on, and DELETE refused on it forever: the source became
+     * undeletable through the API, recoverable only by restarting the process
+     * or editing the database. Deleting the source subsumes that removal.
+     */
+    it('releases an abandoned worktree removal reservation instead of refusing', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', name: 'Source' }))
+        .mockReturnValueOnce(makeDbChain([])) // no referencing agents
+        .mockReturnValueOnce(makeDbChain(undefined)) // no durable workload lease
+        .mockReturnValueOnce(
+          makeDbChain([
+            {
+              id: 'scm_1:agent-x',
+              workspaceName: 'agent-x',
+              ownerInstanceId: null, // handed off: nobody is removing it
+              attemptToken: 'tok-1',
+              attemptStartedAt: new Date(),
+            },
+          ]),
+        )
+      ;(db.delete as Mock)
+        // The reservation release comes first, then the source row itself.
+        .mockReturnValueOnce(makeDeleteChain({ workspaceName: 'agent-x' }))
+        .mockReturnValue(makeDeleteChain())
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(200)
+      const reservationAudit = (writeAudit as Mock).mock.calls.find(
+        (call) => call[1].action === 'scm_source.request_deletion',
+      )
+      // The released guards are part of what this deletion did, so the trail
+      // has to name them.
+      expect(reservationAudit?.[1].details.releasedWorkspaceRemovals).toEqual(['agent-x'])
+    })
+
+    // A beating owner is running the `rm` right now; vacating the source's
+    // storage under it is exactly what the reservation exists to prevent.
+    it('returns 409 while a live owner is removing one of the worktrees', async () => {
+      ;(db.select as Mock)
+        .mockReturnValueOnce(makeDbChain({ id: 'scm_1', name: 'Source' }))
+        .mockReturnValueOnce(makeDbChain([]))
+        .mockReturnValueOnce(makeDbChain(undefined))
+        .mockReturnValueOnce(
+          makeDbChain([
+            {
+              id: 'scm_1:agent-x',
+              workspaceName: 'agent-x',
+              ownerInstanceId: 'inst_live',
+              attemptToken: 'tok-1',
+              attemptStartedAt: new Date(),
+            },
+          ]),
+        )
+
+      const res = await app.request('/api/scm-sources/scm_1', { method: 'DELETE' })
+
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: string }).error).toMatch(/"agent-x" is being removed/)
+      expect(isolateManagedScmStorage).not.toHaveBeenCalled()
       expect(db.delete).not.toHaveBeenCalled()
     })
 
