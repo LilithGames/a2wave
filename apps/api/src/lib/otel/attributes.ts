@@ -36,6 +36,15 @@ export const ATTR = {
   PROVIDER_ID: 'a2wave.provider.id',
   PROVIDER_DISPLAY_NAME: 'a2wave.provider.name',
   CHAT_RESET: 'a2wave.chat.reset',
+  // OpenInference mirror. Backends that speak it (Phoenix, Arize, Langfuse) translate gen_ai.*
+  // into their own llm.* keys, but never derive these — and their input / output / kind columns
+  // read exactly these.
+  OI_SPAN_KIND: 'openinference.span.kind',
+  OI_SESSION_ID: 'session.id',
+  OI_INPUT_VALUE: 'input.value',
+  OI_INPUT_MIME_TYPE: 'input.mime_type',
+  OI_OUTPUT_VALUE: 'output.value',
+  OI_OUTPUT_MIME_TYPE: 'output.mime_type',
   TOOL_UNPAIRED: 'a2wave.tool.unpaired',
   TOOL_INCOMPLETE: 'a2wave.tool.incomplete',
 } as const

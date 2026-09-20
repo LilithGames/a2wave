@@ -10,6 +10,7 @@ const current = {
   headersEnc: '',
   captureContent: 'false',
   serviceName: '',
+  resourceAttributes: '',
 }
 
 describe('prepareOtelSettingsPatch', () => {
@@ -111,6 +112,25 @@ describe('prepareOtelSettingsPatch', () => {
       ok: false,
       error: 'INVALID_OTEL_SETTING',
     })
+  })
+
+  it('normalizes resource attributes and rejects malformed or reserved ones', () => {
+    expect(
+      prepareOtelSettingsPatch(
+        { resourceAttributes: ' openinference.project.name = a2wave ' },
+        current,
+      ),
+    ).toEqual({ ok: true, patch: { resourceAttributes: 'openinference.project.name=a2wave' } })
+    expect(prepareOtelSettingsPatch({ resourceAttributes: '' }, current)).toEqual({
+      ok: true,
+      patch: { resourceAttributes: '' },
+    })
+    for (const resourceAttributes of ['nope', 'service.name=x']) {
+      expect(prepareOtelSettingsPatch({ resourceAttributes }, current)).toMatchObject({
+        ok: false,
+        error: 'INVALID_OTEL_RESOURCE_ATTRIBUTES',
+      })
+    }
   })
 
   it('rejects unknown keys', () => {

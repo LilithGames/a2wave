@@ -6,7 +6,12 @@
  * the stored secret; the server never returns header values, so the editor always starts empty.
  * Validation reuses the shared schema/normalizer — the same implementation the API runs.
  */
-import { normalizeOtelEndpoint, type OtelStatus, otelHeadersSchema } from '@a2wave/shared'
+import {
+  normalizeOtelEndpoint,
+  type OtelStatus,
+  otelHeadersSchema,
+  parseOtelResourceAttributes,
+} from '@a2wave/shared'
 import type { BuildResult } from './sso-config-form'
 
 export interface OtelHeaderRow {
@@ -18,6 +23,8 @@ export interface OtelFormValues {
   enabled: boolean
   endpoint: string
   serviceName: string
+  /** `key=value,key=value`, the OTEL_RESOURCE_ATTRIBUTES format. */
+  resourceAttributes: string
   captureContent: boolean
   /** Replacement headers; empty = leave the stored ones untouched. */
   headers: OtelHeaderRow[]
@@ -27,6 +34,7 @@ export const EMPTY_OTEL_FORM: OtelFormValues = {
   enabled: false,
   endpoint: '',
   serviceName: '',
+  resourceAttributes: '',
   captureContent: false,
   headers: [],
 }
@@ -36,6 +44,7 @@ export function otelFormFromStatus(status: OtelStatus): OtelFormValues {
     enabled: status.enabled,
     endpoint: status.endpoint,
     serviceName: status.serviceName,
+    resourceAttributes: status.resourceAttributes,
     captureContent: status.captureContent,
     headers: [],
   }
@@ -48,10 +57,15 @@ export function buildOtelPatch(form: OtelFormValues): BuildResult<Record<string,
   if (form.enabled && !endpoint)
     return { ok: false, error: 'settings.otel.errors.endpointRequired' }
 
+  if (parseOtelResourceAttributes(form.resourceAttributes) === null) {
+    return { ok: false, error: 'settings.otel.errors.resourceAttributesInvalid' }
+  }
+
   const value: Record<string, string> = {
     enabled: String(form.enabled),
     endpoint,
     serviceName: form.serviceName.trim(),
+    resourceAttributes: form.resourceAttributes.trim(),
     captureContent: String(form.captureContent),
   }
 

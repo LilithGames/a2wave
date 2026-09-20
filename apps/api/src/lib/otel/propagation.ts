@@ -36,3 +36,46 @@ export function normalizeTraceparent(raw: string | null | undefined): string | u
   const parsed = parseTraceparent(raw)
   return parsed ? formatTraceparent(parsed) : undefined
 }
+
+const SESSION_BAGGAGE_KEY = 'session.id'
+const SESSION_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/
+
+export interface InboundTraceContext {
+  traceParent?: string
+  traceSession?: string
+}
+
+function readSessionFromBaggage(baggage: string | null | undefined): string | undefined {
+  for (const member of (baggage ?? '').split(',')) {
+    // `key=value;property=…` — properties are irrelevant here.
+    const [pair] = member.split(';')
+    const separator = pair.indexOf('=')
+    if (separator <= 0 || pair.slice(0, separator).trim() !== SESSION_BAGGAGE_KEY) continue
+    try {
+      const value = decodeURIComponent(pair.slice(separator + 1).trim())
+      return SESSION_ID_RE.test(value) ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
+
+/**
+ * Trace context of an inbound invocation: the W3C `traceparent`, plus the caller's session id
+ * carried as W3C `baggage` (`session.id=…`) so an Agent-to-Agent trace is one session in the
+ * tracing backend. The session is only honoured inside a valid trace. Malformed values are
+ * dropped, never rejected. `getHeader` is optional because some A2A contexts carry no request.
+ */
+export function readInboundTraceContext(
+  getHeader: ((name: string) => string | undefined) | undefined,
+): InboundTraceContext {
+  const traceParent = normalizeTraceparent(getHeader?.('traceparent'))
+  if (!traceParent) return {}
+  const traceSession = readSessionFromBaggage(getHeader?.('baggage'))
+  return traceSession ? { traceParent, traceSession } : { traceParent }
+}
+
+export function formatSessionBaggage(sessionId: string): string {
+  return `${SESSION_BAGGAGE_KEY}=${encodeURIComponent(sessionId)}`
+}

@@ -40,6 +40,28 @@ token usage is reported once per execution, so such spans could only be invented
 | `attempt` | `a2wave.attempt.number`, `a2wave.provider.index` / `.id` / `.name`, `gen_ai.request.model`, `a2wave.chat.reset`, this attempt's own `gen_ai.usage.*`, `error.type` |
 | `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
 
+### OpenInference mirror
+
+`gen_ai.*` is the primary convention. Backends that speak OpenInference (Arize Phoenix, Arize,
+Langfuse) translate `gen_ai.*` into their own `llm.*` keys server-side, but they never derive the
+keys their input / output / kind / session columns read — so those are written explicitly:
+
+| Key | Span | Value |
+|---|---|---|
+| `openinference.span.kind` | all | `AGENT` (invoke_agent), `LLM` (attempt), `TOOL` (execute_tool) |
+| `session.id` | invoke_agent | inherited caller session, else the run id |
+| `input.value` / `input.mime_type` | invoke_agent, execute_tool | prompt (`text/plain`) / tool arguments (`application/json`) — **content-gated** |
+| `output.value` / `output.mime_type` | invoke_agent | the reply — **content-gated** |
+
+- **`attempt` is `LLM`, not `CHAIN`.** It is the span that carries model and token usage, and
+  OpenInference backends total tokens and cost over `LLM` spans only; the `AGENT` root repeats the
+  totals without being double-counted. Marking it `CHAIN` zeroes the backend's token and cost sums.
+- **The session is the run id, not the provider session id** (`gen_ai.conversation.id`). The run id
+  is stable across the turns of a conversation (the run row is reused), survives provider fallback,
+  and is known before execution — the provider session id of a new conversation only exists after
+  the run, too late to hand downstream. One trace must not carry two sessions: the backend picks
+  one arbitrarily.
+
 Root span events: `retry`, `provider_fallback`, and the agent-router's `a2a.task.*` lifecycle
 events (primitive metadata only).
 
@@ -79,6 +101,7 @@ Toggling capture is audited (`settings.otel.updated` records the resulting boole
 | Automatic job retry | `job-retry-scheduler.ts` carries `traceParent` to the replay run. |
 | Manual retry | `buildRetryMetadata` is an allowlist and drops it on purpose: a human retry is a new trace. |
 | Outbound: Agent → Agent | The **attempt** span's `traceparent` is injected as the `TRACEPARENT` env var via `injectRouterRuntimeEnvIntoAgentConfig` (same path as `A2WAVE_CHANNEL_B64`). The agent-router MCP forwards it as a `traceparent` header on local and remote A2A calls; it takes no OpenTelemetry dependency. The attempt span — not the tool span — is the parent because the router's env is fixed when the CLI is spawned. |
+| Session | The trace's session id travels as W3C `baggage` (`session.id=…`): injected as the `BAGGAGE` env var next to `TRACEPARENT`, forwarded by the agent-router, read by `readInboundTraceContext`, stored as `executionMetadata.traceSession`. It is only honoured together with a valid `traceparent`. A downstream Agent's run therefore lands in the caller's session. |
 | Outbound: CLI child | The same `TRACEPARENT` reaches the CLI child through `agentEnv`, so an instrumented tool the Agent runs can join the trace. |
 
 `executionMetadata.traceParent` is a correlation id, not telemetry. The inbound `sampled` flag is
@@ -95,6 +118,7 @@ Settings category `otel` (all values are strings):
 | `headersEnc` | AES-GCM ciphertext of a JSON header map. Server-managed. |
 | `captureContent` | See above. |
 | `serviceName` | `service.name`; empty = `a2wave`. |
+| `resourceAttributes` | Extra resource attributes in the standard `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`). Generic on purpose: backends route on resource attributes (environment, team, project — e.g. Arize Phoenix files spans under `openinference.project.name`). `service.name` / `service.version` / `service.instance.id` are managed and rejected here. |
 
 **Secret convention** (same as `sso.oidcClientSecret`): headers are submitted as the plaintext
 pseudo-key `otel.headers` (a JSON object string) in `PATCH /api/settings`, encrypted by
@@ -103,7 +127,7 @@ keeps them. `GET /api/settings/otel/status` returns header **names** and `header
 A client-supplied `headersEnc` is rejected. Never add an `otel` key to `NON_ADMIN_READABLE_KEYS`.
 
 **Env**: `SETTINGS_OTEL_ENABLED`, `SETTINGS_OTEL_ENDPOINT`, `SETTINGS_OTEL_CAPTURE_CONTENT`,
-`SETTINGS_OTEL_SERVICE_NAME` use the generic settings bridge. `SETTINGS_OTEL_HEADERS` (JSON map)
+`SETTINGS_OTEL_SERVICE_NAME`, `SETTINGS_OTEL_RESOURCE_ATTRIBUTES` use the generic settings bridge. `SETTINGS_OTEL_HEADERS` (JSON map)
 is special-cased in `resolveSettingsEnvEntry`: it is encrypted into `otel.headersEnc` and the
 plaintext never reaches the settings table.
 

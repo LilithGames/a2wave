@@ -531,6 +531,115 @@ describe('content capture', () => {
   })
 })
 
+describe('OpenInference mirror', () => {
+  // Phoenix / Arize / Langfuse read these keys for their input, output and kind columns; they
+  // translate gen_ai.* into llm.* themselves but never derive input.value / output.value.
+  it('tags every span with an OpenInference kind, with or without content capture', () => {
+    const trace = startRunTrace('t', payload())
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'started',
+      callId: 'c1',
+      toolName: 'Bash',
+      ts: 1,
+    })
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'completed',
+      callId: 'c1',
+      toolName: 'Bash',
+      ts: 2,
+    })
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+    expect(root().attributes['openinference.span.kind']).toBe('AGENT')
+    // LLM, not CHAIN: the attempt is where model and token usage are measured, and OpenInference
+    // backends total tokens and cost over LLM spans only (AGENT spans are not double-counted).
+    expect(byName('attempt')[0].attributes['openinference.span.kind']).toBe('LLM')
+    expect(byName('execute_tool')[0].attributes['openinference.span.kind']).toBe('TOOL')
+  })
+
+  it('uses the run id as the session: stable across turns and known before execution', () => {
+    // Not the provider session id: that one changes on provider fallback and, for a new
+    // conversation, only exists after the run — too late to hand to a downstream Agent.
+    startRunTrace('t', payload(), { runId: 'run_1' }).finish({ result: ok, retries: 0 })
+    expect(root().attributes['session.id']).toBe('run_1')
+  })
+
+  it('inherits the caller session so an Agent-to-Agent trace stays one session', () => {
+    startRunTrace('t', payload({ traceParent: PARENT, traceSession: 'run_caller' }), {
+      runId: 'run_child',
+    }).finish({ result: ok, retries: 0 })
+    expect(root().attributes['session.id']).toBe('run_caller')
+  })
+
+  it('exposes the session as W3C baggage for the downstream hop', () => {
+    const trace = startRunTrace('t', payload(), { runId: 'run_1' })
+    expect(trace.baggage()).toBe('session.id=run_1')
+    trace.finish({ result: ok, retries: 0 })
+    runtime = null
+    expect(startRunTrace('t', payload(), { runId: 'run_1' }).baggage()).toBeUndefined()
+  })
+
+  it('omits the session when there is no run row (evaluation, memory)', () => {
+    startRunTrace('t', payload()).finish({ result: ok, retries: 0 })
+    expect(root().attributes['session.id']).toBeUndefined()
+  })
+
+  it('on: mirrors the prompt, the reply and tool arguments as plain values, masked', () => {
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('t', payload({ prompt: `${PROMPT} provider-key-123456` }))
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'started',
+      callId: 'c1',
+      toolName: 'Bash',
+      input: TOOL_INPUT,
+      ts: 1,
+    })
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'completed',
+      callId: 'c1',
+      toolName: 'Bash',
+      ts: 2,
+    })
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    expect(root().attributes).toMatchObject({
+      'input.value': `${PROMPT} [REDACTED]`,
+      'input.mime_type': 'text/plain',
+      'output.value': OUTPUT,
+      'output.mime_type': 'text/plain',
+    })
+    expect(byName('execute_tool')[0].attributes).toMatchObject({
+      'input.value': JSON.stringify(TOOL_INPUT),
+      'input.mime_type': 'application/json',
+    })
+  })
+
+  it('off: writes no input or output value at all', () => {
+    const trace = startRunTrace('t', payload())
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'started',
+      callId: 'c1',
+      toolName: 'Bash',
+      input: TOOL_INPUT,
+      ts: 1,
+    })
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+    for (const span of spans()) {
+      expect(Object.keys(span.attributes).filter((k) => /^(input|output)\./.test(k))).toEqual([])
+    }
+  })
+})
+
 describe('fail-open', () => {
   it('never throws into the run path when the tracer blows up', () => {
     const broken = makeRuntime(false)

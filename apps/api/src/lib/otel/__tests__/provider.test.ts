@@ -59,6 +59,7 @@ const enabled: OtelConfig = {
   headers: { Authorization: 'Bearer t' },
   captureContent: true,
   serviceName: 'a2wave',
+  resourceAttributes: {},
 }
 
 beforeEach(async () => {
@@ -170,6 +171,28 @@ describe('export tracking', () => {
       lastExportAt: null,
       lastError: null,
       droppedSpans: 0,
+    })
+  })
+})
+
+describe('resource', () => {
+  it('adds the configured resource attributes next to the managed ones', async () => {
+    config = {
+      ...enabled,
+      serviceName: 'agents',
+      resourceAttributes: { 'openinference.project.name': 'a2wave', 'service.name': 'spoofed' },
+    }
+    const runtime = getOtelRuntime()
+    runtime?.tracer.startSpan('s').end()
+    await runtime?.forceFlush()
+    const [span] = exporters[0].exported[0] as Array<{
+      resource: { attributes: Record<string, unknown> }
+    }>
+    expect(span.resource.attributes).toMatchObject({
+      'openinference.project.name': 'a2wave',
+      'service.name': 'agents',
+      'service.version': '9.9.9',
+      'service.instance.id': 'instance-1',
     })
   })
 })

@@ -29,7 +29,7 @@ import { executeChatRun } from '../lib/execute-chat-run.js'
 import { WorktreeBranchLockedError, WorktreeDirtyError } from '../lib/git-workspace.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
-import { normalizeTraceparent } from '../lib/otel/propagation.js'
+import { readInboundTraceContext } from '../lib/otel/propagation.js'
 import { registerPendingContext, takePendingContext } from '../lib/pending-job-registry.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildGatewayChannel, stripReservedContextKeys } from '../lib/run-channel.js'
@@ -275,12 +275,12 @@ app.post('/:agentId/invoke', async (c) => {
       : stepContext
   const hasPendingContext = Object.keys(pendingContext).length > 0
   if (hasPendingContext) registerPendingContext(runId, pendingContext)
-  const traceParent = normalizeTraceparent(c.req.header('traceparent'))
+  const traceContext = readInboundTraceContext((name) => c.req.header(name))
   const executionMetadata = {
     ...(attachmentRefs && attachmentRefs.length > 0
       ? { attachments: attachmentRefs, attachmentConsumerId: `agent:${agentId}` }
       : {}),
-    ...(traceParent ? { traceParent } : {}),
+    ...traceContext,
   }
   try {
     await db.insert(runs).values({
@@ -423,7 +423,7 @@ app.post('/:agentId/invoke', async (c) => {
     model: agentConfig.model || undefined,
     workDir: resolvedWorkDir,
     agentConfig,
-    traceParent,
+    ...traceContext,
   }
 
   // workDir 必须透传给 lifecycleParams —— finishRunSuccess 靠它决定是否扫描并注册产物。

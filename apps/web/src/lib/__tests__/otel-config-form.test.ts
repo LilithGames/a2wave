@@ -7,6 +7,7 @@ const status: OtelStatus = {
   endpoint: 'http://localhost:4318',
   tracesUrl: 'http://localhost:4318/v1/traces',
   serviceName: 'agents',
+  resourceAttributes: 'openinference.project.name=a2wave',
   captureContent: true,
   headersSet: true,
   headerNames: ['Authorization'],
@@ -23,6 +24,7 @@ describe('otelFormFromStatus', () => {
       enabled: true,
       endpoint: 'http://localhost:4318',
       serviceName: 'agents',
+      resourceAttributes: 'openinference.project.name=a2wave',
       captureContent: true,
       headers: [],
     })
@@ -43,6 +45,7 @@ describe('buildOtelPatch', () => {
         enabled: 'true',
         endpoint: 'http://localhost:4318',
         serviceName: 'agents',
+        resourceAttributes: '',
         captureContent: 'false',
       },
     })
@@ -69,6 +72,16 @@ describe('buildOtelPatch', () => {
     expect(buildOtelPatch({ ...EMPTY_OTEL_FORM, endpoint: 'grpc://c:4317' })).toEqual({
       ok: false,
       error: 'settings.otel.errors.endpointInvalid',
+    })
+  })
+
+  it('submits resource attributes and rejects a malformed list', () => {
+    const form = { ...EMPTY_OTEL_FORM, endpoint: 'http://c:4318' }
+    const ok = buildOtelPatch({ ...form, resourceAttributes: ' deployment.environment=prod ' })
+    expect(ok.ok && ok.value.resourceAttributes).toBe('deployment.environment=prod')
+    expect(buildOtelPatch({ ...form, resourceAttributes: 'service.name=x' })).toEqual({
+      ok: false,
+      error: 'settings.otel.errors.resourceAttributesInvalid',
     })
   })
 

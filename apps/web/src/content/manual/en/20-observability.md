@@ -37,8 +37,12 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 | Enable export | When off, nothing is produced and execution carries no overhead |
 | Collector endpoint | OTLP/HTTP only (`http://` or `https://`); gRPC is not supported |
 | Service name | The service name shown in your APM; defaults to `a2wave` |
+| Resource attributes | Attributes added to every span, as comma-separated `key=value` pairs. Lets your collector group by environment, team or project, e.g. `deployment.environment=prod` |
 | Auth headers | Stored encrypted. After saving only the header **names** are shown, never the values; leave blank to keep what is stored |
 | Capture content | See the next section; off by default |
+
+> [!TIP]
+> With Arize Phoenix, set **Resource attributes** to `openinference.project.name=<project>` to file traces under that project; without it they land in `default`.
 
 > [!TIP]
 > Only one collector can be configured. To send to several platforms, point a2wave at your own OTel Collector and let the Collector fan out.
@@ -87,6 +91,7 @@ Operators can skip the UI and configure export with environment variables (appli
 | `SETTINGS_OTEL_HEADERS` | Auth headers as JSON, e.g. `{"Authorization":"Bearer xxx"}`; encrypted at startup |
 | `SETTINGS_OTEL_CAPTURE_CONTENT` | `true` turns content capture on; default `false` |
 | `SETTINGS_OTEL_SERVICE_NAME` | Service name; default `a2wave` |
+| `SETTINGS_OTEL_RESOURCE_ATTRIBUTES` | Resource attributes, comma-separated `key=value` |
 
 ## Current limitations
 

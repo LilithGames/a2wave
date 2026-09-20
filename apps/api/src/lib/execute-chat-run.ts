@@ -362,6 +362,7 @@ export async function executeChatRun(
     // Persisted at the channel boundary, so a queued or restart-resumed run still joins the
     // caller's OpenTelemetry trace.
     traceParent: run.executionMetadata?.traceParent,
+    traceSession: run.executionMetadata?.traceSession,
   }
 
   const lifecycleParams = {

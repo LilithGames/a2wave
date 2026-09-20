@@ -28,6 +28,7 @@ const base = {
   headersEnc: '',
   captureContent: 'false',
   serviceName: '',
+  resourceAttributes: '',
 }
 
 beforeEach(() => {
@@ -56,6 +57,7 @@ describe('readOtelConfig', () => {
       headers: {},
       captureContent: false,
       serviceName: 'a2wave',
+      resourceAttributes: {},
     })
   })
 
@@ -68,6 +70,23 @@ describe('readOtelConfig', () => {
       serviceName: 'agents-prod',
       headers: { Authorization: 'Bearer t0ken-t0ken' },
     })
+  })
+})
+
+describe('resource attributes', () => {
+  it('parses the stored key=value list', () => {
+    otelSettings.resourceAttributes =
+      'openinference.project.name=a2wave,deployment.environment=prod'
+    expect(readOtelConfig()?.resourceAttributes).toEqual({
+      'openinference.project.name': 'a2wave',
+      'deployment.environment': 'prod',
+    })
+  })
+
+  it('drops a malformed value rather than disabling export', () => {
+    otelSettings.resourceAttributes = 'not a pair'
+    expect(readOtelConfig()?.resourceAttributes).toEqual({})
+    expect(mockWarn).toHaveBeenCalledTimes(1)
   })
 })
 

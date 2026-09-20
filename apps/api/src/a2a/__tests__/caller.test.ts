@@ -12,9 +12,9 @@ import {
   A2WAVE_CALLER_AGENT_ID_HEADER,
   A2WAVE_CALLER_AGENT_NAME_B64_HEADER,
   A2WAVE_CALLER_AGENT_NAME_HEADER,
-  X_A2WAVE_CHANNEL_B64_HEADER,
   encodeCallerAgentNameHeader,
   extractCallerAgentFromHeaders,
+  X_A2WAVE_CHANNEL_B64_HEADER,
 } from '../caller.js'
 
 function makeCtx(headers: Record<string, string> = {}): Context {

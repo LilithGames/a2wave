@@ -1150,6 +1150,8 @@
       "tracesUrl": "实际上报地址：{{url}}",
       "serviceName": "服务名",
       "serviceNameHint": "对应资源属性 service.name，留空为 a2wave。",
+      "resourceAttributes": "资源属性",
+      "resourceAttributesHint": "附加到每个 span 的资源属性，格式同 OTEL_RESOURCE_ATTRIBUTES：key=value，多个用逗号分隔。常用于让采集端按环境、团队或项目归类（例如 Arize Phoenix 用 openinference.project.name 指定项目）。service.* 由系统管理，不能在这里覆盖。",
       "headers": "鉴权请求头",
       "headersHint": "随每次上报发送，例如 Authorization。加密存储，保存后不再回显。",
       "headersSet": "已设置：{{names}}（不填则保持不变）",
@@ -1183,7 +1185,8 @@
       "errors": {
         "endpointInvalid": "采集端地址需为 http(s) 地址，且不能包含账号密码、查询参数",
         "endpointRequired": "启用导出前请先填写采集端地址",
-        "headersInvalid": "请求头需同时填写名称和值，名称不能重复或包含空格"
+        "headersInvalid": "请求头需同时填写名称和值，名称不能重复或包含空格",
+        "resourceAttributesInvalid": "资源属性需为 key=value 形式、用逗号分隔，且不能包含 service.name / service.version / service.instance.id"
       }
     },
     "tabs": {

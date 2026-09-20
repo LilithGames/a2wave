@@ -56,6 +56,7 @@ export function OtelExportCard() {
   const [error, setError] = useState<string | null>(null)
   const endpointId = useId()
   const serviceNameId = useId()
+  const resourceAttributesId = useId()
   const headerIdPrefix = useId()
 
   // Prefill once from the server; later status refetches (after save / test) must not wipe
@@ -171,6 +172,22 @@ export function OtelExportCard() {
               value={form.serviceName}
               onChange={(e) => setForm({ ...form, serviceName: e.target.value })}
               placeholder="a2wave"
+            />
+          </div>
+
+          <div>
+            <Label htmlFor={resourceAttributesId} className="text-sm font-medium">
+              {t('settings.otel.resourceAttributes')}
+            </Label>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {t('settings.otel.resourceAttributesHint')}
+            </p>
+            <Input
+              id={resourceAttributesId}
+              className="mt-1.5"
+              value={form.resourceAttributes}
+              onChange={(e) => setForm({ ...form, resourceAttributes: e.target.value })}
+              placeholder="deployment.environment=prod,team=platform"
             />
           </div>
         </div>

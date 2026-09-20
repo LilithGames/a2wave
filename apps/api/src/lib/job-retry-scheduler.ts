@@ -153,7 +153,12 @@ async function scheduleJobRetry(
         ...(durableRerunContext ? { nativeChatContext: durableRerunContext } : {}),
         // The replay belongs to the same caller trace as the run it retries.
         ...(originalRun.executionMetadata?.traceParent
-          ? { traceParent: originalRun.executionMetadata.traceParent }
+          ? {
+              traceParent: originalRun.executionMetadata.traceParent,
+              ...(originalRun.executionMetadata.traceSession
+                ? { traceSession: originalRun.executionMetadata.traceSession }
+                : {}),
+            }
           : {}),
         jobRetryOf: chainOrigin,
         jobRetryAttempt: nextAttempt,

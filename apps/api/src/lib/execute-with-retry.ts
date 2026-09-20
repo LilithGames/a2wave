@@ -604,6 +604,9 @@ async function executeWithRetryCore(
               ...attemptPayload,
               agentConfig: injectRouterRuntimeEnvIntoAgentConfig(attemptPayload.agentConfig, {
                 TRACEPARENT: traceparent,
+                // The session rides along as W3C baggage, so a downstream Agent's run lands in
+                // the same session as this one.
+                ...(trace.baggage() ? { BAGGAGE: trace.baggage() as string } : {}),
               }),
             }
           : attemptPayload

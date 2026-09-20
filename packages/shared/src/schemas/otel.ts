@@ -72,6 +72,37 @@ export function resolveOtelTracesUrl(endpoint: string): string {
   return /\/traces$/.test(endpoint) ? endpoint : `${endpoint}/v1/traces`
 }
 
+export const OTEL_MAX_RESOURCE_ATTRIBUTES = 20
+export const OTEL_MAX_RESOURCE_ATTRIBUTE_VALUE_LENGTH = 256
+const RESOURCE_ATTRIBUTE_KEY_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/
+/** Managed by a2wave (`serviceName` has its own setting); not overridable from here. */
+const RESERVED_RESOURCE_ATTRIBUTES = new Set([
+  'service.name',
+  'service.version',
+  'service.instance.id',
+])
+
+/**
+ * Parses extra resource attributes in the standard `OTEL_RESOURCE_ATTRIBUTES` format
+ * (`key=value,key=value`). Backends route on these — a project, a tenant, an environment — so they
+ * are generic rather than tied to any one collector. `''` → `{}`; anything malformed → `null`.
+ */
+export function parseOtelResourceAttributes(raw: string): Record<string, string> | null {
+  const attributes: Record<string, string> = {}
+  for (const pair of raw.split(',')) {
+    if (!pair.trim()) continue
+    const separator = pair.indexOf('=')
+    if (separator <= 0) return null
+    const key = pair.slice(0, separator).trim()
+    const value = pair.slice(separator + 1).trim()
+    if (!RESOURCE_ATTRIBUTE_KEY_RE.test(key) || RESERVED_RESOURCE_ATTRIBUTES.has(key)) return null
+    if (!value || value.length > OTEL_MAX_RESOURCE_ATTRIBUTE_VALUE_LENGTH) return null
+    if (!hasNoControlCharacters(value) || key in attributes) return null
+    attributes[key] = value
+  }
+  return Object.keys(attributes).length > OTEL_MAX_RESOURCE_ATTRIBUTES ? null : attributes
+}
+
 /** GET /api/settings/otel/status — never carries header values. */
 export interface OtelStatus {
   enabled: boolean
@@ -79,6 +110,8 @@ export interface OtelStatus {
   /** Resolved traces URL; empty when no endpoint is configured. */
   tracesUrl: string
   serviceName: string
+  /** Raw `key=value,key=value` string, as stored. */
+  resourceAttributes: string
   captureContent: boolean
   headersSet: boolean
   headerNames: string[]

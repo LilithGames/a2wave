@@ -733,6 +733,8 @@ export const runs = pgTable(
        * id only — span data itself is never stored.
        */
       traceParent?: string
+      /** Caller session id from W3C `baggage` (`session.id`); only stored with a traceParent. */
+      traceSession?: string
       /**
        * Authenticated backend requester whose active admin role may authorize
        * admin-only/stdio MCP capabilities. Persist only the user id; execution

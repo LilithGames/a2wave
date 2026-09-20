@@ -13,6 +13,7 @@ const baseStatus: OtelStatus = {
   endpoint: '',
   tracesUrl: '',
   serviceName: '',
+  resourceAttributes: '',
   captureContent: false,
   headersSet: false,
   headerNames: [],
@@ -75,6 +76,19 @@ describe('OtelExportCard', () => {
 
     expect((save.mock.calls[0][0] as Record<string, string>).headers).toBe(
       '{"x-api-key":"secret-value"}',
+    )
+  })
+
+  it('saves extra resource attributes', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    await user.type(screen.getByLabelText('采集端地址（OTLP/HTTP）'), 'http://localhost:4318')
+    await user.type(screen.getByLabelText('资源属性'), 'openinference.project.name=a2wave')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect((save.mock.calls[0][0] as Record<string, string>).resourceAttributes).toBe(
+      'openinference.project.name=a2wave',
     )
   })
 

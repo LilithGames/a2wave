@@ -285,15 +285,24 @@ describe('createRecordedA2AExecuteFn', () => {
       retries: [],
     })
     const context = {
-      req: { header: (name: string) => (name === 'traceparent' ? TRACEPARENT : undefined) },
+      req: {
+        header: (name: string) =>
+          ({ traceparent: TRACEPARENT, baggage: 'session.id=run_caller' })[name],
+      },
     } as unknown as Context
 
     const executeFn = await createRecordedA2AExecuteFn(context, fakeAgent)
     await executeFn('task_1', defaultPayload)
 
     const runInsertValues = mockDb.insert.mock.results[0].value.values.mock.calls[0][0]
-    expect(runInsertValues.executionMetadata).toEqual({ traceParent: TRACEPARENT })
-    expect(mockExecuteWithRetry.mock.calls[0][1].traceParent).toBe(TRACEPARENT)
+    expect(runInsertValues.executionMetadata).toEqual({
+      traceParent: TRACEPARENT,
+      traceSession: 'run_caller',
+    })
+    expect(mockExecuteWithRetry.mock.calls[0][1]).toMatchObject({
+      traceParent: TRACEPARENT,
+      traceSession: 'run_caller',
+    })
   })
 
   it('ignores a malformed traceparent header', async () => {

@@ -1878,7 +1878,10 @@ async function sendA2ARequest(
 ) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers }
   const traceparent = process.env.TRACEPARENT
-  if (traceparent) headers.traceparent = traceparent
+  if (traceparent) {
+    headers.traceparent = traceparent
+    if (process.env.BAGGAGE) headers.baggage = process.env.BAGGAGE
+  }
   const reqInit: RequestInit = {
     method: 'POST',
     headers,
@@ -1901,7 +1904,11 @@ async function sendA2ARequest(
  */
 function withTraceContextHeader(headers: Headers): Headers {
   const traceparent = process.env.TRACEPARENT
-  if (traceparent && !headers.has('traceparent')) headers.set('traceparent', traceparent)
+  if (!traceparent) return headers
+  if (!headers.has('traceparent')) headers.set('traceparent', traceparent)
+  // The caller's session id (W3C baggage) only means something inside that trace.
+  const baggage = process.env.BAGGAGE
+  if (baggage && !headers.has('baggage')) headers.set('baggage', baggage)
   return headers
 }
 

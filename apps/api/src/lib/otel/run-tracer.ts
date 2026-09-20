@@ -31,7 +31,7 @@ import {
   toContentAttribute,
   usageAttributes,
 } from './attributes.js'
-import { formatTraceparent, parseTraceparent } from './propagation.js'
+import { formatSessionBaggage, formatTraceparent, parseTraceparent } from './propagation.js'
 import { getOtelRuntime, type OtelRuntime } from './provider.js'
 
 /** A runaway agent must not be able to grow the open-span map without bound. */
@@ -62,6 +62,8 @@ export interface AttemptTrace {
 
 export interface RunTrace {
   readonly enabled: boolean
+  /** W3C `baggage` carrying this trace's session id, for the downstream Agent hop. */
+  baggage(): string | undefined
   onLogEntry(entry: StreamLogEntry): void
   startAttempt(info: AttemptInfo): AttemptTrace
   finish(outcome: RunOutcome): void
@@ -75,6 +77,7 @@ export interface RunTraceOptions {
 const NOOP_ATTEMPT: AttemptTrace = { traceparent: () => undefined, end: () => {} }
 const NOOP_RUN_TRACE: RunTrace = {
   enabled: false,
+  baggage: () => undefined,
   onLogEntry: () => {},
   startAttempt: () => NOOP_ATTEMPT,
   finish: () => {},
@@ -119,8 +122,13 @@ class ActiveRunTrace implements RunTrace {
     private readonly root: Span,
     private readonly payload: WorkerTaskPayload,
     private readonly classifiers: ErrorClassifiers,
+    private readonly sessionId: string | undefined,
   ) {
     this.secrets = runtime.captureContent ? collectSecretValues(payload.agentConfig) : []
+  }
+
+  baggage(): string | undefined {
+    return this.sessionId ? formatSessionBaggage(this.sessionId) : undefined
   }
 
   onLogEntry(entry: StreamLogEntry): void {
@@ -194,12 +202,13 @@ class ActiveRunTrace implements RunTrace {
       [ATTR.OPERATION_NAME]: 'execute_tool',
       [ATTR.TOOL_NAME]: toolName,
     }
+    attributes[ATTR.OI_SPAN_KIND] = 'TOOL'
     if (entry.callId) attributes[ATTR.TOOL_CALL_ID] = entry.callId
     if (this.runtime.captureContent && entry.input) {
-      attributes[ATTR.TOOL_CALL_ARGUMENTS] = toContentAttribute(
-        JSON.stringify(entry.input),
-        this.secrets,
-      )
+      const args = toContentAttribute(JSON.stringify(entry.input), this.secrets)
+      attributes[ATTR.TOOL_CALL_ARGUMENTS] = args
+      attributes[ATTR.OI_INPUT_VALUE] = args
+      attributes[ATTR.OI_INPUT_MIME_TYPE] = 'application/json'
     }
     return this.runtime.tracer.startSpan(
       `execute_tool ${toolName}`,
@@ -217,6 +226,9 @@ class ActiveRunTrace implements RunTrace {
       this.lastModel = info.model ?? this.lastModel
       this.lastEngineType = info.engineType ?? this.lastEngineType
       const attributes: Attributes = {
+        // LLM, not CHAIN: this is the span that carries model + token usage, and OpenInference
+        // backends total tokens / cost over LLM spans only (the AGENT root is not double-counted).
+        [ATTR.OI_SPAN_KIND]: 'LLM',
         [ATTR.ATTEMPT_NUMBER]: info.attempt,
         [ATTR.PROVIDER_INDEX]: info.providerIndex,
         [ATTR.CHAT_RESET]: info.resetChat,
@@ -318,16 +330,18 @@ class ActiveRunTrace implements RunTrace {
     const errorType = this.setResultStatus(this.root, result)
     if (result.success) {
       if (this.runtime.captureContent && result.output) {
-        this.root.setAttribute(
-          ATTR.OUTPUT_MESSAGES,
-          JSON.stringify([
+        const output = toContentAttribute(result.output, this.secrets)
+        this.root.setAttributes({
+          [ATTR.OUTPUT_MESSAGES]: JSON.stringify([
             {
               role: 'assistant',
-              parts: [{ type: 'text', content: toContentAttribute(result.output, this.secrets) }],
+              parts: [{ type: 'text', content: output }],
               finish_reason: 'stop',
             },
           ]),
-        )
+          [ATTR.OI_OUTPUT_VALUE]: output,
+          [ATTR.OI_OUTPUT_MIME_TYPE]: 'text/plain',
+        })
       }
       return 'success'
     }
@@ -343,11 +357,16 @@ function rootAttributes(
   const agentConfig = payload.agentConfig
   const candidates: Record<string, AttributeValue | undefined> = {
     [ATTR.OPERATION_NAME]: 'invoke_agent',
+    [ATTR.OI_SPAN_KIND]: 'AGENT',
     [ATTR.PROVIDER_NAME]: agentConfig?.engineType,
     [ATTR.AGENT_ID]: agentConfig?.agentId,
     [ATTR.AGENT_NAME]: agentConfig?.agentName,
     [ATTR.REQUEST_MODEL]: payload.model ?? agentConfig?.model,
     [ATTR.RUN_ID]: runId,
+    // The run id, not the provider session id: it is stable across the turns of a conversation
+    // (the run row is reused), survives provider fallback, and is known before execution — so it
+    // can be handed to a downstream Agent. An inherited session wins, keeping A2A in one session.
+    [ATTR.OI_SESSION_ID]: payload.traceSession ?? runId,
     [ATTR.TASK_ID]: taskId,
     // channel_type only: the rest of the channel context carries PII (email / mobile).
     [ATTR.TRIGGER_SOURCE]: channelType(payload),
@@ -380,17 +399,12 @@ export function startRunTrace(
     const agentLabel = agentConfig?.agentName || agentConfig?.agentId || 'unknown'
     const attributes = rootAttributes(taskId, payload, options.runId)
     if (runtime.captureContent && payload.prompt) {
+      const prompt = toContentAttribute(payload.prompt, collectSecretValues(agentConfig))
       attributes[ATTR.INPUT_MESSAGES] = JSON.stringify([
-        {
-          role: 'user',
-          parts: [
-            {
-              type: 'text',
-              content: toContentAttribute(payload.prompt, collectSecretValues(agentConfig)),
-            },
-          ],
-        },
+        { role: 'user', parts: [{ type: 'text', content: prompt }] },
       ])
+      attributes[ATTR.OI_INPUT_VALUE] = prompt
+      attributes[ATTR.OI_INPUT_MIME_TYPE] = 'text/plain'
     }
     const remoteParent = parseTraceparent(payload.traceParent)
     const parentContext = remoteParent
@@ -401,7 +415,13 @@ export function startRunTrace(
       { kind: SpanKind.INTERNAL, attributes },
       parentContext,
     )
-    return new ActiveRunTrace(runtime, root, payload, options.classifiers ?? {})
+    return new ActiveRunTrace(
+      runtime,
+      root,
+      payload,
+      options.classifiers ?? {},
+      payload.traceSession ?? options.runId,
+    )
   } catch (err) {
     if (acquired) runtime.release()
     logger.debug({ err: (err as Error).message }, 'otel: failed to start the run trace')

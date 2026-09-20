@@ -5,7 +5,11 @@
  * pseudo-key `headers` (a JSON object string), are encrypted here, and only `headersEnc` is ever
  * stored. The plaintext exists in the request body and nowhere else.
  */
-import { normalizeOtelEndpoint, otelHeadersSchema } from '@a2wave/shared'
+import {
+  normalizeOtelEndpoint,
+  otelHeadersSchema,
+  parseOtelResourceAttributes,
+} from '@a2wave/shared'
 import { encryptSecret } from '../secret-box.js'
 import { isCloudMetadataAddress, isCloudMetadataHostname } from '../url-safety-core.js'
 
@@ -14,6 +18,7 @@ export type OtelSettingsPatchError =
   | 'INVALID_OTEL_ENDPOINT'
   | 'OTEL_ENDPOINT_BLOCKED'
   | 'OTEL_ENDPOINT_REQUIRED'
+  | 'INVALID_OTEL_RESOURCE_ATTRIBUTES'
   | 'INVALID_OTEL_SETTING'
 
 export type OtelSettingsPatchResult =
@@ -21,7 +26,14 @@ export type OtelSettingsPatchResult =
   | { ok: false; error: OtelSettingsPatchError; message: string }
 
 const BOOLEAN_KEYS = ['enabled', 'captureContent'] as const
-const KNOWN_KEYS = new Set(['enabled', 'endpoint', 'headers', 'captureContent', 'serviceName'])
+const KNOWN_KEYS = new Set([
+  'enabled',
+  'endpoint',
+  'headers',
+  'captureContent',
+  'serviceName',
+  'resourceAttributes',
+])
 const SERVICE_NAME_MAX_LENGTH = 128
 
 const fail = (error: OtelSettingsPatchError, message: string): OtelSettingsPatchResult => ({
@@ -91,6 +103,19 @@ export function prepareOtelSettingsPatch(
         `serviceName exceeds ${SERVICE_NAME_MAX_LENGTH} characters`,
       )
     }
+  }
+
+  if (patch.resourceAttributes !== undefined) {
+    const attributes = parseOtelResourceAttributes(patch.resourceAttributes)
+    if (attributes === null) {
+      return fail(
+        'INVALID_OTEL_RESOURCE_ATTRIBUTES',
+        'resourceAttributes must be key=value pairs separated by commas; service.* is managed',
+      )
+    }
+    patch.resourceAttributes = Object.entries(attributes)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(',')
   }
 
   if (patch.endpoint !== undefined) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  OAUTH_ALLOWED_EMAILS_MAX,
   normalizeOauthAllowedEmail,
+  OAUTH_ALLOWED_EMAILS_MAX,
   oauthAllowedEmailSchema,
   oauthAllowedEmailsSchema,
 } from '../schemas/agent.js'

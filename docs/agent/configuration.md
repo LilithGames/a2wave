@@ -146,3 +146,4 @@ Bootstrap a Git or Perforce checkout from the environment on first boot.
 | `SETTINGS_OTEL_HEADERS` | JSON map of auth headers, e.g. `{"Authorization":"Bearer …"}`. Encrypted at boot into `otel.headersEnc`; the plaintext is never stored |
 | `SETTINGS_OTEL_CAPTURE_CONTENT` | `true` to include prompts / replies / tool arguments / error text in spans. Default `false` |
 | `SETTINGS_OTEL_SERVICE_NAME` | `service.name` resource attribute, defaults to `a2wave` |
+| `SETTINGS_OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`), e.g. `deployment.environment=prod` |

@@ -7,6 +7,7 @@ import {
   type OtelHeaders,
   type OtelStatus,
   otelHeadersSchema,
+  parseOtelResourceAttributes,
   resolveOtelTracesUrl,
 } from '@a2wave/shared'
 import { logger } from '../logger.js'
@@ -21,6 +22,8 @@ export interface OtelConfig {
   headers: OtelHeaders
   captureContent: boolean
   serviceName: string
+  /** Extra resource attributes; the managed service.* ones always win. */
+  resourceAttributes: Record<string, string>
 }
 
 /**
@@ -44,6 +47,14 @@ export function readOtelHeaders(headersEnc: string): OtelHeaders {
   return {}
 }
 
+/** A malformed value (only reachable via the env bridge) is dropped, not fatal. */
+function readResourceAttributes(raw: string): Record<string, string> {
+  const parsed = parseOtelResourceAttributes(raw)
+  if (parsed) return parsed
+  logger.warn('settings.otel.resourceAttributes is malformed — exporting without them')
+  return {}
+}
+
 /**
  * Returns null when export is disabled or no usable endpoint is configured. `ignoreEnabled` is for
  * "test connection", which must work before the admin flips the switch.
@@ -59,6 +70,7 @@ export function readOtelConfig(options: { ignoreEnabled?: boolean } = {}): OtelC
     headers: readOtelHeaders(raw.headersEnc ?? ''),
     captureContent: raw.captureContent === 'true',
     serviceName: (raw.serviceName ?? '').trim() || DEFAULT_OTEL_SERVICE_NAME,
+    resourceAttributes: readResourceAttributes(raw.resourceAttributes ?? ''),
   }
 }
 
@@ -69,6 +81,7 @@ export function readOtelSettingsView(): Pick<
   | 'endpoint'
   | 'tracesUrl'
   | 'serviceName'
+  | 'resourceAttributes'
   | 'captureContent'
   | 'headersSet'
   | 'headerNames'
@@ -81,6 +94,7 @@ export function readOtelSettingsView(): Pick<
     endpoint,
     tracesUrl: endpoint ? resolveOtelTracesUrl(endpoint) : '',
     serviceName: (raw.serviceName ?? '').trim(),
+    resourceAttributes: (raw.resourceAttributes ?? '').trim(),
     captureContent: raw.captureContent === 'true',
     headersSet: headersEnc !== '',
     headerNames: Object.keys(readOtelHeaders(headersEnc)),
@@ -96,5 +110,6 @@ export function otelConfigFingerprint(): string {
     raw.headersEnc,
     raw.captureContent,
     raw.serviceName,
+    raw.resourceAttributes,
   ])
 }

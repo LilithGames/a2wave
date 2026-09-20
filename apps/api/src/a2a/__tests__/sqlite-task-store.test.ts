@@ -79,7 +79,7 @@ vi.mock('../../lib/logger.js', () => ({
 }))
 
 import { logger } from '../../lib/logger.js'
-import { SqliteTaskStore, normalizeStatusTimestampAfter } from '../sqlite-task-store.js'
+import { normalizeStatusTimestampAfter, SqliteTaskStore } from '../sqlite-task-store.js'
 
 function callContext(tenant = 'agt_one', owner = 'a2a:agt_one:api_key') {
   return new ServerCallContext({

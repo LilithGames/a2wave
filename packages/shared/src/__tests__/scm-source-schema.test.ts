@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_GIT_REPOS, gitConfigSchema } from '../schemas/scm-source.js'
+import { gitConfigSchema, MAX_GIT_REPOS } from '../schemas/scm-source.js'
 
 function repoEntry(index: number) {
   return {

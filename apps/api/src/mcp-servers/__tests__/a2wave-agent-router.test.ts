@@ -403,6 +403,7 @@ describe('invokeAgentHandler', () => {
   it('forwards the run traceparent so the downstream Agent joins the caller trace', async () => {
     const traceparent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
     vi.stubEnv('TRACEPARENT', traceparent)
+    vi.stubEnv('BAGGAGE', 'session.id=run_caller')
     try {
       mockStandardJsonRpcResult({
         message: {
@@ -416,6 +417,7 @@ describe('invokeAgentHandler', () => {
 
       const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
       expect(new Headers(fetchCall[1].headers).get('traceparent')).toBe(traceparent)
+      expect(new Headers(fetchCall[1].headers).get('baggage')).toBe('session.id=run_caller')
     } finally {
       vi.unstubAllEnvs()
     }
@@ -434,6 +436,7 @@ describe('invokeAgentHandler', () => {
 
     const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(new Headers(fetchCall[1].headers).has('traceparent')).toBe(false)
+    expect(new Headers(fetchCall[1].headers).has('baggage')).toBe(false)
   })
 
   it('forwards caller agent headers with ascii-safe encoded name', async () => {

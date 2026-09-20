@@ -37,8 +37,12 @@ invoke_agent <Agent 名称>        一次执行
 | 启用导出 | 关闭时不产生任何数据，对执行没有开销 |
 | 采集端地址 | 只支持 OTLP/HTTP（`http://` 或 `https://`），不支持 gRPC |
 | 服务名 | 在 APM 里显示的服务名，留空为 `a2wave` |
+| 资源属性 | 附加到每个 span 上的属性，格式 `key=value`，多个用逗号分隔。用来让采集端按环境、团队或项目归类，例如 `deployment.environment=prod` |
 | 鉴权请求头 | 加密保存。保存后只显示请求头的**名称**，值不会再回显；不填则保持原值不变 |
 | 采集内容 | 见下一节，默认关闭 |
+
+> [!TIP]
+> 使用 Arize Phoenix 时，在「资源属性」里填 `openinference.project.name=<项目名>`，Trace 就会归到该项目下；不填则进入 `default` 项目。
 
 > [!TIP]
 > 只能配置一个采集端。需要同时发往多个平台时，让 a2wave 发给你自己的 OTel Collector，再由 Collector 分发。
@@ -87,6 +91,7 @@ invoke_agent <Agent 名称>        一次执行
 | `SETTINGS_OTEL_HEADERS` | 鉴权请求头，JSON 格式，如 `{"Authorization":"Bearer xxx"}`；启动时加密保存 |
 | `SETTINGS_OTEL_CAPTURE_CONTENT` | `true` 开启采集内容，默认 `false` |
 | `SETTINGS_OTEL_SERVICE_NAME` | 服务名，默认 `a2wave` |
+| `SETTINGS_OTEL_RESOURCE_ATTRIBUTES` | 资源属性，`key=value` 用逗号分隔 |
 
 ## 目前的限制
 

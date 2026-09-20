@@ -890,7 +890,10 @@ describe('executeChatRun', () => {
     const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
     setupSelectSequence(
       baseAgent,
-      { ...baseRun, executionMetadata: { traceParent: TRACEPARENT } },
+      {
+        ...baseRun,
+        executionMetadata: { traceParent: TRACEPARENT, traceSession: 'run_caller' },
+      },
       baseScmSource,
       undefined,
     )
@@ -900,7 +903,7 @@ describe('executeChatRun', () => {
 
     expect(mockExecuteWithRetry).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ traceParent: TRACEPARENT }),
+      expect.objectContaining({ traceParent: TRACEPARENT, traceSession: 'run_caller' }),
       expect.any(Object),
     )
   })

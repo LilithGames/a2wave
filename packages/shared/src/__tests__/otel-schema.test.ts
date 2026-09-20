@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   normalizeOtelEndpoint,
   otelHeadersSchema,
+  parseOtelResourceAttributes,
   resolveOtelTracesUrl,
   SETTINGS_DEFAULTS,
 } from '../index.js'
@@ -14,6 +15,7 @@ describe('SETTINGS_DEFAULTS.otel', () => {
       headersEnc: '',
       captureContent: 'false',
       serviceName: '',
+      resourceAttributes: '',
     })
   })
 })
@@ -77,5 +79,37 @@ describe('otelHeadersSchema', () => {
     const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-h${i}`, 'v']))
     expect(otelHeadersSchema.safeParse(many).success).toBe(false)
     expect(otelHeadersSchema.safeParse({ 'x-a': 'v'.repeat(4097) }).success).toBe(false)
+  })
+})
+
+describe('parseOtelResourceAttributes', () => {
+  it('parses the OTEL_RESOURCE_ATTRIBUTES format', () => {
+    expect(
+      parseOtelResourceAttributes(
+        ' openinference.project.name=a2wave , deployment.environment=prod ',
+      ),
+    ).toEqual({ 'openinference.project.name': 'a2wave', 'deployment.environment': 'prod' })
+  })
+
+  it('treats an empty string as no attributes', () => {
+    expect(parseOtelResourceAttributes('  ')).toEqual({})
+  })
+
+  it('keeps "=" inside a value', () => {
+    expect(parseOtelResourceAttributes('team=a=b')).toEqual({ team: 'a=b' })
+  })
+
+  it('rejects malformed pairs, bad keys, empty or oversized values', () => {
+    for (const raw of ['novalue', 'k=', '=v', 'bad key=v', `k=${'v'.repeat(257)}`, 'a=1,a=2']) {
+      expect(parseOtelResourceAttributes(raw)).toBeNull()
+    }
+    const many = Array.from({ length: 21 }, (_, i) => `k${i}=v`).join(',')
+    expect(parseOtelResourceAttributes(many)).toBeNull()
+  })
+
+  it('refuses the attributes a2wave manages itself', () => {
+    for (const key of ['service.name', 'service.version', 'service.instance.id']) {
+      expect(parseOtelResourceAttributes(`${key}=x`)).toBeNull()
+    }
   })
 })

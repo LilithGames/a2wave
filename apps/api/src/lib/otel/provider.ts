@@ -120,6 +120,7 @@ function createExporter(config: OtelConfig, stats: ExportStats, warn: boolean): 
 function createProvider(config: OtelConfig, processor: SpanProcessor): BasicTracerProvider {
   return new BasicTracerProvider({
     resource: resourceFromAttributes({
+      ...config.resourceAttributes,
       'service.name': config.serviceName,
       'service.version': getVersion(),
       'service.instance.id': processInstanceId,

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 type Json = Record<string, unknown>
 
@@ -112,9 +112,8 @@ function makeDbChain(result: unknown) {
 
 import { db } from '../../db/client.js'
 import { validateGatewayAuth } from '../../middleware/gateway-auth.js'
-import { buildAgentCard } from '../agent-card.js'
-
 import { asyncQuery } from '../../test/async-query.js'
+import { buildAgentCard } from '../agent-card.js'
 
 const publishedAgent = {
   id: 'agt_test1',

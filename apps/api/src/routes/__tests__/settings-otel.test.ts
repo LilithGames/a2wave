@@ -214,6 +214,7 @@ describe('settings OpenTelemetry endpoints', () => {
         endpoint: '',
         tracesUrl: '',
         serviceName: '',
+        resourceAttributes: '',
         captureContent: false,
         headersSet: false,
         headerNames: [],

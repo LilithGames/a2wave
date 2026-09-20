@@ -375,23 +375,37 @@ describe('Gateway routes', () => {
             return { run: vi.fn() }
           }),
         }))
-        const res = await invokeRequest({ message: 'hi', async: false }, { traceparent })
+        const res = await invokeRequest(
+          { message: 'hi', async: false },
+          { traceparent, baggage: 'session.id=upstream-session' },
+        )
         expect(res.status).toBe(200)
         const runInsert = insertedValues.find((v) => String(v.id).startsWith('run_'))
-        const payload = (executeInWorker as Mock).mock.calls.at(-1)?.[1] as { traceParent?: string }
+        const payload = (executeInWorker as Mock).mock.calls.at(-1)?.[1] as {
+          traceParent?: string
+          traceSession?: string
+        }
         return { runInsert, payload }
       }
 
       it('persists a valid traceparent on the run and hands it to the execution', async () => {
         const { runInsert, payload } = await invokeWithTraceparent(TRACEPARENT)
-        expect(runInsert?.executionMetadata).toMatchObject({ traceParent: TRACEPARENT })
-        expect(payload.traceParent).toBe(TRACEPARENT)
+        expect(runInsert?.executionMetadata).toMatchObject({
+          traceParent: TRACEPARENT,
+          traceSession: 'upstream-session',
+        })
+        expect(payload).toMatchObject({
+          traceParent: TRACEPARENT,
+          traceSession: 'upstream-session',
+        })
       })
 
       it('ignores a malformed traceparent instead of failing the invocation', async () => {
         const { runInsert, payload } = await invokeWithTraceparent('not-a-traceparent')
         expect(runInsert?.executionMetadata).toBeUndefined()
         expect(payload.traceParent).toBeUndefined()
+        // A session is only honoured inside a valid trace.
+        expect(payload.traceSession).toBeUndefined()
       })
     })
 

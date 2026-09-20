@@ -74,6 +74,7 @@ beforeEach(() => {
   mockFinish.mockImplementation(() => events.push('finish'))
   mockStartRunTrace.mockImplementation(() => ({
     enabled: traceEnabled,
+    baggage: () => (traceEnabled ? 'session.id=run_1' : undefined),
     onLogEntry: mockOnLogEntry,
     startAttempt: mockStartAttempt,
     finish: mockFinish,
@@ -148,7 +149,8 @@ describe('executeWithRetry — OpenTelemetry wiring', () => {
     expect(first.agentEnv?.TRACEPARENT).toBe(tp(1))
     expect(second.agentEnv?.TRACEPARENT).toBe(tp(2))
     const router = first.resolvedMcpServers?.find((s) => s.name === ROUTER)
-    expect(router?.env).toEqual({ KEEP: '1', TRACEPARENT: tp(1) })
+    expect(first.agentEnv?.BAGGAGE).toBe('session.id=run_1')
+    expect(router?.env).toEqual({ KEEP: '1', TRACEPARENT: tp(1), BAGGAGE: 'session.id=run_1' })
     expect(first.resolvedMcpServers?.find((s) => s.name === 'other')?.env).toEqual({})
   })
 

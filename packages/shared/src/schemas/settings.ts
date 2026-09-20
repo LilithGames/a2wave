@@ -172,5 +172,7 @@ export const SETTINGS_DEFAULTS: SettingsMap = {
     captureContent: 'false',
     /** Overrides the `service.name` resource attribute; empty string = 'a2wave'. */
     serviceName: '',
+    /** Extra resource attributes, `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`). */
+    resourceAttributes: '',
   },
 }

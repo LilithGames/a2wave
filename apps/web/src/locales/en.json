@@ -1150,6 +1150,8 @@
       "tracesUrl": "Spans are sent to: {{url}}",
       "serviceName": "Service name",
       "serviceNameHint": "The service.name resource attribute. Defaults to a2wave.",
+      "resourceAttributes": "Resource attributes",
+      "resourceAttributesHint": "Extra resource attributes added to every span, in the OTEL_RESOURCE_ATTRIBUTES format: key=value, comma-separated. Collectors use them to group by environment, team or project (e.g. Arize Phoenix routes on openinference.project.name). service.* is managed by the system and cannot be overridden here.",
       "headers": "Auth headers",
       "headersHint": "Sent with every export, e.g. Authorization. Stored encrypted and never shown again.",
       "headersSet": "Set: {{names}} (leave blank to keep unchanged)",
@@ -1183,7 +1185,8 @@
       "errors": {
         "endpointInvalid": "The endpoint must be an http(s) URL without credentials or a query string",
         "endpointRequired": "Enter a collector endpoint before enabling export",
-        "headersInvalid": "Each header needs a name and a value; names must be unique and contain no spaces"
+        "headersInvalid": "Each header needs a name and a value; names must be unique and contain no spaces",
+        "resourceAttributesInvalid": "Resource attributes must be comma-separated key=value pairs and may not include service.name / service.version / service.instance.id"
       }
     },
     "tabs": {
