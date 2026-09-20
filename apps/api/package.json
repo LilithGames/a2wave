@@ -36,7 +36,7 @@
     "@slack/socket-mode": "^3.0.0",
     "@slack/web-api": "^8.0.0",
     "@types/ws": "^8.5.13",
-    "adm-zip": "^0.6.0",
+    "adm-zip": "^0.6.1",
     "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",
     "cross-spawn": "7.0.6",

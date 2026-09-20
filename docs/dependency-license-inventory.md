@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-09-14 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-09-20 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -282,7 +282,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @xmldom/xmldom | 0.8.15 | MIT |
 | accepts | 2.0.0 | MIT |
 | acorn | 8.15.0 | MIT |
-| adm-zip | 0.6.0 | MIT |
+| adm-zip | 0.6.1 | MIT |
 | agent-base | 6.0.2, 7.1.4 | MIT |
 | ajv | 8.18.0, 8.20.0 | MIT |
 | ajv-formats | 3.0.1 | MIT |
