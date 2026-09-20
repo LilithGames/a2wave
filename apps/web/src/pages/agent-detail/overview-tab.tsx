@@ -1,14 +1,20 @@
 import { Activity, CalendarDays, Coins, Hourglass, Timer, TrendingUp, Users } from 'lucide-react'
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SOURCE_LABEL } from '@/components/run-caller-prefix'
 import { StatCard } from '@/components/stat-card'
 import { TokenUsageCoverageHelp } from '@/components/token-usage-coverage-help'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAgentQueueStats, useAgentStats } from '@/hooks/use-runs'
+import {
+  type AgentStats,
+  type TimeseriesRange,
+  useAgentQueueStats,
+  useAgentStats,
+} from '@/hooks/use-runs'
 import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
 import { formatDuration } from '@/lib/utils'
+import { type RangePreset, resolvePreset } from './overview-time-range'
 
 /** recharts pulls in d3 sub-packages, so only overview visitors pay for it. */
 const OverviewTrends = lazy(() =>
@@ -25,7 +31,14 @@ const SOURCE_KEY: Record<string, string> = {
 
 export function OverviewTab({ agentId }: { agentId: string | undefined }) {
   const { t } = useTranslation()
+  const [preset, setPreset] = useState<RangePreset>('7d')
+  const [range, setRange] = useState<TimeseriesRange>(() => resolvePreset('7d'))
   const { data: stats, isLoading, isError } = useAgentStats(agentId)
+  const {
+    data: rangeStats,
+    isLoading: rangeLoading,
+    isError: rangeError,
+  } = useAgentStats(agentId, range)
   const { data: queue, isLoading: queueLoading } = useAgentQueueStats(agentId)
 
   if (isError) {
@@ -35,8 +48,6 @@ export function OverviewTab({ agentId }: { agentId: string | undefined }) {
       </div>
     )
   }
-
-  const channelTotal = (stats?.channelBreakdown ?? []).reduce((sum, c) => sum + c.count, 0)
 
   return (
     <div className="space-y-6">
@@ -105,86 +116,125 @@ export function OverviewTab({ agentId }: { agentId: string | undefined }) {
         />
       </div>
 
+      <AudienceStats stats={stats} lifetime />
+
       {/* Time-range selector + trend charts */}
       <Suspense fallback={<Skeleton className="h-[520px] w-full" />}>
-        <OverviewTrends agentId={agentId} />
+        <OverviewTrends
+          agentId={agentId}
+          preset={preset}
+          onPresetChange={setPreset}
+          range={range}
+          onRangeChange={setRange}
+        />
       </Suspense>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Askers + Top askers */}
-        <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Users className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />
-              <h3 className="text-sm font-medium text-foreground">
-                {t('agentOverview.askerCountTitle')}
-              </h3>
-            </div>
-            <div className="text-[28px] font-semibold tabular-nums text-foreground leading-none mb-4">
-              {stats?.askerCount ?? 0}
-            </div>
-            <div className="text-xs font-medium text-muted-foreground mb-2">
-              {t('agentOverview.topAskersTitle')}
-            </div>
-            {stats && stats.topAskers.length > 0 ? (
-              <ul className="space-y-1.5">
-                {stats.topAskers.map((a, idx) => (
-                  <li key={a.name} className="flex items-center gap-2 text-sm">
-                    <span className="w-4 text-xs tabular-nums text-muted-foreground">
-                      {idx + 1}
-                    </span>
-                    <span className="flex-1 truncate text-foreground">{a.name}</span>
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {t('agentOverview.timesUnit', { count: a.count })}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">{t('agentOverview.noAskers')}</p>
-            )}
-          </CardContent>
-        </Card>
+      {rangeError ? (
+        <div className="info-panel px-3 py-2.5 text-sm text-muted-foreground">
+          {t('agentOverview.loadFailed')}
+        </div>
+      ) : rangeLoading ? (
+        <Skeleton className="h-[240px] w-full" />
+      ) : (
+        <AudienceStats stats={rangeStats} />
+      )}
+    </div>
+  )
+}
 
-        {/* Channel breakdown */}
-        <Card>
-          <CardContent className="p-5">
-            <h3 className="text-sm font-medium text-foreground mb-4">
-              {t('agentOverview.channelBreakdownTitle')}
+function AudienceStats({
+  stats,
+  lifetime = false,
+}: {
+  stats: AgentStats | undefined
+  lifetime?: boolean
+}) {
+  const { t } = useTranslation()
+  const channelTotal = (stats?.channelBreakdown ?? []).reduce((sum, c) => sum + c.count, 0)
+  return (
+    <div
+      className="grid gap-4 lg:grid-cols-2"
+      data-testid={lifetime ? 'lifetime-audience-stats' : 'range-audience-stats'}
+    >
+      {/* Askers + Top askers */}
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Users className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />
+            <h3 className="text-sm font-medium text-foreground">
+              {t(
+                lifetime
+                  ? 'agentOverview.lifetimeAskerCountTitle'
+                  : 'agentOverview.askerCountTitle',
+              )}
             </h3>
-            {stats && stats.channelBreakdown.length > 0 ? (
-              <ul className="space-y-3">
-                {stats.channelBreakdown
-                  .slice()
-                  .sort((a, b) => b.count - a.count)
-                  .map((ch) => {
-                    const pct = channelTotal > 0 ? Math.round((ch.count / channelTotal) * 100) : 0
-                    return (
-                      <li key={ch.source}>
-                        <div className="flex items-center justify-between text-xs mb-1">
-                          <span className="text-foreground">
-                            {SOURCE_KEY[ch.source] ? t(SOURCE_KEY[ch.source]) : ch.source}
-                          </span>
-                          <span className="tabular-nums text-muted-foreground">
-                            {ch.count} · {pct}%
-                          </span>
-                        </div>
-                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-primary"
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                      </li>
-                    )
-                  })}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">{t('agentOverview.noChannels')}</p>
+          </div>
+          <div className="text-[28px] font-semibold tabular-nums text-foreground leading-none mb-4">
+            {stats?.askerCount ?? 0}
+          </div>
+          <div className="text-xs font-medium text-muted-foreground mb-2">
+            {t('agentOverview.topAskersTitle')}
+          </div>
+          {stats && stats.topAskers.length > 0 ? (
+            <ul className="space-y-1.5">
+              {stats.topAskers.map((a, idx) => (
+                <li key={a.name} className="flex items-center gap-2 text-sm">
+                  <span className="w-4 text-xs tabular-nums text-muted-foreground">{idx + 1}</span>
+                  <span className="flex-1 truncate text-foreground">{a.name}</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {t('agentOverview.timesUnit', { count: a.count })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t('agentOverview.noAskers')}</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Channel breakdown */}
+      <Card>
+        <CardContent className="p-5">
+          <h3 className="text-sm font-medium text-foreground mb-4">
+            {t(
+              lifetime
+                ? 'agentOverview.lifetimeChannelBreakdownTitle'
+                : 'agentOverview.channelBreakdownTitle',
             )}
-          </CardContent>
-        </Card>
-      </div>
+          </h3>
+          {stats && stats.channelBreakdown.length > 0 ? (
+            <ul className="space-y-3">
+              {stats.channelBreakdown
+                .slice()
+                .sort((a, b) => b.count - a.count)
+                .map((ch) => {
+                  const pct = channelTotal > 0 ? Math.round((ch.count / channelTotal) * 100) : 0
+                  return (
+                    <li key={ch.source}>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="text-foreground">
+                          {SOURCE_KEY[ch.source] ? t(SOURCE_KEY[ch.source]) : ch.source}
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">
+                          {ch.count} · {pct}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </li>
+                  )
+                })}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t('agentOverview.noChannels')}</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

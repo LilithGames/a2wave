@@ -1153,6 +1153,8 @@
     "faviconUpload": "Upload favicon"
   },
   "agentOverview": {
+    "lifetimeAskerCountTitle": "All-time Askers",
+    "lifetimeChannelBreakdownTitle": "All-time Channel Breakdown",
     "askerCountTitle": "Askers",
     "topAskersTitle": "Top Askers",
     "channelBreakdownTitle": "Channel Breakdown",

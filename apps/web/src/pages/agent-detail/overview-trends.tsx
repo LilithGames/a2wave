@@ -194,10 +194,26 @@ function TrendCard({
   )
 }
 
-export function OverviewTrends({ agentId }: { agentId: string | undefined }) {
+export function OverviewTrends({
+  agentId,
+  preset: controlledPreset,
+  onPresetChange,
+  range: controlledRange,
+  onRangeChange,
+}: {
+  agentId: string | undefined
+  preset?: RangePreset
+  onPresetChange?: (preset: RangePreset) => void
+  range?: TimeseriesRange
+  onRangeChange?: (range: TimeseriesRange) => void
+}) {
   const { t } = useTranslation()
-  const [preset, setPreset] = useState<RangePreset>('7d')
-  const [range, setRange] = useState<TimeseriesRange>(() => resolvePreset('7d'))
+  const [localPreset, setLocalPreset] = useState<RangePreset>('7d')
+  const [localRange, setLocalRange] = useState<TimeseriesRange>(() => resolvePreset('7d'))
+  const preset = controlledPreset ?? localPreset
+  const setPreset = onPresetChange ?? setLocalPreset
+  const range = controlledRange ?? localRange
+  const setRange = onRangeChange ?? setLocalRange
 
   const { data, isLoading, isError } = useAgentTimeseries(agentId, range)
 
