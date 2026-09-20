@@ -1,6 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { SQL } from 'drizzle-orm'
+import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core'
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { z } from 'zod'
@@ -2831,6 +2833,76 @@ describe('GET /agents/:id/stats', () => {
     expect(res.status).toBe(404)
     const body = (await res.json()) as Json
     expect(body.error).toBe('Agent not found')
+  })
+
+  it.each([
+    [
+      '2026-09-01',
+      '2026-09-02',
+      'Asia/Singapore',
+      '28800',
+      '2026-08-31T16:00:00Z',
+      '2026-09-02T15:59:59Z',
+    ],
+    [
+      '2026-03-07',
+      '2026-03-09',
+      'America/Los_Angeles',
+      '-28800',
+      '2026-03-07T08:00:00Z',
+      '2026-03-10T06:59:59Z',
+    ],
+  ])(
+    'filters asker and channel queries by viewer-local dates %s through %s',
+    async (from, to, tz, tzOffset, start, end) => {
+      const filters: SQL[] = []
+      mockDb.select.mockReturnValueOnce(makeSelectChain(SAMPLE_AGENT)).mockImplementation(() => {
+        const chain = makeStatsChain({ cnt: 0, avg: null }, [])
+        const query = chain.from()
+        return {
+          from: () =>
+            asyncQuery({
+              where: (filter: SQL) => {
+                filters.push(filter)
+                return query.where(filter)
+              },
+            }),
+        }
+      })
+      const query = new URLSearchParams({ from, to, tz, tzOffset })
+      const res = await app.request(`/agents/agt_original/stats?${query}`)
+      expect(res.status).toBe(200)
+      const dialect = new SQLiteSyncDialect()
+      for (const index of [3, 4, 5]) {
+        const compiled = dialect.sqlToQuery(filters[index])
+        expect(compiled.sql).toContain('"created_at" >= ?')
+        expect(compiled.sql).toContain('"created_at" <= ?')
+        expect(compiled.params).toEqual(
+          expect.arrayContaining([
+            'agt_original',
+            Date.parse(start) / 1000,
+            Date.parse(end) / 1000,
+          ]),
+        )
+      }
+      // Lifetime status, duration and tokens remain independent of the selector.
+      for (const index of [0, 2, 6]) {
+        expect(dialect.sqlToQuery(filters[index]).sql).not.toContain('created_at')
+      }
+    },
+  )
+
+  it.each([
+    'from=2026-09-01',
+    'to=2026-09-02',
+    'from=2026-02-31&to=2026-03-02',
+    'from=2026-09-03&to=2026-09-02',
+  ])('rejects invalid statistics ranges: %s', async (query) => {
+    mockDb.select
+      .mockReturnValueOnce(makeSelectChain(SAMPLE_AGENT))
+      .mockReturnValue(makeStatsChain({ cnt: 0, avg: null }, []))
+    const res = await app.request(`/agents/agt_original/stats?${query}`)
+    expect(res.status).toBe(400)
   })
 
   it('returns empty aggregates when the agent has no runs', async () => {

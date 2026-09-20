@@ -97,11 +97,24 @@ export type AgentStats = {
   tokens: TokenTotals
 }
 
-export function useAgentStats(agentId: string | undefined) {
+export function useAgentStats(agentId: string | undefined, range?: TimeseriesRange) {
+  const tz = resolveViewerTimeZone()
+  const tzOffset = range ? -dayjsOffsetMinutes(range.from) * 60 : 0
+  const params = range
+    ? new URLSearchParams({
+        from: range.from,
+        to: range.to,
+        bucket: range.bucket,
+        tzOffset: String(tzOffset),
+        ...(tz ? { tz } : {}),
+      }).toString()
+    : ''
   return useQuery({
-    queryKey: ['agent-stats', agentId],
+    queryKey: ['agent-stats', agentId, params],
     queryFn: async () => {
-      const res = await fetch(`/api/agents/${agentId}/stats`, { credentials: 'include' })
+      const res = await fetch(`/api/agents/${agentId}/stats${params ? `?${params}` : ''}`, {
+        credentials: 'include',
+      })
       if (!res.ok) throw new Error('Failed to fetch agent stats')
       return res.json() as Promise<AgentStats>
     },

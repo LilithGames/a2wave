@@ -115,11 +115,13 @@ The **Chat debugging** on the detail page lets you verify the prompt and capabil
 
 ## Overview and Trends
 
-The **Overview** tab answers "how is this Agent actually being used". The top row holds cumulative metrics (total runs, success rate, average duration, today's runs, token usage, queued tasks); below it, **Trends** spreads the same data across a time axis so you can read direction rather than just totals.
+The **Overview** tab answers "how is this Agent actually being used". The top row holds cumulative metrics (total runs, success rate, average duration, today's runs, token usage, queued tasks); directly below these six cards are the lifetime **Askers**, **Top askers**, and **Channel breakdown**. **Trends** follows these lifetime totals and spreads activity across a time axis.
 
 The **Queued tasks** card is a live snapshot: how many tasks are waiting, slot occupancy (`1/1` means the single concurrency slot is busy), and how long the head of the queue has been waiting. Agents run serially by default (concurrency 1), so excess requests queue; a persistent backlog here is the signal to raise the Agent's max concurrency in its settings.
 
 **Time range**: choose Today / Last 7 days / Last 30 days / Last 90 days / Custom. "Today" buckets by **hour**, the rest by **day**; a custom range of two days or less also switches to hourly. Days with no activity still appear on the axis as zero, so a break in a line means "genuinely no calls", not missing data.
+
+The time range also filters the **Askers** total, **Top askers**, and **Channel breakdown** below the charts, using the same local dates. The total counts each person once across the selected range, even if they appear in several chart buckets. The lifetime audience cards above Trends remain unchanged when you select another range. The six KPI cards retain their cumulative or current-day values; queue status remains live.
 
 The five charts are:
 

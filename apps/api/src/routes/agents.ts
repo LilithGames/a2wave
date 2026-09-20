@@ -136,6 +136,7 @@ import { scheduleTriggerManager } from '../lib/schedule-trigger.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
 import { canAgentOwnerUseSkill, canNonAdminUseSkill } from '../lib/skill-access.js'
 import { slackConnectionManager } from '../lib/slack-service.js'
+import { statsWindow, timeseriesQuerySchema } from '../lib/stats-range.js'
 import { telegramConnectionManager } from '../lib/telegram-service.js'
 import {
   boundaryBucketSql,
@@ -144,8 +145,6 @@ import {
   bucketStartSql,
   localDaySequence,
   MAX_BUCKETS,
-  MAX_TZ_OFFSET_SECONDS,
-  zoneOffsetSecondsAt,
 } from '../lib/time-buckets.js'
 import { runTokenSelect, stepTokenSelect, toTokenTotals } from '../lib/token-stats.js'
 import { isAdmin } from '../middleware/auth-middleware.js'
@@ -597,6 +596,19 @@ app.get('/:id/stats', async (c) => {
   // regardless of who originally created each run.
   const baseWhere = eq(runs.initiatorAgentId, id)
 
+  let audienceWhere = baseWhere
+  const query = c.req.query()
+  if (query.from !== undefined || query.to !== undefined) {
+    const parsed = timeseriesQuerySchema.safeParse(query)
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
+    const { fromSeconds, toSeconds } = statsWindow(parsed.data)
+    audienceWhere = and(
+      baseWhere,
+      gte(runs.createdAt, new Date(fromSeconds * 1000)),
+      lte(runs.createdAt, new Date(toSeconds * 1000)),
+    ) as SQL
+  }
+
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
@@ -638,7 +650,7 @@ app.get('/:id/stats', async (c) => {
   // Distinct asker count — same rule as the trend chart on this page, so the
   // two can never disagree. See lib/asker-identity.ts.
   const askerResult = (
-    await db.select({ cnt: askerCountExpr() }).from(runs).where(baseWhere).limit(1)
+    await db.select({ cnt: askerCountExpr() }).from(runs).where(audienceWhere).limit(1)
   )[0]
   const askerCount = askerResult?.cnt ?? 0
 
@@ -648,20 +660,17 @@ app.get('/:id/stats', async (c) => {
   const topAskerRows = await db
     .select({ name: runs.triggerUserName, cnt: count() })
     .from(runs)
-    .where(and(baseWhere, isNotNull(runs.triggerUserName)))
+    .where(and(audienceWhere, isNotNull(runs.triggerUserName)))
     .groupBy(runs.triggerUserName)
     .orderBy(desc(count()))
     .limit(5)
   const topAskers = topAskerRows.map((r) => ({ name: r.name as string, count: r.cnt }))
 
-  // Channel breakdown — group by trigger_source INCLUDING NULL so the sum
-  // matches `total`. Legacy runs predating the channel-context rollout have
-  // NULL triggerSource and are surfaced as a single "unknown" bucket; without
-  // it the overview's percentage bars wouldn't add up to 100% of total runs.
+  // Include legacy NULL sources so channel counts cover every run in the window.
   const channelRows = await db
     .select({ source: runs.triggerSource, cnt: count() })
     .from(runs)
-    .where(baseWhere)
+    .where(audienceWhere)
     .groupBy(runs.triggerSource)
   const channelBreakdown = channelRows.map((r) => ({
     source: (r.source as string | null) ?? 'unknown',
@@ -686,54 +695,6 @@ app.get('/:id/stats', async (c) => {
   })
 })
 
-/**
- * A calendar date that actually exists.
- *
- * The shape regex alone accepts `2026-13-45` and `2026-02-31`; `Date.parse` then
- * yields NaN (or silently rolls over), the bucket loop never iterates, and the
- * handler returns an empty 200 that the UI renders as "no data in this range" —
- * a malformed request misreported as a quiet agent. Round-tripping through
- * `toISOString()` rejects both cases at the boundary instead.
- */
-const calendarDate = (field: string) =>
-  z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, `${field} must be YYYY-MM-DD`)
-    .refine(
-      (s) => {
-        // Guard the parse itself: `new Date('2026-13-45T00:00:00Z')` is an
-        // Invalid Date, and calling toISOString() on it throws a RangeError,
-        // which would surface as a 500 instead of the intended 400.
-        const ms = Date.parse(`${s}T00:00:00Z`)
-        return Number.isFinite(ms) && new Date(ms).toISOString().startsWith(s)
-      },
-      { message: `${field} is not a real calendar date` },
-    )
-
-/** Query contract for the per-agent time series. */
-const timeseriesQuerySchema = z
-  .object({
-    from: calendarDate('from'),
-    to: calendarDate('to'),
-    bucket: z.enum(['day', 'hour']).default('day'),
-    // Viewer's UTC offset in seconds (`-getTimezoneOffset() * 60`). It reaches
-    // SQL as a bound number, but bound it anyway so bad input fails loudly
-    // instead of silently shifting every bucket.
-    tzOffset: z.coerce
-      .number()
-      .int()
-      .min(-MAX_TZ_OFFSET_SECONDS)
-      .max(MAX_TZ_OFFSET_SECONDS)
-      .default(0),
-    // IANA zone (e.g. 'America/Los_Angeles'). Preferred over tzOffset for day
-    // buckets: a single offset cannot express a range crossing a DST switch,
-    // where every later boundary shifts an hour and the transition day is 23 or
-    // 25 hours long. tzOffset remains the fallback for clients that omit it and
-    // stays exact for hour buckets, which DST does not distort.
-    tz: z.string().min(1).max(64).optional(),
-  })
-  .refine((q) => q.from <= q.to, { message: 'from must not be after to' })
-
 const EMPTY_STATUS_COUNTS = {
   completed: 0,
   failed: 0,
@@ -747,8 +708,8 @@ const EMPTY_STATUS_COUNTS = {
  * GET /:id/stats/timeseries - Bucketed run/asker/token/latency series.
  *
  * Deliberately separate from /:id/stats rather than an extension of it: the
- * range selector refetches on every preset click, and the scalar KPIs above the
- * chart are range-independent, so re-running them would be pure waste.
+ * chart needs bucketed metrics while /:id/stats supplies the audience breakdown
+ * for the same range and range-independent scalar KPIs.
  */
 app.get('/:id/stats/timeseries', async (c) => {
   const { id } = c.req.param()
@@ -760,16 +721,7 @@ app.get('/:id/stats/timeseries', async (c) => {
   }
   const { from, to, bucket, tzOffset, tz } = parsed.data
 
-  // Interpret the calendar dates against the viewer's offset so the query window
-  // and the bucket boundaries share one definition of "a day". The window edges
-  // use the offset in force on each edge's own date, so a range that crosses a
-  // DST switch still starts and ends at real local midnight.
-  const fromEdge = Math.floor(Date.parse(`${from}T00:00:00Z`) / 1000)
-  const toEdge = Math.floor(Date.parse(`${to}T23:59:59Z`) / 1000)
-  const fromOffset = tz ? (zoneOffsetSecondsAt(tz, fromEdge - tzOffset) ?? tzOffset) : tzOffset
-  const toOffset = tz ? (zoneOffsetSecondsAt(tz, toEdge - tzOffset) ?? tzOffset) : tzOffset
-  const fromSeconds = fromEdge - fromOffset
-  const toSeconds = toEdge - toOffset
+  const { fromSeconds, toSeconds } = statsWindow(parsed.data)
 
   // Count first, allocate second. bucketSequence() would happily materialize
   // ~79M numbers for `bucket=hour&from=1000-01-01&to=9999-12-31` before the

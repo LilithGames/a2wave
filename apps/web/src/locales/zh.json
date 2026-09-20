@@ -1153,6 +1153,8 @@
     "faviconUpload": "上传图标"
   },
   "agentOverview": {
+    "lifetimeAskerCountTitle": "累计提问人数",
+    "lifetimeChannelBreakdownTitle": "累计渠道分布",
     "askerCountTitle": "提问人数",
     "topAskersTitle": "Top 提问者",
     "channelBreakdownTitle": "渠道分布",

@@ -1091,6 +1091,51 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/agents/{agentId}/stats': {
+      get: {
+        operationId: 'getAgentStats',
+        summary: 'Get Agent KPIs and audience statistics',
+        description:
+          'Requires Agent read access. Optional from/to calendar dates filter askerCount, topAskers and channelBreakdown using the same viewer-local date boundaries as the time series. Both dates must be supplied together. Without them, audience statistics cover all runs. Total runs, status counts, success rate, average duration and token totals remain lifetime metrics; todayRuns remains today-only.',
+        tags: ['Agents'],
+        security: [{ sessionCookie: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/agentId' },
+          {
+            name: 'from',
+            in: 'query',
+            schema: { type: 'string', format: 'date' },
+            description: 'Inclusive first local date.',
+          },
+          {
+            name: 'to',
+            in: 'query',
+            schema: { type: 'string', format: 'date' },
+            description: 'Inclusive last local date.',
+          },
+          {
+            name: 'tz',
+            in: 'query',
+            schema: { type: 'string' },
+            description: 'IANA timezone, preferred for DST-aware boundaries.',
+          },
+          {
+            name: 'tzOffset',
+            in: 'query',
+            schema: { type: 'integer', default: 0 },
+            description: 'Fallback UTC offset in seconds.',
+          },
+        ],
+        responses: {
+          '200': {
+            description:
+              'Agent KPIs, asker count and ranking, channel breakdown, and token totals.',
+          },
+          '400': { description: 'Invalid or incomplete date range.' },
+          '404': { description: 'Agent not found, or the caller cannot read it.' },
+        },
+      },
+    },
     '/agents/{agentId}/status': {
       get: {
         operationId: 'getAgentStatus',
