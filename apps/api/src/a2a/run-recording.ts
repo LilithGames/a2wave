@@ -11,6 +11,7 @@ import { logAudit } from '../lib/audit.js'
 import { executeWithRetry } from '../lib/execute-with-retry.js'
 import { createId } from '../lib/id.js'
 import { logger } from '../lib/logger.js'
+import { readInboundTraceContext } from '../lib/otel/propagation.js'
 import { cancelRunningTasksInBackground, claimRunCancellation } from '../lib/run-cancellation.js'
 import { buildGatewayChannel } from '../lib/run-channel.js'
 import {
@@ -126,6 +127,12 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
       ? ((c.get as (k: string) => unknown)('oauthCaller') as GatewayCaller | undefined)
       : undefined
   const rawCallerAgent = extractCallerAgentFromHeaders(c)
+  // An upstream Agent's agent-router forwards the traceparent of its attempt span (and its session
+  // as W3C baggage), so this run joins the caller's trace. Optional-called for the same reason as
+  // `c.get` below.
+  const traceContext = readInboundTraceContext(
+    c.req?.header ? (name) => c.req.header(name) : undefined,
+  )
 
   // Tighten trust on X-A2WAVE-Caller-Agent-Id header. Two checks:
   //   1. The claimed agent_id must exist in the local registry.
@@ -236,6 +243,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         // the workspace-delete occupancy check can spot in-flight runs.
         ...(payload.workDir ? { workDir: payload.workDir } : {}),
         ...(agent.userId ? { userId: agent.userId } : {}),
+        ...(traceContext.traceParent ? { executionMetadata: traceContext } : {}),
       })
     } catch (err) {
       if (isRunIdempotencyConflict(err)) {
@@ -337,6 +345,7 @@ export async function createRecordedA2AExecuteFn(c: Context, agent: AgentRow): P
         ...(options?.referencedContext
           ? { referencedPromptContext: options.referencedContext }
           : {}),
+        ...traceContext,
       }
 
       await persistRunTurn({

@@ -14,6 +14,16 @@ export interface WorkerTaskPayload {
   referencedPromptContext?: ReferencedPromptContext
   /** Agent 级别环境变量（从 Agent.env 展开） */
   agentEnv?: Record<string, string>
+  /**
+   * W3C `traceparent` of the caller (an upstream Agent's attempt span, or an external client's
+   * span). When OpenTelemetry export is on, this run's `invoke_agent` span joins that trace.
+   */
+  traceParent?: string
+  /**
+   * Session id inherited from the caller (W3C `baggage: session.id=…`), so an Agent-to-Agent trace
+   * is one session in the tracing backend. Absent → this run's own id is the session.
+   */
+  traceSession?: string
 }
 
 /** Options for executeInWorker */

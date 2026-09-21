@@ -158,4 +158,21 @@ export const SETTINGS_DEFAULTS: SettingsMap = {
     /** When 'false', /api/auth/login returns 403 PASSWORD_LOGIN_DISABLED, forcing SSO for everyone. */
     passwordLoginEnabled: 'true',
   },
+  /**
+   * OpenTelemetry trace export of Agent runs to a single OTLP/HTTP endpoint (schemas/otel.ts).
+   * headersEnc is AES-GCM ciphertext of a JSON header map, written by the settings PATCH handler
+   * which intercepts and encrypts the plaintext `otel.headers`; no read endpoint returns values.
+   */
+  otel: {
+    enabled: 'false',
+    /** OTLP/HTTP base URL (`/v1/traces` is appended) or a full traces URL. */
+    endpoint: '',
+    headersEnc: '',
+    /** When 'false', no prompt / response / tool argument / error text leaves the process. */
+    captureContent: 'false',
+    /** Overrides the `service.name` resource attribute; empty string = 'a2wave'. */
+    serviceName: '',
+    /** Extra resource attributes, `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`). */
+    resourceAttributes: '',
+  },
 }

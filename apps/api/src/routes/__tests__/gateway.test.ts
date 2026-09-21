@@ -362,6 +362,53 @@ describe('Gateway routes', () => {
   })
 
   describe('POST /:agentId/invoke — sync mode', () => {
+    describe('W3C trace context', () => {
+      const TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+
+      async function invokeWithTraceparent(traceparent: string) {
+        ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
+        ;(executeInWorker as Mock).mockResolvedValue({ success: true, output: 'ok', durationMs: 1 })
+        const insertedValues: Array<Record<string, unknown>> = []
+        ;(db.insert as Mock).mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: Record<string, unknown>) => {
+            insertedValues.push(v)
+            return { run: vi.fn() }
+          }),
+        }))
+        const res = await invokeRequest(
+          { message: 'hi', async: false },
+          { traceparent, baggage: 'session.id=upstream-session' },
+        )
+        expect(res.status).toBe(200)
+        const runInsert = insertedValues.find((v) => String(v.id).startsWith('run_'))
+        const payload = (executeInWorker as Mock).mock.calls.at(-1)?.[1] as {
+          traceParent?: string
+          traceSession?: string
+        }
+        return { runInsert, payload }
+      }
+
+      it('persists a valid traceparent on the run and hands it to the execution', async () => {
+        const { runInsert, payload } = await invokeWithTraceparent(TRACEPARENT)
+        expect(runInsert?.executionMetadata).toMatchObject({
+          traceParent: TRACEPARENT,
+          traceSession: 'upstream-session',
+        })
+        expect(payload).toMatchObject({
+          traceParent: TRACEPARENT,
+          traceSession: 'upstream-session',
+        })
+      })
+
+      it('ignores a malformed traceparent instead of failing the invocation', async () => {
+        const { runInsert, payload } = await invokeWithTraceparent('not-a-traceparent')
+        expect(runInsert?.executionMetadata).toBeUndefined()
+        expect(payload.traceParent).toBeUndefined()
+        // A session is only honoured inside a valid trace.
+        expect(payload.traceSession).toBeUndefined()
+      })
+    })
+
     it('returns durationMs in sync response', async () => {
       ;(db.select as Mock).mockReturnValue(makeDbChain(publishedAgent))
       ;(executeInWorker as Mock).mockResolvedValue({

@@ -253,6 +253,20 @@ describe('maybeScheduleJobRetry', () => {
     expect(values.executionMetadata.jobRetryAttempt).toBe(2)
   })
 
+  it('keeps the replay in the original caller trace', async () => {
+    const traceParent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    await maybeScheduleJobRetry({
+      run: makeRun({ executionMetadata: { traceParent, traceSession: 'run_caller' } }),
+      status: 'failed',
+      error: 'connection reset',
+      maxJobRetries: 3,
+    })
+    const values = insertValues.mock.calls[0][0] as {
+      executionMetadata: { traceParent?: string; traceSession?: string }
+    }
+    expect(values.executionMetadata).toMatchObject({ traceParent, traceSession: 'run_caller' })
+  })
+
   it('stops once the chain has spent its budget', async () => {
     const out = await maybeScheduleJobRetry({
       run: makeRun({ executionMetadata: { jobRetryOf: 'run_orig', jobRetryAttempt: 2 } }),

@@ -1140,6 +1140,58 @@
       "clearConfirmContent": "Permanently deletes this method’s config in settings, then falls back to environment variables. To disable it temporarily, use the Enable toggle instead.",
       "clearConfirmOk": "Clear"
     },
+    "otel": {
+      "title": "OpenTelemetry trace export",
+      "description": "Exports every Agent run as a trace to your collector. a2wave stores no telemetry.",
+      "enabled": "Enable export",
+      "endpoint": "Collector endpoint",
+      "endpointHint": "OTLP/HTTP base URL; /v1/traces is appended automatically.",
+      "tracesUrl": "Sends to: {{url}}",
+      "loopbackNote": "In a container deployment this address is the a2wave container itself; for a collector on the host use host.docker.internal.",
+      "advanced": "Advanced",
+      "serviceName": "Service name",
+      "serviceNameHint": "Defaults to a2wave. Phoenix-style backends also use it as the project name.",
+      "resourceAttributes": "Resource attributes",
+      "resourceAttributesHint": "key=value pairs, comma separated. To file traces under another Phoenix project, set openinference.project.name=<project>.",
+      "headers": "Auth headers",
+      "headersHint": "Sent with every export. Stored encrypted; values are never shown again.",
+      "headerName": "Name",
+      "headerValue": "Value",
+      "savedValuePlaceholder": "Type a new value to replace it; leave empty to keep",
+      "addHeader": "Add header",
+      "removeHeader": "Remove header {{name}}",
+      "captureContent": "Capture content",
+      "captureContentHint": "Exports prompts, replies, tool arguments and output, and error text (secrets masked); when off, only metadata is exported.",
+      "captureContentWarning": "This content leaves a2wave for an external collector — check its access and retention rules.",
+      "save": "Save",
+      "test": "Test connection",
+      "testHint": "Uses the values above; no need to save first.",
+      "testOk": "Test trace written",
+      "testTraceId": "Trace ID:",
+      "testedUrl": "Sent to: {{url}}",
+      "testFailed": {
+        "OTEL_NOT_CONFIGURED": "Enter a collector endpoint first",
+        "INVALID_CONFIG": "Invalid configuration: {{error}}",
+        "LOOPBACK_REFUSED": "Connection refused. In a container deployment 127.0.0.1 / localhost is the a2wave container itself — use host.docker.internal or the collector's network address.",
+        "EXPORT_FAILED": "Export failed: {{error}}",
+        "TIMEOUT": "The collector did not respond in time"
+      },
+      "status": {
+        "badgeActive": "Exporting",
+        "badgeInactive": "Disabled",
+        "lastExportAt": "Last successful export: {{time}}",
+        "never": "none yet",
+        "lastError": "Last error: {{error}}",
+        "droppedSpans": "Dropped spans: {{count}}",
+        "scopeHint": "This API instance only"
+      },
+      "errors": {
+        "endpointInvalid": "The endpoint must be an http(s) URL without credentials or a query string",
+        "endpointRequired": "Enter a collector endpoint before enabling export",
+        "headersInvalid": "Each header needs a name and a value; names must be unique and contain no spaces",
+        "resourceAttributesInvalid": "Resource attributes must be comma-separated key=value pairs and may not include service.name / service.version / service.instance.id"
+      }
+    },
     "tabs": {
       "general": "General",
       "artifacts": "Artifacts",
@@ -1147,7 +1199,8 @@
       "branding": "Branding",
       "webhook": "Notification Webhook",
       "auth": "Enterprise Login",
-      "cli": "CLI Access"
+      "cli": "CLI Access",
+      "observability": "Tracing"
     },
     "faviconRemove": "Remove favicon",
     "faviconUpload": "Upload favicon"
@@ -2458,6 +2511,7 @@
       "scm_source.workspace.delete": "Delete SCM workspace",
       "settings.auth.updated": "Update login settings",
       "settings.sso.updated": "Update enterprise SSO settings",
+      "settings.otel.updated": "Update OpenTelemetry export settings",
       "provider_cli.install": "Install Agent CLI",
       "provider_cli.uninstall": "Uninstall Agent CLI",
       "settings.update": "Update system settings",

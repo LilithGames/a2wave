@@ -48,6 +48,7 @@ import {
 } from './lib/instance-heartbeat.js'
 import { startKbSyncScheduler } from './lib/kb-sync-scheduler.js'
 import { logger } from './lib/logger.js'
+import { shutdownOtel } from './lib/otel/provider.js'
 import { drainActiveScmSyncs, initAutoSyncSchedulers, stopAllAutoSync } from './lib/p4-sync.js'
 import { processInstanceId } from './lib/process-instance.js'
 import { qqOfficialConnectionManager } from './lib/qq-official-service.js'
@@ -514,6 +515,7 @@ function gracefulShutdown(signal: string) {
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
       drainScmSyncs: () => drainActiveScmSyncs(),
       drainAuditWrites: () => drainAuditWrites(),
+      flushTelemetry: () => shutdownOtel(),
       releaseInstanceHeartbeat: async () => {
         stopInstanceHeartbeat?.()
         await deleteInstanceHeartbeat()
@@ -552,6 +554,7 @@ function gracefulShutdown(signal: string) {
       drainWorkspaceRemovalReleases: drainPendingWorkspaceRemovalReleases,
       drainScmSyncs: () => drainActiveScmSyncs(),
       drainAuditWrites: () => drainAuditWrites(),
+      flushTelemetry: () => shutdownOtel(),
       releaseInstanceHeartbeat: async () => {
         stopInstanceHeartbeat?.()
         await deleteInstanceHeartbeat()

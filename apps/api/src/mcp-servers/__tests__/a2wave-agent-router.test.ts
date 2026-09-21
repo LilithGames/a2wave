@@ -400,6 +400,45 @@ describe('invokeAgentHandler', () => {
     }
   })
 
+  it('forwards the run traceparent so the downstream Agent joins the caller trace', async () => {
+    const traceparent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
+    vi.stubEnv('TRACEPARENT', traceparent)
+    vi.stubEnv('BAGGAGE', 'session.id=run_caller')
+    try {
+      mockStandardJsonRpcResult({
+        message: {
+          messageId: 'message-local',
+          role: 'ROLE_AGENT',
+          parts: [{ text: 'done', mediaType: 'text/plain' }],
+        },
+      })
+
+      await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
+
+      const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(new Headers(fetchCall[1].headers).get('traceparent')).toBe(traceparent)
+      expect(new Headers(fetchCall[1].headers).get('baggage')).toBe('session.id=run_caller')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('sends no traceparent when the run is not traced', async () => {
+    mockStandardJsonRpcResult({
+      message: {
+        messageId: 'message-local',
+        role: 'ROLE_AGENT',
+        parts: [{ text: 'done', mediaType: 'text/plain' }],
+      },
+    })
+
+    await invokeAgentHandler({ agentId: 'agt_1', message: 'hi' }, null)
+
+    const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(new Headers(fetchCall[1].headers).has('traceparent')).toBe(false)
+    expect(new Headers(fetchCall[1].headers).has('baggage')).toBe(false)
+  })
+
   it('forwards caller agent headers with ascii-safe encoded name', async () => {
     process.env.A2WAVE_CALLER_AGENT_ID = 'agt_gateway'
     process.env.A2WAVE_CALLER_AGENT_NAME = '网关测试Agent'
@@ -2734,6 +2773,7 @@ describe('invokeAgentHandler', () => {
     process.env.A2WAVE_CALLER_AGENT_ID = 'agt-private'
     process.env.A2WAVE_CALLER_AGENT_NAME = '私有 Agent'
     process.env.A2WAVE_CHANNEL_B64 = 'private-channel'
+    process.env.TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
     try {
       const targets: RouteTarget[] = [
         { type: 'remote', name: 'external', url: 'https://external.example.com/a2a' },
@@ -2758,7 +2798,12 @@ describe('invokeAgentHandler', () => {
       expect(headers.has('X-A2WAVE-Caller-Agent-Id')).toBe(false)
       expect(headers.has('X-A2WAVE-Caller-Agent-Name-B64')).toBe(false)
       expect(headers.has('X-A2WAVE-Channel-B64')).toBe(false)
+      // W3C trace context is opaque ids only — no identity — and is meant to cross services.
+      expect(headers.get('traceparent')).toBe(
+        '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      )
     } finally {
+      delete process.env.TRACEPARENT
       delete process.env.A2WAVE_STREAMING_CARD_ID
       delete process.env.A2WAVE_CALLER_AGENT_ID
       delete process.env.A2WAVE_CALLER_AGENT_NAME

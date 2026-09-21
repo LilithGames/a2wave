@@ -1140,6 +1140,58 @@
       "clearConfirmContent": "永久删除该方式在设置中的配置，不可恢复，之后回落到环境变量。只想暂时停用请改用「启用」开关。",
       "clearConfirmOk": "清除"
     },
+    "otel": {
+      "title": "OpenTelemetry 链路导出",
+      "description": "把每次 Agent 执行导出为 Trace，发到你的采集端；a2wave 不存储遥测数据。",
+      "enabled": "启用导出",
+      "endpoint": "采集端地址",
+      "endpointHint": "OTLP/HTTP 基础地址，会自动补上 /v1/traces。",
+      "tracesUrl": "实际上报到：{{url}}",
+      "loopbackNote": "容器部署时，本机地址指的是 a2wave 容器自身；采集端在宿主机上请改用 host.docker.internal。",
+      "advanced": "高级选项",
+      "serviceName": "服务名",
+      "serviceNameHint": "默认为 a2wave。Phoenix 等后端的项目名也默认取它。",
+      "resourceAttributes": "资源属性",
+      "resourceAttributesHint": "key=value，多个用逗号分隔。要归到别的 Phoenix 项目，填 openinference.project.name=项目名。",
+      "headers": "鉴权请求头",
+      "headersHint": "随每次上报发送；加密保存，保存后不再显示值。",
+      "headerName": "名称",
+      "headerValue": "值",
+      "savedValuePlaceholder": "输入新值以替换，留空则保留原值",
+      "addHeader": "添加请求头",
+      "removeHeader": "移除请求头 {{name}}",
+      "captureContent": "采集内容",
+      "captureContentHint": "导出提问、回复、工具入参与输出、错误文本（密钥已掩码）；关闭时只导出元数据。",
+      "captureContentWarning": "这些内容会离开 a2wave 发往外部采集端，请确认其访问权限与留存策略。",
+      "save": "保存",
+      "test": "测试连接",
+      "testHint": "按当前填写的配置发送，无需先保存。",
+      "testOk": "已写入一条测试 Trace",
+      "testTraceId": "Trace ID：",
+      "testedUrl": "上报地址：{{url}}",
+      "testFailed": {
+        "OTEL_NOT_CONFIGURED": "请先填写采集端地址",
+        "INVALID_CONFIG": "配置无效：{{error}}",
+        "LOOPBACK_REFUSED": "连接被拒绝。容器部署时 127.0.0.1 / localhost 指的是 a2wave 容器自身，请改用 host.docker.internal 或采集端的网络地址。",
+        "EXPORT_FAILED": "上报失败：{{error}}",
+        "TIMEOUT": "采集端响应超时"
+      },
+      "status": {
+        "badgeActive": "导出中",
+        "badgeInactive": "未启用",
+        "lastExportAt": "最近成功上报：{{time}}",
+        "never": "暂无",
+        "lastError": "最近错误：{{error}}",
+        "droppedSpans": "已丢弃 span：{{count}}",
+        "scopeHint": "仅代表当前 API 实例"
+      },
+      "errors": {
+        "endpointInvalid": "采集端地址需为 http(s) 地址，且不能包含账号密码、查询参数",
+        "endpointRequired": "启用导出前请先填写采集端地址",
+        "headersInvalid": "请求头需同时填写名称和值，名称不能重复或包含空格",
+        "resourceAttributesInvalid": "资源属性需为 key=value 形式、用逗号分隔，且不能包含 service.name / service.version / service.instance.id"
+      }
+    },
     "tabs": {
       "general": "通用",
       "artifacts": "运行产物",
@@ -1147,7 +1199,8 @@
       "branding": "品牌外观",
       "webhook": "通知 Webhook",
       "auth": "企业登录",
-      "cli": "CLI 访问"
+      "cli": "CLI 访问",
+      "observability": "链路追踪"
     },
     "faviconRemove": "移除图标",
     "faviconUpload": "上传图标"
@@ -2485,6 +2538,7 @@
       "scm_source.workspace.delete": "删除代码源工作区",
       "settings.auth.updated": "更新登录设置",
       "settings.sso.updated": "更新企业 SSO 设置",
+      "settings.otel.updated": "更新 OpenTelemetry 导出设置",
       "provider_cli.install": "安装 Agent CLI",
       "provider_cli.uninstall": "卸载 Agent CLI",
       "settings.update": "更新系统设置",

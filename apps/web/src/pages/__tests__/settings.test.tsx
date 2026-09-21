@@ -1,9 +1,9 @@
-import { useSettings } from '@/hooks/use-settings'
-import i18n from '@/i18n'
-import { renderWithProviders } from '@/test/render'
 import { fireEvent, screen } from '@testing-library/react'
 import type { Mock } from 'vitest'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useSettings } from '@/hooks/use-settings'
+import i18n from '@/i18n'
+import { renderWithProviders } from '@/test/render'
 import { SettingsPage } from '../settings'
 
 function renderWithRouter(initialPath = '/settings?tab=artifacts') {
@@ -37,6 +37,10 @@ vi.mock('@/components/sso-methods-card', () => ({
   SsoMethodsCard: vi.fn(() => null),
 }))
 
+vi.mock('@/components/otel-export-card', () => ({
+  OtelExportCard: vi.fn(() => <div data-testid="otel-export-card" />),
+}))
+
 vi.mock('@/components/jwt-signer-card', () => ({
   JwtSignerCard: vi.fn(() => null),
 }))
@@ -66,6 +70,15 @@ describe('SettingsPage — artifacts settings', () => {
     // "运行产物" 同时出现在侧边二级菜单和卡片标题里，断言至少一处即可。
     const matches = screen.getAllByText('运行产物')
     expect(matches.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('offers a Tracing tab that shows the OpenTelemetry export card', () => {
+    renderWithRouter()
+    expect(screen.queryByTestId('otel-export-card')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '链路追踪' }))
+
+    expect(screen.getByTestId('otel-export-card')).toBeInTheDocument()
   })
 
   it('uses semantic tokens for the active settings navigation item', () => {

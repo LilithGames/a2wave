@@ -832,6 +832,100 @@ export const openApiSpec: OpenAPIV3.Document = {
         },
       },
     },
+    '/settings/otel/test': {
+      post: {
+        operationId: 'testOtelExport',
+        summary: 'Send a synthetic test trace to the OpenTelemetry collector (admin only)',
+        description:
+          'Always answers 200; `data.ok` carries the verdict. Works while export is disabled. ' +
+          'Without a body (or with `{}`) the saved configuration is tested. A body carries unsaved form state in the same string shapes as the `otel` section of PATCH /settings: ' +
+          'it is validated and normalized exactly like a save (a failure is reported as `INVALID_CONFIG`, including unknown keys), omitted keys fall back to the saved settings, and nothing is persisted or audited. ' +
+          'In `headers`, the submitted map is the complete set; a value of `********` means "keep the value already stored under this name" (the same rule PATCH /settings applies), and a name without a stored value is a validation error. ' +
+          'The trace is an `invoke_agent` span with one LLM child, shaped like a real Agent run with synthetic content; both spans carry `a2wave.test = true`. ' +
+          'Header values never appear in the response.',
+        tags: ['Settings'],
+        security: [{ sessionCookie: [] }, { userSession: [] }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  endpoint: {
+                    type: 'string',
+                    description: 'OTLP/HTTP base URL, or a full URL ending in `/traces`.',
+                  },
+                  serviceName: { type: 'string' },
+                  resourceAttributes: {
+                    type: 'string',
+                    description: '`key=value,key=value`.',
+                  },
+                  headers: {
+                    type: 'string',
+                    description:
+                      'JSON object string of header name → value; `********` keeps the stored value, `""` tests without headers.',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'The verdict of the test export.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['data'],
+                  properties: {
+                    data: {
+                      type: 'object',
+                      required: ['ok'],
+                      properties: {
+                        ok: { type: 'boolean' },
+                        reason: {
+                          type: 'string',
+                          enum: [
+                            'OTEL_NOT_CONFIGURED',
+                            'INVALID_CONFIG',
+                            'LOOPBACK_REFUSED',
+                            'EXPORT_FAILED',
+                            'TIMEOUT',
+                          ],
+                          description:
+                            'Present when `ok` is false. `LOOPBACK_REFUSED`: connection refused on a loopback address — in a container deployment loopback is the a2wave container itself, not the host running the collector.',
+                        },
+                        error: {
+                          type: 'string',
+                          description:
+                            'The violated validation rule (`INVALID_CONFIG`) or the transport error; never a header value or a collector response body.',
+                        },
+                        testedUrl: {
+                          type: 'string',
+                          description:
+                            'The traces URL the request was sent to; absent when no request was made.',
+                        },
+                        traceId: {
+                          type: 'string',
+                          pattern: '^[0-9a-f]{32}$',
+                          description:
+                            'Trace id of the accepted test trace. Present only when `ok` is true.',
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { description: 'Authentication required.' },
+          '403': { description: 'Administrator access required.' },
+        },
+      },
+    },
     '/scm-sources': {
       get: {
         operationId: 'listScmSources',

@@ -335,6 +335,7 @@ function createRemoteTargetFetch(target: RemoteRouteTarget): typeof fetch {
     if (target.apiKey && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${target.apiKey}`)
     }
+    withTraceContextHeader(headers)
     const isAgentCardRequest = !init.method || init.method.toUpperCase() === 'GET'
     const response = await safeRemoteRouteFetch(input instanceof URL ? input : input.toString(), {
       ...init,
@@ -1876,6 +1877,11 @@ async function sendA2ARequest(
   },
 ) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers }
+  const traceparent = process.env.TRACEPARENT
+  if (traceparent) {
+    headers.traceparent = traceparent
+    if (process.env.BAGGAGE) headers.baggage = process.env.BAGGAGE
+  }
   const reqInit: RequestInit = {
     method: 'POST',
     headers,
@@ -1891,8 +1897,24 @@ async function sendA2ARequest(
   return fetch(url, reqInit)
 }
 
+/**
+ * W3C trace context of the calling run's attempt span (set by execute-with-retry when
+ * OpenTelemetry export is on). Opaque ids only, so it is safe to send to remote targets too; the
+ * router forwards the raw value and takes no OpenTelemetry dependency.
+ */
+function withTraceContextHeader(headers: Headers): Headers {
+  const traceparent = process.env.TRACEPARENT
+  if (!traceparent) return headers
+  if (!headers.has('traceparent')) headers.set('traceparent', traceparent)
+  // The caller's session id (W3C baggage) only means something inside that trace.
+  const baggage = process.env.BAGGAGE
+  if (baggage && !headers.has('baggage')) headers.set('baggage', baggage)
+  return headers
+}
+
 function withInternalContextHeaders(headers: Headers): Headers {
   withInternalAuthHeaders(headers)
+  withTraceContextHeader(headers)
   const streamingCardId = process.env.A2WAVE_STREAMING_CARD_ID
   if (streamingCardId) headers.set('X-Streaming-Card-Id', streamingCardId)
 

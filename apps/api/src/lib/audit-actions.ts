@@ -58,6 +58,7 @@ export const AUDIT_ACTIONS = {
   SETTINGS_UPDATE_CONFLICT: 'settings.update_conflict',
   SETTINGS_AUTH_UPDATED: 'settings.auth.updated',
   SETTINGS_SSO_UPDATED: 'settings.sso.updated',
+  SETTINGS_OTEL_UPDATED: 'settings.otel.updated',
 
   // Users
   USER_ROLE_UPDATED: 'user.role.updated',

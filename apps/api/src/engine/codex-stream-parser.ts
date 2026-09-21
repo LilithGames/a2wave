@@ -17,6 +17,7 @@
  *   - plan_update       → 计划更新
  *   - web_search        → 联网搜索
  */
+import { toolResultText } from './tool-output.js'
 
 /** Normalized event types emitted by the parser. */
 export type ParsedCodexEvent =
@@ -49,6 +50,10 @@ export type ParsedCodexEvent =
       input?: Record<string, unknown>
       subtype: 'started' | 'completed' | 'failed'
       error?: string
+      /** Non-content facts about the call (`exit_code`); safe to export with content capture off. */
+      metadata?: Record<string, unknown>
+      /** What the tool returned, capped. Tracer-only content — see engine/tool-output.ts. */
+      output?: string
     }
   /** Stream-level error (thread.error). */
   | { kind: 'error'; message: string }
@@ -120,6 +125,15 @@ function parseCommandItem(
     }
   }
 
+  // A finished command's combined stdout/stderr. Content: it goes on `output`, never in metadata.
+  const output = phase === 'completed' ? toolResultText(item.aggregated_output) : undefined
+
+  // Only the exit code: `aggregated_output` is content and never goes into metadata.
+  const metadata =
+    phase === 'completed' && typeof item.exit_code === 'number'
+      ? { exit_code: item.exit_code }
+      : undefined
+
   return {
     kind: 'tool_call',
     toolName,
@@ -127,6 +141,8 @@ function parseCommandItem(
     ...(input ? { input } : {}),
     subtype,
     ...(error ? { error } : {}),
+    ...(metadata ? { metadata } : {}),
+    ...(output ? { output } : {}),
   }
 }
 

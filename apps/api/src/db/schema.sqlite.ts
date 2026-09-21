@@ -725,6 +725,14 @@ export const runs = sqliteTable(
        */
       oauthCallerId?: string
       /**
+       * W3C `traceparent` of the caller, validated at the channel boundary. Persisted so a queued
+       * or restart-resumed execution still joins the caller's OpenTelemetry trace. A correlation
+       * id only — span data itself is never stored.
+       */
+      traceParent?: string
+      /** Caller session id from W3C `baggage` (`session.id`); only stored with a traceParent. */
+      traceSession?: string
+      /**
        * Authenticated backend requester whose active admin role may authorize
        * admin-only/stdio MCP capabilities. Persist only the user id; execution
        * re-reads role and active state so queued/recovered work cannot retain a

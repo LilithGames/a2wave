@@ -31,6 +31,9 @@ describe('runGracefulShutdownSequence', () => {
         drainAuditWrites: vi.fn(async () => {
           calls.push('drainAuditWrites')
         }),
+        flushTelemetry: vi.fn(async () => {
+          calls.push('flushTelemetry')
+        }),
         releaseInstanceHeartbeat: vi.fn(async () => {
           calls.push('releaseInstanceHeartbeat')
         }),
@@ -74,6 +77,8 @@ describe('runGracefulShutdownSequence', () => {
       'drainExecutionLeases',
       'drainWorkspaceRemovalReleases',
       'drainAuditWrites',
+      // Every span has ended once the leases drained; flush before the process exits.
+      'flushTelemetry',
       'releaseInstanceHeartbeat',
       'closeDatabase',
     ])
@@ -171,6 +176,17 @@ describe('runGracefulShutdownSequence', () => {
     await runGracefulShutdownSequence(deps)
 
     // A failure reaping children must not strand the DB open / skip cleanup.
+    expect(calls).toContain('closeDatabase')
+  })
+
+  it('still closes the database when the telemetry flush fails', async () => {
+    const { calls, deps } = makeDeps()
+    deps.flushTelemetry = vi.fn(async () => {
+      throw new Error('collector unreachable')
+    })
+
+    await runGracefulShutdownSequence(deps)
+
     expect(calls).toContain('closeDatabase')
   })
 })

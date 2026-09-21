@@ -6,6 +6,7 @@ import { env } from '../env.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
 import { getOidcEnv, oauthChannelAudiences } from './oidc.js'
+import { encryptOtelHeaders } from './otel/settings-patch.js'
 import { resolveScmPathPlan, selectScmPathPeers, withScmPathMutation } from './scm-path-plan.js'
 import { scmConfigEquals } from './scm-secret-mask.js'
 import { findDurableScmSourceWorkload } from './scm-workload-lifecycle.js'
@@ -27,15 +28,43 @@ export function parseSettingsEnvKey(envKey: string): { category: string; key: st
   return { category, key }
 }
 
+/**
+ * Maps one SETTINGS_* entry to the row actually stored (exported for tests). The bridge writes
+ * values verbatim, which is wrong for a secret: `SETTINGS_OTEL_HEADERS` (a JSON header map) is
+ * encrypted into `otel.headersEnc`, exactly as PATCH /api/settings does, so the plaintext never
+ * reaches the settings table. Returns null when the entry must be skipped.
+ */
+export function resolveSettingsEnvEntry(
+  category: string,
+  key: string,
+  value: string,
+): { key: string; value: string } | null {
+  if (category !== 'otel') return { key, value }
+  if (key === 'headersEnc') {
+    logger.warn('SETTINGS_OTEL_HEADERS_ENC is server-managed — ignored; use SETTINGS_OTEL_HEADERS')
+    return null
+  }
+  if (key !== 'headers') return { key, value }
+  const encrypted = encryptOtelHeaders(value)
+  if (encrypted === null) {
+    logger.warn('SETTINGS_OTEL_HEADERS is not a valid JSON header map — ignored')
+    return null
+  }
+  return { key: 'headersEnc', value: encrypted }
+}
+
 /** Scan process.env for SETTINGS_* and upsert each into the settings table */
 async function bootstrapSettings(): Promise<void> {
   const now = new Date()
-  for (const [envKey, value] of Object.entries(process.env)) {
-    if (!value || !envKey.startsWith('SETTINGS_')) continue
+  for (const [envKey, rawValue] of Object.entries(process.env)) {
+    if (!rawValue || !envKey.startsWith('SETTINGS_')) continue
     const parsed = parseSettingsEnvKey(envKey)
     if (!parsed) continue
 
-    const { category, key } = parsed
+    const { category } = parsed
+    const entry = resolveSettingsEnvEntry(category, parsed.key, rawValue)
+    if (!entry) continue
+    const { key, value } = entry
     const existing = (
       await db
         .select()

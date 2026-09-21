@@ -135,6 +135,8 @@ There are two deliberately different pass-through mechanisms:
 
 This separation keeps interoperable remote calls useful in run history without silently turning a self-asserted display name into an authenticated enterprise identity.
 
+A third, unrelated carrier rides the same hop: when OpenTelemetry export is on, the router forwards the calling run's W3C `traceparent` (from the `TRACEPARENT` env var) so the downstream run joins the caller's trace. It holds opaque trace/span ids only — no identity — so it is sent to remote targets too, and it grants no trust. See [otel.md](./otel.md).
+
 ### Trust model (opt-in, not default)
 
 The forwarded `user_info` becomes the identity the downstream agent runs and is audited under, so it is not an "audit-only" field. `buildGatewayChannel` only adopts the upstream header when **all** of the following three conditions hold (see `isTrustedHop`):

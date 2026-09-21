@@ -163,8 +163,9 @@ cluster-aware. Three of them matter, in descending order of impact:
 are served from an in-process snapshot, and only the replica that *handles* the
 write calls `refreshSettingsCache()`. So after an admin saves on replica A,
 replicas B..N keep serving the old values **until they restart**. That covers the
-auth policy, SSO config, retention windows, attachment limits, and security
-switches such as `settings.artifacts.requireAuthForDownload`.
+auth policy, SSO config, retention windows, attachment limits, OpenTelemetry
+export settings (the exporter itself is also per-process — see [otel.md](./otel.md)),
+and security switches such as `settings.artifacts.requireAuthForDownload`.
 
 This is a **behaviour change introduced by the async migration** — settings used
 to be read from the database on every access. It is the single strongest reason

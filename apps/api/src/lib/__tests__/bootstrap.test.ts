@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../../db/client.js'
 import { scmSources } from '../../db/schema.js'
-import { bootstrapFromEnv, parseSettingsEnvKey } from '../bootstrap.js'
+import { bootstrapFromEnv, parseSettingsEnvKey, resolveSettingsEnvEntry } from '../bootstrap.js'
 import { primeSettingsCache } from '../settings-cache.js'
 
 // `bootstrapFromEnv()` returns void but its body kicks off async upserts, so the
@@ -50,6 +50,8 @@ vi.mock('../../env.js', () => ({ env: mockEnv }))
 vi.mock('../id.js', () => ({
   createId: vi.fn((prefix: string) => `${prefix}_test123`),
 }))
+
+vi.mock('../secret-box.js', () => ({ encryptSecret: (plain: string) => `enc(${plain})` }))
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -329,5 +331,30 @@ describe('bootstrapFromEnv', () => {
       const scmInsertCalls = vi.mocked(db.insert).mock.calls.filter((c) => c[0] === scmSources)
       expect(scmInsertCalls).toHaveLength(0)
     })
+  })
+})
+
+describe('resolveSettingsEnvEntry', () => {
+  it('passes ordinary settings through unchanged', () => {
+    expect(resolveSettingsEnvEntry('otel', 'endpoint', 'http://collector:4318')).toEqual({
+      key: 'endpoint',
+      value: 'http://collector:4318',
+    })
+  })
+
+  it('encrypts SETTINGS_OTEL_HEADERS so the plaintext never reaches the settings table', () => {
+    const headers = '{"Authorization":"Bearer collector-token"}'
+    expect(resolveSettingsEnvEntry('otel', 'headers', headers)).toEqual({
+      key: 'headersEnc',
+      value: `enc(${headers})`,
+    })
+  })
+
+  it('skips an invalid header map instead of storing it', () => {
+    expect(resolveSettingsEnvEntry('otel', 'headers', 'Authorization=Bearer x')).toBeNull()
+  })
+
+  it('refuses a ciphertext key supplied through the environment', () => {
+    expect(resolveSettingsEnvEntry('otel', 'headersEnc', 'forged')).toBeNull()
   })
 })

@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-09-20 · `node scripts/gates/check-license-inventory.mjs --write` · 827 packages
+Generated: 2026-09-20 · `node scripts/gates/check-license-inventory.mjs --write` · 839 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -15,8 +15,8 @@ checked for forbidden licenses, and each carries the same license as its parent 
 | License | Packages |
 |---|---|
 | MIT | 705 |
+| Apache-2.0 | 50 |
 | ISC | 41 |
-| Apache-2.0 | 38 |
 | BSD-3-Clause | 23 |
 | BSD-2-Clause | 7 |
 | BlueOak-1.0.0 | 3 |
@@ -146,6 +146,18 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @modelcontextprotocol/sdk | 1.30.0 | MIT |
 | @node-rs/argon2 | 2.2.0 | MIT |
 | @node-saml/node-saml | 5.1.0 | MIT |
+| @opentelemetry/api | 1.9.1 | Apache-2.0 |
+| @opentelemetry/api-logs | 0.222.0 | Apache-2.0 |
+| @opentelemetry/core | 2.11.0 | Apache-2.0 |
+| @opentelemetry/exporter-trace-otlp-proto | 0.222.0 | Apache-2.0 |
+| @opentelemetry/otlp-exporter-base | 0.222.0 | Apache-2.0 |
+| @opentelemetry/otlp-transformer | 0.222.0 | Apache-2.0 |
+| @opentelemetry/resources | 2.11.0 | Apache-2.0 |
+| @opentelemetry/sdk-logs | 0.222.0 | Apache-2.0 |
+| @opentelemetry/sdk-metrics | 2.11.0 | Apache-2.0 |
+| @opentelemetry/sdk-trace | 2.11.0 | Apache-2.0 |
+| @opentelemetry/sdk-trace-base | 2.11.0 | Apache-2.0 |
+| @opentelemetry/semantic-conventions | 1.43.0 | Apache-2.0 |
 | @oxc-project/types | 0.147.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |

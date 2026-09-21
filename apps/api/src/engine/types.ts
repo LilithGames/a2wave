@@ -120,7 +120,16 @@ export type StreamLogEntry =
       metadata?: Record<string, unknown>
       ts: number
     }
-  | { type: 'assistant'; text: string; ts: number }
+  | {
+      type: 'assistant'
+      text: string
+      /**
+       * True for a streamed text DELTA (a fragment of a message), absent for a whole message.
+       * Consumers that stitch text back together join deltas as-is and whole messages by line.
+       */
+      partial?: boolean
+      ts: number
+    }
   | {
       type: 'tool_call'
       subtype: 'started' | 'completed' | 'failed'
@@ -129,6 +138,13 @@ export type StreamLogEntry =
       input?: Record<string, unknown>
       error?: string
       metadata?: Record<string, unknown>
+      /**
+       * What the tool returned, capped at the source (see tool-output.ts). TRACER-ONLY: it is
+       * content, often large and sometimes sensitive, so execute-with-retry strips it from every
+       * other consumer — persisted run logs, the run log file and UI streams never carry it. Only
+       * terminal (`completed` / `failed`) events have it, and only for engines that report it.
+       */
+      output?: string
       ts: number
     }
   | { type: 'tool_heartbeat'; callId: string; toolName: string; elapsedMs: number; ts: number }

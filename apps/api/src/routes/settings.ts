@@ -1,12 +1,18 @@
-import { SSO_CONFIG_SCHEMAS, type SsoConfigKey, updateSettingsInput } from '@a2wave/shared'
+import {
+  type OtelStatus,
+  type OtelTestResult,
+  SSO_CONFIG_SCHEMAS,
+  type SsoConfigKey,
+  updateSettingsInput,
+} from '@a2wave/shared'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { settings } from '../db/schema.js'
 import { withTransaction } from '../db/transaction.js'
-import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { logAudit } from '../lib/audit.js'
+import { AUDIT_ACTIONS } from '../lib/audit-actions.js'
 import { resetAuthSettingsCache } from '../lib/auth-settings.js'
 import {
   getOidcEnv,
@@ -16,8 +22,13 @@ import {
   oauthChannelAudiences,
   probeOidcDiscovery,
 } from '../lib/oidc.js'
-import { getSamlEnv, isSamlConfigured } from '../lib/saml-config.js'
+import { readOtelSettingsView } from '../lib/otel/config.js'
+import { getOtelExportStats, getOtelRuntime } from '../lib/otel/provider.js'
+import { prepareOtelSettingsPatch } from '../lib/otel/settings-patch.js'
+import { resolveOtelTestConfig } from '../lib/otel/test-draft.js'
+import { sendOtelTestSpan } from '../lib/otel/test-trace.js'
 import { getSaml } from '../lib/saml.js'
+import { getSamlEnv, isSamlConfigured } from '../lib/saml-config.js'
 import { encryptSecret } from '../lib/secret-box.js'
 import {
   clearDetectedServerUrl,
@@ -37,7 +48,7 @@ import {
   refreshSettingsCache,
 } from '../lib/settings.js'
 import { computeSsoAvailability } from '../lib/sso-availability.js'
-import { UnsafeUrlError, assertSafePublicUrl } from '../lib/url-safety.js'
+import { assertSafePublicUrl, UnsafeUrlError } from '../lib/url-safety.js'
 import { sendWebhookTest } from '../lib/webhook-notifier.js'
 import { isAdmin, requireAdmin } from '../middleware/auth-middleware.js'
 
@@ -143,6 +154,34 @@ app.get('/sso/status', requireAdmin, async (c) => {
       callbackOriginAvailable: (await getSsoCallbackOrigin()) !== null,
     },
   })
+})
+
+/**
+ * GET /otel/status — OpenTelemetry trace export status (Admin only). Header names and a "set"
+ * boolean only; header values and the ciphertext are never returned. Export stats describe THIS
+ * API instance: the settings cache and the exporter are per-process.
+ */
+app.get('/otel/status', requireAdmin, (c) => {
+  const data: OtelStatus = {
+    ...readOtelSettingsView(),
+    ...getOtelExportStats(),
+    scope: 'this-instance',
+  }
+  return c.json({ data })
+})
+
+/**
+ * POST /otel/test — sends a synthetic test trace. An optional JSON body (OtelTestDraft) carries the
+ * unsaved form state; it is validated exactly like a save but never persisted or audited, and
+ * omitted keys fall back to the saved settings. Always 200; `data.ok` carries the verdict. Works
+ * while export is disabled so an admin can verify before enabling.
+ */
+app.post('/otel/test', requireAdmin, async (c) => {
+  const resolved = resolveOtelTestConfig(await c.req.text())
+  const data: OtelTestResult = resolved.ok
+    ? await sendOtelTestSpan(resolved.config)
+    : { ok: false, reason: 'INVALID_CONFIG', error: resolved.error }
+  return c.json({ data })
 })
 
 const ssoTestSchema = z.object({ type: z.enum(['oidc', 'saml']) })
@@ -293,6 +332,15 @@ app.patch('/', requireAdmin, async (c) => {
   const publicBaseUrl = parsed.data.artifacts?.publicBaseUrl
   if (publicBaseUrl?.trim() && isLocalhostOrLoopback(publicBaseUrl)) {
     return c.json({ error: 'artifacts.publicBaseUrl cannot be localhost or 127.0.0.1' }, 400)
+  }
+
+  // OpenTelemetry export: the plaintext `otel.headers` pseudo-key is encrypted into
+  // `otel.headersEnc` and the endpoint is normalized. Must run before the `settingsData` snapshot
+  // below, like the SSO rewrite.
+  if (parsed.data.otel) {
+    const prepared = prepareOtelSettingsPatch(parsed.data.otel, getCategorySettings('otel'))
+    if (!prepared.ok) return c.json({ error: prepared.error, message: prepared.message }, 400)
+    parsed.data.otel = prepared.patch
   }
 
   // SSO 配置写入预处理：
@@ -500,6 +548,22 @@ app.patch('/', requireAdmin, async (c) => {
       action: AUDIT_ACTIONS.SETTINGS_SSO_UPDATED,
       resource: 'settings',
       details: { changedKeys: Object.keys(parsed.data.sso) },
+    })
+  }
+
+  if (parsed.data.otel) {
+    // Rebuild the exporter now rather than on the next run, so "save, then test / watch status"
+    // reflects the new config. Other replicas pick it up on restart (per-process settings cache).
+    getOtelRuntime()
+    logAudit(c, {
+      action: AUDIT_ACTIONS.SETTINGS_OTEL_UPDATED,
+      resource: 'settings',
+      // Turning content capture on sends prompts and responses to an external collector, so the
+      // resulting state is recorded — as a boolean. Header values never reach `details`.
+      details: {
+        changedKeys: Object.keys(parsed.data.otel),
+        captureContent: getCategorySettings('otel').captureContent === 'true',
+      },
     })
   }
 

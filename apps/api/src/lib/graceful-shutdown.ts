@@ -37,6 +37,12 @@ export interface GracefulShutdownDeps {
    */
   drainAuditWrites: () => Promise<void>
   /**
+   * Flush queued OpenTelemetry spans. Runs after the lease drain, by which point every run span
+   * has ended. Self-bounded (2 s) and never rejects, so it cannot eat the hard shutdown budget;
+   * export-only telemetry that misses the window is dropped, by design.
+   */
+  flushTelemetry: () => Promise<void>
+  /**
    * Delete this instance's heartbeat row. Runs after every drain — the row is
    * what tells surviving replicas "do not touch my marks", so it must outlive
    * this process's own release attempts — and before the database closes. Any
@@ -85,6 +91,7 @@ export async function runGracefulShutdownSequence(deps: GracefulShutdownDeps): P
   await safelyAsync(deps.drainExecutionLeases, 'drainExecutionLeases')
   await safelyAsync(deps.drainWorkspaceRemovalReleases, 'drainWorkspaceRemovalReleases')
   await safelyAsync(deps.drainAuditWrites, 'drainAuditWrites')
+  await safelyAsync(deps.flushTelemetry, 'flushTelemetry')
   await safelyAsync(deps.releaseInstanceHeartbeat, 'releaseInstanceHeartbeat')
   await safelyAsync(deps.closeDatabase, 'closeDatabase')
 }
