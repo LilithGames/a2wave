@@ -32,7 +32,9 @@ invoke_agent <agentName>        one per executeWithRetry call               (INT
 ```
 
 - **Every level names its subject.** `attempt` is followed by the configured Provider name
-  (`attempt Codex CLI`), else the engine type, else nothing — so a fallback run reads
+  (`attempt Codex CLI`) — the chain entry that ran it, else the Agent's primary Provider
+  (`agentConfig.providerName`; most Agents have no resolved chain binding) — else the engine type,
+  else nothing — so a fallback run reads
   "attempt Claude Code, attempt Codex CLI" instead of two identical rows. The Provider name is
   admin-chosen and low-cardinality, like the agent name. Match spans by `a2wave.attempt.number` or
   `openinference.span.kind = LLM`, never by an exact `attempt` name.

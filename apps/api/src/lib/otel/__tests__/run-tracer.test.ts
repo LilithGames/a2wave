@@ -870,6 +870,20 @@ describe('attempt span name', () => {
     )
   })
 
+  it("uses the Agent's primary Provider name when the attempt has no chain binding", () => {
+    // Most Agents run a single Provider whose chain entry is not a resolved binding, so `binding`
+    // is absent; the display name still sits on agentConfig.providerName.
+    expect(nameOf({ providerName: 'Codex CLI', engineType: 'codex' })).toBe('attempt Codex CLI')
+    expect(byName('attempt')[0].attributes['a2wave.provider.name']).toBe('Codex CLI')
+    // A chain binding is more specific (it is the entry that actually ran) and wins.
+    expect(
+      nameOf({
+        providerName: 'Codex CLI',
+        binding: { providerId: 'prv_2', providerName: 'Claude Code' },
+      }),
+    ).toBe('attempt Claude Code')
+  })
+
   it('falls back to the engine type, then to the bare operation', () => {
     expect(nameOf({ engineType: 'codex' })).toBe('attempt codex')
     expect(nameOf({ engineType: undefined })).toBe('attempt')

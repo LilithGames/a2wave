@@ -117,6 +117,17 @@ describe('executeWithRetry — OpenTelemetry wiring', () => {
     expect(mockFinish).toHaveBeenCalledWith({ result, retries: 1, cancelled: false })
   })
 
+  it('tells the trace which Provider ran the attempt, from the agent config', async () => {
+    mockExecuteInWorker.mockResolvedValueOnce(ok)
+    await executeWithRetry('task_1', {
+      ...payload,
+      agentConfig: { ...payload.agentConfig, providerName: 'Codex CLI' },
+    })
+    expect(mockStartAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ providerName: 'Codex CLI' }),
+    )
+  })
+
   it('ends the attempt with that attempt’s own usage, before accumulation', async () => {
     vi.useFakeTimers()
     const endedWith: unknown[] = []

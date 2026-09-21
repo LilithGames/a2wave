@@ -46,6 +46,12 @@ export interface AttemptInfo {
   attempt: number
   providerIndex: number
   binding?: { providerId: string; providerName: string }
+  /**
+   * Display name of the Provider that runs this attempt when there is no chain `binding` — most
+   * Agents run a single Provider whose chain entry is not a resolved binding, and the name then
+   * sits on `agentConfig.providerName`.
+   */
+  providerName?: string
   model?: string
   engineType?: string
   resetChat: boolean
@@ -319,10 +325,11 @@ class ActiveRunTrace implements RunTrace {
         [ATTR.PROVIDER_INDEX]: info.providerIndex,
         [ATTR.CHAT_RESET]: info.resetChat,
       }
-      if (info.binding) {
-        attributes[ATTR.PROVIDER_ID] = info.binding.providerId
-        attributes[ATTR.PROVIDER_DISPLAY_NAME] = info.binding.providerName
-      }
+      // The chain entry that actually ran is the most specific answer; the Agent's primary
+      // Provider is the answer when no chain binding was resolved.
+      const providerName = info.binding?.providerName || info.providerName
+      if (info.binding) attributes[ATTR.PROVIDER_ID] = info.binding.providerId
+      if (providerName) attributes[ATTR.PROVIDER_DISPLAY_NAME] = providerName
       if (info.model) attributes[ATTR.REQUEST_MODEL] = info.model
       if (info.engineType) attributes[ATTR.PROVIDER_NAME] = info.engineType
       if (info.providerIndex > 0) this.usedFallbackProvider = true
@@ -338,7 +345,7 @@ class ActiveRunTrace implements RunTrace {
       // `attempt <provider>`, like `invoke_agent <agent>` and `execute_tool <tool>`: a fallback run
       // then reads "attempt Claude Code, attempt Codex CLI" instead of two identical rows. The
       // configured Provider name is admin-chosen and low-cardinality, like the agent name.
-      const subject = info.binding?.providerName || info.engineType
+      const subject = providerName || info.engineType
       span = this.runtime.tracer.startSpan(
         subject ? `attempt ${subject}` : 'attempt',
         { kind: SpanKind.INTERNAL, attributes },

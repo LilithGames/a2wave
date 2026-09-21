@@ -597,6 +597,7 @@ async function executeWithRetryCore(
         attempt,
         providerIndex,
         binding: providerBinding,
+        providerName: attemptPayload.agentConfig?.providerName,
         model: attemptPayload.model,
         engineType: attemptPayload.agentConfig?.engineType,
         resetChat,
