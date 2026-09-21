@@ -36,6 +36,10 @@ import { getOtelRuntime, type OtelRuntime } from './provider.js'
 
 /** A runaway agent must not be able to grow the open-span map without bound. */
 const MAX_OPEN_TOOL_SPANS = 256
+/** Per attempt. A run that talks more than this keeps its tool spans; later messages are dropped. */
+const MAX_MESSAGE_SPANS = 200
+/** Text held for one message before export truncates it anyway. */
+const MAX_MESSAGE_CHARS = 16_384
 const A2A_TASK_EVENT_RE = /^a2a\.task\./
 
 export interface AttemptInfo {
@@ -88,6 +92,14 @@ interface OpenTool {
   startMs: number
 }
 
+/** Consecutive assistant text between two tool calls, exported as one `assistant_message` span. */
+interface MessageSegment {
+  startMs: number
+  endMs: number
+  /** Held only with content capture on. */
+  text: string
+}
+
 function guard(label: string, fn: () => void): void {
   try {
     fn()
@@ -117,6 +129,10 @@ class ActiveRunTrace implements RunTrace {
   private anonymousToolSeq = 0
   private finished = false
   private usedFallbackProvider = false
+  private message: MessageSegment | null = null
+  private messageCount = 0
+  /** Timestamp of the previous stream event in this attempt: where the next message "starts". */
+  private lastEventMs: number | undefined
 
   constructor(
     private readonly runtime: OtelRuntime,
@@ -135,11 +151,62 @@ class ActiveRunTrace implements RunTrace {
   onLogEntry(entry: StreamLogEntry): void {
     if (this.finished) return
     guard('onLogEntry', () => {
-      if (entry.type === 'tool_call') this.onToolCall(entry)
+      if (entry.type === 'tool_call') {
+        // A tool call ends whatever the Agent was saying before it.
+        if (entry.subtype === 'started') this.flushMessage()
+        this.onToolCall(entry)
+        this.lastEventMs = entry.ts
+      } else if (entry.type === 'assistant') this.onAssistant(entry)
       else if (entry.type === 'retry') {
         this.root.addEvent('retry', { attempt: entry.attempt, backoff_ms: entry.nextAttemptIn })
       } else if (entry.type === 'system') this.onSystem(entry)
     })
+  }
+
+  /**
+   * What the Agent SAID between tool calls. Without it a long run is a wall of identical
+   * `execute_tool` rows that shows what was run and never why. The CLI's individual model calls are
+   * invisible, so this is not an LLM span and carries no usage: it is the text of one stretch of
+   * output, from the previous stream event (the gap is the model generating) to its last fragment.
+   */
+  private onAssistant(entry: Extract<StreamLogEntry, { type: 'assistant' }>): void {
+    if (!this.attemptSpan || !entry.text) return
+    if (!this.message) {
+      this.message = { startMs: this.lastEventMs ?? entry.ts, endMs: entry.ts, text: '' }
+    }
+    const segment = this.message
+    segment.endMs = Math.max(segment.endMs, entry.ts)
+    this.lastEventMs = entry.ts
+    if (!this.runtime.captureContent || segment.text.length >= MAX_MESSAGE_CHARS) return
+    if (entry.partial) segment.text += entry.text
+    // Some CLIs stream deltas AND then send the whole block: do not say it twice.
+    else if (!segment.text.endsWith(entry.text)) {
+      segment.text += (segment.text ? '\n' : '') + entry.text
+    }
+  }
+
+  private flushMessage(): void {
+    const segment = this.message
+    this.message = null
+    if (!segment || !this.attemptSpan || this.messageCount >= MAX_MESSAGE_SPANS) return
+    this.messageCount++
+    const attributes: Attributes = {
+      // CHAIN, not LLM: backends total tokens and cost over LLM spans, and this one has neither.
+      [ATTR.OI_SPAN_KIND]: 'CHAIN',
+      [ATTR.MESSAGE_INDEX]: this.messageCount,
+    }
+    if (this.sessionId) attributes[ATTR.OI_SESSION_ID] = this.sessionId
+    if (this.runtime.captureContent && segment.text) {
+      attributes[ATTR.OI_OUTPUT_VALUE] = toContentAttribute(segment.text, this.secrets)
+      attributes[ATTR.OI_OUTPUT_MIME_TYPE] = 'text/plain'
+    }
+    const span = this.runtime.tracer.startSpan(
+      'assistant_message',
+      { kind: SpanKind.INTERNAL, startTime: segment.startMs, attributes },
+      trace.setSpan(ROOT_CONTEXT, this.attemptSpan),
+    )
+    span.setStatus({ code: SpanStatusCode.OK })
+    span.end(Math.max(segment.endMs, segment.startMs))
   }
 
   private onSystem(entry: Extract<StreamLogEntry, { type: 'system' }>): void {
@@ -268,8 +335,12 @@ class ActiveRunTrace implements RunTrace {
         attributes[ATTR.OI_INPUT_VALUE] = toContentAttribute(this.payload.prompt, this.secrets)
         attributes[ATTR.OI_INPUT_MIME_TYPE] = 'text/plain'
       }
+      // `attempt <provider>`, like `invoke_agent <agent>` and `execute_tool <tool>`: a fallback run
+      // then reads "attempt Claude Code, attempt Codex CLI" instead of two identical rows. The
+      // configured Provider name is admin-chosen and low-cardinality, like the agent name.
+      const subject = info.binding?.providerName || info.engineType
       span = this.runtime.tracer.startSpan(
-        'attempt',
+        subject ? `attempt ${subject}` : 'attempt',
         { kind: SpanKind.INTERNAL, attributes },
         trace.setSpan(ROOT_CONTEXT, this.root),
       )
@@ -298,6 +369,10 @@ class ActiveRunTrace implements RunTrace {
   private closeAttempt(): void {
     const span = this.attemptSpan
     if (!span) return
+    // The last thing said (usually the reply itself) has no tool call after it to flush it.
+    this.flushMessage()
+    this.messageCount = 0
+    this.lastEventMs = undefined
     this.attemptSpan = null
     for (const open of this.openTools.values()) {
       open.span.setAttribute(ATTR.TOOL_INCOMPLETE, true)

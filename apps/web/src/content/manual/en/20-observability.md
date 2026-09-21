@@ -9,14 +9,16 @@ a2wave can export every Agent execution as a standard **OpenTelemetry trace** an
 
 ```
 invoke_agent <Agent name>        one execution
-└─ attempt                       one per retry / Provider switch
+└─ attempt <Provider name>       one per retry / Provider switch
+   ├─ assistant_message          what the Agent said between two tool calls
    └─ execute_tool <tool name>   one per tool call, with real start and end times
 ```
 
 | Level | What you see |
 |-------|--------------|
 | `invoke_agent` | Agent, model, trigger channel, a pseudonymous id of whoever triggered it, total tokens, retry count, whether a Provider fallback happened, the names of mounted Skills and MCP servers, final outcome (success / failed / timeout / cancelled) |
-| `attempt` | Which attempt it was, the Provider and model used, that attempt's own tokens |
+| `attempt <Provider>` | Which attempt it was, the Provider and model used, that attempt's own tokens; the Provider is in the name, so after a fallback you can tell at a glance who ran each part |
+| `assistant_message` | What the Agent said between two tool calls (consecutive text is merged into one span); the text is exported only with **Capture content** on — with it off the span keeps its place in time and nothing else |
 | `execute_tool` | Tool name, call duration, success or failure, and the exit code when the Provider reports one |
 
 Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same structure. Attributes follow the OpenTelemetry GenAI semantic conventions (`gen_ai.*`), which mainstream APMs recognise out of the box.

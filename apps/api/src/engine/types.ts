@@ -120,7 +120,16 @@ export type StreamLogEntry =
       metadata?: Record<string, unknown>
       ts: number
     }
-  | { type: 'assistant'; text: string; ts: number }
+  | {
+      type: 'assistant'
+      text: string
+      /**
+       * True for a streamed text DELTA (a fragment of a message), absent for a whole message.
+       * Consumers that stitch text back together join deltas as-is and whole messages by line.
+       */
+      partial?: boolean
+      ts: number
+    }
   | {
       type: 'tool_call'
       subtype: 'started' | 'completed' | 'failed'

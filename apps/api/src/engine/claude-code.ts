@@ -796,6 +796,7 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
             onLogEntry?.({
               type: 'assistant',
               text: delta.text,
+              partial: true,
               ts: Date.now(),
             })
           }

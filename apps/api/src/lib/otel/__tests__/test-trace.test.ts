@@ -68,7 +68,8 @@ describe('emitOtelTestTrace', () => {
     const spans = exporter.getFinishedSpans()
     expect(spans).toHaveLength(2)
     const root = spans.find((span) => span.name === 'invoke_agent a2wave connection test')
-    const child = spans.find((span) => span.name === 'attempt')
+    // Named after what ran it, like a real attempt: the synthetic engine type is `a2wave`.
+    const child = spans.find((span) => span.name === 'attempt a2wave')
     expect(root).toBeDefined()
     expect(child).toBeDefined()
 

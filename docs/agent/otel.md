@@ -25,10 +25,26 @@ settings category.
 ## Span model
 
 ```
-invoke_agent <agentName>        one per executeWithRetry call            (INTERNAL)
-└─ attempt                      one per retry / provider-fallback try    (INTERNAL)
-   └─ execute_tool <toolName>   paired from normalized tool_call events  (INTERNAL)
+invoke_agent <agentName>        one per executeWithRetry call               (INTERNAL)
+└─ attempt <providerName>       one per retry / provider-fallback try       (INTERNAL)
+   ├─ assistant_message         what the Agent said between two tool calls  (INTERNAL)
+   └─ execute_tool <toolName>   paired from normalized tool_call events     (INTERNAL)
 ```
+
+- **Every level names its subject.** `attempt` is followed by the configured Provider name
+  (`attempt Codex CLI`), else the engine type, else nothing — so a fallback run reads
+  "attempt Claude Code, attempt Codex CLI" instead of two identical rows. The Provider name is
+  admin-chosen and low-cardinality, like the agent name. Match spans by `a2wave.attempt.number` or
+  `openinference.span.kind = LLM`, never by an exact `attempt` name.
+- **`assistant_message` is what the Agent SAID, not a model call.** Without it a long run is a wall
+  of identical `execute_tool` rows that shows what was run and never why. Consecutive `assistant`
+  entries are merged into one span and flushed by the next tool call (or the end of the attempt);
+  the span starts at the previous stream event — the gap is the model generating — and ends at its
+  last fragment. The CLI's individual model calls stay invisible, so it carries no usage and is
+  `CHAIN`, not `LLM`: backends total tokens and cost over `LLM` spans. Streamed deltas
+  (`assistant.partial`) are joined as-is, whole messages by line, and a block the deltas already
+  spelled is not repeated. The text is **content-gated**; with capture off the span is still
+  emitted, empty, so the rhythm of the run stays visible. At most 200 per attempt.
 
 The single instrumentation seam is `executeWithRetry` (`lib/execute-with-retry.ts`) — the one
 chokepoint every channel passes through, including A2A, evaluation and memory, which bypass
@@ -41,7 +57,8 @@ token usage is reported once per execution, so such spans could only be invented
 | Span | Attributes |
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name`, `gen_ai.provider.name` (engine type), `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.request.model` (last attempt's), `gen_ai.conversation.id` (provider session id), `gen_ai.usage.*`, `a2wave.run.id`, `a2wave.task.id`, `a2wave.trigger.source`, `a2wave.attempt.count`, `a2wave.retry.count`, `a2wave.run.outcome` (`success` / `failed` / `timeout` / `cancelled`), `error.type`, `user.id` (pseudonymous, see below), `a2wave.workspace.type` (`temp` / `scm`), `a2wave.agent.skills` and `a2wave.agent.mcp_servers` (names only), `a2wave.provider.fallback` (true when any attempt ran on a chain entry other than the first) |
-| `attempt` | `a2wave.attempt.number`, `a2wave.provider.index` / `.id` / `.name`, `gen_ai.request.model`, `a2wave.chat.reset`, this attempt's own `gen_ai.usage.*`, `error.type` |
+| `attempt <provider>` | `a2wave.attempt.number`, `a2wave.provider.index` / `.id` / `.name`, `gen_ai.request.model`, `a2wave.chat.reset`, this attempt's own `gen_ai.usage.*`, `error.type` |
+| `assistant_message` | `a2wave.message.index` (1-based within the attempt), `output.value` (**content-gated**) |
 | `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (**content-gated**), `a2wave.tool.exit_code` (when the engine reports one), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
 
 ### OpenInference mirror
@@ -52,10 +69,10 @@ keys their input / output / kind / session columns read — so those are written
 
 | Key | Span | Value |
 |---|---|---|
-| `openinference.span.kind` | all | `AGENT` (invoke_agent), `LLM` (attempt), `TOOL` (execute_tool) |
+| `openinference.span.kind` | all | `AGENT` (invoke_agent), `LLM` (attempt), `CHAIN` (assistant_message), `TOOL` (execute_tool) |
 | `session.id` | all | inherited caller session, else the run id — the same value on every span |
 | `input.value` / `input.mime_type` | invoke_agent, attempt, execute_tool | prompt (`text/plain`) / tool arguments (`application/json`) — **content-gated** |
-| `output.value` / `output.mime_type` | invoke_agent, attempt (successful only), execute_tool | the reply / what the tool returned (`text/plain`) — **content-gated** |
+| `output.value` / `output.mime_type` | invoke_agent, attempt (successful only), assistant_message, execute_tool | the reply / what was said / what the tool returned (`text/plain`) — **content-gated** |
 
 - **`attempt` is `LLM`, not `CHAIN`.** It is the span that carries model and token usage, and
   OpenInference backends total tokens and cost over `LLM` spans only; the `AGENT` root repeats the
@@ -231,7 +248,7 @@ real runs:
 
 ```
 invoke_agent a2wave connection test     AGENT, prompt "ping", reply "pong", 1 + 1 tokens
-└─ attempt                              LLM, model a2wave-connection-test
+└─ attempt a2wave                       LLM, model a2wave-connection-test
 ```
 
 Both spans carry **`a2wave.test = true`** (set by a span processor on the probe provider, so every

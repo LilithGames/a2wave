@@ -44,6 +44,7 @@ export const ATTR = {
   // OTel `user.id`: a pseudonymous, stable identifier — never an email, name or phone number.
   USER_ID: 'user.id',
   TOOL_EXIT_CODE: 'a2wave.tool.exit_code',
+  MESSAGE_INDEX: 'a2wave.message.index',
   WORKSPACE_TYPE: 'a2wave.workspace.type',
   AGENT_SKILLS: 'a2wave.agent.skills',
   AGENT_MCP_SERVERS: 'a2wave.agent.mcp_servers',

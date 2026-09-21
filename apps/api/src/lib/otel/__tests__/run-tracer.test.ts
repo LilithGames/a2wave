@@ -852,3 +852,123 @@ describe('trace enrichment', () => {
     expect(root().attributes['a2wave.provider.fallback']).toBe(false)
   })
 })
+
+describe('attempt span name', () => {
+  const nameOf = (info: Record<string, unknown>) => {
+    exporter.reset()
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    trace.startAttempt(attempt(1, info)).end(ok)
+    trace.finish({ result: ok, retries: 0 })
+    return byName('attempt')[0].name
+  }
+
+  it('names the Provider that ran it, like the other two levels name their subject', () => {
+    // `invoke_agent <agent>` and `execute_tool <tool>` say what they are about; a bare `attempt`
+    // did not, and a fallback run showed two identical rows.
+    expect(nameOf({ binding: { providerId: 'prv_1', providerName: 'Codex CLI' } })).toBe(
+      'attempt Codex CLI',
+    )
+  })
+
+  it('falls back to the engine type, then to the bare operation', () => {
+    expect(nameOf({ engineType: 'codex' })).toBe('attempt codex')
+    expect(nameOf({ engineType: undefined })).toBe('attempt')
+  })
+})
+
+describe('assistant messages', () => {
+  const say = (text: string, ts: number, partial?: boolean) =>
+    ({ type: 'assistant', text, ts, ...(partial ? { partial: true } : {}) }) as const
+  const tool = (subtype: 'started' | 'completed', callId: string, ts: number) =>
+    ({ type: 'tool_call', subtype, callId, toolName: 'shell', ts }) as const
+  const messages = () => byName('assistant_message')
+
+  it('interleaves what the Agent said with its tool calls, merging consecutive text into one span', () => {
+    // Without this a long run is a wall of identical `execute_tool shell` rows: the tree shows
+    // what was run but never why.
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(say('SAY-1 checking the MR state', 1000))
+    trace.onLogEntry(tool('started', 'c1', 1100))
+    trace.onLogEntry(tool('completed', 'c1', 1500))
+    trace.onLogEntry(say('SAY-2 it is still open', 2000))
+    trace.onLogEntry(say('SAY-3 reviewing the diff', 2300))
+    trace.onLogEntry(tool('started', 'c2', 2400))
+    trace.onLogEntry(tool('completed', 'c2', 2600))
+    trace.onLogEntry(say('SAY-4 done', 3000))
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    const attemptId = byName('attempt')[0].spanContext().spanId
+    expect(messages().map((m) => m.attributes['output.value'])).toEqual([
+      'SAY-1 checking the MR state',
+      'SAY-2 it is still open\nSAY-3 reviewing the diff',
+      'SAY-4 done',
+    ])
+    for (const [index, m] of messages().entries()) {
+      expect(m.parentSpanContext?.spanId).toBe(attemptId)
+      expect(m.attributes['openinference.span.kind']).toBe('CHAIN')
+      expect(m.attributes['session.id']).toBe('run_1')
+      expect(m.attributes['a2wave.message.index']).toBe(index + 1)
+    }
+    // The gap since the previous event is the model generating: 1500 → 2300 for the second one.
+    const ms = (t: [number, number]) => t[0] * 1000 + t[1] / 1e6
+    expect(ms(messages()[1].startTime)).toBe(1500)
+    expect(ms(messages()[1].endTime)).toBe(2300)
+  })
+
+  it('emits the spans without any text when content capture is off', () => {
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(say('SAY-SECRET-TEXT', 1000))
+    trace.onLogEntry(tool('started', 'c1', 1100))
+    trace.onLogEntry(tool('completed', 'c1', 1200))
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    expect(messages()).toHaveLength(1)
+    expect(messages()[0].attributes['output.value']).toBeUndefined()
+    expect(JSON.stringify(spans().map((x) => x.attributes))).not.toContain('SAY-SECRET-TEXT')
+  })
+
+  it('joins streamed deltas without a separator and does not repeat a block the deltas already spelled', () => {
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(say('Hel', 1000, true))
+    trace.onLogEntry(say('lo wor', 1010, true))
+    trace.onLogEntry(say('ld', 1020, true))
+    trace.onLogEntry(say('Hello world', 1030))
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    expect(messages().map((m) => m.attributes['output.value'])).toEqual(['Hello world'])
+  })
+
+  it('masks injected credentials and bounds the number of message spans per attempt', () => {
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(say('key is provider-key-123456 ok', 1000))
+    for (let i = 0; i < 300; i++) {
+      trace.onLogEntry(tool('started', `c${i}`, 2000 + i * 10))
+      trace.onLogEntry(tool('completed', `c${i}`, 2005 + i * 10))
+      trace.onLogEntry(say(`step ${i}`, 2008 + i * 10))
+    }
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    expect(JSON.stringify(messages().map((m) => m.attributes))).not.toContain('provider-key-123456')
+    expect(messages().length).toBeLessThanOrEqual(200)
+    expect(messages().length).toBeGreaterThan(100)
+  })
+
+  it('ignores assistant text outside an attempt', () => {
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    trace.onLogEntry(say('before any attempt', 900))
+    trace.finish({ result: ok, retries: 0 })
+    expect(messages()).toHaveLength(0)
+  })
+})

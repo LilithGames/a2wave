@@ -121,7 +121,7 @@ export function createCcStreamParser(options: CcStreamParserOptions): CcStreamPa
         if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
           state.outputBuffer += delta.text
           onUpdate?.(state.outputBuffer)
-          onLogEntry?.({ type: 'assistant', text: delta.text, ts: Date.now() })
+          onLogEntry?.({ type: 'assistant', text: delta.text, partial: true, ts: Date.now() })
         }
         break
       }

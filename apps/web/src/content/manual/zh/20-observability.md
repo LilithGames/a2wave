@@ -9,14 +9,16 @@ a2wave 可以把每一次 Agent 执行导出为一条标准的 **OpenTelemetry T
 
 ```
 invoke_agent <Agent 名称>        一次执行
-└─ attempt                       每次重试 / 切换 Provider 各一段
+└─ attempt <Provider 名称>       每次重试 / 切换 Provider 各一段
+   ├─ assistant_message          Agent 在两次工具调用之间说的话
    └─ execute_tool <工具名>      每次工具调用，带真实起止时间
 ```
 
 | 层级 | 你能看到什么 |
 |------|--------------|
 | `invoke_agent` | Agent、模型、触发渠道、触发用户的匿名 ID、总 Token、重试次数、是否发生 Provider 降级、挂载的 Skill 与 MCP 名称、最终结果（成功 / 失败 / 超时 / 已取消） |
-| `attempt` | 第几次尝试、用的是哪个 Provider 和模型、这次尝试自己的 Token |
+| `attempt <Provider>` | 第几次尝试、用的是哪个 Provider 和模型、这次尝试自己的 Token；名称里直接带上 Provider，发生降级时一眼能看出每段是谁跑的 |
+| `assistant_message` | Agent 在两次工具调用之间说了什么（连续的文字合并成一段）；文字只在开启「采集内容」时导出，关闭时只保留这一段的时间位置 |
 | `execute_tool` | 工具名、调用耗时、成功还是失败，以及退出码（Provider 上报时） |
 
 所有 Provider（Claude Code、Codex、Cursor 等）导出的结构完全一致。属性遵循 OpenTelemetry 的 GenAI 语义约定（`gen_ai.*`），主流 APM 可以直接识别。

@@ -75,6 +75,23 @@ describe('createCcStreamParser', () => {
     expect(updates).toEqual(['chunk'])
   })
 
+  it('marks a streamed delta as partial and a whole text block as not, so consumers can stitch them', async () => {
+    const { parser, entries } = setup()
+    parser.parseLine(
+      line({ type: 'stream_event', event: { delta: { type: 'text_delta', text: 'chu' } } }),
+    )
+    parser.parseLine(
+      line({ type: 'assistant', message: { content: [{ type: 'text', text: 'whole message' }] } }),
+    )
+    expect(entries.filter((e) => e.type === 'assistant')).toMatchObject([
+      { text: 'chu', partial: true },
+      { text: 'whole message' },
+    ])
+    expect(
+      (entries.filter((e) => e.type === 'assistant')[1] as { partial?: boolean }).partial,
+    ).toBeUndefined()
+  })
+
   it('pairs tool_use → tool_result: backfills toolName and drives the heartbeat', async () => {
     const { parser, entries, heartbeat } = setup()
     parser.parseLine(
