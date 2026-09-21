@@ -1,8 +1,9 @@
 /**
- * E2E tests for OpenTelemetry trace export settings (Settings → Observability).
+ * E2E tests for OpenTelemetry trace export settings (Settings → Tracing).
  *
  * Covers the secret contract end to end: auth headers are accepted once, persisted encrypted, and
- * only their NAMES come back. Also covers "test connection" against a port nothing listens on.
+ * only their NAMES come back (as read-only rows whose value stays empty). Also covers "test
+ * connection" with an UNSAVED draft endpoint on a port nothing listens on.
  * Writes real global settings rows, so the original `otel` values are restored afterwards.
  */
 import { expect, test } from '@playwright/test'
@@ -52,13 +53,18 @@ test.describe
       await page.getByLabel(/^(值|Value)$/).fill(HEADER_VALUE)
       await page.getByRole('button', { name: /^(保存|Save)$/ }).click()
 
-      await expect(page.getByText(/已设置：Authorization|Set: Authorization/)).toBeVisible({
-        timeout: 5000,
-      })
+      // After a save the row becomes a saved row: name kept read-only, value cleared.
+      const savedName = page.getByRole('textbox', { name: /^(名称|Name)$/ })
+      await expect(savedName).toHaveValue('Authorization', { timeout: 5000 })
+      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('')
 
       await page.reload()
       await page.waitForLoadState('networkidle')
-      await expect(page.getByText(/已设置：Authorization|Set: Authorization/)).toBeVisible()
+      await expect(page.getByRole('textbox', { name: /^(名称|Name)$/ })).toHaveValue(
+        'Authorization',
+      )
+      await expect(page.getByRole('textbox', { name: /^(名称|Name)$/ })).not.toBeEditable()
+      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('')
       await expect(
         page.getByRole('textbox', { name: /采集端地址|Collector endpoint/ }),
       ).toHaveValue(UNREACHABLE_COLLECTOR)
@@ -73,16 +79,28 @@ test.describe
       }
     })
 
-    test('test connection reports a failure for an unreachable collector', async ({ page }) => {
-      const token = await getAdminToken()
-      await patchOtel(token, { endpoint: UNREACHABLE_COLLECTOR })
-
+    test('test connection uses the unsaved draft and explains a refused loopback address', async ({
+      page,
+    }) => {
       await page.goto(`${ROUTES.settings}?tab=observability`)
       await page.waitForLoadState('networkidle')
+      // Typed but never saved: the test must exercise what is in the form.
+      await page
+        .getByRole('textbox', { name: /采集端地址|Collector endpoint/ })
+        .fill(UNREACHABLE_COLLECTOR)
       await page.getByRole('button', { name: /测试连接|Test connection/ }).click()
 
-      await expect(page.getByText(/上报失败|Export failed|响应超时|did not respond/)).toBeVisible({
-        timeout: 15000,
+      await expect(
+        page
+          .getByText(/host\.docker\.internal|上报失败|Export failed|响应超时|did not respond/)
+          .last(),
+      ).toBeVisible({ timeout: 15000 })
+
+      // Nothing was persisted by the test.
+      const token = await getAdminToken()
+      const res = await fetch(`${API_BASE}/api/settings/otel/status`, {
+        headers: { Authorization: `Bearer ${token}` },
       })
+      expect((await res.json()).data.endpoint).toBe('')
     })
   })

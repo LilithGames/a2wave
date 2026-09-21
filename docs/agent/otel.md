@@ -126,6 +126,22 @@ pseudo-key `otel.headers` (a JSON object string) in `PATCH /api/settings`, encry
 keeps them. `GET /api/settings/otel/status` returns header **names** and `headersSet` only.
 A client-supplied `headersEnc` is rejected. Never add an `otel` key to `NON_ADMIN_READABLE_KEYS`.
 
+**Keep marker.** Stored values are never returned, so the editor lists saved headers by name and
+cannot resubmit them. The submitted map is the **complete new set**, with one exception: a value of
+exactly `OTEL_KEEP_HEADER_VALUE` (`********`) takes the value currently stored under that name
+(exact, case-sensitive match).
+
+| Submitted | Result |
+|---|---|
+| `{"Authorization":"********","x-new":"v"}` | `Authorization` keeps its stored value, `x-new` is added |
+| a stored name absent from the map | that header is deleted |
+| `********` for a name with no stored value | `400 INVALID_OTEL_HEADERS`, the message names the header — never an empty header |
+| `''` | every header is cleared |
+
+The decrypt helper lives in `lib/otel/headers.ts` so the read side (`config.ts`, which loads the
+settings cache) and the write side (`settings-patch.ts`, loaded by the env bridge at boot) do not
+import each other.
+
 **Env**: `SETTINGS_OTEL_ENABLED`, `SETTINGS_OTEL_ENDPOINT`, `SETTINGS_OTEL_CAPTURE_CONTENT`,
 `SETTINGS_OTEL_SERVICE_NAME`, `SETTINGS_OTEL_RESOURCE_ATTRIBUTES` use the generic settings bridge. `SETTINGS_OTEL_HEADERS` (JSON map)
 is special-cased in `resolveSettingsEnvEntry`: it is encrypted into `otel.headersEnc` and the
@@ -136,8 +152,64 @@ plaintext never reaches the settings table.
 admin-configured OIDC issuer. Only cloud instance-metadata hosts are refused. The exporter follows
 no redirects and no collector response body is ever returned to the admin.
 
-**Endpoints** (admin only): `GET /api/settings/otel/status`, `POST /api/settings/otel/test`
-(sends one span to the *saved* config, works while disabled, always `200` with `data.ok`).
+**Endpoints** (admin only): `GET /api/settings/otel/status`, `POST /api/settings/otel/test`.
+
+## Test connection
+
+`POST /api/settings/otel/test` works while export is disabled and **always answers `200`**; the
+verdict is `data.ok`.
+
+**Draft testing.** The optional JSON body is an `OtelTestDraft` — `endpoint`, `serviceName`,
+`resourceAttributes`, `headers`, in the same string shapes as the `otel` section of
+`PATCH /api/settings`. No body, or `{}`, tests the saved settings.
+
+- The draft runs through the **same** `prepareOtelSettingsPatch` a save uses (endpoint
+  normalization, the cloud-metadata block, the header keep marker), then is layered over the saved
+  settings in memory: `otelConfigFromRaw({ ...saved, ...preparedPatch })`
+  (`lib/otel/test-draft.ts`). Omitted keys fall back to the saved value.
+- **Never persisted, never audited**, and the live runtime is not rebuilt. `enabled` and
+  `captureContent` are ignored if sent.
+- Anything a save would reject — and unknown keys, non-string values, a malformed body — is
+  `{ ok: false, reason: 'INVALID_CONFIG', error: <the rule> }`, not a `400`.
+- Header values never appear in a response, an error string or a log line.
+
+**The test trace** (`lib/otel/test-trace.ts`) is a small synthetic run, because a bare span is
+barely displayed by GenAI backends and proves nothing about how real runs will look. It drives the
+real run tracer (`startRunTraceOn`) through a throwaway provider built like the production one —
+same exporter, headers, service name and resource attributes — so its attributes cannot drift from
+real runs:
+
+```
+invoke_agent a2wave connection test     AGENT, prompt "ping", reply "pong", 1 + 1 tokens
+└─ attempt                              LLM, model a2wave-connection-test
+```
+
+Both spans carry **`a2wave.test = true`** (set by a span processor on the probe provider, so every
+probe span gets it); filter on it to keep test data out of dashboards and cost totals.
+`a2wave.trigger.source` is `otel_test`. Content is always shown on the test trace, whatever
+`captureContent` says — it is synthetic. Both spans leave in one batch, so there is one verdict.
+
+| Result | Meaning |
+|---|---|
+| `ok: true` + `traceId` + `testedUrl` | The collector accepted the trace; look `traceId` (32 hex) up in the backend. |
+| `OTEL_NOT_CONFIGURED` | No usable endpoint in saved settings + draft. No request was made. |
+| `INVALID_CONFIG` | The draft failed save validation; `error` says which rule. No request was made. |
+| `LOOPBACK_REFUSED` | `ECONNREFUSED` on a loopback endpoint (`localhost`, `127.x`, `::1`). `error` keeps the raw message. |
+| `EXPORT_FAILED` | Any other transport or HTTP failure; `error` is the exporter's message. |
+| `TIMEOUT` | No answer within 6 s. |
+
+`testedUrl` is present whenever a request was attempted.
+
+**Loopback in containers.** `LOOPBACK_REFUSED` is nearly always a container deployment: inside the
+a2wave container, `localhost` is the container itself, not the host running the collector. Point
+the endpoint at the collector's service name on a shared Docker network, or at
+`http://host.docker.internal:4318` (Docker Desktop; on Linux add
+`--add-host=host.docker.internal:host-gateway` / `extra_hosts`).
+
+**OTLP partial success is not detected.** `@opentelemetry/exporter-trace-otlp-proto` hands the
+collector's response to an internal handler that only logs `partialSuccess` through the global
+`diag` logger; the export result it reports is plain success. A collector that answers `200` while
+rejecting spans therefore tests as `ok`. The `traceId` lookup is the verification.
 
 ## Runtime lifecycle
 

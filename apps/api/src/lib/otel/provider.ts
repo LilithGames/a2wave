@@ -6,7 +6,7 @@
  * OpenTelemetry user in the process. Telemetry is export-only — spans live in an in-memory batch
  * queue and are dropped with a warning when the collector is unreachable.
  */
-import type { OtelTestResult } from '@a2wave/shared'
+import { isLoopbackOtelEndpoint, type OtelTestResult } from '@a2wave/shared'
 import type { Tracer } from '@opentelemetry/api'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 import { resourceFromAttributes } from '@opentelemetry/resources'
@@ -15,13 +15,14 @@ import {
   BasicTracerProvider,
   BatchSpanProcessor,
   type ReadableSpan,
-  SimpleSpanProcessor,
+  type Span,
   type SpanExporter,
   type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import { logger } from '../logger.js'
 import { processInstanceId } from '../process-instance.js'
 import { getVersion } from '../version.js'
+import { ATTR } from './attributes.js'
 import { type OtelConfig, otelConfigFingerprint, readOtelConfig } from './config.js'
 
 const TRACER_NAME = 'a2wave.agent-run'
@@ -117,7 +118,7 @@ function createExporter(config: OtelConfig, stats: ExportStats, warn: boolean): 
   return new TrackingExporter(otlp, stats, warn)
 }
 
-function createProvider(config: OtelConfig, processor: SpanProcessor): BasicTracerProvider {
+function createProvider(config: OtelConfig, processors: SpanProcessor[]): BasicTracerProvider {
   return new BasicTracerProvider({
     resource: resourceFromAttributes({
       ...config.resourceAttributes,
@@ -126,7 +127,7 @@ function createProvider(config: OtelConfig, processor: SpanProcessor): BasicTrac
       'service.instance.id': processInstanceId,
     }),
     sampler: new AlwaysOnSampler(),
-    spanProcessors: [processor],
+    spanProcessors: processors,
   })
 }
 
@@ -141,15 +142,14 @@ class Runtime implements OtelRuntime {
 
   constructor(config: OtelConfig) {
     this.captureContent = config.captureContent
-    this.provider = createProvider(
-      config,
+    this.provider = createProvider(config, [
       new BatchSpanProcessor(createExporter(config, this.stats, true), {
         scheduledDelayMillis: 5000,
         exportTimeoutMillis: EXPORT_TIMEOUT_MS,
         maxQueueSize: 2048,
         maxExportBatchSize: 512,
       }),
-    )
+    ])
     this.tracer = this.provider.getTracer(TRACER_NAME)
   }
 
@@ -232,33 +232,68 @@ export async function shutdownOtel(timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS): Pro
   if (outcome === 'timeout') logger.warn('otel: shutdown flush timed out — queued spans dropped')
 }
 
-/** "Test connection": one span through a throwaway exporter, verdict instead of an exception. */
-export async function sendOtelTestSpan(
-  config: OtelConfig | null,
+/** Every span of a probe is synthetic; operators filter on this to keep test data out of views. */
+class TestMarkProcessor implements SpanProcessor {
+  onStart(span: Span): void {
+    span.setAttribute(ATTR.TEST, true)
+  }
+  onEnd(): void {}
+  forceFlush(): Promise<void> {
+    return Promise.resolve()
+  }
+  shutdown(): Promise<void> {
+    return Promise.resolve()
+  }
+}
+
+/**
+ * A refused connection on loopback is almost always a container deployment: there, loopback is the
+ * a2wave container itself, not the host running the collector.
+ */
+function exportFailure(config: OtelConfig, error: string): OtelTestResult {
+  const refusedOnLoopback = /ECONNREFUSED/.test(error) && isLoopbackOtelEndpoint(config.endpoint)
+  return {
+    ok: false,
+    reason: refusedOnLoopback ? 'LOOPBACK_REFUSED' : 'EXPORT_FAILED',
+    error,
+    testedUrl: config.tracesUrl,
+  }
+}
+
+/**
+ * "Test connection": `emit` writes spans through a throwaway provider built exactly like the
+ * production one (same exporter, headers, resource) and returns their trace id. The spans leave as
+ * one batch, so there is a single verdict — returned, never thrown.
+ */
+export async function exportOtelProbe(
+  config: OtelConfig,
+  emit: (runtime: OtelRuntime) => string | undefined,
   timeoutMs = DEFAULT_TEST_TIMEOUT_MS,
 ): Promise<OtelTestResult> {
-  if (!config) return { ok: false, reason: 'OTEL_NOT_CONFIGURED' }
   const stats = emptyStats()
-  const provider = createProvider(
-    config,
-    new SimpleSpanProcessor(createExporter(config, stats, false)),
-  )
+  const provider = createProvider(config, [
+    new TestMarkProcessor(),
+    new BatchSpanProcessor(createExporter(config, stats, false), {
+      exportTimeoutMillis: EXPORT_TIMEOUT_MS,
+    }),
+  ])
+  // forceFlush rejects on a failed export; the tracked verdict is the single source of truth.
+  const forceFlush = () => provider.forceFlush().catch(() => {})
   try {
-    provider.getTracer(TRACER_NAME).startSpan('a2wave.otel.test').end()
-    // forceFlush rejects on a failed export; the tracked verdict is the single source of truth.
-    const outcome = await withTimeout(
-      provider.forceFlush().catch(() => {}),
-      timeoutMs,
-    )
-    if (outcome === 'timeout') return { ok: false, reason: 'TIMEOUT' }
-    if (stats.lastExportAt) return { ok: true }
-    return { ok: false, reason: 'EXPORT_FAILED', error: stats.lastError ?? 'export failed' }
+    const traceId = emit({
+      tracer: provider.getTracer(TRACER_NAME),
+      // The probe's content is synthetic, so it is always shown — whatever the admin's setting.
+      captureContent: true,
+      acquire: () => {},
+      release: () => {},
+      forceFlush,
+    })
+    const outcome = await withTimeout(forceFlush(), timeoutMs)
+    if (outcome === 'timeout') return { ok: false, reason: 'TIMEOUT', testedUrl: config.tracesUrl }
+    if (stats.lastExportAt) return { ok: true, testedUrl: config.tracesUrl, traceId }
+    return exportFailure(config, stats.lastError ?? 'export failed')
   } catch (err) {
-    return {
-      ok: false,
-      reason: 'EXPORT_FAILED',
-      error: (err as Error).message.slice(0, ERROR_MESSAGE_MAX_LENGTH),
-    }
+    return exportFailure(config, (err as Error).message.slice(0, ERROR_MESSAGE_MAX_LENGTH))
   } finally {
     void provider.shutdown().catch(() => {})
   }

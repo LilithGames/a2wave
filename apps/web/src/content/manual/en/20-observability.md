@@ -26,20 +26,23 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 
 ## Turning export on (administrators)
 
-1. Go to **Settings → Observability**.
-2. Enter the **collector endpoint**. A base URL is enough, e.g. `http://otel-collector:4318` — `/v1/traces` is appended for you. If your platform gives you a full ingest URL, you can enter that instead. Intranet and localhost addresses are supported.
+1. Go to **Settings → Tracing**.
+2. Enter the **collector endpoint**: an OTLP/HTTP base URL such as `http://otel-collector:4318` — `/v1/traces` is appended for you, and the resolved URL is shown live under the field. A full ingest URL from your platform also works.
 3. If the collector requires authentication, click **Add header** and enter a name (e.g. `Authorization`) and a value.
-4. Click **Save**, then **Test connection**. "Test span delivered to the collector" means the path works.
-5. Switch on **Enable export** and save. Every execution from then on is exported.
+4. Click **Test connection**. It uses **what is in the form — no need to save first**: a2wave writes one synthetic test trace tagged `a2wave.test=true` and shows its trace ID, which you can look up in your APM to confirm it arrived.
+5. Switch on **Enable export** and click **Save**. Every execution from then on is exported.
+
+> [!NOTE]
+> When a2wave runs in a container (Docker etc.), `127.0.0.1` / `localhost` is the a2wave container itself, not the host. For a collector on the host use `http://host.docker.internal:4318`, or the collector's network address.
 
 | Setting | Notes |
 |---------|-------|
 | Enable export | When off, nothing is produced and execution carries no overhead |
 | Collector endpoint | OTLP/HTTP only (`http://` or `https://`); gRPC is not supported |
-| Service name | The service name shown in your APM; defaults to `a2wave` |
-| Resource attributes | Attributes added to every span, as comma-separated `key=value` pairs. Lets your collector group by environment, team or project, e.g. `deployment.environment=prod` |
-| Auth headers | Stored encrypted. After saving only the header **names** are shown, never the values; leave blank to keep what is stored |
+| Auth headers | Stored encrypted; values are never shown again. Saved headers are listed by name, one per row: leave the value empty to keep it, type a new value to replace it, remove the row and save to delete it. To rename, remove and add |
 | Capture content | See the next section; off by default |
+| Service name (Advanced) | The service name shown in your APM; defaults to `a2wave` |
+| Resource attributes (Advanced) | Attributes added to every span, as comma-separated `key=value` pairs, e.g. `deployment.environment=prod` |
 
 > [!TIP]
 > With Arize Phoenix, set **Resource attributes** to `openinference.project.name=<project>` to file traces under that project; without it they land in `default`.
@@ -68,11 +71,12 @@ Switching **Capture content** is recorded in the audit log (visible to administr
 
 ## Checking export health
 
-The bottom of **Settings → Observability** shows the time of the last successful export, the most recent error, and the number of dropped spans.
+The bottom of **Settings → Tracing** shows the time of the last successful export, the most recent error, and the number of dropped spans.
 
 | Symptom | Likely cause |
 |---------|--------------|
-| Test connection reports "Export failed" | Wrong address or port, the collector's OTLP/HTTP receiver is not enabled, or the network is unreachable |
+| Test connection reports "Export failed" | Wrong address or port, the collector's OTLP/HTTP receiver is not enabled, or the network is unreachable. The message includes the URL that was tried |
+| Test connection reports "Connection refused" and mentions containers | A loopback address was entered in a container deployment — use `host.docker.internal` or the collector's network address |
 | Last error is `Unauthorized` / 401 | Auth headers are missing or expired — enter them again and save |
 | Dropped spans keep growing | The collector is unreachable. a2wave neither retries nor spools to disk; data beyond the in-memory buffer is dropped — **Agent execution is unaffected** |
 | Settings changed but some requests ignore them | In a multi-replica deployment, export status and configuration apply per instance; other replicas need a restart |

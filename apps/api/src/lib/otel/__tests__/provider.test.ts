@@ -1,3 +1,4 @@
+import { ROOT_CONTEXT, trace } from '@opentelemetry/api'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OtelConfig } from '../config.js'
 
@@ -46,10 +47,11 @@ vi.mock('@opentelemetry/exporter-trace-otlp-proto', () => ({
 }))
 
 import {
+  exportOtelProbe,
   getOtelExportStats,
   getOtelRuntime,
+  type OtelRuntime,
   resetOtelForTests,
-  sendOtelTestSpan,
   shutdownOtel,
 } from '../provider.js'
 
@@ -222,32 +224,130 @@ describe('shutdownOtel', () => {
   })
 })
 
-describe('sendOtelTestSpan', () => {
-  it('reports OTEL_NOT_CONFIGURED without a usable config', async () => {
-    expect(await sendOtelTestSpan(null)).toEqual({ ok: false, reason: 'OTEL_NOT_CONFIGURED' })
-  })
+interface ExportedSpan {
+  name: string
+  attributes: Record<string, unknown>
+  spanContext(): { traceId: string; spanId: string }
+  parentSpanContext?: { spanId: string }
+}
 
-  it('exports one span through a throwaway exporter', async () => {
-    expect(await sendOtelTestSpan(enabled)).toEqual({ ok: true })
+/** Emits a parent and a child, like the real test trace does, and reports the trace id. */
+const emitPair = (runtime: OtelRuntime): string => {
+  const parent = runtime.tracer.startSpan('parent')
+  const child = runtime.tracer.startSpan('child', {}, trace.setSpan(ROOT_CONTEXT, parent))
+  child.end()
+  parent.end()
+  return parent.spanContext().traceId
+}
+
+describe('exportOtelProbe', () => {
+  it('exports the emitted spans as one batch through a throwaway exporter', async () => {
+    const result = await exportOtelProbe(enabled, emitPair)
+    expect(result).toEqual({
+      ok: true,
+      testedUrl: 'http://collector:4318/v1/traces',
+      traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
     expect(exporters).toHaveLength(1)
+    expect(exporters[0].options).toMatchObject({
+      url: 'http://collector:4318/v1/traces',
+      headers: { Authorization: 'Bearer t' },
+    })
     expect(exporters[0].exported).toHaveLength(1)
-    expect(exporters[0].shutdown).toHaveBeenCalled()
+    expect(exporters[0].exported[0]).toHaveLength(2)
+    await vi.waitFor(() => expect(exporters[0].shutdown).toHaveBeenCalled())
   })
 
-  it('reports EXPORT_FAILED with the exporter error', async () => {
-    nextExportResult = { code: 1, error: new Error('connect ECONNREFUSED') }
-    expect(await sendOtelTestSpan(enabled)).toEqual({
+  it('marks every probe span as test data and applies the configured resource', async () => {
+    const result = await exportOtelProbe(
+      { ...enabled, serviceName: 'agents', resourceAttributes: { env: 'staging' } },
+      emitPair,
+    )
+    const spans = exporters[0].exported[0] as Array<
+      ExportedSpan & { resource: { attributes: Record<string, unknown> } }
+    >
+    for (const span of spans) {
+      expect(span.attributes['a2wave.test']).toBe(true)
+      expect(span.spanContext().traceId).toBe(result.traceId)
+      expect(span.resource.attributes).toMatchObject({ 'service.name': 'agents', env: 'staging' })
+    }
+  })
+
+  it('hands the emitter a runtime that captures content', async () => {
+    let captured: boolean | undefined
+    await exportOtelProbe({ ...enabled, captureContent: false }, (runtime) => {
+      captured = runtime.captureContent
+      return emitPair(runtime)
+    })
+    expect(captured).toBe(true)
+  })
+
+  it('reports EXPORT_FAILED with the exporter error and the URL that was tried', async () => {
+    nextExportResult = { code: 1, error: new Error('Unauthorized') }
+    expect(await exportOtelProbe(enabled, emitPair)).toEqual({
       ok: false,
       reason: 'EXPORT_FAILED',
-      error: 'connect ECONNREFUSED',
+      error: 'Unauthorized',
+      testedUrl: 'http://collector:4318/v1/traces',
     })
+  })
+
+  it('keeps EXPORT_FAILED for a refused connection to a non-loopback host', async () => {
+    nextExportResult = { code: 1, error: new Error('connect ECONNREFUSED 10.0.0.8:4318') }
+    expect(await exportOtelProbe(enabled, emitPair)).toMatchObject({
+      ok: false,
+      reason: 'EXPORT_FAILED',
+    })
+  })
+
+  it.each(['http://localhost:4318', 'http://127.0.0.1:4318', 'http://[::1]:4318'])(
+    'diagnoses a refused connection to %s as LOOPBACK_REFUSED',
+    async (endpoint) => {
+      nextExportResult = { code: 1, error: new Error('connect ECONNREFUSED 127.0.0.1:4318') }
+      expect(
+        await exportOtelProbe(
+          { ...enabled, endpoint, tracesUrl: `${endpoint}/v1/traces` },
+          emitPair,
+        ),
+      ).toEqual({
+        ok: false,
+        reason: 'LOOPBACK_REFUSED',
+        error: 'connect ECONNREFUSED 127.0.0.1:4318',
+        testedUrl: `${endpoint}/v1/traces`,
+      })
+    },
+  )
+
+  it('keeps EXPORT_FAILED for other loopback failures', async () => {
+    nextExportResult = { code: 1, error: new Error('Unauthorized') }
+    expect(
+      await exportOtelProbe(
+        {
+          ...enabled,
+          endpoint: 'http://localhost:4318',
+          tracesUrl: 'http://localhost:4318/v1/traces',
+        },
+        emitPair,
+      ),
+    ).toMatchObject({ reason: 'EXPORT_FAILED' })
+  })
+
+  it('reports EXPORT_FAILED when the emitter throws', async () => {
+    const result = await exportOtelProbe(enabled, () => {
+      throw new Error('boom')
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'EXPORT_FAILED', error: 'boom' })
   })
 
   it('reports TIMEOUT when the collector never answers', async () => {
     vi.useFakeTimers()
     exportHangs = true
-    const pending = sendOtelTestSpan(enabled, 1000)
+    const pending = exportOtelProbe(enabled, emitPair, 1000)
     await vi.advanceTimersByTimeAsync(1000)
-    expect(await pending).toEqual({ ok: false, reason: 'TIMEOUT' })
+    expect(await pending).toEqual({
+      ok: false,
+      reason: 'TIMEOUT',
+      testedUrl: 'http://collector:4318/v1/traces',
+    })
   })
 })

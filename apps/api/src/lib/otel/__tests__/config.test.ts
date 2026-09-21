@@ -20,7 +20,12 @@ vi.mock('../../logger.js', () => ({
   },
 }))
 
-import { otelConfigFingerprint, readOtelConfig, readOtelHeaders } from '../config.js'
+import {
+  otelConfigFingerprint,
+  otelConfigFromRaw,
+  readOtelConfig,
+  readOtelHeaders,
+} from '../config.js'
 
 const base = {
   enabled: 'true',
@@ -35,6 +40,30 @@ beforeEach(() => {
   otelSettings = { ...base }
   mockDecrypt.mockClear()
   mockWarn.mockClear()
+})
+
+describe('otelConfigFromRaw', () => {
+  it('builds the config from the given record, not from the saved settings', () => {
+    otelSettings.endpoint = 'http://saved:4318'
+    expect(
+      otelConfigFromRaw(
+        { endpoint: 'http://draft:4318', headersEnc: 'enc({"x-a":"v"})', serviceName: ' svc ' },
+        { ignoreEnabled: true },
+      ),
+    ).toEqual({
+      endpoint: 'http://draft:4318',
+      tracesUrl: 'http://draft:4318/v1/traces',
+      headers: { 'x-a': 'v' },
+      captureContent: false,
+      serviceName: 'svc',
+      resourceAttributes: {},
+    })
+  })
+
+  it('honours enabled unless told to ignore it', () => {
+    expect(otelConfigFromRaw({ endpoint: 'http://draft:4318' })).toBeNull()
+    expect(otelConfigFromRaw({ enabled: 'true', endpoint: 'http://draft:4318' })).not.toBeNull()
+  })
 })
 
 describe('readOtelConfig', () => {

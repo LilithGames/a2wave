@@ -390,7 +390,19 @@ export function startRunTrace(
   options: RunTraceOptions = {},
 ): RunTrace {
   const runtime = getOtelRuntime()
-  if (!runtime) return NOOP_RUN_TRACE
+  return runtime ? startRunTraceOn(runtime, taskId, payload, options) : NOOP_RUN_TRACE
+}
+
+/**
+ * The same, on an explicit runtime. "Test connection" uses it so its synthetic trace is built by
+ * the very code that builds a real run's. Never throws.
+ */
+export function startRunTraceOn(
+  runtime: OtelRuntime,
+  taskId: string,
+  payload: WorkerTaskPayload,
+  options: RunTraceOptions = {},
+): RunTrace {
   let acquired = false
   try {
     runtime.acquire()

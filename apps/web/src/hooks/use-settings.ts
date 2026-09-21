@@ -3,6 +3,7 @@ import {
   ATTACHMENT_MAX_FILE_SIZE_BYTES,
   ATTACHMENT_MAX_FILES,
   type OtelStatus,
+  type OtelTestDraft,
   type OtelTestResult,
   type SettingsMap,
   type UpdateSettingsInput,
@@ -225,7 +226,7 @@ export function useUpdateSso() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// OpenTelemetry trace export (Settings → Observability)
+// OpenTelemetry trace export (Settings → Tracing)
 // ─────────────────────────────────────────────────────────────
 const OTEL_STATUS_KEY = ['settings', 'otel', 'status'] as const
 
@@ -238,11 +239,15 @@ export function useOtelStatus(enabled = true) {
   })
 }
 
-/** Sends one test span to the SAVED endpoint; the verdict is in `ok`, never an HTTP error. */
+/**
+ * Writes one synthetic test trace using the UNSAVED form draft (nothing is persisted); the verdict
+ * is in `ok`, never an HTTP error.
+ */
 export function useOtelTest() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api.post<OtelTestResult>('/settings/otel/test', {}).then((r) => r.data),
+    mutationFn: (draft: OtelTestDraft) =>
+      api.post<OtelTestResult>('/settings/otel/test', draft).then((r) => r.data),
     onSettled: () => qc.invalidateQueries({ queryKey: OTEL_STATUS_KEY }),
   })
 }

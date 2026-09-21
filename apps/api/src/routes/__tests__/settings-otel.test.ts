@@ -1,3 +1,4 @@
+import { OTEL_KEEP_HEADER_VALUE } from '@a2wave/shared'
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -82,6 +83,8 @@ const mockExportStats = vi.fn(() => ({
 vi.mock('../../lib/otel/provider.js', () => ({
   getOtelRuntime: () => mockGetOtelRuntime(),
   getOtelExportStats: () => mockExportStats(),
+}))
+vi.mock('../../lib/otel/test-trace.js', () => ({
   sendOtelTestSpan: (...args: unknown[]) => mockSendOtelTestSpan(...args),
 }))
 
@@ -261,6 +264,102 @@ describe('settings OpenTelemetry endpoints', () => {
           headers: { Authorization: 'Bearer collector-token' },
         }),
       )
+    })
+
+    describe('with a draft body', () => {
+      const testDraft = (draft: unknown) =>
+        app.request('/api/settings/otel/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: typeof draft === 'string' ? draft : JSON.stringify(draft),
+        })
+      const verdict = async (res: Response) =>
+        ((await res.json()) as { data: { ok: boolean; reason?: string; error?: string } }).data
+
+      beforeEach(async () => {
+        await patch({ endpoint: 'http://localhost:4318', serviceName: 'saved', headers: HEADERS })
+        vi.mocked(logAudit).mockClear()
+        mockGetOtelRuntime.mockClear()
+        mockSendOtelTestSpan.mockResolvedValue({ ok: true })
+      })
+
+      it('treats {} like no body: the saved config is tested', async () => {
+        await testDraft({})
+        expect(mockSendOtelTestSpan).toHaveBeenCalledWith(
+          expect.objectContaining({ tracesUrl: 'http://localhost:4318/v1/traces' }),
+        )
+      })
+
+      it('tests the draft endpoint without persisting or auditing anything', async () => {
+        const before = JSON.stringify(settingsStore)
+        const res = await testDraft({
+          endpoint: ' http://draft-collector:4318/ ',
+          serviceName: ' draft ',
+          resourceAttributes: 'env = staging',
+        })
+        expect(res.status).toBe(200)
+        expect(mockSendOtelTestSpan).toHaveBeenCalledWith({
+          endpoint: 'http://draft-collector:4318',
+          tracesUrl: 'http://draft-collector:4318/v1/traces',
+          headers: { Authorization: 'Bearer collector-token' },
+          captureContent: false,
+          serviceName: 'draft',
+          resourceAttributes: { env: 'staging' },
+        })
+        expect(JSON.stringify(settingsStore)).toBe(before)
+        expect(logAudit).not.toHaveBeenCalled()
+        expect(mockGetOtelRuntime).not.toHaveBeenCalled()
+      })
+
+      it('resolves the keep marker to the stored header value and drops absent names', async () => {
+        await testDraft({
+          headers: JSON.stringify({ Authorization: OTEL_KEEP_HEADER_VALUE, 'x-new': 'added' }),
+        })
+        expect(mockSendOtelTestSpan).toHaveBeenCalledWith(
+          expect.objectContaining({
+            headers: { Authorization: 'Bearer collector-token', 'x-new': 'added' },
+          }),
+        )
+        await testDraft({ headers: '' })
+        expect(mockSendOtelTestSpan).toHaveBeenLastCalledWith(
+          expect.objectContaining({ headers: {} }),
+        )
+      })
+
+      it('ignores enabled and captureContent', async () => {
+        await patch({ enabled: 'true' })
+        await testDraft({ enabled: 'true', captureContent: 'true', endpoint: '' })
+        expect(mockSendOtelTestSpan).toHaveBeenCalledWith(null)
+      })
+
+      it.each([
+        ['an invalid endpoint', { endpoint: 'grpc://collector:4317' }, 'endpoint'],
+        ['a cloud metadata endpoint', { endpoint: 'http://169.254.169.254' }, 'metadata'],
+        ['a keep marker without a stored value', { headers: '{"x-gone":"********"}' }, 'x-gone'],
+        ['malformed resource attributes', { resourceAttributes: 'nope' }, 'resourceAttributes'],
+        ['an unknown key', { sampler: 'always' }, 'sampler'],
+        ['a server-managed key', { headersEnc: 'forged' }, 'headersEnc'],
+        ['a non-string value', { endpoint: 4318 }, 'endpoint'],
+        ['a non-object body', ['http://x'], 'object'],
+        ['malformed JSON', '{not json', 'JSON'],
+      ])('answers 200 INVALID_CONFIG for %s', async (_label, draft, hint) => {
+        const res = await testDraft(draft)
+        expect(res.status).toBe(200)
+        const data = await verdict(res)
+        expect(data).toMatchObject({ ok: false, reason: 'INVALID_CONFIG' })
+        expect(data.error).toContain(hint)
+        expect(mockSendOtelTestSpan).not.toHaveBeenCalled()
+      })
+
+      it('never echoes a header value', async () => {
+        const res = await testDraft({
+          headers: JSON.stringify({ 'bad name': 'draft-secret-value' }),
+        })
+        const text = await res.text()
+        expect(text).toContain('INVALID_CONFIG')
+        expect(text).not.toContain('draft-secret-value')
+        expect(text).not.toContain('collector-token')
+      })
     })
 
     it('always answers 200 and carries the verdict in the body', async () => {

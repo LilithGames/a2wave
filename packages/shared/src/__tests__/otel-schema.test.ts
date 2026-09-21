@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isLoopbackOtelEndpoint,
   normalizeOtelEndpoint,
+  OTEL_KEEP_HEADER_VALUE,
   otelHeadersSchema,
   parseOtelResourceAttributes,
   resolveOtelTracesUrl,
@@ -111,5 +113,36 @@ describe('parseOtelResourceAttributes', () => {
     for (const key of ['service.name', 'service.version', 'service.instance.id']) {
       expect(parseOtelResourceAttributes(`${key}=x`)).toBeNull()
     }
+  })
+})
+
+describe('isLoopbackOtelEndpoint', () => {
+  it.each([
+    'http://127.0.0.1:6006',
+    'http://127.8.9.1:4318/v1/traces',
+    'http://localhost:4318',
+    'http://LOCALHOST:4318',
+    'http://[::1]:4318',
+  ])('treats %s as loopback', (endpoint) => {
+    expect(isLoopbackOtelEndpoint(endpoint)).toBe(true)
+  })
+
+  it.each([
+    'http://host.docker.internal:6006',
+    'http://otel-collector:4318',
+    'http://10.0.0.5:4318',
+    'https://127.example.com',
+    'not a url',
+    '',
+  ])('does not treat %s as loopback', (endpoint) => {
+    expect(isLoopbackOtelEndpoint(endpoint)).toBe(false)
+  })
+})
+
+describe('OTEL_KEEP_HEADER_VALUE', () => {
+  it('is a legal header value, so a keep-marker map passes the same schema as real headers', () => {
+    expect(otelHeadersSchema.safeParse({ Authorization: OTEL_KEEP_HEADER_VALUE }).success).toBe(
+      true,
+    )
   })
 })

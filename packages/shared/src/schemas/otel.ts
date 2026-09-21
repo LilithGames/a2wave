@@ -124,11 +124,59 @@ export interface OtelStatus {
   scope: 'this-instance'
 }
 
-export type OtelTestFailureReason = 'OTEL_NOT_CONFIGURED' | 'EXPORT_FAILED' | 'TIMEOUT'
+/**
+ * Header value meaning "keep the value that is already stored under this name". Stored header
+ * values are never returned, so the editor lists saved headers by NAME and submits this marker
+ * for every saved header the admin did not retype. A name sent with this marker but without a
+ * stored value is a validation error, never an empty header.
+ */
+export const OTEL_KEEP_HEADER_VALUE = '********'
+
+/**
+ * Unsaved form state for "test connection". Same string shapes as the `otel` section of
+ * PATCH /api/settings (`headers` is a JSON object string and may carry OTEL_KEEP_HEADER_VALUE).
+ * Omitted keys fall back to the saved setting. Nothing in a draft is ever persisted.
+ */
+export interface OtelTestDraft {
+  endpoint?: string
+  serviceName?: string
+  resourceAttributes?: string
+  headers?: string
+}
+
+export type OtelTestFailureReason =
+  | 'OTEL_NOT_CONFIGURED'
+  /** The draft failed the same validation a save would run; `error` says which rule. */
+  | 'INVALID_CONFIG'
+  /**
+   * Connection refused on a loopback address. In a container deployment loopback is the a2wave
+   * container itself, not the host running the collector.
+   */
+  | 'LOOPBACK_REFUSED'
+  | 'EXPORT_FAILED'
+  | 'TIMEOUT'
 
 /** POST /api/settings/otel/test — always 200; `ok` carries the verdict. */
 export interface OtelTestResult {
   ok: boolean
   reason?: OtelTestFailureReason
   error?: string
+  /** The traces URL the test trace was actually sent to; absent when no request was made. */
+  testedUrl?: string
+  /**
+   * Trace id (32 lowercase hex) of the test trace the collector accepted, so the admin can look it
+   * up in the backend. Present only when `ok` is true.
+   */
+  traceId?: string
+}
+
+const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])$/i
+
+/** True when the endpoint's host is a loopback name or address. Malformed input → false. */
+export function isLoopbackOtelEndpoint(endpoint: string): boolean {
+  try {
+    return LOOPBACK_HOST_RE.test(new URL(endpoint).hostname)
+  } catch {
+    return false
+  }
 }

@@ -36,6 +36,8 @@ export const ATTR = {
   PROVIDER_ID: 'a2wave.provider.id',
   PROVIDER_DISPLAY_NAME: 'a2wave.provider.name',
   CHAT_RESET: 'a2wave.chat.reset',
+  /** Set on every span of the settings page's "test connection" trace; never on a real run. */
+  TEST: 'a2wave.test',
   // OpenInference mirror. Backends that speak it (Phoenix, Arize, Langfuse) translate gen_ai.*
   // into their own llm.* keys, but never derive these — and their input / output / kind columns
   // read exactly these.

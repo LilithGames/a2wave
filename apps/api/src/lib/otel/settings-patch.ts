@@ -7,11 +7,14 @@
  */
 import {
   normalizeOtelEndpoint,
+  OTEL_KEEP_HEADER_VALUE,
+  type OtelHeaders,
   otelHeadersSchema,
   parseOtelResourceAttributes,
 } from '@a2wave/shared'
 import { encryptSecret } from '../secret-box.js'
 import { isCloudMetadataAddress, isCloudMetadataHostname } from '../url-safety-core.js'
+import { readOtelHeaders } from './headers.js'
 
 export type OtelSettingsPatchError =
   | 'INVALID_OTEL_HEADERS'
@@ -42,8 +45,7 @@ const fail = (error: OtelSettingsPatchError, message: string): OtelSettingsPatch
   message,
 })
 
-/** Validates a JSON header map and returns its ciphertext; null when the input is not valid. */
-export function encryptOtelHeaders(rawJson: string): string | null {
+function parseOtelHeaders(rawJson: string): OtelHeaders | null {
   let json: unknown
   try {
     json = JSON.parse(rawJson)
@@ -51,7 +53,33 @@ export function encryptOtelHeaders(rawJson: string): string | null {
     return null
   }
   const parsed = otelHeadersSchema.safeParse(json)
-  return parsed.success ? encryptSecret(JSON.stringify(parsed.data)) : null
+  return parsed.success ? parsed.data : null
+}
+
+/** Validates a JSON header map and returns its ciphertext; null when the input is not valid. */
+export function encryptOtelHeaders(rawJson: string): string | null {
+  const headers = parseOtelHeaders(rawJson)
+  return headers ? encryptSecret(JSON.stringify(headers)) : null
+}
+
+/**
+ * The submitted map is the complete new set: a name that is absent is dropped. Stored values are
+ * never sent to the client, so an entry carrying OTEL_KEEP_HEADER_VALUE takes the value stored
+ * under exactly that name. Returns the name of the first marker with nothing stored behind it.
+ */
+function resolveKeptHeaders(
+  submitted: OtelHeaders,
+  headersEnc: string,
+): { headers: OtelHeaders } | { missing: string } {
+  const kept = Object.keys(submitted).filter((name) => submitted[name] === OTEL_KEEP_HEADER_VALUE)
+  if (kept.length === 0) return { headers: submitted }
+  const stored = readOtelHeaders(headersEnc)
+  const headers: OtelHeaders = { ...submitted }
+  for (const name of kept) {
+    if (!Object.hasOwn(stored, name)) return { missing: name }
+    headers[name] = stored[name]
+  }
+  return { headers }
 }
 
 /**
@@ -81,11 +109,18 @@ export function prepareOtelSettingsPatch(
   if (headers !== undefined) {
     if (headers.trim() === '') patch.headersEnc = ''
     else {
-      const encrypted = encryptOtelHeaders(headers)
-      if (encrypted === null) {
+      const submitted = parseOtelHeaders(headers)
+      if (submitted === null) {
         return fail('INVALID_OTEL_HEADERS', 'headers must be a JSON object of header name → value')
       }
-      patch.headersEnc = encrypted
+      const resolved = resolveKeptHeaders(submitted, current.headersEnc ?? '')
+      if ('missing' in resolved) {
+        return fail(
+          'INVALID_OTEL_HEADERS',
+          `header "${resolved.missing}" has no saved value to keep; enter its value`,
+        )
+      }
+      patch.headersEnc = encryptSecret(JSON.stringify(resolved.headers))
     }
   }
 

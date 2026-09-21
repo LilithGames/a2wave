@@ -72,11 +72,11 @@ describe('SettingsPage — artifacts settings', () => {
     expect(matches.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('offers an Observability tab that shows the OpenTelemetry export card', () => {
+  it('offers a Tracing tab that shows the OpenTelemetry export card', () => {
     renderWithRouter()
     expect(screen.queryByTestId('otel-export-card')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '可观测性' }))
+    fireEvent.click(screen.getByRole('button', { name: '链路追踪' }))
 
     expect(screen.getByTestId('otel-export-card')).toBeInTheDocument()
   })

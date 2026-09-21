@@ -1,4 +1,4 @@
-import type { OtelStatus, OtelTestResult } from '@a2wave/shared'
+import { OTEL_KEEP_HEADER_VALUE, type OtelStatus, type OtelTestResult } from '@a2wave/shared'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders, screen } from '@/test/render'
@@ -23,6 +23,15 @@ const baseStatus: OtelStatus = {
   droppedSpans: 0,
   scope: 'this-instance',
 }
+const withSavedHeader: OtelStatus = {
+  ...baseStatus,
+  enabled: true,
+  endpoint: 'http://collector:4318',
+  tracesUrl: 'http://collector:4318/v1/traces',
+  headersSet: true,
+  headerNames: ['Authorization'],
+  active: true,
+}
 let status: OtelStatus = baseStatus
 
 vi.mock('@/hooks/use-settings', () => ({
@@ -31,10 +40,13 @@ vi.mock('@/hooks/use-settings', () => ({
   useUpdateOtel: () => ({ mutate: save, isPending: false }),
 }))
 
+const endpointInput = () => screen.getByLabelText('采集端地址')
+const savedPatch = () => save.mock.calls[0][0] as Record<string, string>
+
 describe('OtelExportCard', () => {
   beforeEach(() => {
-    save.mockClear()
-    runTest.mockClear()
+    save.mockReset()
+    runTest.mockReset()
     testResult = undefined
     status = baseStatus
   })
@@ -43,60 +55,129 @@ describe('OtelExportCard', () => {
     const user = userEvent.setup()
     renderWithProviders(<OtelExportCard />)
 
-    await user.type(screen.getByLabelText('采集端地址（OTLP/HTTP）'), 'http://localhost:4318')
+    await user.type(endpointInput(), 'http://collector:4318')
     await user.click(screen.getByRole('button', { name: '保存' }))
 
     expect(save).toHaveBeenCalledTimes(1)
-    const patch = save.mock.calls[0][0] as Record<string, string>
-    expect(patch).toMatchObject({ enabled: 'false', endpoint: 'http://localhost:4318' })
-    expect('headers' in patch).toBe(false)
+    expect(savedPatch()).toMatchObject({ enabled: 'false', endpoint: 'http://collector:4318' })
+    expect('headers' in savedPatch()).toBe(false)
   })
 
-  it('shows saved header names but never a value, and submits newly entered headers', async () => {
-    status = {
-      ...baseStatus,
-      enabled: true,
-      endpoint: 'http://localhost:4318',
-      tracesUrl: 'http://localhost:4318/v1/traces',
-      headersSet: true,
-      headerNames: ['Authorization'],
-      active: true,
-    }
+  it('lists saved headers as rows with a read-only name and never a value', () => {
+    status = withSavedHeader
+    renderWithProviders(<OtelExportCard />)
+
+    const name = screen.getByLabelText('名称')
+    expect(name).toHaveValue('Authorization')
+    expect(name).toHaveAttribute('readonly')
+    expect(screen.getByLabelText('值')).toHaveValue('')
+    expect(screen.getByPlaceholderText('已保存，留空则不修改')).toBeInTheDocument()
+    expect(screen.getByText('导出中')).toBeInTheDocument()
+  })
+
+  it('keeps the saved headers when another one is added', async () => {
+    status = withSavedHeader
     const user = userEvent.setup()
     renderWithProviders(<OtelExportCard />)
 
-    expect(screen.getByText('已设置：Authorization（不填则保持不变）')).toBeInTheDocument()
-    expect(screen.getByText('实际上报地址：http://localhost:4318/v1/traces')).toBeInTheDocument()
-    expect(screen.getByText('导出中')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '添加请求头' }))
+    await user.type(screen.getAllByLabelText('名称')[1], 'x-api-key')
+    await user.type(screen.getAllByLabelText('值')[1], 'secret-value')
+    await user.click(screen.getByRole('button', { name: '保存' }))
 
+    expect(JSON.parse(savedPatch().headers)).toEqual({
+      Authorization: OTEL_KEEP_HEADER_VALUE,
+      'x-api-key': 'secret-value',
+    })
+  })
+
+  it('clears the saved headers once their rows are removed and the form is saved', async () => {
+    status = withSavedHeader
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    await user.click(screen.getByRole('button', { name: '移除请求头 Authorization' }))
+    expect(save).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(savedPatch().headers).toBe('')
+  })
+
+  it('turns newly saved headers into saved rows', async () => {
+    save.mockImplementation((_patch, options) => options.onSuccess())
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    await user.type(endpointInput(), 'http://collector:4318')
     await user.click(screen.getByRole('button', { name: '添加请求头' }))
     await user.type(screen.getByLabelText('名称'), 'x-api-key')
     await user.type(screen.getByLabelText('值'), 'secret-value')
     await user.click(screen.getByRole('button', { name: '保存' }))
 
-    expect((save.mock.calls[0][0] as Record<string, string>).headers).toBe(
-      '{"x-api-key":"secret-value"}',
-    )
+    expect(screen.getByLabelText('名称')).toHaveAttribute('readonly')
+    expect(screen.getByLabelText('值')).toHaveValue('')
+
+    // A second save with nothing retyped must not resend the header set.
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect('headers' in (save.mock.calls[1][0] as Record<string, string>)).toBe(false)
   })
 
-  it('saves extra resource attributes', async () => {
+  it('keeps service name and resource attributes in a collapsed Advanced section', async () => {
     const user = userEvent.setup()
     renderWithProviders(<OtelExportCard />)
 
-    await user.type(screen.getByLabelText('采集端地址（OTLP/HTTP）'), 'http://localhost:4318')
+    expect(screen.getByLabelText('服务名')).not.toBeVisible()
+    await user.click(screen.getByText('高级选项'))
+    expect(screen.getByLabelText('服务名')).toBeVisible()
+
+    await user.type(endpointInput(), 'http://collector:4318')
     await user.type(screen.getByLabelText('资源属性'), 'openinference.project.name=a2wave')
     await user.click(screen.getByRole('button', { name: '保存' }))
 
-    expect((save.mock.calls[0][0] as Record<string, string>).resourceAttributes).toBe(
-      'openinference.project.name=a2wave',
-    )
+    expect(savedPatch().resourceAttributes).toBe('openinference.project.name=a2wave')
+  })
+
+  it('opens Advanced when a service name is already set', () => {
+    status = { ...baseStatus, serviceName: 'agents' }
+    renderWithProviders(<OtelExportCard />)
+
+    expect(screen.getByLabelText('服务名')).toBeVisible()
+  })
+
+  it('shows the resolved traces URL live from what is typed', async () => {
+    status = withSavedHeader
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    expect(screen.getByText('实际上报到：http://collector:4318/v1/traces')).toBeInTheDocument()
+
+    await user.clear(endpointInput())
+    expect(screen.queryByText(/实际上报到/)).not.toBeInTheDocument()
+
+    await user.type(endpointInput(), 'https://apm.example.com/ingest/traces')
+    expect(
+      screen.getByText('实际上报到：https://apm.example.com/ingest/traces'),
+    ).toBeInTheDocument()
+
+    await user.clear(endpointInput())
+    await user.type(endpointInput(), 'grpc://collector:4317')
+    expect(screen.queryByText(/实际上报到/)).not.toBeInTheDocument()
+  })
+
+  it('hints at host.docker.internal for a loopback endpoint', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    expect(screen.queryByText(/host\.docker\.internal/)).not.toBeInTheDocument()
+    await user.type(endpointInput(), 'http://localhost:4318')
+    expect(screen.getByText(/host\.docker\.internal/)).toBeInTheDocument()
   })
 
   it('blocks an invalid form with an inline error instead of saving', async () => {
     const user = userEvent.setup()
     renderWithProviders(<OtelExportCard />)
 
-    await user.type(screen.getByLabelText('采集端地址（OTLP/HTTP）'), 'grpc://collector:4317')
+    await user.type(endpointInput(), 'grpc://collector:4317')
     await user.click(screen.getByRole('button', { name: '保存' }))
 
     expect(save).not.toHaveBeenCalled()
@@ -112,25 +193,80 @@ describe('OtelExportCard', () => {
     expect(screen.getByText(/会离开 a2wave/)).toBeInTheDocument()
   })
 
-  it('clears the saved headers on request', async () => {
-    status = { ...baseStatus, headersSet: true, headerNames: ['Authorization'] }
-    const user = userEvent.setup()
-    renderWithProviders(<OtelExportCard />)
+  describe('test connection', () => {
+    it('posts the unsaved draft without saving it', async () => {
+      status = withSavedHeader
+      const user = userEvent.setup()
+      renderWithProviders(<OtelExportCard />)
 
-    await user.click(screen.getByRole('button', { name: '清除已保存的请求头' }))
+      await user.clear(endpointInput())
+      await user.type(endpointInput(), 'http://draft-collector:4318/')
+      await user.click(screen.getByRole('button', { name: '添加请求头' }))
+      await user.type(screen.getAllByLabelText('名称')[1], 'x-api-key')
+      await user.type(screen.getAllByLabelText('值')[1], 'k1')
+      await user.click(screen.getByRole('button', { name: '测试连接' }))
 
-    expect(save).toHaveBeenCalledWith({ headers: '' })
-  })
+      expect(save).not.toHaveBeenCalled()
+      expect(runTest).toHaveBeenCalledTimes(1)
+      expect(runTest.mock.calls[0][0]).toEqual({
+        endpoint: 'http://draft-collector:4318',
+        serviceName: '',
+        resourceAttributes: '',
+        headers: JSON.stringify({ Authorization: OTEL_KEEP_HEADER_VALUE, 'x-api-key': 'k1' }),
+      })
+    })
 
-  it('runs the connection test and reports a failure reason', async () => {
-    testResult = { ok: false, reason: 'EXPORT_FAILED', error: 'connect ECONNREFUSED' }
-    const user = userEvent.setup()
-    renderWithProviders(<OtelExportCard />)
+    it('shows the form error and sends nothing when the draft is invalid', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<OtelExportCard />)
 
-    await user.click(screen.getByRole('button', { name: '测试连接' }))
+      await user.type(endpointInput(), 'grpc://collector:4317')
+      await user.click(screen.getByRole('button', { name: '测试连接' }))
 
-    expect(runTest).toHaveBeenCalledTimes(1)
-    expect(screen.getByText('上报失败：connect ECONNREFUSED')).toBeInTheDocument()
+      expect(runTest).not.toHaveBeenCalled()
+      expect(screen.getByRole('alert')).toHaveTextContent('采集端地址需为 http(s) 地址')
+    })
+
+    it('shows the trace id and the tested URL on success', () => {
+      const traceId = '0af7651916cd43dd8448eb211c80319c'
+      testResult = { ok: true, traceId, testedUrl: 'http://collector:4318/v1/traces' }
+      renderWithProviders(<OtelExportCard />)
+
+      expect(screen.getByText('已写入一条测试 Trace')).toBeInTheDocument()
+      expect(screen.getByText(traceId)).toHaveClass('select-all')
+      expect(screen.getByText('上报地址：http://collector:4318/v1/traces')).toBeInTheDocument()
+    })
+
+    it('reports an export failure with the URL that was tried', () => {
+      testResult = {
+        ok: false,
+        reason: 'EXPORT_FAILED',
+        error: 'HTTP 401',
+        testedUrl: 'http://collector:4318/v1/traces',
+      }
+      renderWithProviders(<OtelExportCard />)
+
+      expect(screen.getByText('上报失败：HTTP 401')).toBeInTheDocument()
+      expect(screen.getByText('上报地址：http://collector:4318/v1/traces')).toBeInTheDocument()
+    })
+
+    it('explains a refused loopback connection', () => {
+      testResult = {
+        ok: false,
+        reason: 'LOOPBACK_REFUSED',
+        testedUrl: 'http://127.0.0.1:4318/v1/traces',
+      }
+      renderWithProviders(<OtelExportCard />)
+
+      expect(screen.getByText(/a2wave 容器自身.*host\.docker\.internal/)).toBeInTheDocument()
+    })
+
+    it('shows which rule an invalid draft broke', () => {
+      testResult = { ok: false, reason: 'INVALID_CONFIG', error: 'Unknown saved header: x-old' }
+      renderWithProviders(<OtelExportCard />)
+
+      expect(screen.getByText('配置无效：Unknown saved header: x-old')).toBeInTheDocument()
+    })
   })
 
   it('surfaces exporter health for this instance', () => {
@@ -139,5 +275,6 @@ describe('OtelExportCard', () => {
 
     expect(screen.getByText('最近错误：Unauthorized')).toBeInTheDocument()
     expect(screen.getByText('已丢弃 span：12')).toBeInTheDocument()
+    expect(screen.getByText('未启用')).toHaveAttribute('title', '仅代表当前 API 实例')
   })
 })

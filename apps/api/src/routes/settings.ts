@@ -1,5 +1,6 @@
 import {
   type OtelStatus,
+  type OtelTestResult,
   SSO_CONFIG_SCHEMAS,
   type SsoConfigKey,
   updateSettingsInput,
@@ -21,9 +22,11 @@ import {
   oauthChannelAudiences,
   probeOidcDiscovery,
 } from '../lib/oidc.js'
-import { readOtelConfig, readOtelSettingsView } from '../lib/otel/config.js'
-import { getOtelExportStats, getOtelRuntime, sendOtelTestSpan } from '../lib/otel/provider.js'
+import { readOtelSettingsView } from '../lib/otel/config.js'
+import { getOtelExportStats, getOtelRuntime } from '../lib/otel/provider.js'
 import { prepareOtelSettingsPatch } from '../lib/otel/settings-patch.js'
+import { resolveOtelTestConfig } from '../lib/otel/test-draft.js'
+import { sendOtelTestSpan } from '../lib/otel/test-trace.js'
 import { getSaml } from '../lib/saml.js'
 import { getSamlEnv, isSamlConfigured } from '../lib/saml-config.js'
 import { encryptSecret } from '../lib/secret-box.js'
@@ -168,12 +171,17 @@ app.get('/otel/status', requireAdmin, (c) => {
 })
 
 /**
- * POST /otel/test — sends one test span to the SAVED endpoint (the stored headers cannot be read
- * back, so an unsaved form cannot be tested). Always 200; `data.ok` carries the verdict. Works
+ * POST /otel/test — sends a synthetic test trace. An optional JSON body (OtelTestDraft) carries the
+ * unsaved form state; it is validated exactly like a save but never persisted or audited, and
+ * omitted keys fall back to the saved settings. Always 200; `data.ok` carries the verdict. Works
  * while export is disabled so an admin can verify before enabling.
  */
 app.post('/otel/test', requireAdmin, async (c) => {
-  return c.json({ data: await sendOtelTestSpan(readOtelConfig({ ignoreEnabled: true })) })
+  const resolved = resolveOtelTestConfig(await c.req.text())
+  const data: OtelTestResult = resolved.ok
+    ? await sendOtelTestSpan(resolved.config)
+    : { ok: false, reason: 'INVALID_CONFIG', error: resolved.error }
+  return c.json({ data })
 })
 
 const ssoTestSchema = z.object({ type: z.enum(['oidc', 'saml']) })
