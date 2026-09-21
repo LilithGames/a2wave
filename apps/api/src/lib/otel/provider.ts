@@ -118,9 +118,20 @@ function createExporter(config: OtelConfig, stats: ExportStats, warn: boolean): 
   return new TrackingExporter(otlp, stats, warn)
 }
 
+/**
+ * OpenInference backends (Arize Phoenix, Arize AX) file a trace under the project named by this
+ * RESOURCE attribute and fall back to a catch-all "default" project without it.
+ */
+const OI_PROJECT_NAME = 'openinference.project.name'
+
 function createProvider(config: OtelConfig, processors: SpanProcessor[]): BasicTracerProvider {
   return new BasicTracerProvider({
     resource: resourceFromAttributes({
+      // Default the project to the service name: a2wave already mirrors OpenInference span
+      // attributes for these backends, and an admin who named the service expects to find its
+      // traces under that name. An explicit resource attribute below still wins, and backends that
+      // do not speak OpenInference ignore the key.
+      [OI_PROJECT_NAME]: config.serviceName,
       ...config.resourceAttributes,
       'service.name': config.serviceName,
       'service.version': getVersion(),

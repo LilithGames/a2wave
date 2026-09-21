@@ -118,7 +118,7 @@ Settings category `otel` (all values are strings):
 | `headersEnc` | AES-GCM ciphertext of a JSON header map. Server-managed. |
 | `captureContent` | See above. |
 | `serviceName` | `service.name`; empty = `a2wave`. |
-| `resourceAttributes` | Extra resource attributes in the standard `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`). Generic on purpose: backends route on resource attributes (environment, team, project — e.g. Arize Phoenix files spans under `openinference.project.name`). `service.name` / `service.version` / `service.instance.id` are managed and rejected here. |
+| `resourceAttributes` | Extra resource attributes in the standard `OTEL_RESOURCE_ATTRIBUTES` format (`k=v,k=v`). Generic on purpose: backends route on resource attributes (environment, team, project — e.g. Arize Phoenix files spans under `openinference.project.name`). `service.name` / `service.version` / `service.instance.id` are managed and rejected here. **`openinference.project.name` defaults to the service name** when it is not set here: OpenInference backends otherwise drop everything into a catch-all `default` project, and an admin who named the service expects to find its traces under that name. This is an a2wave default, not an OpenTelemetry or OpenInference rule (Phoenix's own SDK defaults to `default`); backends that do not speak OpenInference ignore the key. |
 
 **Secret convention** (same as `sso.oidcClientSecret`): headers are submitted as the plaintext
 pseudo-key `otel.headers` (a JSON object string) in `PATCH /api/settings`, encrypted by

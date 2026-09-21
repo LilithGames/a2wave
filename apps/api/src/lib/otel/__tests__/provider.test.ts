@@ -199,6 +199,27 @@ describe('resource', () => {
   })
 })
 
+describe('OpenInference project default', () => {
+  it('files traces under the service name when no project is configured', async () => {
+    // Phoenix / Arize pick the project from the RESOURCE attribute openinference.project.name and
+    // fall back to "default". a2wave already mirrors OpenInference span attributes for those
+    // backends, so an admin who set "service name = agents" expects a project called "agents",
+    // not a needle in "default".
+    config = { ...enabled, serviceName: 'agents', resourceAttributes: { env: 'staging' } }
+    const runtime = getOtelRuntime()
+    runtime?.tracer.startSpan('s').end()
+    await runtime?.forceFlush()
+    const [span] = exporters[0].exported[0] as Array<{
+      resource: { attributes: Record<string, unknown> }
+    }>
+    expect(span.resource.attributes).toMatchObject({
+      'openinference.project.name': 'agents',
+      'service.name': 'agents',
+      env: 'staging',
+    })
+  })
+})
+
 describe('shutdownOtel', () => {
   it('flushes and shuts the exporter down', async () => {
     config = enabled

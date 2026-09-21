@@ -45,7 +45,7 @@ invoke_agent <Agent 名称>        一次执行
 | 资源属性（高级选项） | 附加到每个 span 的属性，`key=value`，多个用逗号分隔，例如 `deployment.environment=prod` |
 
 > [!TIP]
-> 使用 Arize Phoenix 时，在「资源属性」里填 `openinference.project.name=<项目名>`，Trace 就会归到该项目下；不填则进入 `default` 项目。
+> 使用 Arize Phoenix 时，Trace 默认归到与「服务名」同名的项目（默认即 `a2wave`）。要归到别的项目，在「资源属性」里填 `openinference.project.name=<项目名>`。
 
 > [!TIP]
 > 只能配置一个采集端。需要同时发往多个平台时，让 a2wave 发给你自己的 OTel Collector，再由 Collector 分发。

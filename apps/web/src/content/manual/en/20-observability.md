@@ -45,7 +45,7 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 | Resource attributes (Advanced) | Attributes added to every span, as comma-separated `key=value` pairs, e.g. `deployment.environment=prod` |
 
 > [!TIP]
-> With Arize Phoenix, set **Resource attributes** to `openinference.project.name=<project>` to file traces under that project; without it they land in `default`.
+> With Arize Phoenix, traces are filed under a project named after **Service name** (`a2wave` by default). To use another project, set **Resource attributes** to `openinference.project.name=<project>`.
 
 > [!TIP]
 > Only one collector can be configured. To send to several platforms, point a2wave at your own OTel Collector and let the Collector fan out.
