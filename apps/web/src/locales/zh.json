@@ -1161,7 +1161,7 @@
       "addHeader": "添加请求头",
       "removeHeader": "移除请求头 {{name}}",
       "captureContent": "采集内容",
-      "captureContentHint": "导出提问、回复、工具入参和错误文本（密钥已掩码）；关闭时只导出元数据。",
+      "captureContentHint": "导出提问、回复、工具入参与输出、错误文本（密钥已掩码）；关闭时只导出元数据。",
       "captureContentWarning": "这些内容会离开 a2wave 发往外部采集端，请确认其访问权限与留存策略。",
       "save": "保存",
       "test": "测试连接",

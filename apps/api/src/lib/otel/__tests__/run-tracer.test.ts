@@ -782,6 +782,39 @@ describe('trace enrichment', () => {
     expect(JSON.stringify(tool.attributes)).not.toContain(TOOL_ERROR)
   })
 
+  it('exports tool output only with content capture on, masked against injected credentials', () => {
+    const run = (capture: boolean) => {
+      exporter.reset()
+      runtime = makeRuntime(capture)
+      const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+      const at = trace.startAttempt(attempt(1))
+      trace.onLogEntry(startedTool('c1', 1000))
+      trace.onLogEntry({
+        type: 'tool_call',
+        subtype: 'completed',
+        callId: 'c1',
+        toolName: 'shell',
+        output: 'TOOL-OUTPUT ANTHROPIC_API_KEY=provider-key-123456 done',
+        ts: 1200,
+      })
+      at.end(ok)
+      trace.finish({ result: ok, retries: 0 })
+      return byName('execute_tool')[0].attributes
+    }
+
+    const captured = run(true)
+    expect(captured['output.value']).toContain('TOOL-OUTPUT')
+    expect(captured['output.mime_type']).toBe('text/plain')
+    expect(captured['gen_ai.tool.call.result']).toBe(captured['output.value'])
+    // The Agent's own provider key must not leave in a tool's output.
+    expect(JSON.stringify(captured)).not.toContain('provider-key-123456')
+
+    const quiet = run(false)
+    expect(quiet['output.value']).toBeUndefined()
+    expect(quiet['gen_ai.tool.call.result']).toBeUndefined()
+    expect(JSON.stringify(quiet)).not.toContain('TOOL-OUTPUT')
+  })
+
   it('describes the Agent environment on the root span', () => {
     const trace = startRunTrace(
       'chat/run_1/rst_1',

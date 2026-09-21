@@ -56,9 +56,9 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 
 ## Capture content (off by default)
 
-By default only **metadata** is exported: timing, tokens, model, status, tool names. The user's prompt, the Agent's reply, tool arguments and error text do **not** leave a2wave.
+By default only **metadata** is exported: timing, tokens, model, status, tool names. The user's prompt, the Agent's reply, tool arguments and output, and error text do **not** leave a2wave.
 
-With **Capture content** on, that content is written into the trace too, which helps when you need to see what a specific execution said and called.
+With **Capture content** on, that content is written into the trace too, which helps when you need to see what a specific execution said, what it called, and what the tools returned. Tool output is export-only: it is never written to a2wave's run logs and never shown in the execution view. Claude Code, Codex, Qoder and Trae report tool output today; tool spans of other Providers have none.
 
 > [!WARNING]
 > Once on, conversation content is sent to an external collector. First make sure the collector's access control and data retention meet your requirements.

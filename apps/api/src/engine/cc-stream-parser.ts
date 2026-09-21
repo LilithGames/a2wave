@@ -18,6 +18,7 @@
  */
 
 import type { HeartbeatTracker } from './heartbeat.js'
+import { toolResultText } from './tool-output.js'
 import type { StreamCallback, StreamLogCallback, TokenUsage } from './types.js'
 import { extractClaudeStyleUsage } from './usage.js'
 
@@ -169,29 +170,11 @@ export function createCcStreamParser(options: CcStreamParserOptions): CcStreamPa
           const callId = (typedBlock.tool_use_id as string) || ''
           if (!callId) continue
           const isError = typedBlock.is_error === true
-          let errorText: string | undefined
-          if (isError) {
-            const raw = typedBlock.content
-            if (typeof raw === 'string') {
-              errorText = raw
-            } else if (Array.isArray(raw)) {
-              errorText =
-                raw
-                  .map((b) => {
-                    if (
-                      b &&
-                      typeof b === 'object' &&
-                      'text' in b &&
-                      typeof (b as { text: unknown }).text === 'string'
-                    ) {
-                      return (b as { text: string }).text
-                    }
-                    return ''
-                  })
-                  .filter(Boolean)
-                  .join('\n') || undefined
-            }
-          }
+          // One text for both roles: a failed call's text is its error; a successful call's is
+          // its output (tracer-only content, see tool-output.ts).
+          const resultText = toolResultText(typedBlock.content)
+          const errorText = isError ? resultText : undefined
+          const output = isError ? undefined : resultText
           heartbeat.onSettled(callId)
           const toolName = toolNameByCallId.get(callId) ?? ''
           toolNameByCallId.delete(callId)
@@ -201,6 +184,7 @@ export function createCcStreamParser(options: CcStreamParserOptions): CcStreamPa
             callId,
             toolName,
             ...(errorText ? { error: errorText } : {}),
+            ...(output ? { output } : {}),
             ts: Date.now(),
           })
         }

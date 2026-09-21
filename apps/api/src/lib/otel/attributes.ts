@@ -26,6 +26,7 @@ export const ATTR = {
   TOOL_NAME: 'gen_ai.tool.name',
   TOOL_CALL_ID: 'gen_ai.tool.call.id',
   TOOL_CALL_ARGUMENTS: 'gen_ai.tool.call.arguments',
+  TOOL_CALL_RESULT: 'gen_ai.tool.call.result',
   ERROR_TYPE: 'error.type',
   RUN_ID: 'a2wave.run.id',
   TASK_ID: 'a2wave.task.id',

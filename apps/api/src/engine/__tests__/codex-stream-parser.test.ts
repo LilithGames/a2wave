@@ -213,8 +213,25 @@ describe('parseCodexStreamLine — events', () => {
       subtype: 'failed',
       callId: 'item_4',
       metadata: { exit_code: 1 },
+      // The output travels on its own tracer-only field, never inside metadata.
+      output: 'SECRET-LOOKING-OUTPUT',
     })
-    expect(JSON.stringify(event)).not.toContain('SECRET-LOOKING-OUTPUT')
+    expect(JSON.stringify((event as { metadata?: unknown }).metadata)).not.toContain(
+      'SECRET-LOOKING-OUTPUT',
+    )
+  })
+
+  it("reports a command's aggregated output on completion only, and omits it when empty", async () => {
+    const parse = (type: string, item: Record<string, unknown>) =>
+      events(JSON.stringify({ type, item }))[0] as { output?: string }
+    const base = { id: 'i', type: 'command_execution', command: 'ls' }
+    expect(
+      parse('item.completed', { ...base, aggregated_output: 'a\nb', status: 'completed' }).output,
+    ).toBe('a\nb')
+    expect(parse('item.started', { ...base, aggregated_output: 'partial' }).output).toBeUndefined()
+    expect(
+      parse('item.completed', { ...base, aggregated_output: '', status: 'completed' }).output,
+    ).toBeUndefined()
   })
 
   it('reports exit code 0 on success and omits metadata when Codex sent no exit code', async () => {

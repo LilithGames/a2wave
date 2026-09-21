@@ -581,6 +581,8 @@ describe('ClaudeCodeEngine onLogEntry callbacks', () => {
     // Completion entries must carry the tool name so the UI can render
     // "✓ Bash" rather than a blank ✓ row.
     expect(completed?.[0].toolName).toBe('Bash')
+    // The result text rides along as tracer-only output (execute-with-retry strips it elsewhere).
+    expect(completed?.[0]).toMatchObject({ output: 'file1\nfile2' })
   })
 
   it('emits tool_call:failed when tool_result.is_error is true', async () => {

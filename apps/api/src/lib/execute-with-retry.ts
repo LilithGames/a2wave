@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { runs } from '../db/schema.js'
 import { bindExecutionLeaseTask, hasExecutionLease } from '../engine/execution-lease-registry.js'
+import { stripToolOutput } from '../engine/tool-output.js'
 import type { StreamLogEntry, TokenUsage } from '../engine/types.js'
 import { accumulateUsage } from '../engine/usage.js'
 import { executeInWorker } from '../worker/index.js'
@@ -367,9 +368,12 @@ export async function executeWithRetry(
         {
           ...options,
           onLogEntry: (entry) => {
-            runLogFile?.write(entry)
+            // Tool output is tracer-only content (engine/tool-output.ts): the trace gets the
+            // entry as the engine produced it, every other consumer gets it without `output`.
             trace.onLogEntry(entry)
-            options?.onLogEntry?.(entry)
+            const shareable = stripToolOutput(entry)
+            runLogFile?.write(shareable)
+            options?.onLogEntry?.(shareable)
           },
         },
         trace,
@@ -469,7 +473,9 @@ async function executeWithRetryCore(
   // Internal log collector — always active, persisted via lifecycle
   const { logs, onLogEntry: collectLog } = createLogCollector()
   const mergedOnLogEntry = (entry: StreamLogEntry) => {
-    collectLog(entry)
+    // The collected logs are persisted with the run: never with tool output. The outer tee still
+    // receives the full entry, because it is what feeds the tracer.
+    collectLog(stripToolOutput(entry))
     externalOnLogEntry?.(entry)
   }
 

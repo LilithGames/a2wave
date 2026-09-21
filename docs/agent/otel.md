@@ -2,7 +2,11 @@
 
 Every Agent execution can be exported as an OpenTelemetry trace that follows the
 [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/), pushed over
-OTLP/HTTP to one collector configured in **Settings → Observability** (or via env).
+OTLP/HTTP to one collector configured in **Settings → Tracing** (or via env).
+
+> The GenAI semantic conventions are not a stable part of the OpenTelemetry specification yet, so
+> `gen_ai.*` names can still change upstream. Every attribute name a2wave writes is defined once,
+> in `apps/api/src/lib/otel/attributes.ts`; follow a rename there, not at the call sites.
 
 Read this before touching `apps/api/src/lib/otel/`, the `traceParent` plumbing, or the `otel`
 settings category.
@@ -38,7 +42,7 @@ token usage is reported once per execution, so such spans could only be invented
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name`, `gen_ai.provider.name` (engine type), `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.request.model` (last attempt's), `gen_ai.conversation.id` (provider session id), `gen_ai.usage.*`, `a2wave.run.id`, `a2wave.task.id`, `a2wave.trigger.source`, `a2wave.attempt.count`, `a2wave.retry.count`, `a2wave.run.outcome` (`success` / `failed` / `timeout` / `cancelled`), `error.type`, `user.id` (pseudonymous, see below), `a2wave.workspace.type` (`temp` / `scm`), `a2wave.agent.skills` and `a2wave.agent.mcp_servers` (names only), `a2wave.provider.fallback` (true when any attempt ran on a chain entry other than the first) |
 | `attempt` | `a2wave.attempt.number`, `a2wave.provider.index` / `.id` / `.name`, `gen_ai.request.model`, `a2wave.chat.reset`, this attempt's own `gen_ai.usage.*`, `error.type` |
-| `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `a2wave.tool.exit_code` (when the engine reports one), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
+| `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` (**content-gated**), `a2wave.tool.exit_code` (when the engine reports one), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
 
 ### OpenInference mirror
 
@@ -51,7 +55,7 @@ keys their input / output / kind / session columns read — so those are written
 | `openinference.span.kind` | all | `AGENT` (invoke_agent), `LLM` (attempt), `TOOL` (execute_tool) |
 | `session.id` | all | inherited caller session, else the run id — the same value on every span |
 | `input.value` / `input.mime_type` | invoke_agent, attempt, execute_tool | prompt (`text/plain`) / tool arguments (`application/json`) — **content-gated** |
-| `output.value` / `output.mime_type` | invoke_agent, attempt (successful only) | the reply — **content-gated** |
+| `output.value` / `output.mime_type` | invoke_agent, attempt (successful only), execute_tool | the reply / what the tool returned (`text/plain`) — **content-gated** |
 
 - **`attempt` is `LLM`, not `CHAIN`.** It is the span that carries model and token usage, and
   OpenInference backends total tokens and cost over `LLM` spans only; the `AGENT` root repeats the
@@ -96,8 +100,17 @@ with 93,257 uncached and 1,145,856 cached input tokens showed a prompt of 1,145,
   about the call, not content, so it is exported with capture off and — with capture off — becomes
   the status message (`exit code 2`) of a failed tool span, which would otherwise be a bare `ERROR`.
   Engines put stderr samples in `metadata` too; those are never read. Today only the Codex parser
-  supplies the exit code; tool OUTPUT is not in the normalized stream at all, so exporting it means
-  extending `StreamLogEntry` and every Provider parser first.
+  supplies the exit code.
+- **Tool output is tracer-only.** A tool's result is the most useful thing to see when debugging an
+  Agent and the most dangerous thing to keep: unbounded (a `cat` of a large file) and routinely
+  sensitive (env dumps, file contents, API responses). It travels on `tool_call.output`
+  (`engine/tool-output.ts`, capped at 8192 characters at the source) and `executeWithRetry` — the
+  only consumer of engine log entries — hands the full entry to the tracer and a stripped copy to
+  everything else: the persisted run logs, the run log file and UI streams never carry it. The
+  tracer exports it only with content capture on, masked against the credentials injected into the
+  execution and truncated like all content. Supplied by the Codex parser (`aggregated_output`), the
+  Claude Code engine and the shared Claude-style parser (Qoder, Trae) from `tool_result`; other
+  engines simply have no `output`, and a new one only needs to set the field.
 
 Root span events: `retry`, `provider_fallback`, and the agent-router's `a2a.task.*` lifecycle
 events (primitive metadata only).
@@ -118,7 +131,7 @@ Rules a change must keep:
 ## Content capture
 
 `otel.captureContent` defaults to **off**. When off, these strings are never read, so they cannot
-leak: the prompt, the Agent's output, tool arguments, and tool / run error text. `error.type`
+leak: the prompt, the Agent's output, tool arguments, tool output, and tool / run error text. `error.type`
 (low-cardinality class) is always exported.
 
 When on, content is added as `gen_ai.input.messages`, `gen_ai.output.messages`,

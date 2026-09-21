@@ -107,6 +107,34 @@ describe('createCcStreamParser', () => {
     expect(heartbeat.settled).toEqual(['call_1'])
   })
 
+  it("carries a successful tool_result's text as tracer-only output (string and blocks carriers)", async () => {
+    const { parser, entries } = setup()
+    parser.parseLine(
+      line({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'c1', is_error: false, content: 'total 0' },
+            {
+              type: 'tool_result',
+              tool_use_id: 'c2',
+              is_error: false,
+              content: [
+                { type: 'text', text: 'line 1' },
+                { type: 'text', text: 'line 2' },
+              ],
+            },
+            { type: 'tool_result', tool_use_id: 'c3', is_error: false },
+          ],
+        },
+      }),
+    )
+    const outputs = entries
+      .filter((e) => e.type === 'tool_call')
+      .map((e) => (e as { output?: string }).output)
+    expect(outputs).toEqual(['total 0', 'line 1\nline 2', undefined])
+  })
+
   it('tool_result is_error=true → failed entry with error text extracted (string / blocks carriers)', async () => {
     const { parser, entries } = setup()
     parser.parseLine(

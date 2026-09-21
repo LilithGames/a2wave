@@ -29,6 +29,7 @@ import {
   omitRuntimeEnvKeys,
   sanitizeAgentRuntimeEnv,
 } from './runtime-context.js'
+import { toolResultText } from './tool-output.js'
 import type {
   ExecuteResult,
   ListModelsOptions,
@@ -857,29 +858,11 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
             if (!callId) continue
             const isError = typedBlock.is_error === true
             // The text is usually either a string or an array of blocks.
-            let errorText: string | undefined
-            if (isError) {
-              const raw = typedBlock.content
-              if (typeof raw === 'string') {
-                errorText = raw
-              } else if (Array.isArray(raw)) {
-                errorText =
-                  raw
-                    .map((b) => {
-                      if (
-                        b &&
-                        typeof b === 'object' &&
-                        'text' in b &&
-                        typeof (b as { text: unknown }).text === 'string'
-                      ) {
-                        return (b as { text: string }).text
-                      }
-                      return ''
-                    })
-                    .filter(Boolean)
-                    .join('\n') || undefined
-              }
-            }
+            // One text for both roles: a failed call's text is its error; a successful call's is
+            // its output (tracer-only content, see tool-output.ts).
+            const resultText = toolResultText(typedBlock.content)
+            const errorText = isError ? resultText : undefined
+            const output = isError ? undefined : resultText
             heartbeat.onSettled(callId)
             const toolName = toolNameByCallId.get(callId) ?? ''
             toolNameByCallId.delete(callId)
@@ -889,6 +872,7 @@ export class ClaudeCodeEngine extends BaseCliAgentEngine {
               callId,
               toolName,
               ...(errorText ? { error: errorText } : {}),
+              ...(output ? { output } : {}),
               ts: Date.now(),
             })
           }

@@ -18,8 +18,9 @@ vi.mock('../../db/schema.js', () => ({ runs: { id: 'runs.id', status: 'runs.stat
 vi.mock('../logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }))
+const mockRunLogWrite = vi.fn()
 vi.mock('../run-log-file.js', () => ({
-  createRunLogFileWriter: () => ({ write: vi.fn(), close: vi.fn(() => Promise.resolve()) }),
+  createRunLogFileWriter: () => ({ write: mockRunLogWrite, close: vi.fn(() => Promise.resolve()) }),
 }))
 
 const events: string[] = []
@@ -178,6 +179,43 @@ describe('executeWithRetry — OpenTelemetry wiring', () => {
     const types = mockOnLogEntry.mock.calls.map((c) => c[0].type)
     expect(types).toEqual(expect.arrayContaining(['assistant', 'retry']))
     expect(external).toHaveBeenCalledTimes(mockOnLogEntry.mock.calls.length)
+  })
+
+  it('gives tool output to the tracer only: persisted logs, the run log file and external consumers never see it', async () => {
+    // Tool output is content — unbounded and routinely sensitive. The tracer exports it only with
+    // content capture on, masked and truncated; nothing else may keep or stream it.
+    const toolDone = {
+      type: 'tool_call',
+      subtype: 'completed',
+      callId: 'c1',
+      toolName: 'shell',
+      metadata: { exit_code: 0 },
+      output: 'TOOL-OUTPUT-CONTENT',
+      ts: 1,
+    }
+    mockRunLogWrite.mockClear()
+    mockExecuteInWorker.mockImplementationOnce(async (_t, _p, opts) => {
+      opts.onLogEntry(toolDone)
+      return ok
+    })
+    const external = vi.fn()
+    const outcome = await executeWithRetry('task_1', payload, {
+      runId: 'run_1',
+      onLogEntry: external,
+    })
+
+    const traced = mockOnLogEntry.mock.calls.map((c) => c[0]).find((e) => e.type === 'tool_call')
+    expect(traced.output).toBe('TOOL-OUTPUT-CONTENT')
+
+    for (const seen of [
+      external.mock.calls.map((c) => c[0]),
+      mockRunLogWrite.mock.calls.map((c) => c[0]),
+      outcome.logs,
+    ]) {
+      const tool = seen.find((e: { type: string }) => e.type === 'tool_call')
+      expect(tool).toMatchObject({ callId: 'c1', metadata: { exit_code: 0 } })
+      expect(JSON.stringify(seen)).not.toContain('TOOL-OUTPUT-CONTENT')
+    }
   })
 
   it('reports a cancelled run', async () => {

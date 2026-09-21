@@ -125,9 +125,9 @@ describe('CodexAgentEngine onLogEntry callbacks', () => {
       callId: 'i1',
       toolName: 'shell',
     })
-    // The exit code reaches the normalized entry (the tracer exports it); the output does not.
-    expect(completed?.[0]).toMatchObject({ metadata: { exit_code: 0 } })
-    expect(JSON.stringify(completed?.[0])).not.toContain('total 0')
+    // The exit code and the output reach the normalized entry. The output is tracer-only:
+    // execute-with-retry strips it for every other consumer (covered there).
+    expect(completed?.[0]).toMatchObject({ metadata: { exit_code: 0 }, output: 'total 0' })
   })
 
   it('emits assistant text and success result for agent_message', async () => {

@@ -188,6 +188,17 @@ class ActiveRunTrace implements RunTrace {
     // engines put stderr samples there.
     const exitCode = entry.metadata?.exit_code
     if (typeof exitCode === 'number') open.span.setAttribute(ATTR.TOOL_EXIT_CODE, exitCode)
+    // What the tool returned: content, so gated, masked against the credentials injected into
+    // this execution, and truncated. It reaches the tracer alone (execute-with-retry strips it
+    // from persisted logs and UI streams).
+    if (this.runtime.captureContent && entry.output) {
+      const result = toContentAttribute(entry.output, this.secrets)
+      open.span.setAttributes({
+        [ATTR.TOOL_CALL_RESULT]: result,
+        [ATTR.OI_OUTPUT_VALUE]: result,
+        [ATTR.OI_OUTPUT_MIME_TYPE]: 'text/plain',
+      })
+    }
     if (entry.subtype === 'failed') {
       open.span.setAttribute(ATTR.ERROR_TYPE, 'tool_error')
       const message =
