@@ -116,6 +116,7 @@ class ActiveRunTrace implements RunTrace {
   private lastEngineType: string | undefined
   private anonymousToolSeq = 0
   private finished = false
+  private usedFallbackProvider = false
 
   constructor(
     private readonly runtime: OtelRuntime,
@@ -182,14 +183,20 @@ class ActiveRunTrace implements RunTrace {
       open = { span: this.startToolSpan(entry), startMs: entry.ts }
       open.span.setAttribute(ATTR.TOOL_UNPAIRED, true)
     }
+    // The exit code is a fact about the call, not content: it is exported with capture off, and
+    // it is the only reason a bare "ERROR" can carry then. Nothing else in `metadata` is read —
+    // engines put stderr samples there.
+    const exitCode = entry.metadata?.exit_code
+    if (typeof exitCode === 'number') open.span.setAttribute(ATTR.TOOL_EXIT_CODE, exitCode)
     if (entry.subtype === 'failed') {
       open.span.setAttribute(ATTR.ERROR_TYPE, 'tool_error')
-      open.span.setStatus({
-        code: SpanStatusCode.ERROR,
-        ...(this.runtime.captureContent && entry.error
-          ? { message: toContentAttribute(entry.error, this.secrets) }
-          : {}),
-      })
+      const message =
+        this.runtime.captureContent && entry.error
+          ? toContentAttribute(entry.error, this.secrets)
+          : typeof exitCode === 'number'
+            ? `exit code ${exitCode}`
+            : undefined
+      open.span.setStatus({ code: SpanStatusCode.ERROR, ...(message ? { message } : {}) })
     } else {
       open.span.setStatus({ code: SpanStatusCode.OK })
     }
@@ -203,6 +210,7 @@ class ActiveRunTrace implements RunTrace {
       [ATTR.TOOL_NAME]: toolName,
     }
     attributes[ATTR.OI_SPAN_KIND] = 'TOOL'
+    if (this.sessionId) attributes[ATTR.OI_SESSION_ID] = this.sessionId
     if (entry.callId) attributes[ATTR.TOOL_CALL_ID] = entry.callId
     if (this.runtime.captureContent && entry.input) {
       const args = toContentAttribute(JSON.stringify(entry.input), this.secrets)
@@ -239,6 +247,16 @@ class ActiveRunTrace implements RunTrace {
       }
       if (info.model) attributes[ATTR.REQUEST_MODEL] = info.model
       if (info.engineType) attributes[ATTR.PROVIDER_NAME] = info.engineType
+      if (info.providerIndex > 0) this.usedFallbackProvider = true
+      // Same id on every span: the root is exported LAST, so an id on the root alone gives a
+      // backend no session for the trace until the run has ended.
+      if (this.sessionId) attributes[ATTR.OI_SESSION_ID] = this.sessionId
+      // OpenInference LLM views read I/O off the LLM span; a2wave cannot see the CLI's individual
+      // model calls, so the attempt carries the run's prompt (and, on success, its reply).
+      if (this.runtime.captureContent && this.payload.prompt) {
+        attributes[ATTR.OI_INPUT_VALUE] = toContentAttribute(this.payload.prompt, this.secrets)
+        attributes[ATTR.OI_INPUT_MIME_TYPE] = 'text/plain'
+      }
       span = this.runtime.tracer.startSpan(
         'attempt',
         { kind: SpanKind.INTERNAL, attributes },
@@ -254,6 +272,12 @@ class ActiveRunTrace implements RunTrace {
         guard('endAttempt', () => {
           if (this.attemptSpan !== attemptSpan) return
           attemptSpan.setAttributes(usageAttributes(result.usage))
+          if (this.runtime.captureContent && result.success && result.output) {
+            attemptSpan.setAttributes({
+              [ATTR.OI_OUTPUT_VALUE]: toContentAttribute(result.output, this.secrets),
+              [ATTR.OI_OUTPUT_MIME_TYPE]: 'text/plain',
+            })
+          }
           this.setResultStatus(attemptSpan, result)
           this.closeAttempt()
         }),
@@ -298,6 +322,7 @@ class ActiveRunTrace implements RunTrace {
       const attributes: Attributes = {
         [ATTR.ATTEMPT_COUNT]: this.attemptCount,
         [ATTR.RETRY_COUNT]: outcome.retries,
+        [ATTR.PROVIDER_FALLBACK]: this.usedFallbackProvider,
         ...usageAttributes(result?.usage),
       }
       const model = this.lastModel ?? this.payload.model ?? this.payload.agentConfig?.model
@@ -368,14 +393,50 @@ function rootAttributes(
     // can be handed to a downstream Agent. An inherited session wins, keeping A2A in one session.
     [ATTR.OI_SESSION_ID]: payload.traceSession ?? runId,
     [ATTR.TASK_ID]: taskId,
-    // channel_type only: the rest of the channel context carries PII (email / mobile).
+    // channel_type and a pseudonymous id only: the rest of the channel context is PII.
     [ATTR.TRIGGER_SOURCE]: channelType(payload),
+    [ATTR.USER_ID]: pseudonymousUserId(payload),
+    [ATTR.WORKSPACE_TYPE]: agentConfig?.workspaceType,
+    // Names only — a Skill's content and an MCP server's config never leave the process.
+    [ATTR.AGENT_SKILLS]: names(agentConfig?.resolvedSkills),
+    [ATTR.AGENT_MCP_SERVERS]: names(agentConfig?.resolvedMcpServers),
   }
   const attributes: Attributes = {}
   for (const [key, value] of Object.entries(candidates)) {
     if (value !== undefined && value !== '') attributes[key] = value
   }
   return attributes
+}
+
+/** Non-empty `name`s of a resolved list, or undefined so the attribute is omitted. */
+function names(items: ReadonlyArray<{ name?: unknown }> | undefined): string[] | undefined {
+  const out = (items ?? []).flatMap((item) =>
+    typeof item?.name === 'string' && item.name ? [item.name] : [],
+  )
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * A stable, opaque id for "who triggered this": the a2wave user id when the platform knows it
+ * (the id its own audit trail uses), else the identity provider's subject. Deliberately NOT the
+ * email, display name or mobile that sit next to it in the channel context — an export to a
+ * third-party backend must not carry directly identifying data.
+ */
+function pseudonymousUserId(payload: WorkerTaskPayload): string | undefined {
+  const channel = (
+    payload.context as
+      | {
+          channel?: {
+            channel_info?: { triggered_by_user_id?: unknown }
+            user_info?: { source_id?: unknown } | null
+          }
+        }
+      | undefined
+  )?.channel
+  const platformId = channel?.channel_info?.triggered_by_user_id
+  if (typeof platformId === 'string' && platformId) return platformId
+  const subject = channel?.user_info?.source_id
+  return typeof subject === 'string' && subject ? subject : undefined
 }
 
 function channelType(payload: WorkerTaskPayload): string | undefined {

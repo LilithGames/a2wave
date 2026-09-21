@@ -89,11 +89,28 @@ describe('toContentAttribute', () => {
 })
 
 describe('usageAttributes', () => {
-  it('maps only the fields that were reported', () => {
+  it('reports input tokens INCLUDING cached ones, with the cache figures as details', () => {
+    // The platform stores uncached input apart from cache reads/writes. Backends do not: the
+    // OpenInference prompt count and cost model treat cache reads as a SUBSET of the input, so
+    // exporting the uncached figure alone made Phoenix drop it from the trace total
+    // (93,257 uncached + 1,145,856 cached showed up as 1,145,856).
     expect(usageAttributes({ inputTokens: 10, cacheReadTokens: 3 })).toEqual({
-      [ATTR.USAGE_INPUT_TOKENS]: 10,
+      [ATTR.USAGE_INPUT_TOKENS]: 13,
+      [ATTR.USAGE_UNCACHED_INPUT_TOKENS]: 10,
       [ATTR.USAGE_CACHE_READ_TOKENS]: 3,
     })
+    expect(usageAttributes({ inputTokens: 10, cacheReadTokens: 3, cacheWriteTokens: 4 })).toEqual({
+      [ATTR.USAGE_INPUT_TOKENS]: 17,
+      [ATTR.USAGE_UNCACHED_INPUT_TOKENS]: 10,
+      [ATTR.USAGE_CACHE_READ_TOKENS]: 3,
+      [ATTR.USAGE_CACHE_CREATION_TOKENS]: 4,
+    })
+  })
+
+  it('leaves the input figure alone when no cache usage was reported', () => {
+    expect(usageAttributes({ inputTokens: 10 })).toEqual({ [ATTR.USAGE_INPUT_TOKENS]: 10 })
+    // Cache figures without an input figure: do not invent an input total.
+    expect(usageAttributes({ cacheReadTokens: 3 })).toEqual({ [ATTR.USAGE_CACHE_READ_TOKENS]: 3 })
   })
 
   it('keeps a reported zero but never invents one', () => {
@@ -111,7 +128,8 @@ describe('usageAttributes', () => {
         cacheWriteTokens: 5,
       }),
     ).toEqual({
-      [ATTR.USAGE_INPUT_TOKENS]: 1,
+      [ATTR.USAGE_INPUT_TOKENS]: 10,
+      [ATTR.USAGE_UNCACHED_INPUT_TOKENS]: 1,
       [ATTR.USAGE_OUTPUT_TOKENS]: 2,
       [ATTR.USAGE_REASONING_TOKENS]: 3,
       [ATTR.USAGE_CACHE_READ_TOKENS]: 4,

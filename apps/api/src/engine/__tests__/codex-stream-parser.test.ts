@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  type ParsedCodexEvent,
   composeCodexAssistantOutput,
+  type ParsedCodexEvent,
   parseCodexStreamLine,
   statKeyFor,
 } from '../codex-stream-parser.js'
@@ -190,6 +190,49 @@ describe('parseCodexStreamLine — events', () => {
         error: 'exit 1',
       },
     ])
+  })
+
+  it("carries a command's exit code as metadata, and nothing else from the item", async () => {
+    // The exit code is what makes a failed tool span explainable; aggregated_output is content
+    // and must not ride along in metadata, which is exported even with content capture off.
+    const [event] = events(
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_4',
+          type: 'command_execution',
+          command: 'grep -q needle haystack',
+          aggregated_output: 'SECRET-LOOKING-OUTPUT',
+          exit_code: 1,
+          status: 'failed',
+        },
+      }),
+    )
+    expect(event).toMatchObject({
+      kind: 'tool_call',
+      subtype: 'failed',
+      callId: 'item_4',
+      metadata: { exit_code: 1 },
+    })
+    expect(JSON.stringify(event)).not.toContain('SECRET-LOOKING-OUTPUT')
+  })
+
+  it('reports exit code 0 on success and omits metadata when Codex sent no exit code', async () => {
+    const completed = (item: Record<string, unknown>) =>
+      events(JSON.stringify({ type: 'item.completed', item }))[0] as { metadata?: unknown }
+    expect(
+      completed({
+        id: 'i',
+        type: 'command_execution',
+        command: 'true',
+        exit_code: 0,
+        status: 'completed',
+      }).metadata,
+    ).toEqual({ exit_code: 0 })
+    expect(
+      completed({ id: 'i', type: 'command_execution', command: 'true', status: 'completed' })
+        .metadata,
+    ).toBeUndefined()
   })
 
   it('parses mcp_tool_call item as tool_call with tool name', async () => {

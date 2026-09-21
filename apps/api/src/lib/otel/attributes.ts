@@ -19,6 +19,8 @@ export const ATTR = {
   USAGE_CACHE_READ_TOKENS: 'gen_ai.usage.cache_read.input_tokens',
   USAGE_CACHE_CREATION_TOKENS: 'gen_ai.usage.cache_creation.input_tokens',
   USAGE_REASONING_TOKENS: 'a2wave.usage.reasoning_tokens',
+  // The platform's own figure: input that was NOT served from a provider cache.
+  USAGE_UNCACHED_INPUT_TOKENS: 'a2wave.usage.uncached_input_tokens',
   INPUT_MESSAGES: 'gen_ai.input.messages',
   OUTPUT_MESSAGES: 'gen_ai.output.messages',
   TOOL_NAME: 'gen_ai.tool.name',
@@ -38,6 +40,13 @@ export const ATTR = {
   CHAT_RESET: 'a2wave.chat.reset',
   /** Set on every span of the settings page's "test connection" trace; never on a real run. */
   TEST: 'a2wave.test',
+  // OTel `user.id`: a pseudonymous, stable identifier — never an email, name or phone number.
+  USER_ID: 'user.id',
+  TOOL_EXIT_CODE: 'a2wave.tool.exit_code',
+  WORKSPACE_TYPE: 'a2wave.workspace.type',
+  AGENT_SKILLS: 'a2wave.agent.skills',
+  AGENT_MCP_SERVERS: 'a2wave.agent.mcp_servers',
+  PROVIDER_FALLBACK: 'a2wave.provider.fallback',
   // OpenInference mirror. Backends that speak it (Phoenix, Arize, Langfuse) translate gen_ai.*
   // into their own llm.* keys, but never derive these — and their input / output / kind columns
   // read exactly these.
@@ -114,7 +123,15 @@ export function toContentAttribute(value: string, secrets: readonly string[]): s
 export function usageAttributes(usage: TokenUsage | undefined): Attributes {
   const attrs: Attributes = {}
   if (!usage) return attrs
-  if (usage.inputTokens !== undefined) attrs[ATTR.USAGE_INPUT_TOKENS] = usage.inputTokens
+  if (usage.inputTokens !== undefined) {
+    // TokenUsage.inputTokens is UNCACHED input (the platform stores cache reads/writes apart).
+    // Backends read gen_ai.usage.input_tokens as the whole prompt, with the cache figures as a
+    // breakdown OF it: the OpenInference prompt count and cost model subtract cache reads from the
+    // prompt. Exporting the uncached figure alone made a backend drop it from the trace total.
+    const cached = (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+    attrs[ATTR.USAGE_INPUT_TOKENS] = usage.inputTokens + cached
+    if (cached > 0) attrs[ATTR.USAGE_UNCACHED_INPUT_TOKENS] = usage.inputTokens
+  }
   if (usage.outputTokens !== undefined) attrs[ATTR.USAGE_OUTPUT_TOKENS] = usage.outputTokens
   if (usage.reasoningTokens !== undefined)
     attrs[ATTR.USAGE_REASONING_TOKENS] = usage.reasoningTokens

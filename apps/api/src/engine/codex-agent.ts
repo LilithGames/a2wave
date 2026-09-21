@@ -752,6 +752,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
               toolName: ev.toolName,
               ...(ev.input ? { input: ev.input } : {}),
               ...(ev.error ? { error: ev.error } : {}),
+              ...(ev.metadata ? { metadata: ev.metadata } : {}),
               ts: Date.now(),
             })
             if (ev.callId) {

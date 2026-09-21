@@ -49,6 +49,8 @@ export type ParsedCodexEvent =
       input?: Record<string, unknown>
       subtype: 'started' | 'completed' | 'failed'
       error?: string
+      /** Non-content facts about the call (`exit_code`); safe to export with content capture off. */
+      metadata?: Record<string, unknown>
     }
   /** Stream-level error (thread.error). */
   | { kind: 'error'; message: string }
@@ -120,6 +122,12 @@ function parseCommandItem(
     }
   }
 
+  // Only the exit code: `aggregated_output` is content and never goes into metadata.
+  const metadata =
+    phase === 'completed' && typeof item.exit_code === 'number'
+      ? { exit_code: item.exit_code }
+      : undefined
+
   return {
     kind: 'tool_call',
     toolName,
@@ -127,6 +135,7 @@ function parseCommandItem(
     ...(input ? { input } : {}),
     subtype,
     ...(error ? { error } : {}),
+    ...(metadata ? { metadata } : {}),
   }
 }
 

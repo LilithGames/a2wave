@@ -15,14 +15,18 @@ invoke_agent <Agent 名称>        一次执行
 
 | 层级 | 你能看到什么 |
 |------|--------------|
-| `invoke_agent` | Agent、模型、触发渠道、总 Token、重试次数、最终结果（成功 / 失败 / 超时 / 已取消） |
+| `invoke_agent` | Agent、模型、触发渠道、触发用户的匿名 ID、总 Token、重试次数、是否发生 Provider 降级、挂载的 Skill 与 MCP 名称、最终结果（成功 / 失败 / 超时 / 已取消） |
 | `attempt` | 第几次尝试、用的是哪个 Provider 和模型、这次尝试自己的 Token |
-| `execute_tool` | 工具名、调用耗时、成功还是失败 |
+| `execute_tool` | 工具名、调用耗时、成功还是失败，以及退出码（Provider 上报时） |
 
 所有 Provider（Claude Code、Codex、Cursor 等）导出的结构完全一致。属性遵循 OpenTelemetry 的 GenAI 语义约定（`gen_ai.*`），主流 APM 可以直接识别。
 
 > [!NOTE]
 > 有的 Provider 不上报 Token 用量，这时 Trace 里不会出现 Token 属性，而不是显示为 0。
+>
+> 输入 Token（`gen_ai.usage.input_tokens`）是**包含缓存命中**的完整提示词用量，缓存读取/写入另有明细属性；a2wave 界面里的「输入 Token」则是未命中缓存的部分，所以两边数字不同是正常的。
+>
+> 触发用户只导出匿名 ID（a2wave 用户 ID 或身份提供方的不透明标识），邮箱、姓名、手机号不会导出。
 
 ## 开启导出（管理员）
 

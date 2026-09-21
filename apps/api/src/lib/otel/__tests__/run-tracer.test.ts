@@ -676,3 +676,146 @@ describe('fail-open', () => {
     expect(() => trace.finish({ result: ok, retries: 0 })).not.toThrow()
   })
 })
+
+describe('trace enrichment', () => {
+  const startedTool = (callId: string, ts: number) =>
+    ({
+      type: 'tool_call',
+      subtype: 'started',
+      callId,
+      toolName: 'shell',
+      input: TOOL_INPUT,
+      ts,
+    }) as const
+
+  it('puts the session id on every span, so a run shows up in a Sessions view while it runs', () => {
+    // The root span is exported last. With the id on the root only, a backend had no session for
+    // the trace until the run ended — minutes for a long review.
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(startedTool('c1', 1000))
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'completed',
+      callId: 'c1',
+      toolName: 'shell',
+      ts: 1200,
+    })
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    for (const span of [root(), byName('attempt')[0], byName('execute_tool')[0]]) {
+      expect(span.attributes['session.id']).toBe('run_1')
+    }
+  })
+
+  it('mirrors the prompt and the reply onto the attempt span only when content capture is on', () => {
+    runtime = makeRuntime(true)
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    trace.startAttempt(attempt(1)).end(ok)
+    trace.finish({ result: ok, retries: 0 })
+    const captured = byName('attempt')[0]
+    expect(captured.attributes['input.value']).toBe(PROMPT)
+    expect(captured.attributes['output.value']).toBe(OUTPUT)
+
+    exporter.reset()
+    runtime = makeRuntime(false)
+    const quiet = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    quiet.startAttempt(attempt(1)).end(ok)
+    quiet.finish({ result: ok, retries: 0 })
+    expect(byName('attempt')[0].attributes['input.value']).toBeUndefined()
+    expect(byName('attempt')[0].attributes['output.value']).toBeUndefined()
+  })
+
+  it('exports a pseudonymous user id and never the email, name or mobile next to it', () => {
+    const withUser = (channel: Record<string, unknown>) => {
+      exporter.reset()
+      const trace = startRunTrace('t', payload({ context: { channel } } as never), { runId: 'r' })
+      trace.finish({ result: ok, retries: 0 })
+      return root().attributes
+    }
+    const pii = { email: 'pii@example.com', name: 'Real Name', mobile: '13800000000' }
+
+    // The a2wave user who triggered it wins: it is the id the platform's own audit trail uses.
+    expect(
+      withUser({
+        channel_type: 'debug',
+        channel_info: { triggered_by_user_id: 'usr_7' },
+        user_info: { ...pii, source_id: 'ou_feishu' },
+      })['user.id'],
+    ).toBe('usr_7')
+    // Otherwise the identity provider's opaque subject.
+    expect(
+      withUser({ channel_type: 'feishu', user_info: { ...pii, source_id: 'ou_feishu' } })[
+        'user.id'
+      ],
+    ).toBe('ou_feishu')
+    // No stable id: nothing is exported, and an email is never promoted into one.
+    const none = withUser({ channel_type: 'api', user_info: pii })
+    expect(none['user.id']).toBeUndefined()
+    expect(JSON.stringify(none)).not.toContain('pii@example.com')
+    expect(JSON.stringify(none)).not.toContain('Real Name')
+    expect(JSON.stringify(none)).not.toContain('13800000000')
+  })
+
+  it("records a failed tool's exit code even with content capture off", () => {
+    // "ERROR" with no reason is useless for debugging an Agent. The exit code is not content.
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    const at = trace.startAttempt(attempt(1))
+    trace.onLogEntry(startedTool('c1', 1000))
+    trace.onLogEntry({
+      type: 'tool_call',
+      subtype: 'failed',
+      callId: 'c1',
+      toolName: 'shell',
+      error: TOOL_ERROR,
+      metadata: { exit_code: 2, stderr: 'must-not-leak' },
+      ts: 1300,
+    })
+    at.end(ok)
+    trace.finish({ result: ok, retries: 0 })
+
+    const tool = byName('execute_tool')[0]
+    expect(tool.attributes['a2wave.tool.exit_code']).toBe(2)
+    expect(tool.status).toEqual({ code: SpanStatusCode.ERROR, message: 'exit code 2' })
+    expect(JSON.stringify(tool.attributes)).not.toContain('must-not-leak')
+    expect(JSON.stringify(tool.attributes)).not.toContain(TOOL_ERROR)
+  })
+
+  it('describes the Agent environment on the root span', () => {
+    const trace = startRunTrace(
+      'chat/run_1/rst_1',
+      payload({
+        agentConfig: {
+          agentId: 'agt_1',
+          agentName: 'Reporter',
+          engineType: 'claude-code',
+          workspaceType: 'scm',
+          resolvedSkills: [
+            { name: 'security-best-practices', content: 'SKILL-BODY' },
+            { name: 'tdd', content: null },
+          ],
+          resolvedMcpServers: [{ name: 'lark-cli' }],
+        },
+      } as never),
+      { runId: 'run_1' },
+    )
+    trace.startAttempt(attempt(1)).end(failed)
+    trace.startAttempt(attempt(2, { providerIndex: 1 })).end(ok)
+    trace.finish({ result: ok, retries: 1 })
+
+    const attrs = root().attributes
+    expect(attrs['a2wave.workspace.type']).toBe('scm')
+    expect(attrs['a2wave.agent.skills']).toEqual(['security-best-practices', 'tdd'])
+    expect(attrs['a2wave.agent.mcp_servers']).toEqual(['lark-cli'])
+    expect(attrs['a2wave.provider.fallback']).toBe(true)
+    expect(JSON.stringify(attrs)).not.toContain('SKILL-BODY')
+  })
+
+  it('does not claim a provider fallback when every attempt used the primary provider', () => {
+    const trace = startRunTrace('chat/run_1/rst_1', payload(), { runId: 'run_1' })
+    trace.startAttempt(attempt(1)).end(ok)
+    trace.finish({ result: ok, retries: 0 })
+    expect(root().attributes['a2wave.provider.fallback']).toBe(false)
+  })
+})

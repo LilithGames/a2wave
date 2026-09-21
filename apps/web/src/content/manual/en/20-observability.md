@@ -15,14 +15,18 @@ invoke_agent <Agent name>        one execution
 
 | Level | What you see |
 |-------|--------------|
-| `invoke_agent` | Agent, model, trigger channel, total tokens, retry count, final outcome (success / failed / timeout / cancelled) |
+| `invoke_agent` | Agent, model, trigger channel, a pseudonymous id of whoever triggered it, total tokens, retry count, whether a Provider fallback happened, the names of mounted Skills and MCP servers, final outcome (success / failed / timeout / cancelled) |
 | `attempt` | Which attempt it was, the Provider and model used, that attempt's own tokens |
-| `execute_tool` | Tool name, call duration, success or failure |
+| `execute_tool` | Tool name, call duration, success or failure, and the exit code when the Provider reports one |
 
 Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same structure. Attributes follow the OpenTelemetry GenAI semantic conventions (`gen_ai.*`), which mainstream APMs recognise out of the box.
 
 > [!NOTE]
 > Some Providers do not report token usage. In that case the trace has no token attributes at all, rather than showing 0.
+>
+> Input tokens (`gen_ai.usage.input_tokens`) are the **whole prompt, cache hits included**, with cache reads and writes as separate breakdown attributes. The "input tokens" shown inside a2wave are the uncached part only, so the two numbers legitimately differ.
+>
+> Only a pseudonymous id of the triggering user is exported (the a2wave user id or the identity provider's opaque subject); email, name and phone number never are.
 
 ## Turning export on (administrators)
 

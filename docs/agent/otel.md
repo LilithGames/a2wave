@@ -36,9 +36,9 @@ token usage is reported once per execution, so such spans could only be invented
 
 | Span | Attributes |
 |---|---|
-| `invoke_agent` | `gen_ai.operation.name`, `gen_ai.provider.name` (engine type), `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.request.model` (last attempt's), `gen_ai.conversation.id` (provider session id), `gen_ai.usage.*`, `a2wave.run.id`, `a2wave.task.id`, `a2wave.trigger.source`, `a2wave.attempt.count`, `a2wave.retry.count`, `a2wave.run.outcome` (`success` / `failed` / `timeout` / `cancelled`), `error.type` |
+| `invoke_agent` | `gen_ai.operation.name`, `gen_ai.provider.name` (engine type), `gen_ai.agent.id`, `gen_ai.agent.name`, `gen_ai.request.model` (last attempt's), `gen_ai.conversation.id` (provider session id), `gen_ai.usage.*`, `a2wave.run.id`, `a2wave.task.id`, `a2wave.trigger.source`, `a2wave.attempt.count`, `a2wave.retry.count`, `a2wave.run.outcome` (`success` / `failed` / `timeout` / `cancelled`), `error.type`, `user.id` (pseudonymous, see below), `a2wave.workspace.type` (`temp` / `scm`), `a2wave.agent.skills` and `a2wave.agent.mcp_servers` (names only), `a2wave.provider.fallback` (true when any attempt ran on a chain entry other than the first) |
 | `attempt` | `a2wave.attempt.number`, `a2wave.provider.index` / `.id` / `.name`, `gen_ai.request.model`, `a2wave.chat.reset`, this attempt's own `gen_ai.usage.*`, `error.type` |
-| `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
+| `execute_tool` | `gen_ai.operation.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id` (when non-empty), `a2wave.tool.exit_code` (when the engine reports one), `a2wave.tool.unpaired`, `a2wave.tool.incomplete` |
 
 ### OpenInference mirror
 
@@ -49,9 +49,9 @@ keys their input / output / kind / session columns read — so those are written
 | Key | Span | Value |
 |---|---|---|
 | `openinference.span.kind` | all | `AGENT` (invoke_agent), `LLM` (attempt), `TOOL` (execute_tool) |
-| `session.id` | invoke_agent | inherited caller session, else the run id |
-| `input.value` / `input.mime_type` | invoke_agent, execute_tool | prompt (`text/plain`) / tool arguments (`application/json`) — **content-gated** |
-| `output.value` / `output.mime_type` | invoke_agent | the reply — **content-gated** |
+| `session.id` | all | inherited caller session, else the run id — the same value on every span |
+| `input.value` / `input.mime_type` | invoke_agent, attempt, execute_tool | prompt (`text/plain`) / tool arguments (`application/json`) — **content-gated** |
+| `output.value` / `output.mime_type` | invoke_agent, attempt (successful only) | the reply — **content-gated** |
 
 - **`attempt` is `LLM`, not `CHAIN`.** It is the span that carries model and token usage, and
   OpenInference backends total tokens and cost over `LLM` spans only; the `AGENT` root repeats the
@@ -61,6 +61,43 @@ keys their input / output / kind / session columns read — so those are written
   and is known before execution — the provider session id of a new conversation only exists after
   the run, too late to hand downstream. One trace must not carry two sessions: the backend picks
   one arbitrarily.
+
+- **`session.id` is on every span, not just the root.** The root span is exported last, so an id
+  on the root alone left a backend with no session for the trace until the run had ended —
+  minutes for a long review. It is one value per trace, so the "one trace, one session" rule holds.
+- **`attempt` mirrors the prompt and the reply.** a2wave cannot see the CLI's individual model
+  calls; OpenInference LLM views read I/O off the `LLM` span, which would otherwise be empty.
+
+### Token accounting
+
+`TokenUsage.inputTokens` is **uncached** input: the platform stores cache reads and cache writes
+apart (see `engine/usage.ts`, which subtracts Codex's `cached_input_tokens`). Backends do not. The
+OpenInference prompt count and cost model treat cache reads as a **subset** of the prompt, so the
+export writes:
+
+| Key | Value |
+|---|---|
+| `gen_ai.usage.input_tokens` | uncached + cache read + cache creation — the whole prompt |
+| `gen_ai.usage.cache_read.input_tokens` / `cache_creation.input_tokens` | the breakdown |
+| `a2wave.usage.uncached_input_tokens` | the platform's own figure, only when there was cache usage |
+
+Exporting the uncached figure as `input_tokens` made Phoenix drop it from the trace total: a run
+with 93,257 uncached and 1,145,856 cached input tokens showed a prompt of 1,145,856. Do not
+"simplify" this back to a 1:1 mapping.
+
+### Identity and tool failures
+
+- **`user.id` is a pseudonymous id, never PII.** It is the a2wave user id when the platform knows
+  who triggered the run (`channel_info.triggered_by_user_id`, the id the audit trail uses), else the
+  identity provider's opaque subject (`user_info.source_id`). The email, display name and mobile
+  that sit next to it in the channel context are never exported, and nothing is promoted into an id
+  when no stable one exists. It is exported with content capture off: an id is not content.
+- **`a2wave.tool.exit_code` is the one thing read from a tool call's `metadata`.** It is a fact
+  about the call, not content, so it is exported with capture off and — with capture off — becomes
+  the status message (`exit code 2`) of a failed tool span, which would otherwise be a bare `ERROR`.
+  Engines put stderr samples in `metadata` too; those are never read. Today only the Codex parser
+  supplies the exit code; tool OUTPUT is not in the normalized stream at all, so exporting it means
+  extending `StreamLogEntry` and every Provider parser first.
 
 Root span events: `retry`, `provider_fallback`, and the agent-router's `a2a.task.*` lifecycle
 events (primitive metadata only).
