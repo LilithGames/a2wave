@@ -39,7 +39,7 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 |---------|-------|
 | Enable export | When off, nothing is produced and execution carries no overhead |
 | Collector endpoint | OTLP/HTTP only (`http://` or `https://`); gRPC is not supported |
-| Auth headers | Stored encrypted; values are never shown again. Saved headers are listed by name, one per row: leave the value empty to keep it, type a new value to replace it, remove the row and save to delete it. To rename, remove and add |
+| Auth headers | Stored encrypted; values are never shown again. Saved headers are listed by name, one per row, with the value shown as a mask: leave it untouched to keep it, type a new value to replace it, remove the row and save to delete it. To rename, remove and add |
 | Capture content | See the next section; off by default |
 | Service name (Advanced) | The service name shown in your APM; defaults to `a2wave` |
 | Resource attributes (Advanced) | Attributes added to every span, as comma-separated `key=value` pairs, e.g. `deployment.environment=prod` |

@@ -63,16 +63,56 @@ describe('OtelExportCard', () => {
     expect('headers' in savedPatch()).toBe(false)
   })
 
-  it('lists saved headers as rows with a read-only name and never a value', () => {
+  it('lists saved headers as rows with a read-only name and a masked value', () => {
     status = withSavedHeader
     renderWithProviders(<OtelExportCard />)
 
     const name = screen.getByLabelText('名称')
     expect(name).toHaveValue('Authorization')
     expect(name).toHaveAttribute('readonly')
-    expect(screen.getByLabelText('值')).toHaveValue('')
-    expect(screen.getByPlaceholderText('已保存，留空则不修改')).toBeInTheDocument()
+    // An empty box reads as "no value"; the mask says one is stored. It is display-only:
+    // the real value never reaches the browser.
+    expect(screen.getByLabelText('值')).toHaveValue(OTEL_KEEP_HEADER_VALUE)
+    expect(screen.getByLabelText('值')).toHaveAttribute('type', 'password')
     expect(screen.getByText('导出中')).toBeInTheDocument()
+  })
+
+  it('clears the mask on focus so a new value can be typed, and restores it when left empty', async () => {
+    status = withSavedHeader
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+    const value = screen.getByLabelText('值')
+
+    await user.click(value)
+    expect(value).toHaveValue('')
+    expect(value).toHaveAttribute('placeholder', '输入新值以替换，留空则保留原值')
+
+    await user.tab()
+    expect(value).toHaveValue(OTEL_KEEP_HEADER_VALUE)
+  })
+
+  it('keeps a typed replacement after blur and submits it instead of the keep marker', async () => {
+    status = withSavedHeader
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+    const value = screen.getByLabelText('值')
+
+    await user.click(value)
+    await user.type(value, 'Bearer new-key')
+    await user.tab()
+    expect(value).toHaveValue('Bearer new-key')
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(JSON.parse(savedPatch().headers)).toEqual({ Authorization: 'Bearer new-key' })
+  })
+
+  it('does not submit the display mask as a value when the saved header is untouched', async () => {
+    status = withSavedHeader
+    const user = userEvent.setup()
+    renderWithProviders(<OtelExportCard />)
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect('headers' in savedPatch()).toBe(false)
   })
 
   it('keeps the saved headers when another one is added', async () => {
@@ -115,7 +155,8 @@ describe('OtelExportCard', () => {
     await user.click(screen.getByRole('button', { name: '保存' }))
 
     expect(screen.getByLabelText('名称')).toHaveAttribute('readonly')
-    expect(screen.getByLabelText('值')).toHaveValue('')
+    // The typed secret is dropped from the form; the saved row shows the display mask instead.
+    expect(screen.getByLabelText('值')).toHaveValue(OTEL_KEEP_HEADER_VALUE)
 
     // A second save with nothing retyped must not resend the header set.
     await user.click(screen.getByRole('button', { name: '保存' }))

@@ -2,7 +2,7 @@
  * E2E tests for OpenTelemetry trace export settings (Settings → Tracing).
  *
  * Covers the secret contract end to end: auth headers are accepted once, persisted encrypted, and
- * only their NAMES come back (as read-only rows whose value stays empty). Also covers "test
+ * only their NAMES come back (as read-only rows whose value is a display-only mask). Also covers "test
  * connection" with an UNSAVED draft endpoint on a port nothing listens on.
  * Writes real global settings rows, so the original `otel` values are restored afterwards.
  */
@@ -53,10 +53,10 @@ test.describe
       await page.getByLabel(/^(值|Value)$/).fill(HEADER_VALUE)
       await page.getByRole('button', { name: /^(保存|Save)$/ }).click()
 
-      // After a save the row becomes a saved row: name kept read-only, value cleared.
+      // After a save the row becomes a saved row: name kept read-only, value shown as a mask.
       const savedName = page.getByRole('textbox', { name: /^(名称|Name)$/ })
       await expect(savedName).toHaveValue('Authorization', { timeout: 5000 })
-      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('')
+      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('********')
 
       await page.reload()
       await page.waitForLoadState('networkidle')
@@ -64,7 +64,7 @@ test.describe
         'Authorization',
       )
       await expect(page.getByRole('textbox', { name: /^(名称|Name)$/ })).not.toBeEditable()
-      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('')
+      await expect(page.getByLabel(/^(值|Value)$/)).toHaveValue('********')
       await expect(
         page.getByRole('textbox', { name: /采集端地址|Collector endpoint/ }),
       ).toHaveValue(UNREACHABLE_COLLECTOR)

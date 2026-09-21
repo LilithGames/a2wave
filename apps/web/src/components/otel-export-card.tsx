@@ -11,6 +11,7 @@
 import {
   isLoopbackOtelEndpoint,
   normalizeOtelEndpoint,
+  OTEL_KEEP_HEADER_VALUE,
   type OtelTestResult,
   resolveOtelTracesUrl,
 } from '@a2wave/shared'
@@ -100,6 +101,7 @@ export function OtelExportCard() {
   const test = useOtelTest()
   const [form, setForm] = useState<OtelFormValues>(EMPTY_OTEL_FORM)
   const [error, setError] = useState<string | null>(null)
+  const [focusedHeader, setFocusedHeader] = useState<number | null>(null)
   // Header names the server stores, as of the last load or save — what "unchanged" is judged against.
   const [savedHeaderNames, setSavedHeaderNames] = useState<string[]>([])
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -267,7 +269,16 @@ export function OtelExportCard() {
                     type="password"
                     autoComplete="off"
                     className="mt-1"
-                    value={row.value}
+                    // A saved value never reaches the browser. While the row is untouched and
+                    // not focused, show a display-only mask so the box does not read as "empty";
+                    // focusing clears it so a replacement can be typed straight away.
+                    value={
+                      row.saved && row.value === '' && focusedHeader !== index
+                        ? OTEL_KEEP_HEADER_VALUE
+                        : row.value
+                    }
+                    onFocus={() => setFocusedHeader(index)}
+                    onBlur={() => setFocusedHeader(null)}
                     onChange={(e) => setHeader(index, { value: e.target.value })}
                     placeholder={row.saved ? t('settings.otel.savedValuePlaceholder') : undefined}
                   />
