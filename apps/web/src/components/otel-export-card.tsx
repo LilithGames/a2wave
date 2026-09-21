@@ -12,11 +12,12 @@ import {
   isLoopbackOtelEndpoint,
   normalizeOtelEndpoint,
   OTEL_KEEP_HEADER_VALUE,
+  type OtelStatus,
   type OtelTestResult,
   resolveOtelTracesUrl,
 } from '@a2wave/shared'
 import { Activity, Check, ChevronRight, Loader2, Plus, Trash2, X } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,7 +28,6 @@ import { useOtelStatus, useOtelTest, useUpdateOtel } from '@/hooks/use-settings'
 import {
   buildOtelPatch,
   buildOtelTestDraft,
-  EMPTY_OTEL_FORM,
   markOtelHeadersSaved,
   type OtelFormValues,
   type OtelHeaderRow,
@@ -94,34 +94,18 @@ function TestResultLine({ result }: { result: OtelTestResult }) {
   )
 }
 
+/**
+ * Loader: shows a spinner until a status fetched DURING THIS VISIT is available, then mounts the
+ * form. The form seeds its state from that status on its first render, so it never paints a state
+ * the server did not report (it used to render one "everything off" frame and fill the real values
+ * in an effect, visible as the enable switch flipping on). A cached status from an earlier visit is
+ * not good enough to seed an editor: what it shows must be what is saved.
+ */
 export function OtelExportCard() {
   const { t } = useTranslation()
-  const { data: status, isLoading } = useOtelStatus()
-  const update = useUpdateOtel()
-  const test = useOtelTest()
-  const [form, setForm] = useState<OtelFormValues>(EMPTY_OTEL_FORM)
-  const [error, setError] = useState<string | null>(null)
-  const [focusedHeader, setFocusedHeader] = useState<number | null>(null)
-  // Header names the server stores, as of the last load or save — what "unchanged" is judged against.
-  const [savedHeaderNames, setSavedHeaderNames] = useState<string[]>([])
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const endpointId = useId()
-  const serviceNameId = useId()
-  const resourceAttributesId = useId()
-  const headerIdPrefix = useId()
+  const { data: status, isLoading, isFetchedAfterMount } = useOtelStatus()
 
-  // Prefill once from the server; later status refetches (after save / test) must not wipe
-  // what the admin is typing.
-  const prefilled = useRef(false)
-  useEffect(() => {
-    if (!status || prefilled.current) return
-    prefilled.current = true
-    setForm(otelFormFromStatus(status))
-    setSavedHeaderNames(status.headerNames)
-    setAdvancedOpen(Boolean(status.serviceName || status.resourceAttributes))
-  }, [status])
-
-  if (isLoading || !status) {
+  if (isLoading || !status || isFetchedAfterMount === false) {
     return (
       <Card>
         <CardContent className="flex items-center gap-2 px-6 py-8 text-sm text-muted-foreground">
@@ -131,6 +115,29 @@ export function OtelExportCard() {
       </Card>
     )
   }
+  return <OtelExportForm status={status} />
+}
+
+/**
+ * Mounted once per visit: `status` seeds the form on the first render only, so later refetches
+ * (after a save or a test) refresh the badge and export stats without wiping what is being typed.
+ */
+function OtelExportForm({ status }: { status: OtelStatus }) {
+  const { t } = useTranslation()
+  const update = useUpdateOtel()
+  const test = useOtelTest()
+  const [form, setForm] = useState<OtelFormValues>(() => otelFormFromStatus(status))
+  const [error, setError] = useState<string | null>(null)
+  const [focusedHeader, setFocusedHeader] = useState<number | null>(null)
+  // Header names the server stores, as of the last load or save — what "unchanged" is judged against.
+  const [savedHeaderNames, setSavedHeaderNames] = useState<string[]>(() => status.headerNames)
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    Boolean(status.serviceName || status.resourceAttributes),
+  )
+  const endpointId = useId()
+  const serviceNameId = useId()
+  const resourceAttributesId = useId()
+  const headerIdPrefix = useId()
 
   const setHeader = (index: number, patch: Partial<OtelHeaderRow>) =>
     setForm((prev) => ({

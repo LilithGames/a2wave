@@ -5,6 +5,7 @@
  */
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { gunzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../logger.js', () => ({
@@ -24,6 +25,8 @@ interface Received {
   url: string | undefined
   headers: IncomingHttpHeaders
   bytes: number
+  /** Raw OTLP/protobuf payload; string attribute keys and values appear in it as plain UTF-8. */
+  body: Buffer
 }
 
 let server: Server | null = null
@@ -32,11 +35,13 @@ async function listen(status: number): Promise<{ port: number; received: Receive
   const received: Received[] = []
   server = createServer((req, res) => {
     let bytes = 0
+    const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => {
       bytes += chunk.length
+      chunks.push(chunk)
     })
     req.on('end', () => {
-      received.push({ url: req.url, headers: req.headers, bytes })
+      received.push({ url: req.url, headers: req.headers, bytes, body: Buffer.concat(chunks) })
       res.writeHead(status, { 'Content-Type': 'application/x-protobuf' })
       res.end()
     })
@@ -64,6 +69,27 @@ const configFor = (port: number, headers: Record<string, string> = {}): OtelConf
 afterEach(close)
 
 describe('sendOtelTestSpan over HTTP', () => {
+  it('puts the configured resource attributes on the wire, where backends route on them', async () => {
+    // Arize Phoenix files a trace under the project named by the RESOURCE attribute
+    // `openinference.project.name` and falls back to "default" without it. A test trace that
+    // "succeeds but does not show up" is this attribute missing from the payload.
+    const { port, received } = await listen(200)
+    const result = await sendOtelTestSpan({
+      ...configFor(port),
+      serviceName: 'svc-under-test',
+      resourceAttributes: { 'openinference.project.name': 'wire-project' },
+    })
+
+    expect(result.ok).toBe(true)
+    // The exporter gzips the body; string keys and values are plain UTF-8 once inflated.
+    const raw = received[0].body
+    const inflated = received[0].headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw
+    const payload = inflated.toString('latin1')
+    expect(payload).toContain('openinference.project.name')
+    expect(payload).toContain('wire-project')
+    expect(payload).toContain('svc-under-test')
+  })
+
   it('posts one request carrying the configured headers and reports the trace id', async () => {
     const { port, received } = await listen(200)
     const result = await sendOtelTestSpan(configFor(port, { 'x-collector-auth': 'wire-value' }))
