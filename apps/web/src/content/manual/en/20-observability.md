@@ -60,6 +60,9 @@ Every Provider (Claude Code, Codex, Cursor, …) exports exactly the same struct
 
 By default only **metadata** is exported: timing, tokens, model, status, tool names. The user's prompt, the Agent's reply, tool arguments and output, and error text do **not** leave a2wave.
 
+> [!WARNING]
+> Captured content carries whatever the Agent read: tool output can contain config files, source code and API responses. a2wave masks the credentials it injected and secrets of common shapes (private-key blocks, `Bearer`, GitLab / GitHub / AWS / Slack tokens, JWTs, the value of assignments such as `password=…`), but **a secret with no recognizable shape, or sensitive business data, cannot be detected**. Point the collector only at a platform you trust, with access and retention under control.
+
 With **Capture content** on, that content is written into the trace too, which helps when you need to see what a specific execution said, what it called, and what the tools returned. Tool output is export-only: it is never written to a2wave's run logs and never shown in the execution view. Claude Code, Codex, Qoder and Trae report tool output today; tool spans of other Providers have none.
 
 > [!WARNING]

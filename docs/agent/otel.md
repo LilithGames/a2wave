@@ -108,6 +108,28 @@ Exporting the uncached figure as `input_tokens` made Phoenix drop it from the tr
 with 93,257 uncached and 1,145,856 cached input tokens showed a prompt of 1,145,856. Do not
 "simplify" this back to a 1:1 mapping.
 
+### Masking captured content
+
+Everything content-gated goes through `toContentAttribute`: mask, then truncate (a secret straddling
+the cut must not leak its head). Masking is two nets, and neither is a guarantee:
+
+1. **Exact values** of every credential a2wave injected into the execution — Provider key / OAuth
+   token, Agent env values, MCP `env` and `headers` (`collectSecretValues`).
+2. **Shapes** of credentials a2wave was never told about (`CREDENTIAL_PATTERNS`): PEM private-key
+   blocks (whole, or to the end of a truncated text), `Bearer …`, `sk-` / `a2ak-` / `ak-` keys,
+   GitLab (`glpat-`, `gldt-`, …) and GitHub (`ghp_`, `ghs_`, `github_pat_`, …) tokens, AWS access
+   key ids, Slack tokens, bare JWTs, and the VALUE of a credential assignment
+   (`password: x`, `DB_PASSWORD=x`, `"client_secret": "x"`).
+
+The second net exists because of tool output: it carries whatever the Agent read — a config file, a
+CLI echoing its token, a key checked into the repository under review (a security-review Agent
+reads exactly those on purpose). It is biased toward masking: a redacted word costs a moment, a
+leaked key costs a rotation. What it cannot catch is a secret with no recognizable shape — an
+all-letters password, a proprietary token format, business data that is sensitive without being a
+credential. That is why content capture is **off by default**, why the settings page warns where
+the content goes, and why a new pattern is cheap to add: one line here, one fixture in
+`attributes.test.ts` (assembled from fragments, so the repository's secret scanner stays quiet).
+
 ### Identity and tool failures
 
 - **`user.id` is a pseudonymous id, never PII.** It is the a2wave user id when the platform knows

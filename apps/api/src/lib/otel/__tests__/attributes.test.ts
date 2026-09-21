@@ -79,6 +79,61 @@ describe('maskSecrets', () => {
   })
 })
 
+describe('maskSecrets — secrets a2wave was never told about', () => {
+  // Tool output is the content most likely to carry them: a `cat` of a config file, a CLI that
+  // echoes its token, a key checked into the repository under review. Fixtures are assembled from
+  // fragments so that no secret-shaped literal exists in this file.
+  const join = (...parts: string[]) => parts.join('')
+  const body = (n: number) => 'Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'.repeat(4).slice(0, n)
+
+  it.each([
+    ['GitLab personal token', join('glp', 'at-', body(20))],
+    ['GitLab deploy token', join('gld', 't-', body(20))],
+    ['GitHub classic token', join('gh', 'p_', body(36))],
+    ['GitHub server token', join('gh', 's_', body(36))],
+    ['GitHub fine-grained token', join('github', '_pat_', body(60))],
+    ['AWS access key id', join('AK', 'IA', 'IOSFODNN7EXAMPLE')],
+    ['AWS temporary key id', join('AS', 'IA', 'IOSFODNN7EXAMPLE')],
+    ['Slack token', join('xo', 'xb-', '1234567890-', body(16))],
+    ['bare JWT', join('ey', 'J', body(14), '.', body(20), '.', body(24))],
+  ])('masks a %s', (_label, token) => {
+    const out = maskSecrets(`before ${token} after`, [])
+    expect(out).toBe('before [REDACTED] after')
+  })
+
+  it('masks a whole PEM private key block, even one cut off before its END line', () => {
+    const begin = join('-----BEGIN RSA PRIV', 'ATE KEY-----')
+    const end = join('-----END RSA PRIV', 'ATE KEY-----')
+    const whole = `head\n${begin}\nMIIEow${body(40)}\n${body(40)}\n${end}\ntail`
+    expect(maskSecrets(whole, [])).toBe('head\n[REDACTED]\ntail')
+    const cut = `head\n${begin}\nMIIEow${body(40)}`
+    expect(maskSecrets(cut, [])).toBe('head\n[REDACTED]')
+  })
+
+  it('masks the value of a credential assignment and keeps the key, in the common config syntaxes', () => {
+    const value = body(16)
+    expect(maskSecrets(`password: ${value}`, [])).toBe('password: [REDACTED]')
+    expect(maskSecrets(`DB_PASSWORD=${value}`, [])).toBe('DB_PASSWORD=[REDACTED]')
+    expect(maskSecrets(`"client_secret": "${value}",`, [])).toBe('"client_secret": "[REDACTED]",')
+    expect(maskSecrets(`api-key = '${value}'`, [])).toBe("api-key = '[REDACTED]'")
+    expect(maskSecrets(`secret_key_base: "${value}"`, [])).toBe('secret_key_base: "[REDACTED]"')
+  })
+
+  it('leaves ordinary prose and code alone', () => {
+    for (const text of [
+      'the token count was 93257',
+      'password: string',
+      'const token = await getToken()',
+      'secret: process.env.AUTH_SECRET',
+      'passwords must be hashed with argon2',
+      'glab mr view 74 --repo group/project',
+      'AKIAXYZ is not long enough',
+    ]) {
+      expect(maskSecrets(text, [])).toBe(text)
+    }
+  })
+})
+
 describe('toContentAttribute', () => {
   it('masks before truncating so a secret straddling the cut cannot leak its head', () => {
     const secret = 'S'.repeat(40)

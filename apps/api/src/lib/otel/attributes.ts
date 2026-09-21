@@ -98,9 +98,38 @@ export function collectSecretValues(agentConfig: SecretSource | undefined): stri
   return [...unique]
 }
 
+/**
+ * Shapes of credentials a2wave was never told about. The exact-value pass above only knows what
+ * the platform injected; captured content — tool output above all — also carries whatever the
+ * Agent happened to read: a config file, a CLI echoing its token, a key checked into the repo
+ * under review. These patterns are the second net. They are deliberately biased toward masking:
+ * a redacted word in a trace costs a moment, a leaked key costs a rotation.
+ *
+ * Not a guarantee. A secret with no recognizable shape (a bare password in prose) passes through,
+ * which is why content capture is off by default and the manual says where the content goes.
+ */
 const CREDENTIAL_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  // A PEM private key, whole — or to the end of the text when truncation cut the END line off.
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, REDACTED],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, `Bearer ${REDACTED}`],
   [/\b(?:sk|a2ak|ak)[-_][A-Za-z0-9_-]{12,}/g, REDACTED],
+  // GitLab (glpat-, gldt-, glrt-, …) and GitHub (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_).
+  [/\bgl[a-z]{2,6}-[A-Za-z0-9_-]{20,}/g, REDACTED],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}/g, REDACTED],
+  [/\bgithub_pat_[A-Za-z0-9_]{40,}/g, REDACTED],
+  // AWS access key ids, Slack tokens.
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, REDACTED],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, REDACTED],
+  // A bare JWT (three base64url segments; the header always starts with eyJ).
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
+  // `password: x`, `DB_PASSWORD=x`, `"client_secret": "x"`, `api-key = 'x'`: keep the key, mask the
+  // value. A value is masked when it is 8+ characters, contains a digit, and has no `.` or `(` —
+  // so a type (`password: string`), an expression (`process.env.X`, `await getToken()`) and prose
+  // stay readable. The price: an all-letters password in an assignment is NOT caught.
+  [
+    /((?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)(?=[^\s"',;]*\d)(?![^\s"',;]*[.(])([^\s"',;]{8,})/gi,
+    `$1${REDACTED}`,
+  ],
 ]
 
 export function maskSecrets(value: string, secrets: readonly string[]): string {
