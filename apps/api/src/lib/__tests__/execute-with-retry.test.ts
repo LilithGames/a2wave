@@ -216,6 +216,20 @@ describe('executeWithRetry', () => {
     expect(mockExecuteInWorker).toHaveBeenCalledTimes(2)
   })
 
+  it('does not retry or switch providers after a non-retryable worker deadline', async () => {
+    mockExecuteInWorker.mockResolvedValue({
+      success: false,
+      output: '',
+      error: 'Task execution timeout (60s)',
+      retryable: false,
+      durationMs: 60_000,
+    })
+    const { result } = await executeWithRetry('task_1', basePayload, { runId: 'run_1' })
+
+    expect(result.retryable).toBe(false)
+    expect(mockExecuteInWorker).toHaveBeenCalledTimes(1)
+  })
+
   it('returns failure when all retries exhausted', async () => {
     mockExecuteInWorker.mockResolvedValue({
       success: false,

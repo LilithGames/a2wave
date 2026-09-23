@@ -22,6 +22,7 @@ import {
 import { logger } from '../lib/logger.js'
 import { buildMemoryContext, buildRecallInstruction } from '../lib/memory-context.js'
 import { removeMemoryOverride } from '../lib/memory-storage.js'
+import { getExecutionAbortSignal } from './execution-lease-registry.js'
 import { type KbDocFile, syncKbDocsToWorkspaceAsync } from './kb-sync.js'
 import {
   cleanupManagedMcpConfigAsync,
@@ -78,6 +79,11 @@ export abstract class BaseAgentEngine implements AgentEngine {
   // ----------------------------------------------------------
 
   async executeStream(request: StreamExecuteRequest): Promise<ExecuteResult> {
+    const throwIfAborted = () => {
+      request.abortSignal?.throwIfAborted()
+      getExecutionAbortSignal(request.taskId)?.throwIfAborted()
+    }
+    throwIfAborted()
     const start = Date.now()
     const { model = 'claude-sonnet', fallbackModels = [] } = request
     const defaultWorkDir = this.getDefaultWorkDir()
@@ -102,6 +108,7 @@ export abstract class BaseAgentEngine implements AgentEngine {
         this.prepareKbDocs(preparedRequest),
         memoryContextPromise,
       ])
+      throwIfAborted()
       this.prepareMemoryOverride(preparedRequest)
       const runtimeContext = prepareRuntimeContext(preparedRequest, { defaultWorkDir })
       const runtimeRequest: StreamExecuteRequest = { ...preparedRequest, runtimeContext }
@@ -113,6 +120,7 @@ export abstract class BaseAgentEngine implements AgentEngine {
       ) as StreamExecuteRequest
 
       try {
+        throwIfAborted()
         const result = await this.executeStreamWithModel(enriched, model)
         return { ...result, durationMs: Date.now() - start }
       } catch (err) {
@@ -407,6 +415,8 @@ export abstract class BaseAgentEngine implements AgentEngine {
     startTime: number,
     memoryContext?: string | null,
   ): Promise<ExecuteResult> {
+    request.abortSignal?.throwIfAborted()
+    getExecutionAbortSignal(request.taskId)?.throwIfAborted()
     const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError)
     let usage = extractUsageFromError(primaryError)
 
@@ -422,11 +432,15 @@ export abstract class BaseAgentEngine implements AgentEngine {
           'Model failed, trying fallback',
         )
         try {
+          request.abortSignal?.throwIfAborted()
+          getExecutionAbortSignal(request.taskId)?.throwIfAborted()
           const fallbackRequest = this.enrichPrompt(
             { ...request, model: fallback, chatId: undefined },
             fallback,
             memoryContext,
           ) as StreamExecuteRequest
+          request.abortSignal?.throwIfAborted()
+          getExecutionAbortSignal(request.taskId)?.throwIfAborted()
           const result = await this.executeStreamWithModel(fallbackRequest, fallback)
           if (result.usage) usage = accumulateUsage(usage, result.usage)
           return {
