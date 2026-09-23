@@ -1,7 +1,7 @@
 import { getEmbeddings, isEmbeddingAvailable } from './embedding-service.js'
 import { logger } from './logger.js'
 import { reindexAgentFts, reindexAgentVectors } from './memory-index.js'
-import { type MemoryProviderConfig, callMemoryProvider } from './memory-provider.js'
+import { callMemoryProvider, type MemoryProviderConfig } from './memory-provider.js'
 /**
  * 日志合并整理
  * 将旧的每日日志合并为周摘要，防止无限增长并提高搜索相关性
@@ -25,7 +25,7 @@ export function clearConsolidationQueues(): void {
 }
 
 function getISOWeek(date: Date): string {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
   const dayNum = d.getUTCDay() || 7
   d.setUTCDate(d.getUTCDate() + 4 - dayNum)
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))

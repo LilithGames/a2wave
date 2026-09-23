@@ -59,6 +59,8 @@ export interface ReferencedPromptContext {
 export interface ExecuteRequest {
   /** Unique task identifier */
   taskId: string
+  /** Execution-scoped cancellation, retained across registry cleanup. */
+  abortSignal?: AbortSignal
   /** Working directory (sandbox path) */
   workDir: string
   /** User prompt / instruction */
