@@ -1,4 +1,8 @@
 import { extractUsageFromError } from '../engine/cli-engine-base.js'
+import {
+  getExecutionAbortSignal,
+  registerWorkerExecutionSignal,
+} from '../engine/execution-lease-registry.js'
 import { registerExecutionProcessLogSink } from '../engine/execution-process-log.js'
 import { engineRegistry } from '../engine/index.js'
 import type { StreamLogEntry, TokenUsage } from '../engine/types.js'
@@ -125,7 +129,11 @@ export async function executeInWorker(
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   let timeoutTriggered = false
   let emittedUsage: TokenUsage | undefined
+  const deadlineController = new AbortController()
+  const unregisterWorkerSignal = registerWorkerExecutionSignal(taskId, deadlineController.signal)
+  const executionSignal = getExecutionAbortSignal(taskId)
   const handleLogEntry = (entry: StreamLogEntry) => {
+    if (executionSignal?.aborted) return
     if (entry.type === 'result' && entry.usage) emittedUsage = entry.usage
     onLogEntry?.(entry)
   }
@@ -133,6 +141,7 @@ export async function executeInWorker(
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
       timeoutTriggered = true
+      deadlineController.abort()
       reject(new Error(`Task execution timeout (${timeoutMs / 1000}s)`))
     }, timeoutMs)
   })
@@ -141,6 +150,7 @@ export async function executeInWorker(
   try {
     executePromise = engine.executeStream({
       taskId,
+      abortSignal: executionSignal,
       workDir: payload.workDir || '',
       prompt: payload.prompt,
       context: payload.context,
@@ -149,7 +159,11 @@ export async function executeInWorker(
       fallbackModels: payload.agentConfig?.fallbackModels || [],
       chatId: payload.chatId,
       branch: 'main',
-      onUpdate,
+      onUpdate: onUpdate
+        ? (value) => {
+            if (!executionSignal?.aborted) onUpdate(value)
+          }
+        : undefined,
       onLogEntry: handleLogEntry,
       agentConfig: executionAgentConfig,
     })
@@ -202,12 +216,14 @@ export async function executeInWorker(
       success: false,
       output: '',
       error: errorMsg,
+      ...(timeoutTriggered ? { retryable: false } : {}),
       durationMs: Date.now() - startTime,
       // Engine errors may carry tokens consumed before failure.
       usage: extractUsageFromError(err) ?? emittedUsage,
     }
   } finally {
     unregisterProcessLogSink()
+    unregisterWorkerSignal()
     cleanupRuntimeGroupConfigs(runtimeGroupLease)
   }
 }

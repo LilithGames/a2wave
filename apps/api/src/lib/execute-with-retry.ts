@@ -686,6 +686,17 @@ async function executeWithRetryCore(
         return { result: lastResult, retries, logs }
       }
 
+      if (lastResult.retryable === false) {
+        retries.push({
+          attempt,
+          error: providerBinding
+            ? `[${providerBinding.providerName}] ${lastResult.error ?? 'Execution failed'}`
+            : (lastResult.error ?? 'Execution failed'),
+          durationMs: Date.now() - startTime,
+        })
+        return { result: lastResult, retries, logs }
+      }
+
       const durationMs = Date.now() - startTime
 
       // 「换个账户就能好」类错误（软限流 429 / 硬配额 / 能力不兼容）不消耗本 provider

@@ -91,6 +91,7 @@ describe('memory-consolidation', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     if (existsSync(testRoot)) {
       rmSync(testRoot, { recursive: true })
     }
@@ -127,6 +128,7 @@ describe('memory-consolidation', () => {
   })
 
   it('deletes original files after consolidation', async () => {
+    vi.stubEnv('TZ', 'America/New_York')
     for (let i = 6; i <= 12; i++) {
       writeMemoryFile(agentId, `memory/2025-01-${String(i).padStart(2, '0')}.md`, `day ${i}`)
     }

@@ -68,6 +68,7 @@ import {
   registerAgentToken,
 } from '../../lib/agent-memory-token.js'
 import { BaseAgentEngine } from '../base-engine.js'
+import { registerWorkerExecutionSignal } from '../execution-lease-registry.js'
 import { assembleSystemPrompt, buildPromptParts } from '../prompt-builder.js'
 import type { AgentRuntimeContext, ExecuteResult, StreamExecuteRequest } from '../types.js'
 
@@ -183,6 +184,33 @@ afterEach(() => {
 })
 
 describe('BaseAgentEngine.executeStream — happy path', () => {
+  it('does not start a CLI after its worker deadline expires during preparation', async () => {
+    let finishPreparation!: () => void
+    syncSkillsToWorkspaceAsyncMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishPreparation = resolve
+      }),
+    )
+    const controller = new AbortController()
+    const unregister = registerWorkerExecutionSignal('t1', controller.signal)
+    const engine = new TestEngine()
+    const execution = engine.executeStream(
+      makeReq({
+        abortSignal: controller.signal,
+        agentConfig: {
+          skillsDir: '.cursor/skills',
+          resolvedSkills: [{ id: 'skl_1', name: 's', content: 'x' }],
+        } as never,
+      }),
+    )
+    controller.abort()
+    unregister()
+    finishPreparation()
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' })
+    expect(engine.callCount).toBe(0)
+  })
+
   it('runs prepare* + executes with the requested model and enriches the prompt', async () => {
     const engine = new TestEngine()
     const result = await engine.executeStream(

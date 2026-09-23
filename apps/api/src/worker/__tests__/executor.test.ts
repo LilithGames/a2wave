@@ -100,7 +100,7 @@ describe('executeInWorker', () => {
         taskId: 'task_1',
         workDir: '/tmp/work',
         prompt: 'do something',
-        onUpdate,
+        onUpdate: expect.any(Function),
         onLogEntry: expect.any(Function),
       }),
     )
@@ -201,6 +201,7 @@ describe('executeInWorker', () => {
 
     expect(result.success).toBe(false)
     expect(result.error).toContain('timeout')
+    expect(result.retryable).toBe(false)
     expect(engineRegistry.cancel).toHaveBeenCalledWith('task_1')
     expect(existsSync(requireMaterializedPath(materializedPath))).toBe(false)
   })
@@ -225,6 +226,29 @@ describe('executeInWorker', () => {
       success: false,
       usage: { inputTokens: 25, reasoningTokens: 6 },
     })
+  })
+
+  it('discards updates and output from an engine that settles after timeout', async () => {
+    vi.useFakeTimers()
+    let finish!: (result: { success: boolean; output: string }) => void
+    let sendUpdate!: (value: string) => void
+    mockEngine.executeStream.mockImplementation((request) => {
+      sendUpdate = request.onUpdate
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const onUpdate = vi.fn()
+    const promise = executeInWorker('task_1', makePayload(), { timeoutMs: 100, onUpdate })
+    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(250)
+    const result = await promise
+    sendUpdate('late output')
+    finish({ success: true, output: 'late success' })
+    await Promise.resolve()
+
+    expect(result).toMatchObject({ success: false, retryable: false })
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it('uses usage from the engine rejection that follows timeout cancellation', async () => {
@@ -323,7 +347,7 @@ describe('executeInWorker', () => {
     await executeInWorker('task_1', makePayload(), { onUpdate, onLogEntry })
 
     const callArg = mockEngine.executeStream.mock.calls[0][0]
-    expect(callArg.onUpdate).toBe(onUpdate)
+    expect(callArg.onUpdate).toEqual(expect.any(Function))
     const entry = { type: 'system' as const, subtype: 'init', ts: Date.now() }
     callArg.onLogEntry?.(entry)
     expect(onLogEntry).toHaveBeenCalledWith(entry)
@@ -358,7 +382,7 @@ describe('executeInWorker', () => {
     const promise = executeInWorker(
       'task_1',
       makePayload({
-        agentConfig: { engineType: 'cursor', timeoutMinutes: 2 } as any,
+        agentConfig: { engineType: 'cursor', timeoutMinutes: 2 } as never,
       }),
     )
 

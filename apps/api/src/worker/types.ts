@@ -41,6 +41,8 @@ export interface ExecuteWorkerResult {
   output: string
   chatId?: string
   error?: string
+  /** False when the worker deadline has expired and starting another attempt is unsafe. */
+  retryable?: boolean
   durationMs: number
   /** Token usage forwarded from ExecuteResult.usage. */
   usage?: import('../engine/types.js').TokenUsage
