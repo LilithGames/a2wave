@@ -86,7 +86,8 @@ const GROUPS = [
     prefix: 'providers',
     title: 'providers — preset entities and their managed CLIs',
     notFor: [
-      'There is no `providers create` or `update`. Providers have no editable field; model catalogs are probed per credential, never stored.',
+      'There is no `providers create` or `update`. Providers are presets; Codex shared ChatGPT accounts are managed separately with `providers accounts`. Model catalogs are probed per credential, never stored.',
+      '`providers accounts login` opens ChatGPT sign-in on the computer running the CLI. For a Web connection, pass its --server and --login-id and paste the one-time connection code into the hidden prompt (or pipe it with --code-stdin). Never put the code in command arguments. Agent OAuth config selects providerOauthAccountId; access and refresh tokens stay on the server.',
       '`providers cli install <kind>` answers 202 and installs in the background; add `--wait` to block until it settles and to exit 1 on failure. `lockDrift: above` means the installed build is NEWER than the lock pin and the engine accepts it — reinstalling would downgrade it.',
     ],
   },

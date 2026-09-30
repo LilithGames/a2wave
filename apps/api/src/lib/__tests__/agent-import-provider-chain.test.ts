@@ -5,8 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Same tx stub shape as agent-import-stdio-gate.test.ts: insert/select are
 // no-ops so the import runs far enough to reach the config validation.
 const insertRun = vi.fn()
+const insertValues = vi.fn(() => asyncQuery({ run: insertRun }))
 const txStub = {
-  insert: vi.fn(() => asyncQuery({ values: vi.fn(() => asyncQuery({ run: insertRun })) })),
+  insert: vi.fn(() => asyncQuery({ values: insertValues })),
   select: vi.fn(() =>
     asyncQuery({
       from: vi.fn(() => asyncQuery({ where: vi.fn(() => asyncQuery({ get: () => undefined })) })),
@@ -35,11 +36,10 @@ vi.mock('../skill-storage.js', () => ({
 vi.mock('../id.js', () => ({ createId: (p?: string) => `${p}_test` }))
 vi.mock('../url-safety.js', () => ({ isBlockedHost: () => false }))
 
+import { asyncQuery } from '../../test/async-query.js'
 import { importAgentFromZip } from '../agent-import.js'
 
-import { asyncQuery } from '../../test/async-query.js'
-
-function buildZip(config: Record<string, unknown>): Buffer {
+function buildZip(config: Record<string, unknown>, authMode?: string): Buffer {
   const zip = new AdmZip()
   zip.addFile(
     'manifest.json',
@@ -56,6 +56,7 @@ function buildZip(config: Record<string, unknown>): Buffer {
         skillRefs: [],
         kbDocumentRefs: [],
         providerRef: null,
+        authMode,
         scmSourceRef: null,
       }),
     ),
@@ -74,6 +75,7 @@ function chainOf(length: number) {
 
 beforeEach(() => {
   insertRun.mockReset()
+  insertValues.mockClear()
 })
 
 // Import writes `config` verbatim, so the create/update schema's chain cap does
@@ -94,5 +96,14 @@ describe('agent import provider chain cap', () => {
   it('accepts an Agent with no provider chain in its config', async () => {
     const zip = buildZip({})
     await expect(importAgentFromZip(zip, 'usr_alice', false)).resolves.not.toThrow()
+  })
+})
+
+describe('imported OAuth credentials', () => {
+  it('preserves a top-level OAuth mode while requiring a new account binding', async () => {
+    await importAgentFromZip(buildZip({}, 'oauth'), 'usr_alice', false)
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ authMode: 'oauth', providerOauthAccountId: null }),
+    )
   })
 })

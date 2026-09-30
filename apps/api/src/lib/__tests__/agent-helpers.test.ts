@@ -88,8 +88,11 @@ vi.mock('../slug.js', () => ({
 import { asyncQuery } from '../../test/async-query.js'
 import {
   _resetTtlCleanupDebounce,
+  type AgentConfig,
+  applyProviderBinding,
   buildAgentConfig,
   injectScmEnv,
+  type ResolvedProviderBinding,
   resolveWorkDir,
   validateAgentProviderConfiguration,
   WorktreeOccupiedError,
@@ -2876,5 +2879,43 @@ describe('buildAgentConfig', () => {
     // sanitize: replace [^a-zA-Z0-9_-] with '-', collapse multiple '-', trim leading/trailing '-'
     // "My MCP:Server" → "My-MCP-Server" → short id = 'abc123'.slice(0,6) = 'abc123'
     expect(inlineBackend.name).toMatch(/^My-MCP-Server-abc123$/)
+  })
+})
+
+describe('OAuth account runtime propagation', () => {
+  const binding: ResolvedProviderBinding = {
+    id: 'binding-codex',
+    providerId: 'prv_codex',
+    providerName: 'Codex CLI',
+    providerKind: 'codex',
+    engineType: 'codex',
+    authMode: 'oauth',
+    providerOauthAccountId: 'poa_current',
+    model: 'account-model',
+    mcpDelivery: { mode: 'runtime-injection' },
+  }
+  it('keeps the selected account in evaluation execution but clears it when falling back to local credentials', async () => {
+    const { applyEvaluationSnapshot } = await import('../evaluation-snapshot.js')
+    const live: AgentConfig = {
+      providerId: 'prv_other',
+      providerOauthAccountId: 'poa_stale',
+      providerChain: [binding],
+    }
+    const config = applyEvaluationSnapshot(
+      live,
+      { providerId: 'prv_codex', model: 'frozen-model', systemPrompt: 'Evaluate this' },
+      { id: 'agt_test' } as Parameters<typeof buildAgentConfig>[0],
+    )
+    expect(config.providerOauthAccountId).toBe('poa_current')
+    expect((config.providerChain as ResolvedProviderBinding[])[0].providerOauthAccountId).toBe(
+      'poa_current',
+    )
+    expect(config.model).toBe('frozen-model')
+    applyProviderBinding(config, {
+      ...binding,
+      authMode: 'localSession',
+      providerOauthAccountId: undefined,
+    })
+    expect(config.providerOauthAccountId).toBeUndefined()
   })
 })

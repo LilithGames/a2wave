@@ -876,6 +876,20 @@
       "when": 1789352709110,
       "tag": "0124_open_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "6",
+      "when": 1790737504672,
+      "tag": "0125_conscious_ma_gnuci",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "6",
+      "when": 1790738044267,
+      "tag": "0126_vengeful_lionheart",
+      "breakpoints": true
     }
   ]
 }

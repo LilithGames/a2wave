@@ -195,6 +195,7 @@ export async function collectAgentExecutionChecks(agent: AgentRow): Promise<Diag
     apiKey: (await config).providerApiKey,
     baseUrl: (await config).providerBaseUrl,
     oauthToken: (await config).providerOauthToken,
+    oauthAccountId: (await config).providerOauthAccountId,
   }
   const validation = adapter.validateBinding(credentials)
   if (validation.code === 'unsupported_mode') {

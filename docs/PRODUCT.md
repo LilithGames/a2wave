@@ -97,6 +97,15 @@ Agent is a YAML file that can be reviewed and diffed, and `a2wave setup` generat
 `.env` and `docker-compose.yml` instead of asking anyone to click through a console.
 Keeping that surface complete and documented is how the barrier actually comes down.
 
+The Codex Provider can hold multiple shared ChatGPT subscription accounts. An
+Agent explicitly selects one account; connecting a new account does not change
+an Agent until its configuration is saved. Signed-in teammates may select shared
+accounts, while each account's creator and administrators manage its lifecycle.
+Credentials remain server-side, account bindings are cleared in portable
+exports/imports and clones, and execution never silently borrows another account.
+Browser consent runs on the user's computer through the a2wave CLI's local
+callback. See the [account protocol and runtime contract](agent/provider-oauth-accounts.md).
+
 *(Full rule text: [Iron Rules](../AGENTS.md#product-identity--iron-rules).)*
 
 ---

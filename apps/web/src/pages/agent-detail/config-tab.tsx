@@ -11,7 +11,6 @@ import {
   Eye,
   EyeOff,
   GripVertical,
-  Info,
   Key,
   Plus,
   RefreshCw,
@@ -23,6 +22,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { ChatGPTAccountPicker } from '@/components/chatgpt-accounts'
 import { PromptEditor } from '@/components/prompt-editor'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -52,7 +52,7 @@ import {
   resolveModelProbeErrorTranslation,
   visibleCredentialFieldsFor,
 } from './provider-capabilities'
-import { applyProviderEntryPatch } from './provider-chain'
+import { applyProviderEntryPatch, applyProviderProbeResult } from './provider-chain'
 import { LocalSessionGuideIcon, ProviderLoginSessionStatus } from './provider-login-status'
 import { RouteSection } from './route-section'
 import type { AgentFormMethods, EnvEntry, ProviderChainEntry, RemoteEntry } from './types'
@@ -429,10 +429,8 @@ export function ConfigTab({
     async (entry: ProviderChainEntry, provider: ProviderDto | undefined) => {
       if (!provider) return
 
-      const { request, missingFields, maskedFields, unsupportedAuthMode } = buildProbeModelsRequest(
-        provider,
-        entry,
-      )
+      const { request, missingFields, maskedFields, unsupportedAuthMode, missingOauthAccount } =
+        buildProbeModelsRequest(provider, entry)
       if (!request) {
         if (unsupportedAuthMode) {
           updateProviderEntry(entry.id, {
@@ -440,6 +438,8 @@ export function ConfigTab({
               provider: provider.name,
             }),
           })
+        } else if (missingOauthAccount) {
+          updateProviderEntry(entry.id, { probeError: t('chatgptAccounts.accountRequired') })
         } else if (maskedFields?.length) {
           updateProviderEntry(entry.id, { probeError: t('agentDetail.probeMaskedCredentials') })
         } else if (missingFields.includes('baseUrl')) {
@@ -457,10 +457,16 @@ export function ConfigTab({
         probeError: undefined,
         probeErrorCode: undefined,
       })
+      const writeProbeResult = (patch: Partial<ProviderChainEntry>) =>
+        setProviderChainEntries((entries) =>
+          entries.map((current) =>
+            current.id === entry.id ? applyProviderProbeResult(current, entry, patch) : current,
+          ),
+        )
       try {
         const result = await probeMutation.mutateAsync(request)
         if (result.error) {
-          updateProviderEntry(entry.id, {
+          writeProbeResult({
             probing: false,
             probeError: result.error,
             probeErrorCode: result.code,
@@ -469,7 +475,7 @@ export function ConfigTab({
             fastModeAvailability: undefined,
           })
         } else {
-          updateProviderEntry(entry.id, {
+          writeProbeResult({
             probing: false,
             probeError: undefined,
             probeErrorCode: undefined,
@@ -479,7 +485,7 @@ export function ConfigTab({
           })
         }
       } catch (e) {
-        updateProviderEntry(entry.id, {
+        writeProbeResult({
           probing: false,
           probeError: e instanceof Error ? e.message : String(e),
           probeErrorCode: undefined,
@@ -489,7 +495,7 @@ export function ConfigTab({
         })
       }
     },
-    [probeMutation, t, updateProviderEntry],
+    [probeMutation, t, updateProviderEntry, setProviderChainEntries],
   )
 
   /** Automatically probes entries whose manifest opts into mount-time discovery. */
@@ -855,7 +861,11 @@ export function ConfigTab({
                 entry.authMode === 'localSession'
                   ? t('agentDetail.authModeLocalSession')
                   : entry.authMode === 'oauth'
-                    ? t('agentDetail.authModeOauth')
+                    ? t(
+                        provider?.kind === 'codex'
+                          ? 'agentDetail.authModeChatgptAccount'
+                          : 'agentDetail.authModeOauth',
+                      )
                     : t('agentDetail.authModeApiKey')
               const baseUrlHost = (() => {
                 if (!entry.providerBaseUrl) return ''
@@ -1004,6 +1014,7 @@ export function ConfigTab({
                                   providerApiKey: '',
                                   providerBaseUrl: '',
                                   providerOauthToken: '',
+                                  providerOauthAccountId: '',
                                 }
                               : {}),
                           })
@@ -1050,6 +1061,7 @@ export function ConfigTab({
                                     providerApiKey: '',
                                     providerBaseUrl: '',
                                     providerOauthToken: '',
+                                    providerOauthAccountId: '',
                                   }
                                 : authMode === 'oauth'
                                   ? {
@@ -1058,6 +1070,7 @@ export function ConfigTab({
                                     }
                                   : {
                                       providerOauthToken: '',
+                                      providerOauthAccountId: '',
                                     }),
                             })
                           }}
@@ -1068,7 +1081,11 @@ export function ConfigTab({
                               {authMode === 'apiKey' ? (
                                 t('agentDetail.authModeApiKey')
                               ) : authMode === 'oauth' ? (
-                                t('agentDetail.authModeOauth')
+                                t(
+                                  provider?.kind === 'codex'
+                                    ? 'agentDetail.authModeChatgptAccount'
+                                    : 'agentDetail.authModeOauth',
+                                )
                               ) : (
                                 <span className="inline-flex items-center gap-1">
                                   {t('agentDetail.authModeLocalSession')}
@@ -1092,6 +1109,19 @@ export function ConfigTab({
                             {t('agentDetail.authModeLocalSessionHint', { command: loginCommand })}
                           </p>
                         </div>
+                      ) : provider?.kind === 'codex' && entry.authMode === 'oauth' ? (
+                        <ChatGPTAccountPicker
+                          key={provider.id}
+                          providerId={provider.id}
+                          value={entry.providerOauthAccountId}
+                          onChange={(accountId) =>
+                            updateProviderEntry(entry.id, {
+                              providerOauthAccountId: accountId,
+                              providerOauthToken: '',
+                              model: '',
+                            })
+                          }
+                        />
                       ) : credentialFields.includes('oauthToken') ? (
                         <div className="space-y-2">
                           <Label

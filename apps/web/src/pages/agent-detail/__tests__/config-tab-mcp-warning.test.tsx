@@ -9,10 +9,11 @@
  * in: hardcoding `routeEnabled = false` keeps every helper test green while
  * silently dropping the warning for a route-only agent.
  */
-import { renderWithProviders, screen } from '@/test/render'
+
 import type { ProviderCapabilities, ProviderDto } from '@a2wave/shared'
 import { useForm } from 'react-hook-form'
 import { describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen } from '@/test/render'
 import { ConfigTab } from '../config-tab'
 import type { AgentFormMethods, ProviderChainEntry, RemoteEntry } from '../types'
 
@@ -200,5 +201,30 @@ describe('ConfigTab — Pi proxy credentials', () => {
       'https://proxy.example.com/v1',
     )
     expect(screen.getByTestId('provider-chain-probe-models-0')).toBeEnabled()
+  })
+})
+
+describe('ConfigTab — ChatGPT account credentials', () => {
+  it('names the Codex OAuth mode as a ChatGPT account in both the header and picker', () => {
+    const provider = {
+      ...noMcpProvider,
+      kind: 'codex',
+      capabilities: {
+        ...capabilities,
+        authModes: ['oauth'],
+        defaultAuthMode: 'oauth',
+        modelDiscovery: { oauth: 'manual' },
+        credentialFields: { oauth: [{ field: 'oauthAccountId', required: true }] },
+      },
+    } as ProviderDto
+    renderWithProviders(
+      <Harness
+        remoteEntries={[]}
+        provider={provider}
+        entry={{ ...chainEntry, authMode: 'oauth', expanded: true }}
+      />,
+    )
+    expect(screen.getAllByText('使用 ChatGPT 账号')).toHaveLength(2)
+    expect(screen.queryByText('使用 OAuth Token')).not.toBeInTheDocument()
   })
 })

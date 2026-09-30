@@ -414,7 +414,7 @@
     "notFound": "Provider 未找到",
     "backToProviders": "返回 Providers",
     "preset": "预设",
-    "presetInfo": "系统预设 — 全部配置只读。可用模型由 Agent 按各自凭据实时探测，不在此处维护。",
+    "presetInfo": "系统预设 — Provider 基础信息只读。可用模型由 Agent 按各自凭据实时探测，不在此处维护。",
     "basicInfo": "基本信息",
     "basicInfoDesc": "Provider 名称和描述",
     "name": "名称",
@@ -1320,6 +1320,7 @@
     "authMode": "凭证模式",
     "authModeApiKey": "使用 API Key",
     "authModeOauth": "使用 OAuth Token",
+    "authModeChatgptAccount": "使用 ChatGPT 账号",
     "authModeLocalSession": "使用服务器登录态",
     "authHeaderStyle": "API Key 请求头",
     "authHeaderStyleXApiKey": "x-api-key（兼容默认值）",
@@ -2562,7 +2563,17 @@
       "user_invitation.created": "创建用户邀请",
       "user_invitation.revoked": "撤销用户邀请",
       "user_invitation.accepted": "接受用户邀请",
-      "user_invitation.accept_failed": "接受用户邀请失败"
+      "user_invitation.accept_failed": "接受用户邀请失败",
+      "provider_oauth_account.login_start": "开始 ChatGPT 登录",
+      "provider_oauth_account.connect": "连接 ChatGPT 账号",
+      "provider_oauth_account.disconnect": "断开 ChatGPT 账号",
+      "provider_oauth_account.disconnect_failed": "断开 ChatGPT 账号失败",
+      "provider_oauth_account.login_failed": "ChatGPT 登录失败",
+      "provider_oauth_account.refresh": "刷新 ChatGPT 凭据",
+      "provider_oauth_account.refresh_failed": "ChatGPT 凭据刷新失败",
+      "provider_oauth_account.login_create": "创建 ChatGPT 连接请求",
+      "provider_oauth_account.update": "重命名 ChatGPT 账号",
+      "provider_oauth_account.delete": "移除 ChatGPT 账号"
     },
     "resources": {
       "agent": "Agent",
@@ -2586,7 +2597,8 @@
       "skill": "技能",
       "skill-group": "技能分组",
       "user": "用户",
-      "user_invitation": "用户邀请"
+      "user_invitation": "用户邀请",
+      "provider_oauth_account": "ChatGPT 账号"
     },
     "datePresetAll": "全部时间",
     "dateRange": "时间范围"
@@ -2827,5 +2839,47 @@
     "pageDesc": "供 a2wave CLI、CI 任务和脚本使用的令牌。每个都只属于你，可以单独删除。",
     "submit": "创建令牌",
     "copyFailed": "复制失败，请手动选中令牌复制。"
+  },
+  "chatgptAccounts": {
+    "title": "ChatGPT 账号",
+    "connect": "Continue with ChatGPT",
+    "reconnect": "重新登录",
+    "rename": "重命名",
+    "account": "ChatGPT 账号",
+    "selectAccount": "选择已授权账号",
+    "label": "账号名称",
+    "labelOptional": "账号名称（可选）",
+    "empty": "还没有连接 ChatGPT 账号。",
+    "sharedUsage": "账号由此 Provider 共享，绑定 Agent 后将消耗所选账号授权的 ChatGPT 额度。",
+    "saveBindingHint": "新增登录成功后会自动选中账号；保存 Agent 后才会应用此绑定。",
+    "loginDescription": "请在使用浏览器的电脑上完成授权后返回此处，ChatGPT 凭据由 a2wave 保存。",
+    "localCommandHint": "在打开浏览器的这台电脑上运行命令，本机 a2wave CLI 会自动打开 ChatGPT 授权页面。",
+    "codeHint": "复制本次连接码，在 CLI 提示时粘贴。请保持此窗口打开直至授权完成；不要分享连接码或把它放进命令。",
+    "generateCode": "生成连接码",
+    "copyCode": "复制连接码",
+    "copyCommand": "复制命令",
+    "copied": "已复制",
+    "copyFailed": "复制失败，请检查剪贴板权限后重试。",
+    "expires": "连接码将在 {{time}} 过期。",
+    "waiting": "等待本机 CLI 连接…",
+    "authorizing": "请在 ChatGPT 中完成授权…",
+    "reconnectAccount": "请使用相同的 ChatGPT 账号和工作区重新登录 {{account}}。",
+    "loginExpired": "连接请求已过期，请重新生成连接码。",
+    "loginFailed": "ChatGPT 授权失败，请重新生成连接码，并确认使用所选账号和工作区。",
+    "statusFailed": "无法查询授权状态，请重试以确认是否已完成。",
+    "startFailed": "无法发起 ChatGPT 授权，请重试。",
+    "loadFailed": "无法加载 ChatGPT 账号，请重试。",
+    "renameFailed": "重命名失败，请重试。",
+    "deleteTitle": "移除 ChatGPT 账号？",
+    "deleteHint": "将从共享账号池移除 {{account}}，请先解除所有使用此账号的 Agent 绑定。",
+    "deleteFailed": "无法移除账号，请先解除 Agent 绑定，并确认你有管理权限。",
+    "unavailableAccount": "账号不可用（{{id}}）",
+    "accountRequired": "请先选择已连接的 ChatGPT 账号，再拉取模型。",
+    "chainAccountRequired": "第 {{index}} 个 Provider 需要选择已连接的 ChatGPT 账号。",
+    "status": {
+      "ready": "已连接",
+      "expired": "访问凭据已过期",
+      "reauth_required": "需要重新登录"
+    }
   }
 }

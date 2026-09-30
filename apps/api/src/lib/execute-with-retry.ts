@@ -256,6 +256,12 @@ const DETERMINISTIC_MODEL_FALLBACK_PATTERNS: readonly ErrorPattern[] = [
   'unsupported model',
 ]
 
+// Resuming an interrupted task may already have produced external side effects.
+// A failed recovery must stop before generic quota fallback can replay its prompt.
+const RECOVERY_TERMINAL_ERROR_PATTERNS: readonly ErrorPattern[] = [
+  'codex oauth unauthorized recovery failed:',
+]
+
 // 账户/配额/限速类（软限流 + 硬配额）：有不同账户的 provider 时换一个就可能解决。
 // 这类错误即使带有 401/403 形态，也允许 providerChain fallback 尝试另一个账户。
 const ACCOUNT_PROVIDER_FALLBACK_PATTERNS: readonly ErrorPattern[] = [
@@ -287,7 +293,8 @@ function matchAnyPattern(error: string | undefined, patterns: readonly ErrorPatt
  * are NOT fallbackable — they get same-provider retry instead, so we
  * don't burn backup-provider quota on problems that switching can't fix.
  *
- * Fallback wins over permanent classification: if an error has BOTH a
+ * Terminal recovery failures always stop: replaying may repeat completed actions.
+ * For other errors, fallback wins over permanent classification: if an error has BOTH a
  * permanent-shaped substring (e.g. '403') and an account-quota signal
  * (e.g. 'usage limit'), a different account/key may still resolve it.
  * Only mark permanent when no fallback signal is present.
@@ -298,6 +305,7 @@ function isProviderFallbackableError(error: string | undefined): boolean {
 }
 
 export function isPermanentError(error: string | undefined): boolean {
+  if (matchAnyPattern(error, RECOVERY_TERMINAL_ERROR_PATTERNS)) return true
   // Account fallback errors are not permanent even if they share substrings with
   // permanent patterns — a different provider/account may still recover.
   if (matchAnyPattern(error, ACCOUNT_PROVIDER_FALLBACK_PATTERNS)) return false

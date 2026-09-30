@@ -66,6 +66,35 @@ afterEach(() => {
 })
 
 describe('CliProcessRunner contract', () => {
+  it('keeps interactive stdin open for protocol messages until the adapter ends it', async () => {
+    let protocolInput: NodeJS.WritableStream | undefined
+    const { runner, spawnProcess, children, options } = createHarness({
+      onStdinReady: (stdin) => {
+        protocolInput = stdin
+      },
+    })
+    const execution = runner.run(options)
+    const child = children[0]
+    const received: string[] = []
+    child.stdin.on('data', (chunk: Buffer) => received.push(chunk.toString()))
+    child.emit('spawn')
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'example-cli',
+      [],
+      expect.objectContaining({
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }),
+    )
+    expect(protocolInput).toBe(child.stdin)
+    protocolInput?.write('first\n')
+    protocolInput?.write('second\n')
+    expect(received).toEqual(['first\n', 'second\n'])
+    expect(child.stdin.writableEnded).toBe(false)
+    protocolInput?.end()
+    child.emit('close', 0)
+    expect((await execution).reason).toBe('completed')
+  })
+
   it('writes the complete provided input to child stdin after spawn', async () => {
     const input = '<system>\r\nfirst line\r\nsecond line\r\n</system>'
     const { runner, spawnProcess, children, options } = createHarness({ stdin: input })

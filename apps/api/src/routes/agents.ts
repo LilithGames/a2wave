@@ -118,6 +118,10 @@ import {
 } from '../lib/oauth-publish.js'
 import { getCurrentUserId, getOwnerFilter } from '../lib/owner-filter.js'
 import { registerPendingContext } from '../lib/pending-job-registry.js'
+import {
+  hasProviderOauthBindings,
+  withProviderOauthBindings,
+} from '../lib/provider-oauth-binding.js'
 import { qqOfficialConnectionManager } from '../lib/qq-official-service.js'
 import {
   buildChatAppChannel,
@@ -1182,21 +1186,26 @@ app.post('/', async (c) => {
   const id = createId('agt')
   const authMode = await effectiveProviderAuthMode(parsed.data.providerId, parsed.data.authMode)
   const insertAgent = async (executor: typeof db) =>
-    (
-      await executor
-        .insert(agents)
-        .values({
-          id,
-          // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
-          // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
-          oauthAccessMode: 'all_idaas_users',
-          ...parsed.data,
-          env: envRestore.value,
-          authMode,
-          userId,
-        })
-        .returning()
-    )[0]
+    withProviderOauthBindings(
+      { ...parsed.data, authMode },
+      executor,
+      async (writeTx) =>
+        (
+          await writeTx
+            .insert(agents)
+            .values({
+              id,
+              // `createAgentInput` omits this, and drizzle would otherwise bind the column's retired
+              // default into the INSERT — re-seeding rows on the value 0100 exists to remove.
+              oauthAccessMode: 'all_idaas_users',
+              ...parsed.data,
+              env: envRestore.value,
+              authMode,
+              userId,
+            })
+            .returning()
+        )[0],
+    )
 
   // Binding and SCM deletion reservation share one lifecycle lock. The earlier
   // lookup gives a useful validation error, while this authoritative lookup in
@@ -1485,6 +1494,11 @@ app.patch('/:id', async (c) => {
   const updatePayload = {
     ...parsed.data,
     ...(authModeToSave !== undefined ? { authMode: authModeToSave } : {}),
+    ...(authModeToSave !== undefined &&
+    authModeToSave !== 'oauth' &&
+    parsed.data.providerOauthAccountId === undefined
+      ? { providerOauthAccountId: null }
+      : {}),
     config: configToSave,
     env: envToSave,
     feishuConfig: feishuConfigToSave,
@@ -1499,14 +1513,12 @@ app.patch('/:id', async (c) => {
     updatedAt: new Date(),
   }
 
-  if (existing.publishStatus === 'published') {
-    const candidate = { ...existing }
-    const candidateRecord = candidate as unknown as Record<string, unknown>
-    for (const [key, value] of Object.entries(updatePayload)) {
-      if (value !== undefined) candidateRecord[key] = value
-    }
-    await validateAgentProviderConfiguration(candidate)
+  const candidate = { ...existing }
+  const candidateRecord = candidate as unknown as Record<string, unknown>
+  for (const [key, value] of Object.entries(updatePayload)) {
+    if (value !== undefined) candidateRecord[key] = value
   }
+  if (existing.publishStatus === 'published') await validateAgentProviderConfiguration(candidate)
 
   // Resolve before persistence so workspace lookup failures still reject the
   // update, but defer file mutations until the database update succeeds. This
@@ -1519,11 +1531,17 @@ app.patch('/:id', async (c) => {
   }
 
   const updateAgent = async (executor: typeof db) =>
-    (await executor.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0]
+    withProviderOauthBindings(
+      candidate,
+      executor,
+      async (writeTx) =>
+        (await writeTx.update(agents).set(updatePayload).where(eq(agents.id, id)).returning())[0],
+    )
   const bindingResult = await mutateAgentBinding({
     agentId: id,
     requestedWorkspaceType: parsed.data.workspaceType,
     requestedScmSourceId: scmSourceId,
+    transactional: hasProviderOauthBindings(candidate),
     mutate: updateAgent,
   })
   if (!bindingResult.allowed) {
@@ -2109,6 +2127,7 @@ app.post('/:id/clone', async (c) => {
           providerApiKey: null,
           providerBaseUrl: null,
           providerOauthToken: null,
+          providerOauthAccountId: null,
           memoryProviderApiKey: null,
           embeddingApiKey: null,
           authMode: agent.authMode,

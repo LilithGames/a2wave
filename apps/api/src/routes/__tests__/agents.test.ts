@@ -19,6 +19,7 @@ import {
   makeUpdateReturningChain,
 } from './agents-db-chains.js'
 import { registerAgentEnvMaskingTests } from './agents-env-masking-cases.js'
+import { registerAgentOauthAccountBindingTests } from './agents-oauth-account-binding-cases.js'
 import { registerOauthPublishTests } from './agents-oauth-publish-cases.js'
 import { registerAgentSecretRedactionTests } from './agents-secret-redaction-cases.js'
 import { registerSkillVisibilityCloneTests } from './agents-skill-visibility-clone-cases.js'
@@ -2765,6 +2766,8 @@ describe('Provider chain API compatibility', () => {
     const savedConfig = getCaptured().config as { providerChain: Array<Record<string, unknown>> }
     expect(savedConfig.providerChain[0]?.providerApiKey).toBe('primary-secret')
   })
+
+  registerAgentOauthAccountBindingTests({ SAMPLE_AGENT, createAgentsRouteApp, mockDbForUpdate })
 
   it('PATCH /agents/:id with legacy-only Provider config does not force providerChain migration', async () => {
     const app = await createAgentsRouteApp()

@@ -16,6 +16,7 @@ export const agentFormSchema = z.object({
   providerApiKey: z.string(),
   providerBaseUrl: z.string(),
   providerOauthToken: z.string(),
+  providerOauthAccountId: z.string().optional(),
   authMode: z.enum(['apiKey', 'oauth', 'localSession']),
   providerId: z.string().nullable(),
   model: z.string(),

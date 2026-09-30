@@ -795,6 +795,28 @@ describe('BaseAgentEngine.executeStream — fallback', () => {
     expect(result).toMatchObject({ success: false, usage: { inputTokens: 100 } })
   })
 
+  it('does not replay a terminal OAuth recovery failure through model fallback', async () => {
+    isModelErrorMock.mockReturnValue(true)
+    selectFallbackModelMock.mockReturnValue('backup-model')
+    const failure = Object.assign(
+      new Error('Codex OAuth unauthorized recovery failed: model unavailable'),
+      { usage: { inputTokens: 25, outputTokens: 3 } },
+    )
+    const attempt = vi.fn(async () => {
+      throw failure
+    })
+    const engine = new TestEngine('codex', attempt)
+    const result = await engine.executeStream(
+      makeReq({ model: 'primary-model', fallbackModels: ['backup-model'] }),
+    )
+    expect(attempt).toHaveBeenCalledOnce()
+    expect(result).toMatchObject({
+      success: false,
+      error: failure.message,
+      usage: { inputTokens: 25, outputTokens: 3 },
+    })
+  })
+
   it('returns success from the fallback model when the primary fails with a model error', async () => {
     isModelErrorMock.mockReturnValue(true)
     selectFallbackModelMock.mockReturnValue('claude-haiku')

@@ -5,6 +5,7 @@ import { forceArgs, parseIntFlag, requireConfirmation, resolveForceFlag } from '
 import { emit, jsonArg } from '../lib/output.js'
 import { pageArgs, pageQuery } from '../lib/paginate.js'
 import { type PollOptions, pollUntilTerminal } from '../lib/poll.js'
+import { providerAccountsCommand } from './provider-accounts.js'
 
 interface Provider {
   id: string
@@ -178,6 +179,7 @@ const ENGINE_TYPES = [
 export const providersCommand = defineCommand({
   meta: { name: 'providers', description: 'Manage Providers (execution engines)' },
   subCommands: {
+    accounts: providerAccountsCommand,
     list: defineCommand({
       meta: { name: 'list', description: 'List all Providers', agentMeta: { risk: 'read' } },
       args: { ...jsonArg, ...pageArgs, ...urlArg },

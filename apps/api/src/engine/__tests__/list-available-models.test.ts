@@ -248,12 +248,12 @@ describe('CodexAgentEngine.listAvailableModels', () => {
     expect(result.models).toEqual(['gpt-5.5'])
   })
 
-  it('returns unsupported_mode for oauth', async () => {
+  it('requires a stored account rather than a pasted OAuth token', async () => {
     const result = await engine.listAvailableModels({
       authMode: 'oauth',
       oauthToken: 'token-xxx',
     })
-    expect(result.code).toBe('unsupported_mode')
+    expect(result.code).toBe('invalid_input')
     expect(mockSpawn).not.toHaveBeenCalled()
   })
 

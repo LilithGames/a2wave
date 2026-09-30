@@ -410,7 +410,10 @@ export abstract class BaseAgentEngine implements AgentEngine {
     const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError)
     let usage = extractUsageFromError(primaryError)
 
-    if (isModelError(errMsg) && fallbackModels.length > 0) {
+    // Authentication recovery already continued persisted tool results. Even a
+    // model-shaped failure here must not replay the original task in a fresh session.
+    const recoveryIsTerminal = /^Codex OAuth unauthorized recovery failed:/i.test(errMsg)
+    if (!recoveryIsTerminal && isModelError(errMsg) && fallbackModels.length > 0) {
       const fallback = selectFallbackModel(primaryModel, fallbackModels)
       if (fallback) {
         logger.info(

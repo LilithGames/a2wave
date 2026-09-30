@@ -20,7 +20,7 @@ On the Agent detail page you can configure:
 - **Reasoning effort and fast mode**: supported by some engines (Claude Code, Codex) and configured **beside each chain entry's model** — see "Reasoning Effort and Fast Mode" below.
 - **Credential mode (authMode)**:
   - `apiKey`: injects an API Key (e.g. `ANTHROPIC_API_KEY`).
-  - `oauth`: injects an OAuth Token (`CLAUDE_CODE_OAUTH_TOKEN`, Claude Code only).
+  - `oauth`: Claude Code uses an OAuth Token; Codex selects a shared authorized ChatGPT account. You can connect a new account directly in the Provider entry; it becomes selected locally, and **Save** applies the binding. Runs consume that account’s authorized allowance. See [ChatGPT accounts](/wiki/providers).
   - `localSession`: uses the login session of the CLI on the **server running a2wave** (`~/.claude`, etc., not the computer where your browser currently is), injecting no credentials.
 - **Workspace type (workspaceType)**: `temp` (temporary directory, default) or `scm` (bound to an [SCM Source](/wiki/scm-sources)).
 - **Mounted capabilities**: [Skills](/wiki/skills) and Skill groups, [MCP Servers](/wiki/mcp-servers), [Knowledge Bases](/wiki/knowledge-base).

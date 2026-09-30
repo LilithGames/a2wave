@@ -199,6 +199,7 @@ export interface AgentYaml {
   authMode?: 'apiKey' | 'oauth' | 'localSession'
   providerApiKey?: string
   providerOauthToken?: string
+  providerOauthAccountId?: string | null
   providerBaseUrl?: string
   /** Feishu channel config (written into the agent record on create; later publish just uses channels:[feishu]) */
   feishuConfig?: AgentYamlFeishuConfig
@@ -511,6 +512,8 @@ export function toCreatePayload(doc: AgentYamlDoc, refs: ResolvedRefs): Record<s
   if (doc.authMode !== undefined) payload.authMode = doc.authMode
   if (doc.providerApiKey !== undefined) payload.providerApiKey = doc.providerApiKey
   if (doc.providerOauthToken !== undefined) payload.providerOauthToken = doc.providerOauthToken
+  if (doc.providerOauthAccountId !== undefined)
+    payload.providerOauthAccountId = doc.providerOauthAccountId
   if (doc.providerBaseUrl !== undefined) payload.providerBaseUrl = doc.providerBaseUrl
   if (refs.providerId !== undefined) payload.providerId = refs.providerId
   if (refs.skills !== undefined) payload.skills = refs.skills
@@ -778,7 +781,8 @@ env:
 # call — it would be stored and fail the Agent's first request.
 # authMode: apiKey                         # apiKey | oauth | localSession
 # providerApiKey: \${ANTHROPIC_API_KEY}     # or file:~/.secrets/anthropic-key.txt
-# providerOauthToken: file:./oauth.txt      # when authMode=oauth
+# providerOauthToken: file:./oauth.txt      # Claude Code OAuth token
+# providerOauthAccountId: poa_...          # Codex ChatGPT account on this instance
 # providerBaseUrl: https://api.anthropic.com
 # embeddingApiKey: \${EMBEDDING_API_KEY}   # Dedicated memory embedding credential (inherits Provider credential when unset)
 

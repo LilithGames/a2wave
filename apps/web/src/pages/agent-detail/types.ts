@@ -9,6 +9,7 @@ export type FormData = {
   providerApiKey: string
   providerBaseUrl: string
   providerOauthToken: string
+  providerOauthAccountId?: string
   authMode: 'apiKey' | 'oauth' | 'localSession'
   providerId: string | null
   model: string
@@ -40,6 +41,7 @@ export type ProviderChainEntry = {
   providerApiKey: string
   providerBaseUrl: string
   providerOauthToken: string
+  providerOauthAccountId?: string
   /**
    * 推理档位与 fast 模式跟着 model 走，而不是挂在 Agent 上：一条链里可以混用
    * 不同 Provider 和模型，合法档位由模型决定，Agent 级的值对其中某一档必然非法。
