@@ -997,16 +997,6 @@ body {
   line-height: 1;
 }
 
-/* Force the selected item's label + icon to the on-primary color. Our options
-   wrap the label in a custom <span> with a lucide icon (currentColor); without
-   this the icon/text inherits the muted color and renders dark-grey on the
-   indigo fill. !important so it wins regardless of @layer ordering. */
-.ant-segmented .ant-segmented-item-selected,
-.ant-segmented .ant-segmented-item-selected .ant-segmented-item-label,
-.ant-segmented .ant-segmented-item-selected .ant-segmented-item-label * {
-  color: var(--color-primary-foreground) !important;
-}
-
 /* Nearly-instant switch. rc-segmented relies on the thumb's transitionend to
    clear its internal `thumbShow` state and restore the item's `-selected` class;
    a hard `transition: none` never fires that event, stranding the just-clicked
@@ -1020,6 +1010,16 @@ body {
 .ant-segmented .ant-segmented-item,
 .ant-segmented .ant-segmented-item-label {
   transition: none !important;
+}
+
+/* Force the selected item's label + icon to the on-primary color. Our options
+   wrap the label in a custom <span> with a lucide icon (currentColor); without
+   this the icon/text inherits the muted color and renders dark-grey on the
+   indigo fill. !important so it wins regardless of @layer ordering. */
+.ant-segmented .ant-segmented-item-selected,
+.ant-segmented .ant-segmented-item-selected .ant-segmented-item-label,
+.ant-segmented .ant-segmented-item-selected .ant-segmented-item-label * {
+  color: var(--color-primary-foreground) !important;
 }
 
 /* Info panel — the shared "info area" surface (design-tokens.md). A soft brand

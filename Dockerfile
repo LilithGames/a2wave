@@ -75,7 +75,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
     # both values from the vendor's own SHA256SUMS next to each binary
     # (bin.linux26x86_64/SHA256SUMS, bin.linux26aarch64/SHA256SUMS) and update
     # them here — never from `sha256sum` of whatever the build just downloaded,
-    # which would make the check a formality. Last re-read 2026-08-14.
+    # which would make the check a formality. Last re-read 2026-10-12
+    # (changelist 3084003, GPG-verified on both arches).
     #
     # Use `filehost`, NOT `cdist2`: the two hosts are not always in sync, and
     # when they diverge the SHA256SUMS/.asc pair tracks `filehost`. On
@@ -89,9 +90,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
     # touching the checksums above: a stale mirror needs a host fix, not a
     # new hash.
     case "${TARGETARCH}" in \
-      amd64) P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
-      arm64) P4_ARCH="aarch64"; P4_SHA256="2b4df86bab5a72950fdd93d92ef865c0e2d6b378a6bc8bde62b86511cfc6d669" ;; \
-      *)     P4_ARCH="x86_64"; P4_SHA256="949c4bc71f15f58bae95aa702ec812d3e43b8fbc4e789b744ada0b96c5557257" ;; \
+      amd64) P4_ARCH="x86_64"; P4_SHA256="8a3293231e0df8dbc414587bfa99372e8f6fb7fc13f4b03532d5f7c1430bb839" ;; \
+      arm64) P4_ARCH="aarch64"; P4_SHA256="b3675f2690421dce7b7b691ec918c1665cacf2870934c4ce1b7481b7c809f095" ;; \
+      *)     P4_ARCH="x86_64"; P4_SHA256="8a3293231e0df8dbc414587bfa99372e8f6fb7fc13f4b03532d5f7c1430bb839" ;; \
     esac && \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
       "https://filehost.perforce.com/perforce/r24.2/bin.linux26${P4_ARCH}/p4" \
