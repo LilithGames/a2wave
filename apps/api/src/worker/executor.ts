@@ -130,11 +130,12 @@ export async function executeInWorker(
   let timeoutTriggered = false
   let emittedUsage: TokenUsage | undefined
   const deadlineController = new AbortController()
-  const unregisterWorkerSignal = registerWorkerExecutionSignal(taskId, deadlineController.signal)
-  const executionSignal = getExecutionAbortSignal(taskId)
+  let unregisterWorkerSignal: (() => void) | undefined
+  // Only the worker deadline silences output: a cancelled Run still records the
+  // tail and the usage its CLI flushes on the way out.
   const handleLogEntry = (entry: StreamLogEntry) => {
-    if (executionSignal?.aborted) return
     if (entry.type === 'result' && entry.usage) emittedUsage = entry.usage
+    if (deadlineController.signal.aborted) return
     onLogEntry?.(entry)
   }
   const unregisterProcessLogSink = registerExecutionProcessLogSink(taskId, handleLogEntry)
@@ -148,9 +149,10 @@ export async function executeInWorker(
 
   let executePromise: ReturnType<typeof engine.executeStream> | undefined
   try {
+    unregisterWorkerSignal = registerWorkerExecutionSignal(taskId, deadlineController.signal)
     executePromise = engine.executeStream({
       taskId,
-      abortSignal: executionSignal,
+      abortSignal: getExecutionAbortSignal(taskId),
       workDir: payload.workDir || '',
       prompt: payload.prompt,
       context: payload.context,
@@ -161,7 +163,7 @@ export async function executeInWorker(
       branch: 'main',
       onUpdate: onUpdate
         ? (value) => {
-            if (!executionSignal?.aborted) onUpdate(value)
+            if (!deadlineController.signal.aborted) onUpdate(value)
           }
         : undefined,
       onLogEntry: handleLogEntry,
@@ -216,14 +218,13 @@ export async function executeInWorker(
       success: false,
       output: '',
       error: errorMsg,
-      ...(timeoutTriggered ? { retryable: false } : {}),
       durationMs: Date.now() - startTime,
       // Engine errors may carry tokens consumed before failure.
       usage: extractUsageFromError(err) ?? emittedUsage,
     }
   } finally {
     unregisterProcessLogSink()
-    unregisterWorkerSignal()
+    unregisterWorkerSignal?.()
     cleanupRuntimeGroupConfigs(runtimeGroupLease)
   }
 }

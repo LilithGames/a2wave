@@ -211,6 +211,23 @@ describe('BaseAgentEngine.executeStream — happy path', () => {
     expect(engine.callCount).toBe(0)
   })
 
+  it('keeps the usage a cancelled CLI reported when its Run is aborted mid-execution', async () => {
+    const controller = new AbortController()
+    const engine = new TestEngine('cursor', async () => {
+      controller.abort()
+      throw Object.assign(new Error('cursor stream execution cancelled'), {
+        usage: { inputTokens: 40, outputTokens: 2 },
+      })
+    })
+
+    const result = await engine.executeStream(makeReq({ abortSignal: controller.signal }))
+
+    expect(result).toMatchObject({
+      success: false,
+      usage: { inputTokens: 40, outputTokens: 2 },
+    })
+  })
+
   it('runs prepare* + executes with the requested model and enriches the prompt', async () => {
     const engine = new TestEngine()
     const result = await engine.executeStream(

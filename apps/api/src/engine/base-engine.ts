@@ -415,8 +415,6 @@ export abstract class BaseAgentEngine implements AgentEngine {
     startTime: number,
     memoryContext?: string | null,
   ): Promise<ExecuteResult> {
-    request.abortSignal?.throwIfAborted()
-    getExecutionAbortSignal(request.taskId)?.throwIfAborted()
     const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError)
     let usage = extractUsageFromError(primaryError)
 
