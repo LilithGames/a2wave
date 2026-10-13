@@ -17,6 +17,12 @@ vi.mock('../../lib/settings.js', () => ({
   getSetting: vi.fn().mockReturnValue('15'),
 }))
 
+import {
+  _resetExecutionLeasesForTests,
+  beginExecutionLease,
+  cancelExecutionLease,
+  registerWorkerExecutionSignal,
+} from '../../engine/execution-lease-registry.js'
 import { emitExecutionProcessLogLine } from '../../engine/execution-process-log.js'
 import { engineRegistry } from '../../engine/index.js'
 import { executeInWorker } from '../executor.js'
@@ -71,6 +77,7 @@ describe('executeInWorker', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
+    _resetExecutionLeasesForTests()
     ;(engineRegistry.get as Mock).mockReturnValue(mockEngine)
     ;(engineRegistry.cancel as Mock).mockResolvedValue(false)
   })
@@ -100,7 +107,7 @@ describe('executeInWorker', () => {
         taskId: 'task_1',
         workDir: '/tmp/work',
         prompt: 'do something',
-        onUpdate,
+        onUpdate: expect.any(Function),
         onLogEntry: expect.any(Function),
       }),
     )
@@ -227,6 +234,93 @@ describe('executeInWorker', () => {
     })
   })
 
+  it('discards updates and output from an engine that settles after timeout', async () => {
+    vi.useFakeTimers()
+    let finish!: (result: { success: boolean; output: string }) => void
+    let sendUpdate!: (value: string) => void
+    mockEngine.executeStream.mockImplementation((request) => {
+      sendUpdate = request.onUpdate
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const onUpdate = vi.fn()
+    const promise = executeInWorker('task_1', makePayload(), { timeoutMs: 100, onUpdate })
+    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(250)
+    const result = await promise
+    sendUpdate('late output')
+    finish({ success: true, output: 'late success' })
+    await Promise.resolve()
+
+    expect(result).toMatchObject({ success: false })
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('records usage reported after the deadline without forwarding the entry', async () => {
+    vi.useFakeTimers()
+    let request!: { onLogEntry: (entry: unknown) => void }
+    mockEngine.executeStream.mockImplementation((req) => {
+      request = req
+      return new Promise(() => {})
+    })
+    ;(engineRegistry.cancel as Mock).mockImplementationOnce(async () => {
+      request.onLogEntry({ type: 'result', usage: { inputTokens: 9, outputTokens: 3 }, ts: 1 })
+      return true
+    })
+    const onLogEntry = vi.fn()
+    const promise = executeInWorker('task_1', makePayload(), { timeoutMs: 100, onLogEntry })
+    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(250)
+
+    await expect(promise).resolves.toMatchObject({
+      success: false,
+      usage: { inputTokens: 9, outputTokens: 3 },
+    })
+    expect(onLogEntry).not.toHaveBeenCalled()
+  })
+
+  it('still forwards output and usage that arrive after the Run is cancelled', async () => {
+    const lease = beginExecutionLease('run_1', 'task_1', 'agt_1')
+    let request: { onUpdate: (v: string) => void; onLogEntry: (e: unknown) => void } | undefined
+    let finish!: (result: { success: boolean; output: string; error: string }) => void
+    mockEngine.executeStream.mockImplementation((req) => {
+      request = req
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const onUpdate = vi.fn()
+    const onLogEntry = vi.fn()
+    const promise = executeInWorker('task_1', makePayload(), { onUpdate, onLogEntry })
+    await vi.waitFor(() => expect(request).toBeDefined())
+
+    void cancelExecutionLease('run_1')
+    const entry = { type: 'result', usage: { inputTokens: 5, outputTokens: 1 }, ts: 1 }
+    request?.onUpdate('tail output')
+    request?.onLogEntry(entry)
+    finish({ success: false, output: '', error: 'cancelled' })
+    const result = await promise
+    lease.finish()
+
+    expect(onUpdate).toHaveBeenCalledWith('tail output')
+    expect(onLogEntry).toHaveBeenCalledWith(entry)
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 1 })
+  })
+
+  it('fails the attempt instead of throwing when the task already has a worker signal', async () => {
+    const unregister = registerWorkerExecutionSignal('task_1', new AbortController().signal)
+
+    const result = await executeInWorker('task_1', makePayload())
+    unregister()
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('already exists'),
+    })
+    expect(mockEngine.executeStream).not.toHaveBeenCalled()
+  })
+
   it('uses usage from the engine rejection that follows timeout cancellation', async () => {
     vi.useFakeTimers()
     let rejectExecution!: (error: Error) => void
@@ -323,7 +417,7 @@ describe('executeInWorker', () => {
     await executeInWorker('task_1', makePayload(), { onUpdate, onLogEntry })
 
     const callArg = mockEngine.executeStream.mock.calls[0][0]
-    expect(callArg.onUpdate).toBe(onUpdate)
+    expect(callArg.onUpdate).toEqual(expect.any(Function))
     const entry = { type: 'system' as const, subtype: 'init', ts: Date.now() }
     callArg.onLogEntry?.(entry)
     expect(onLogEntry).toHaveBeenCalledWith(entry)
@@ -358,7 +452,7 @@ describe('executeInWorker', () => {
     const promise = executeInWorker(
       'task_1',
       makePayload({
-        agentConfig: { engineType: 'cursor', timeoutMinutes: 2 } as any,
+        agentConfig: { engineType: 'cursor', timeoutMinutes: 2 } as never,
       }),
     )
 

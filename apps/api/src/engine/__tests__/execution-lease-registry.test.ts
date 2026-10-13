@@ -4,13 +4,13 @@ import {
   beginExecutionLease,
   bindExecutionLeaseTask,
   cancelExecutionLease,
-  completeExecutionLease,
   countActiveExecutionLeases,
   drainActiveExecutionLeases,
   drainDurableExecutionLeaseReleases,
   getExecutionAbortSignal,
   hasExecutionLease,
   isRunExecutionSettling,
+  registerWorkerExecutionSignal,
   reserveExecutionLease,
   setDurableExecutionLeaseReleaseHandler,
 } from '../execution-lease-registry.js'
@@ -78,6 +78,22 @@ describe('execution lease registry', () => {
     lease.finish()
 
     expect(getExecutionAbortSignal('task_1')).toBeUndefined()
+  })
+
+  it('aborts a task for either the Run cancellation or its worker deadline', () => {
+    const lease = beginExecutionLease('run_1', 'task_1', 'agt_1')
+    const workerController = new AbortController()
+    const unregister = registerWorkerExecutionSignal('task_1', workerController.signal)
+    const combinedSignal = getExecutionAbortSignal('task_1')
+
+    expect(combinedSignal?.aborted).toBe(false)
+    workerController.abort()
+    expect(combinedSignal?.aborted).toBe(true)
+    expect(lease.signal.aborted).toBe(false)
+
+    unregister()
+    expect(getExecutionAbortSignal('task_1')).toBe(lease.signal)
+    lease.finish()
   })
 
   it('does not create an unresolved tombstone when cancellation has no active lease', async () => {

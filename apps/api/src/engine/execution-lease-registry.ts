@@ -15,6 +15,7 @@ export interface ExecutionLease {
 
 const leasesByRunId = new Map<string, ExecutionLeaseEntry>()
 const leasesByTaskId = new Map<string, ExecutionLeaseEntry>()
+const workerSignalsByTaskId = new Map<string, AbortSignal>()
 let durableReleaseHandler: ((runId: string, agentId?: string) => Promise<void>) | undefined
 const pendingDurableReleases = new Set<Promise<void>>()
 /**
@@ -117,7 +118,21 @@ export function cancelExecutionLease(runId: string): Promise<void> {
 
 /** Used by CliProcessRunner to close the cancellation-before-spawn window. */
 export function getExecutionAbortSignal(taskId: string): AbortSignal | undefined {
-  return leasesByTaskId.get(taskId)?.controller.signal
+  const leaseSignal = leasesByTaskId.get(taskId)?.controller.signal
+  const workerSignal = workerSignalsByTaskId.get(taskId)
+  if (leaseSignal && workerSignal) return AbortSignal.any([leaseSignal, workerSignal])
+  return leaseSignal ?? workerSignal
+}
+
+/** A worker deadline must also stop preparation before it can spawn a CLI. */
+export function registerWorkerExecutionSignal(taskId: string, signal: AbortSignal): () => void {
+  if (workerSignalsByTaskId.has(taskId)) {
+    throw new Error(`Worker execution signal already exists for task "${taskId}"`)
+  }
+  workerSignalsByTaskId.set(taskId, signal)
+  return () => {
+    if (workerSignalsByTaskId.get(taskId) === signal) workerSignalsByTaskId.delete(taskId)
+  }
 }
 
 export function hasExecutionLease(runId: string): boolean {
@@ -211,6 +226,7 @@ export function _resetExecutionLeasesForTests(): void {
   for (const entry of leasesByRunId.values()) finishExecutionLeaseEntry(entry)
   leasesByRunId.clear()
   leasesByTaskId.clear()
+  workerSignalsByTaskId.clear()
   durableReleaseHandler = undefined
   pendingDurableReleases.clear()
   settlingRunIds.clear()

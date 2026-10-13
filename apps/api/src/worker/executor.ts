@@ -1,4 +1,8 @@
 import { extractUsageFromError } from '../engine/cli-engine-base.js'
+import {
+  getExecutionAbortSignal,
+  registerWorkerExecutionSignal,
+} from '../engine/execution-lease-registry.js'
 import { registerExecutionProcessLogSink } from '../engine/execution-process-log.js'
 import { engineRegistry } from '../engine/index.js'
 import type { StreamLogEntry, TokenUsage } from '../engine/types.js'
@@ -125,22 +129,30 @@ export async function executeInWorker(
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   let timeoutTriggered = false
   let emittedUsage: TokenUsage | undefined
+  const deadlineController = new AbortController()
+  let unregisterWorkerSignal: (() => void) | undefined
+  // Only the worker deadline silences output: a cancelled Run still records the
+  // tail and the usage its CLI flushes on the way out.
   const handleLogEntry = (entry: StreamLogEntry) => {
     if (entry.type === 'result' && entry.usage) emittedUsage = entry.usage
+    if (deadlineController.signal.aborted) return
     onLogEntry?.(entry)
   }
   const unregisterProcessLogSink = registerExecutionProcessLogSink(taskId, handleLogEntry)
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
       timeoutTriggered = true
+      deadlineController.abort()
       reject(new Error(`Task execution timeout (${timeoutMs / 1000}s)`))
     }, timeoutMs)
   })
 
   let executePromise: ReturnType<typeof engine.executeStream> | undefined
   try {
+    unregisterWorkerSignal = registerWorkerExecutionSignal(taskId, deadlineController.signal)
     executePromise = engine.executeStream({
       taskId,
+      abortSignal: getExecutionAbortSignal(taskId),
       workDir: payload.workDir || '',
       prompt: payload.prompt,
       context: payload.context,
@@ -149,7 +161,11 @@ export async function executeInWorker(
       fallbackModels: payload.agentConfig?.fallbackModels || [],
       chatId: payload.chatId,
       branch: 'main',
-      onUpdate,
+      onUpdate: onUpdate
+        ? (value) => {
+            if (!deadlineController.signal.aborted) onUpdate(value)
+          }
+        : undefined,
       onLogEntry: handleLogEntry,
       agentConfig: executionAgentConfig,
     })
@@ -208,6 +224,7 @@ export async function executeInWorker(
     }
   } finally {
     unregisterProcessLogSink()
+    unregisterWorkerSignal?.()
     cleanupRuntimeGroupConfigs(runtimeGroupLease)
   }
 }
