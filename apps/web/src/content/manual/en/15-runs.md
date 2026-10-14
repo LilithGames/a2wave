@@ -36,7 +36,8 @@ The Agent in the row title is the **Agent that executed this Run**. The Agent in
 - **Conversation details**: click a row to read the complete retained conversation in chronological order. Each underlying Run remains a separate execution block inside the drawer (a reused `chat_app` or `debug` Run can itself contain multiple turns), and can still be opened in the existing Run details view for its chat output, Run Steps, execution log, retry/rerun, or cancellation controls.
 - **Conversation boundaries**: `/new` and explicit in-product reset start a separate conversation. Feishu and QQ also start a separate conversation after their session timeout, so later messages do not merge into an expired conversation.
 - **Run links**: an existing link containing `?runId=...` still opens the conversation that contains that Run and highlights the linked round.
-- **Statistics overview**: counts, success rate, average duration, etc.
+- **Statistics overview**: counts, success rate, average duration, etc. The failed count under the dashboard's **Total Runs** card covers only failed runs created in the **last 7 days** (hover the icon next to it for the explanation) and is highlighted when non-zero; the success rate still covers all history.
+- **Provider failure notice**: the Provider section on an Agent's configuration page shows the error from its most recent failed run, and the notice disappears as soon as a later run completes. Runs that are still in progress or were cancelled do not clear it.
 
 Conversation-list pagination is synced to the address bar (e.g. `/runs?page=2`), so refreshing or sharing the link returns you to the same page. The full-log viewer also records `logPage` in the current link while paging, and clears it automatically after the viewer is closed.
 
