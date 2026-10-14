@@ -1,7 +1,9 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/i18n'
 import { renderWithProviders, screen, userEvent } from '@/test/render'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from '../dashboard'
+
+const runCounts = vi.hoisted(() => ({ failed: 0, running: 0 }))
 
 vi.mock('@/components/onboarding-welcome', () => ({
   OnboardingWelcome: () => null,
@@ -21,8 +23,8 @@ vi.mock('@/hooks/use-runs', () => ({
       todayRuns: 0,
       byStatus: {
         completed: 0,
-        failed: 0,
-        running: 0,
+        failed: runCounts.failed,
+        running: runCounts.running,
         pending: 0,
         queued: 0,
         cancelled: 0,
@@ -98,5 +100,33 @@ describe('DashboardPage token usage', () => {
       expect(link).toHaveClass('text-interactive-foreground')
       expect(link.className).not.toMatch(/text-primary/)
     }
+  })
+})
+
+describe('DashboardPage total runs card', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
+    runCounts.failed = 0
+    runCounts.running = 0
+  })
+
+  it('shows the failed count next to the running count and highlights it', () => {
+    runCounts.failed = 543
+    runCounts.running = 2
+    renderWithProviders(<DashboardPage />)
+
+    const totalRuns = screen.getByRole('link', { name: /Total Runs/ })
+    expect(totalRuns).toHaveTextContent('2 running · 543 failed')
+    expect(screen.getByText('543 failed')).toHaveClass('text-destructive')
+    expect(screen.getAllByText('543 failed')).toHaveLength(1)
+  })
+
+  it('does not highlight the failed count when nothing has failed', () => {
+    renderWithProviders(<DashboardPage />)
+
+    expect(screen.getByRole('link', { name: /Total Runs/ })).toHaveTextContent(
+      '0 running · 0 failed',
+    )
+    expect(screen.getByText('0 failed')).not.toHaveClass('text-destructive')
   })
 })

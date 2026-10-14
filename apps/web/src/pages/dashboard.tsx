@@ -1,19 +1,3 @@
-import { OnboardingWelcome } from '@/components/onboarding-welcome'
-import { RunCallerPrefix } from '@/components/run-caller-prefix'
-import { StatCard } from '@/components/stat-card'
-import { TokenUsageCoverageHelp } from '@/components/token-usage-coverage-help'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { useAgents } from '@/hooks/use-agents'
-import {
-  type AgentLeaderboardEntry,
-  useAgentRunLeaderboard,
-  useRunStats,
-  useRuns,
-} from '@/hooks/use-runs'
-import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
-import { formatDuration, formatRelativeTime } from '@/lib/utils'
 import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
 import {
   Activity,
@@ -30,6 +14,22 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { OnboardingWelcome } from '@/components/onboarding-welcome'
+import { RunCallerPrefix } from '@/components/run-caller-prefix'
+import { StatCard } from '@/components/stat-card'
+import { TokenUsageCoverageHelp } from '@/components/token-usage-coverage-help'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useAgents } from '@/hooks/use-agents'
+import {
+  type AgentLeaderboardEntry,
+  useAgentRunLeaderboard,
+  useRunStats,
+  useRuns,
+} from '@/hooks/use-runs'
+import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
+import { formatDuration, formatRelativeTime } from '@/lib/utils'
 
 const STATUS_BADGE: Record<
   RunStatus,
@@ -48,6 +48,7 @@ export function DashboardPage() {
   const { data: agentsResult, isLoading: agentsLoading } = useAgents()
   const { data: runsData, isLoading: runsLoading } = useRuns({ pageSize: 5 })
   const { data: stats, isLoading: statsLoading } = useRunStats()
+  const failedRuns = stats?.byStatus.failed ?? 0
   const { data: leaderboard, isLoading: leaderboardLoading } = useAgentRunLeaderboard()
 
   const recentRuns = runsData?.data ?? []
@@ -75,7 +76,15 @@ export function DashboardPage() {
           icon={<Activity className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />}
           iconTileClass="bg-brand-gradient-subtle"
           value={stats?.total ?? 0}
-          hint={t('dashboard.runningCount', { count: stats?.byStatus.running ?? 0 })}
+          hint={
+            <>
+              {t('dashboard.runningCount', { count: stats?.byStatus.running ?? 0 })}
+              {' · '}
+              <span className={failedRuns > 0 ? 'font-medium text-destructive' : undefined}>
+                {t('dashboard.failedCount', { count: failedRuns })}
+              </span>
+            </>
+          }
           loading={statsLoading}
           to="/runs"
         />
@@ -92,7 +101,6 @@ export function DashboardPage() {
           icon={<Timer className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />}
           iconTileClass="bg-primary-subtle"
           value={formatDuration(stats?.avgDuration)}
-          hint={t('dashboard.failedCount', { count: stats?.byStatus.failed ?? 0 })}
           loading={statsLoading}
         />
         <StatCard
