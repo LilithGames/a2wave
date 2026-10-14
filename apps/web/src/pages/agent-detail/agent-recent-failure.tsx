@@ -4,7 +4,8 @@ import { useRuns } from '@/hooks/use-runs'
 import { formatRelativeTime } from '@/lib/utils'
 
 /**
- * The Agent's most recent failed Run, shown in the Provider section.
+ * The Agent's most recent failed Run, shown in the Provider section until a
+ * newer Run completes.
  *
  * Every credential probe on this page asks a CLI, and most CLIs answer from a
  * local file: a revoked token still reads as "logged in" while every Run dies
@@ -36,7 +37,12 @@ export function AgentRecentFailureNotice({ agentId }: { agentId: string | undefi
   const { t } = useTranslation()
   const { data } = useRuns({ agentId, page: 1, pageSize: RUNS_PAGE_SIZE })
 
-  const latestFailure = data?.data?.find((run) => run.status === 'failed')
+  // Only the newest finished outcome counts: a completed run after the failure
+  // means it has been resolved. In-flight and cancelled runs prove nothing.
+  const latestOutcome = data?.data?.find(
+    (run) => run.status === 'completed' || run.status === 'failed',
+  )
+  const latestFailure = latestOutcome?.status === 'failed' ? latestOutcome : undefined
   const error =
     typeof (latestFailure?.result as { error?: unknown } | null)?.error === 'string'
       ? ((latestFailure?.result as { error: string }).error as string)
