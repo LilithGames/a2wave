@@ -1,3 +1,21 @@
+import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
+import { Tooltip } from 'antd'
+import {
+  Activity,
+  CalendarDays,
+  CheckCircle2,
+  Circle,
+  Clock,
+  Coins,
+  Info,
+  Loader2,
+  Timer,
+  TrendingUp,
+  Users,
+  XCircle,
+} from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { OnboardingWelcome } from '@/components/onboarding-welcome'
 import { RunCallerPrefix } from '@/components/run-caller-prefix'
 import { StatCard } from '@/components/stat-card'
@@ -14,22 +32,6 @@ import {
 } from '@/hooks/use-runs'
 import { formatTokens, sumTokenUsage } from '@/lib/format-tokens'
 import { formatDuration, formatRelativeTime } from '@/lib/utils'
-import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
-import {
-  Activity,
-  CalendarDays,
-  CheckCircle2,
-  Circle,
-  Clock,
-  Coins,
-  Loader2,
-  Timer,
-  TrendingUp,
-  Users,
-  XCircle,
-} from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
 
 const STATUS_BADGE: Record<
   RunStatus,
@@ -48,6 +50,7 @@ export function DashboardPage() {
   const { data: agentsResult, isLoading: agentsLoading } = useAgents()
   const { data: runsData, isLoading: runsLoading } = useRuns({ pageSize: 5 })
   const { data: stats, isLoading: statsLoading } = useRunStats()
+  const failedRuns = stats?.recentFailed ?? 0
   const { data: leaderboard, isLoading: leaderboardLoading } = useAgentRunLeaderboard()
 
   const recentRuns = runsData?.data ?? []
@@ -75,7 +78,22 @@ export function DashboardPage() {
           icon={<Activity className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />}
           iconTileClass="bg-brand-gradient-subtle"
           value={stats?.total ?? 0}
-          hint={t('dashboard.runningCount', { count: stats?.byStatus.running ?? 0 })}
+          hint={
+            <>
+              {t('dashboard.runningCount', { count: stats?.byStatus.running ?? 0 })}
+              {' · '}
+              <span className={failedRuns > 0 ? 'font-medium text-destructive' : undefined}>
+                {t('dashboard.failedCount', { count: failedRuns })}
+              </span>
+              <Tooltip title={t('dashboard.recentFailedHint')}>
+                <Info
+                  role="img"
+                  aria-label={t('dashboard.recentFailedHint')}
+                  className="ml-1 inline size-3 align-[-1px] text-muted-foreground"
+                />
+              </Tooltip>
+            </>
+          }
           loading={statsLoading}
           to="/runs"
         />
@@ -92,7 +110,6 @@ export function DashboardPage() {
           icon={<Timer className="h-4 w-4 text-interactive-foreground" aria-hidden="true" />}
           iconTileClass="bg-primary-subtle"
           value={formatDuration(stats?.avgDuration)}
-          hint={t('dashboard.failedCount', { count: stats?.byStatus.failed ?? 0 })}
           loading={statsLoading}
         />
         <StatCard

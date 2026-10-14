@@ -251,6 +251,7 @@
     "runningCount": "{{count}} 个运行中",
     "completedCount": "{{count}} 个已完成",
     "failedCount": "{{count}} 个失败",
+    "recentFailedHint": "最近 7 天的失败运行数",
     "recentCompleted": "最近完成",
     "recentCompletedDesc": "已完成的运行",
     "successRate": "成功率",

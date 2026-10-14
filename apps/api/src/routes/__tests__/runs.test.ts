@@ -2473,9 +2473,10 @@ describe('read routes apply the visibility filter', () => {
 
     const res = await app.request('/runs/stats')
     expect(res.status).toBe(200)
-    // Eight aggregates: status counts, today count, today status counts, avg
-    // duration, askers, today askers, token totals, today token totals.
-    await assertEveryWhereIsScoped(wheres, 8)
+    // Nine aggregates: status counts, today count, today status counts, avg
+    // duration, askers, today askers, token totals, today token totals, and
+    // failures in the last 7 days.
+    await assertEveryWhereIsScoped(wheres, 9)
   })
 
   it.each([

@@ -52,6 +52,33 @@ describe('AgentRecentFailureNotice', () => {
     expect(screen.queryByText(/older failure/)).toBeNull()
   })
 
+  it('renders nothing once a newer run has completed', () => {
+    // The failure is history once the Agent has succeeded since: the operator
+    // already fixed it, and a stale "log in again" sends them chasing nothing.
+    resolveRuns([
+      run({ id: 'run_new', status: 'completed', result: null }),
+      run({
+        id: 'run_old',
+        status: 'failed',
+        result: { error: 'Your refresh token was already used. Please log out and sign in again.' },
+      }),
+    ])
+    const { container } = renderWithProviders(<AgentRecentFailureNotice agentId="agt_1" />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('keeps the failure while newer runs are only in flight or cancelled', async () => {
+    // Neither proves the configuration works again.
+    resolveRuns([
+      run({ id: 'run_running', status: 'running', result: null }),
+      run({ id: 'run_cancelled', status: 'cancelled', result: null }),
+      run({ id: 'run_failed', status: 'failed', result: { error: 'still broken' } }),
+    ])
+    renderWithProviders(<AgentRecentFailureNotice agentId="agt_1" />)
+
+    await waitFor(() => expect(screen.getByText(/still broken/)).toBeInTheDocument())
+  })
+
   it('calls out an error that looks like a dead credential', async () => {
     // The one case where the login chip is actively misleading: the CLI reports
     // a session from disk while the vendor is refusing the token.

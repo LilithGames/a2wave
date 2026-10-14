@@ -251,6 +251,7 @@
     "runningCount": "{{count}} running",
     "completedCount": "{{count}} completed",
     "failedCount": "{{count}} failed",
+    "recentFailedHint": "Failed runs in the last 7 days",
     "recentCompleted": "Recent Completed",
     "recentCompletedDesc": "Completed runs",
     "successRate": "Success Rate",

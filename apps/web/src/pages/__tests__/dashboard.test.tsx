@@ -1,7 +1,9 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/i18n'
 import { renderWithProviders, screen, userEvent } from '@/test/render'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardPage } from '../dashboard'
+
+const runCounts = vi.hoisted(() => ({ failed: 0, recentFailed: 0, running: 0 }))
 
 vi.mock('@/components/onboarding-welcome', () => ({
   OnboardingWelcome: () => null,
@@ -21,8 +23,8 @@ vi.mock('@/hooks/use-runs', () => ({
       todayRuns: 0,
       byStatus: {
         completed: 0,
-        failed: 0,
-        running: 0,
+        failed: runCounts.failed,
+        running: runCounts.running,
         pending: 0,
         queued: 0,
         cancelled: 0,
@@ -37,6 +39,7 @@ vi.mock('@/hooks/use-runs', () => ({
       },
       askerCount: 0,
       todayAskerCount: 0,
+      recentFailed: runCounts.recentFailed,
       tokens: { input: 5_000, output: 1_000, reasoning: 250, cacheRead: 10_000, cacheWrite: 500 },
       todayTokens: {
         input: 1_200,
@@ -98,5 +101,40 @@ describe('DashboardPage token usage', () => {
       expect(link).toHaveClass('text-interactive-foreground')
       expect(link.className).not.toMatch(/text-primary/)
     }
+  })
+})
+
+describe('DashboardPage total runs card', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
+    runCounts.failed = 0
+    runCounts.recentFailed = 0
+    runCounts.running = 0
+  })
+
+  it('shows failures from the last 7 days, not the lifetime total, and highlights them', async () => {
+    runCounts.failed = 543
+    runCounts.recentFailed = 4
+    runCounts.running = 2
+    const user = userEvent.setup()
+    renderWithProviders(<DashboardPage />)
+
+    const totalRuns = screen.getByRole('link', { name: /Total Runs/ })
+    expect(totalRuns).toHaveTextContent('2 running · 4 failed')
+    expect(screen.getByText('4 failed')).toHaveClass('text-destructive')
+    expect(screen.queryByText('543 failed')).toBeNull()
+
+    await user.hover(screen.getByRole('img', { name: 'Failed runs in the last 7 days' }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Failed runs in the last 7 days')
+  })
+
+  it('does not highlight the failed count when nothing failed in the last 7 days', () => {
+    runCounts.failed = 543
+    renderWithProviders(<DashboardPage />)
+
+    expect(screen.getByRole('link', { name: /Total Runs/ })).toHaveTextContent(
+      '0 running · 0 failed',
+    )
+    expect(screen.getByText('0 failed')).not.toHaveClass('text-destructive')
   })
 })
