@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 type Json = Record<string, unknown>
 
@@ -150,6 +150,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // today asker count
       .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
       .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     expect(res.status).toBe(200)
@@ -180,6 +181,7 @@ describe('GET /runs/stats', () => {
       todayAskerCount: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
       todayTokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      recentFailed: 0,
     })
   })
 
@@ -203,6 +205,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(
         makeJoinGetChain({ input: 100, output: 20, reasoning: 10, cacheRead: 0, cacheWrite: 0 }),
       )
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     expect(res.status).toBe(200)
@@ -247,6 +250,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(makeGetChain({ cnt: 2 })) // today asker count
       .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
       .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     expect(res.status).toBe(200)
@@ -286,6 +290,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(makeGetChain({ cnt: 1 })) // today asker count
       .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
       .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     const json = (await res.json()) as Json
@@ -305,6 +310,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(makeGetChain({ cnt: 1 })) // today asker count
       .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
       .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     const json = (await res.json()) as Json
@@ -332,6 +338,7 @@ describe('GET /runs/stats', () => {
       .mockReturnValueOnce(makeGetChain({ cnt: 1 })) // today asker count
       .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
       .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // failed in the last 7 days
 
     const res = await app.request('/runs/stats')
     const json = (await res.json()) as Json
@@ -340,4 +347,47 @@ describe('GET /runs/stats', () => {
     expect((json.todayByStatus as Json).pending).toBe(0)
     expect((json.todayByStatus as Json).queued).toBe(0)
   })
+
+  it('recentFailed counts failed runs created in the last 7 days only', async () => {
+    const recentFailedChain = makeGetChain({ cnt: 4 })
+    mockDb.select
+      .mockReturnValueOnce(makeGroupByChain([{ status: 'failed', cnt: 543 }]))
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 }))
+      .mockReturnValueOnce(makeGroupByChain([]))
+      .mockReturnValueOnce(makeGetChain({ avg: null }))
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // asker count
+      .mockReturnValueOnce(makeGetChain({ cnt: 0 })) // today asker count
+      .mockReturnValueOnce(makeGetChain(undefined)) // tokens aggregate
+      .mockReturnValueOnce(makeJoinGetChain(undefined)) // today tokens aggregate
+      .mockReturnValueOnce(recentFailedChain)
+
+    const res = await app.request('/runs/stats')
+    const json = (await res.json()) as Json
+
+    expect((json.byStatus as Json).failed).toBe(543)
+    expect(json.recentFailed).toBe(4)
+    const where = recentFailedChain.from.mock.results[0]?.value.where.mock.calls[0]?.[0]
+    const sevenDaysAgo = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000)
+    expect(collectDates(where).map((d) => d.getTime())).toEqual([sevenDaysAgo.getTime()])
+    expect(collectStrings(where)).toContain('failed')
+  })
 })
+
+/** Every Date bound into a Drizzle condition tree. */
+function collectDates(node: unknown, seen = new Set<unknown>()): Date[] {
+  if (node instanceof Date) return [node]
+  if (!node || typeof node !== 'object' || seen.has(node)) return []
+  seen.add(node)
+  return Object.values(node).flatMap((v) => collectDates(v, seen))
+}
+
+/** Every string param bound into a Drizzle condition tree. */
+function collectStrings(node: unknown, seen = new Set<unknown>()): string[] {
+  if (!node || typeof node !== 'object' || seen.has(node)) return []
+  seen.add(node)
+  const own =
+    'value' in node && typeof (node as { value: unknown }).value === 'string'
+      ? [(node as { value: string }).value]
+      : []
+  return [...own, ...Object.values(node).flatMap((v) => collectStrings(v, seen))]
+}

@@ -1,4 +1,5 @@
 import type { RunStatus, RunTriggerSource } from '@a2wave/shared'
+import { Tooltip } from 'antd'
 import {
   Activity,
   CalendarDays,
@@ -6,6 +7,7 @@ import {
   Circle,
   Clock,
   Coins,
+  Info,
   Loader2,
   Timer,
   TrendingUp,
@@ -48,7 +50,7 @@ export function DashboardPage() {
   const { data: agentsResult, isLoading: agentsLoading } = useAgents()
   const { data: runsData, isLoading: runsLoading } = useRuns({ pageSize: 5 })
   const { data: stats, isLoading: statsLoading } = useRunStats()
-  const failedRuns = stats?.byStatus.failed ?? 0
+  const failedRuns = stats?.recentFailed ?? 0
   const { data: leaderboard, isLoading: leaderboardLoading } = useAgentRunLeaderboard()
 
   const recentRuns = runsData?.data ?? []
@@ -83,6 +85,13 @@ export function DashboardPage() {
               <span className={failedRuns > 0 ? 'font-medium text-destructive' : undefined}>
                 {t('dashboard.failedCount', { count: failedRuns })}
               </span>
+              <Tooltip title={t('dashboard.recentFailedHint')}>
+                <Info
+                  role="img"
+                  aria-label={t('dashboard.recentFailedHint')}
+                  className="ml-1 inline size-3 align-[-1px] text-muted-foreground"
+                />
+              </Tooltip>
             </>
           }
           loading={statsLoading}

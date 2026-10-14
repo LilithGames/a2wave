@@ -304,6 +304,8 @@ const executeRunSchema = z.object({
 
 // --- Routes ---
 
+const RECENT_FAILED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+
 /** GET /runs/stats - 运行统计概览 */
 app.get('/stats', async (c) => {
   const visibilityFilter = getRunReadFilter(c)
@@ -401,6 +403,18 @@ app.get('/stats', async (c) => {
     )[0],
   )
 
+  // Failures from the last 7 days. The lifetime byStatus.failed never decays, so
+  // it cannot tell an operator whether anything is failing now.
+  const recentFailedSince = new Date(Date.now() - RECENT_FAILED_WINDOW_MS)
+  const recentFailedCondition = and(
+    visibilityFilter,
+    eq(runs.status, 'failed'),
+    gte(runs.createdAt, recentFailedSince),
+  )
+  const recentFailed =
+    (await db.select({ cnt: count() }).from(runs).where(recentFailedCondition).limit(1))[0]?.cnt ??
+    0
+
   return c.json({
     total,
     successRate,
@@ -412,6 +426,7 @@ app.get('/stats', async (c) => {
     todayAskerCount,
     tokens,
     todayTokens,
+    recentFailed,
   })
 })
 

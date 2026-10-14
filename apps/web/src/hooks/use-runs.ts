@@ -42,6 +42,8 @@ export type RunStats = {
   todayAskerCount: number
   tokens: TokenTotals
   todayTokens: TokenTotals
+  /** Failed runs created in the last 7 days. */
+  recentFailed: number
 }
 
 export function useRunStats() {
