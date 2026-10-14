@@ -1,6 +1,7 @@
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import {
+  authModeEnum,
   chatAppConfigSchema,
   type GroupConfig,
   gitTriggerConfigSchemaFor,
@@ -706,7 +707,13 @@ export async function importAgentFromZip(
 
     // 5. Resolve Provider by name
     let providerId: string | null = null
-    let providerAuthMode: (typeof agents.$inferInsert)['authMode'] = 'apiKey'
+    const importedAuthMode =
+      exportedAgent.authMode === undefined ? undefined : authModeEnum.parse(exportedAgent.authMode)
+    let providerAuthMode: (typeof agents.$inferInsert)['authMode'] = importedAuthMode ?? 'apiKey'
+    if (importedAuthMode === 'oauth')
+      warnings.push(
+        'Select a ChatGPT account or configure OAuth credentials before running this Agent',
+      )
     if (exportedAgent.providerRef) {
       const provider = (
         await tx
@@ -717,8 +724,17 @@ export async function importAgentFromZip(
       )[0]
       if (provider) {
         providerId = provider.id
-        providerAuthMode =
-          providerCatalog.get(provider.kind)?.manifest.capabilities.defaultAuthMode ?? 'apiKey'
+        const capabilities = providerCatalog.get(provider.kind)?.manifest.capabilities
+        if (
+          importedAuthMode &&
+          capabilities &&
+          !capabilities.authModes.includes(importedAuthMode)
+        ) {
+          throw new Error(
+            `Provider "${provider.name}" does not support the imported auth mode "${importedAuthMode}"`,
+          )
+        }
+        providerAuthMode = importedAuthMode ?? capabilities?.defaultAuthMode ?? 'apiKey'
       } else {
         warnings.push(
           `Provider "${exportedAgent.providerRef}" does not exist on the target instance; it was cleared and must be configured manually`,
@@ -822,9 +838,22 @@ export async function importAgentFromZip(
       }
     }
 
-    const importedConfig = shouldDisableImportedMemory
+    let importedConfig = shouldDisableImportedMemory
       ? { ...(exportedAgent.config ?? {}), memoryEnabled: false }
       : exportedAgent.config
+
+    if (importedConfig && Array.isArray(importedConfig.providerChain)) {
+      const chain = importedConfig.providerChain as Array<Record<string, unknown>>
+      if (chain.some((binding) => binding.providerOauthAccountId)) {
+        importedConfig = {
+          ...importedConfig,
+          providerChain: chain.map((binding) => ({ ...binding, providerOauthAccountId: null })),
+        }
+        warnings.push(
+          'ChatGPT account bindings are not imported; select an account on this instance',
+        )
+      }
+    }
 
     // The provider chain cap is a create/update-schema rule, and import writes
     // `config` verbatim — so validate here too rather than let an oversized chain
@@ -996,6 +1025,7 @@ export async function importAgentFromZip(
       providerApiKey: null,
       providerBaseUrl: null,
       providerOauthToken: null,
+      providerOauthAccountId: null,
       endpointApiKey: null,
       publishAuthType: 'api_key',
       publishIpWhitelist: [],

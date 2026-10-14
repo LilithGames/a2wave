@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowLeft, Bot, Shield } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router-dom'
+import { ChatGPTAccountsCard } from '@/components/chatgpt-accounts'
 import { CodexQuotaDisplay } from '@/components/codex-quota'
 import {
   ProviderCliInstallControl,
@@ -16,13 +17,13 @@ import { useProviderClis } from '@/hooks/use-provider-clis'
 import { useProvider, useProviderDependents } from '@/hooks/use-providers'
 
 /**
- * Provider detail — read-only by design.
+ * Provider presets are read-only; OAuth connections are user-managed.
  *
  * Every field is owned by code: identity, scripts and paths come from the
  * preset definition, capabilities from the manifest, and the model catalog is
  * probed from the CLI against each Agent's own credentials (so it lives on the
- * Agent configuration page, not here). The only action left is installing or
- * updating the CLI that actually runs the Provider.
+ * Agent configuration page, not here). Users manage shared ChatGPT connections;
+ * administrators also install or update the CLI that runs the Provider.
  */
 export function ProviderDetailPage() {
   const { t } = useTranslation()
@@ -123,6 +124,8 @@ export function ProviderDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {provider.kind === 'codex' ? <ChatGPTAccountsCard providerId={providerId} /> : null}
 
       {/* Models — probed per Agent, never stored on the Provider, so this card
           points at where the list actually comes from instead of showing a

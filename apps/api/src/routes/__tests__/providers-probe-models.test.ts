@@ -75,6 +75,40 @@ afterEach(() => {
 })
 
 describe('POST /probe-models — generic request validation', () => {
+  it('forwards the selected Codex OAuth account to model discovery', async () => {
+    const probeModels = vi.fn().mockResolvedValue({ models: ['account-model'] })
+    providerCatalogGetMock.mockReturnValue({
+      manifest: { capabilities: { credentialFields: { oauth: [{ field: 'oauthAccountId' }] } } },
+      probeModels,
+    })
+    const res = await postProbe({
+      kind: 'codex',
+      authMode: 'oauth',
+      oauthAccountId: 'poa_selected',
+    })
+    expect(res.status).toBe(200)
+    expect(probeModels).toHaveBeenCalledWith({ authMode: 'oauth', oauthAccountId: 'poa_selected' })
+  })
+
+  it('rejects an OAuth account supplied for a different credential mode', async () => {
+    const probeModels = vi.fn()
+    providerCatalogGetMock.mockReturnValue({
+      manifest: { capabilities: { credentialFields: { apiKey: [{ field: 'apiKey' }] } } },
+      probeModels,
+    })
+    expect(
+      (
+        await postProbe({
+          kind: 'codex',
+          authMode: 'apiKey',
+          apiKey: 'key',
+          oauthAccountId: 'poa_selected',
+        })
+      ).status,
+    ).toBe(400)
+    expect(probeModels).not.toHaveBeenCalled()
+  })
+
   it('returns 400 on invalid JSON', async () => {
     const res = await buildApp().request('/providers/probe-models', {
       method: 'POST',

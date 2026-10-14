@@ -60,6 +60,17 @@ export function extractLiveSessionId(line: string): string | null {
 
   const record = data as Record<string, unknown>
 
+  // The app-server adapter reserves request 2 for its own thread/start or
+  // thread/resume. Notifications also describe child agents and must not
+  // replace the primary run's recovery session.
+  if (record.id === 2 && !record.method) {
+    const thread = (record.result as Record<string, unknown> | undefined)?.thread
+    if (thread && typeof thread === 'object') {
+      const id = readStringField(thread as Record<string, unknown>, 'id')
+      if (id) return id
+    }
+  }
+
   const type = record.type
   if (typeof type === 'string') {
     const scopedKey = TYPE_SCOPED_SESSION_KEYS[type]

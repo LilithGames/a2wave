@@ -281,6 +281,23 @@ describe('collectAgentExecutionChecks', () => {
     expect(checks.some((c) => c.id === 'provider_credentials_from_environment')).toBe(true)
   })
 
+  it('recognizes the selected Codex account as its OAuth credential', async () => {
+    mockBuildAgentConfig.mockReturnValue({
+      providerId: 'prv_1',
+      providerKind: 'codex',
+      engineType: 'codex',
+      authMode: 'oauth',
+      model: 'account-model',
+      providerOauthAccountId: 'poa_selected',
+    })
+    mockProviderGet.mockReturnValue({ id: 'prv_1', kind: 'codex', name: 'Codex CLI' })
+    const checks = await collectAgentExecutionChecks(
+      row({ id: 'a1', providerId: 'prv_1', type: 'llm', authMode: 'oauth' }),
+    )
+    expect(checks.some((check) => check.id === 'provider_credentials_configured')).toBe(true)
+    expect(checks.some((check) => check.id === 'provider_credentials_from_environment')).toBe(false)
+  })
+
   it('uses resolved Provider chain credentials instead of stale top-level Agent fields', async () => {
     mockBuildAgentConfig.mockReturnValue({
       providerId: 'prv_1',
@@ -379,15 +396,15 @@ describe('collectAgentExecutionChecks', () => {
   it('reports unsupported auth modes from the Provider manifest', async () => {
     mockBuildAgentConfig.mockReturnValue({
       providerId: 'prv_1',
-      providerKind: 'codex',
-      engineType: 'codex',
+      providerKind: 'cursor',
+      engineType: 'cursor',
       authMode: 'oauth',
       providerOauthToken: 'token',
     })
     mockProviderGet.mockReturnValue({
       id: 'prv_1',
-      kind: 'codex',
-      name: 'Codex CLI',
+      kind: 'cursor',
+      name: 'Cursor CLI',
     })
 
     const checks = await collectAgentExecutionChecks(

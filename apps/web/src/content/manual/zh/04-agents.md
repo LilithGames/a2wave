@@ -20,7 +20,7 @@ Agent 是 a2wave 的核心编排单元。一个 Agent = **系统提示词 + 执�
 - **推理档位与快速模式**：部分引擎（Claude Code、Codex）支持，配置在**每一档 Provider 的模型旁边**，详见下方「推理档位与快速模式」。
 - **凭证模式（authMode）**：
   - `apiKey`：注入 API Key（如 `ANTHROPIC_API_KEY`）。
-  - `oauth`：注入 OAuth Token（`CLAUDE_CODE_OAUTH_TOKEN`，仅 Claude Code）。
+  - `oauth`：Claude Code 使用 OAuth Token；Codex 选择共享的已授权 ChatGPT 账号。可以直接在 Provider 条目中新增登录，成功后会自动选中，**保存**后才应用绑定。运行会消耗该账号授权的额度，详见 [ChatGPT 账号](/wiki/providers)。
   - `localSession`：用「运行 a2wave 的服务器」上 CLI 的登录态（`~/.claude` 等，非你当前浏览器所在的电脑），不注入凭证。
 - **工作目录类型（workspaceType）**：`temp`（临时目录，默认）或 `scm`（绑定 [代码源](/wiki/scm-sources)）。
 - **挂载能力**：[Skill](/wiki/skills) 与 Skill 分组、[MCP Server](/wiki/mcp-servers)、[知识库](/wiki/knowledge-base)。

@@ -16,6 +16,21 @@ import {
 } from '../agent-yaml.js'
 
 describe('expandEnvVars', () => {
+  it('preserves a same-instance Codex OAuth account reference in Agent apply payloads', () => {
+    const doc = {
+      name: 'subscription-agent',
+      authMode: 'oauth' as const,
+      providerOauthAccountId: 'poa_one',
+      config: {
+        providerChain: [
+          { providerId: 'prv_codex', authMode: 'oauth', providerOauthAccountId: 'poa_one' },
+        ],
+      },
+    }
+    const payload = toCreatePayload(doc, { providerId: 'prv_codex' })
+    expect(payload.providerOauthAccountId).toBe('poa_one')
+    expect(payload.config).toEqual(doc.config)
+  })
   it('substitutes a present variable', () => {
     expect(expandEnvVars('hi ${NAME}', { NAME: 'world' })).toBe('hi world')
   })

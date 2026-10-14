@@ -162,6 +162,20 @@
       "when": 1789352857645,
       "tag": "0022_equal_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790737506509,
+      "tag": "0023_luxuriant_meltdown",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790738046173,
+      "tag": "0024_tired_hammerhead",
+      "breakpoints": true
     }
   ]
 }

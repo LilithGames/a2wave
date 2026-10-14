@@ -19,6 +19,7 @@ export interface ProviderCredentialValues {
   providerApiKey?: string
   providerBaseUrl?: string
   providerOauthToken?: string
+  providerOauthAccountId?: string
 }
 
 export interface ModelProbeErrorTranslation {
@@ -191,6 +192,7 @@ function credentialValue(
 ): string | undefined {
   if (field === 'apiKey') return input.providerApiKey
   if (field === 'baseUrl') return input.providerBaseUrl
+  if (field === 'oauthAccountId') return input.providerOauthAccountId
   return input.providerOauthToken
 }
 
@@ -202,6 +204,7 @@ export function buildProbeModelsRequest(
   missingFields: ProviderCredentialField[]
   maskedFields?: ProviderCredentialField[]
   unsupportedAuthMode?: boolean
+  missingOauthAccount?: boolean
 } {
   // Deliberately NOT normalized: the probe must run under the mode the operator
   // sees selected. config-tab renders the auth-mode label and the credential
@@ -219,11 +222,18 @@ export function buildProbeModelsRequest(
   if (normalizeAuthMode(provider.capabilities, authMode) !== authMode) {
     return { missingFields, unsupportedAuthMode: true }
   }
+  if (provider.kind === 'codex' && authMode === 'oauth') {
+    const oauthAccountId = input.providerOauthAccountId?.trim()
+    return oauthAccountId
+      ? { request: { kind: 'codex', authMode, oauthAccountId }, missingFields: [] }
+      : { missingFields: [], missingOauthAccount: true }
+  }
   const visibleFields = new Set(visibleCredentialFieldsFor(provider.capabilities, authMode))
   const normalizedValues = {
     apiKey: input.providerApiKey?.trim(),
     baseUrl: input.providerBaseUrl?.trim(),
     oauthToken: input.providerOauthToken?.trim(),
+    oauthAccountId: input.providerOauthAccountId?.trim(),
   }
   const maskedFields = Array.from(visibleFields).filter(
     (field) => normalizedValues[field] === MASKED_SECRET,

@@ -147,6 +147,7 @@ export const providerChainItemSchema = z.object({
   providerApiKey: z.string().nullable().optional(),
   providerBaseUrl: z.string().nullable().optional(),
   providerOauthToken: z.string().nullable().optional(),
+  providerOauthAccountId: z.string().min(1).nullable().optional(),
   enabled: z.boolean().default(true),
 })
 export type ProviderChainItem = z.infer<typeof providerChainItemSchema>
@@ -476,6 +477,7 @@ export const agentSchema = z.object({
   providerApiKey: z.string().nullable().optional(),
   providerBaseUrl: z.string().nullable().optional(),
   providerOauthToken: z.string().nullable().optional(),
+  providerOauthAccountId: z.string().min(1).nullable().optional(),
   /** @deprecated Auto-memory inherits the Agent Provider credentials; kept only for legacy client compatibility */
   memoryProviderApiKey: z.string().nullable().optional(),
   embeddingApiKey: z.string().nullable().optional(),
@@ -556,6 +558,7 @@ export const createAgentInput = z.object({
   providerApiKey: z.string().nullable().optional(),
   providerBaseUrl: z.string().nullable().optional(),
   providerOauthToken: z.string().nullable().optional(),
+  providerOauthAccountId: z.string().min(1).nullable().optional(),
   /** @deprecated Auto-memory inherits the Agent Provider credentials; kept only for legacy client compatibility */
   memoryProviderApiKey: z.string().nullable().optional(),
   embeddingApiKey: z.string().nullable().optional(),

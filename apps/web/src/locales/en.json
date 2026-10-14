@@ -414,7 +414,7 @@
     "notFound": "Provider not found",
     "backToProviders": "Back to Providers",
     "preset": "Preset",
-    "presetInfo": "System preset — all configuration is read-only. Available models are probed live by each Agent using its own credentials, not maintained here.",
+    "presetInfo": "System preset — Provider basic information is read-only. Available models are probed live by each Agent using its own credentials, not maintained here.",
     "basicInfo": "Basic Information",
     "basicInfoDesc": "Provider name and description",
     "name": "Name",
@@ -1320,6 +1320,7 @@
     "authMode": "Auth Mode",
     "authModeApiKey": "Use API Key",
     "authModeOauth": "Use OAuth Token",
+    "authModeChatgptAccount": "Use ChatGPT account",
     "authModeLocalSession": "Use server's login session",
     "authHeaderStyle": "API Key header",
     "authHeaderStyleXApiKey": "x-api-key (compatible default)",
@@ -2535,7 +2536,17 @@
       "user_invitation.created": "Create user invitation",
       "user_invitation.revoked": "Revoke user invitation",
       "user_invitation.accepted": "Accept user invitation",
-      "user_invitation.accept_failed": "User invitation accept failed"
+      "user_invitation.accept_failed": "User invitation accept failed",
+      "provider_oauth_account.login_start": "Start ChatGPT sign-in",
+      "provider_oauth_account.connect": "Connect ChatGPT account",
+      "provider_oauth_account.disconnect": "Disconnect ChatGPT account",
+      "provider_oauth_account.disconnect_failed": "ChatGPT disconnect failed",
+      "provider_oauth_account.login_failed": "ChatGPT sign-in failed",
+      "provider_oauth_account.refresh": "Refresh ChatGPT credentials",
+      "provider_oauth_account.refresh_failed": "ChatGPT credential refresh failed",
+      "provider_oauth_account.login_create": "Create ChatGPT connection request",
+      "provider_oauth_account.update": "Rename ChatGPT account",
+      "provider_oauth_account.delete": "Remove ChatGPT account"
     },
     "resources": {
       "agent": "Agent",
@@ -2559,7 +2570,8 @@
       "skill": "Skill",
       "skill-group": "Skill group",
       "user": "User",
-      "user_invitation": "User invitation"
+      "user_invitation": "User invitation",
+      "provider_oauth_account": "ChatGPT account"
     },
     "datePresetAll": "All time",
     "dateRange": "Date range"
@@ -2827,5 +2839,47 @@
     "pageDesc": "Tokens for the a2wave CLI, CI jobs, and scripts. Each one is yours alone and can be deleted on its own.",
     "submit": "Create token",
     "copyFailed": "Could not copy. Select the token and copy it manually."
+  },
+  "chatgptAccounts": {
+    "title": "ChatGPT Accounts",
+    "connect": "Continue with ChatGPT",
+    "reconnect": "Reconnect",
+    "rename": "Rename",
+    "account": "ChatGPT account",
+    "selectAccount": "Select an authorized account",
+    "label": "Account label",
+    "labelOptional": "Account label (optional)",
+    "empty": "No ChatGPT accounts have been connected.",
+    "sharedUsage": "Accounts are shared by this Provider. Binding an Agent will consume the selected account’s authorized ChatGPT allowance.",
+    "saveBindingHint": "A new connection is selected here automatically. Save the Agent to apply this binding.",
+    "loginDescription": "Authorize from the computer where you use your browser, then return here. Your ChatGPT tokens are stored by a2wave.",
+    "localCommandHint": "Run this command on the computer where your browser is open. The local a2wave CLI will open ChatGPT for authorization.",
+    "codeHint": "Copy this one-time connection code and paste it when the CLI asks. Keep this dialog open until authorization finishes; do not share the code or include it in commands.",
+    "generateCode": "Generate connection code",
+    "copyCode": "Copy connection code",
+    "copyCommand": "Copy command",
+    "copied": "Copied",
+    "copyFailed": "Could not copy. Check your clipboard permissions and try again.",
+    "expires": "Connection code expires at {{time}}.",
+    "waiting": "Waiting for the local CLI…",
+    "authorizing": "Complete authorization in ChatGPT…",
+    "reconnectAccount": "Reconnect {{account}} with the same ChatGPT account and workspace.",
+    "loginExpired": "The connection request expired. Generate a new code and try again.",
+    "loginFailed": "ChatGPT authorization failed. Generate a new code to try again with the selected account and workspace.",
+    "statusFailed": "Could not check authorization status. Retry to see whether it completed.",
+    "startFailed": "Could not start ChatGPT authorization. Try again.",
+    "loadFailed": "Could not load ChatGPT accounts.",
+    "renameFailed": "Could not rename this account. Try again.",
+    "deleteTitle": "Remove ChatGPT account?",
+    "deleteHint": "Remove {{account}} from the shared account pool. First unbind all Agents using it.",
+    "deleteFailed": "Could not remove the account. Unbind Agents using it and confirm you have permission.",
+    "unavailableAccount": "Unavailable account ({{id}})",
+    "accountRequired": "Select a connected ChatGPT account before fetching models.",
+    "chainAccountRequired": "Provider entry {{index}} requires a connected ChatGPT account.",
+    "status": {
+      "ready": "Connected",
+      "expired": "Access expired",
+      "reauth_required": "Sign-in required"
+    }
   }
 }

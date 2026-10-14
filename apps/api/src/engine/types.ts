@@ -261,6 +261,8 @@ export interface ListModelsOptions {
   apiKey?: string
   /** OAuth token entered by the user in oauth mode (only Claude Code has this mode) */
   oauthToken?: string
+  /** Stored ChatGPT account selected for Codex SIWC model discovery. */
+  oauthAccountId?: string
   /** Optional API base URL or proxy endpoint entered in apiKey mode. */
   baseUrl?: string
 }

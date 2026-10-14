@@ -11,6 +11,7 @@ import { extractRunId } from './runtime-context.js'
 export function tapLiveSessionId(
   taskId: string,
   onStdoutLine: (line: string) => void,
+  mapSessionId?: (sessionId: string) => string,
 ): (line: string) => void {
   const runId = extractRunId(taskId)
   // Evaluation replays (`eval/<task>/<case>/<seq>`) and memory tasks
@@ -38,7 +39,7 @@ export function tapLiveSessionId(
       const { persistLiveSessionId } = await import('../lib/persist-live-session-id.js')
       // Return the verdict rather than swallowing it: false means the run row
       // is gone, which is what lets the recorder stand down.
-      const written = await persistLiveSessionId(runId, sessionId)
+      const written = await persistLiveSessionId(runId, mapSessionId?.(sessionId) ?? sessionId)
       if (written) sessionRecorded = true
       return written
     },

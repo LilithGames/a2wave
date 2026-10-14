@@ -205,6 +205,33 @@ describe('agentsCommand', () => {
       expect(mockResolveAgentId).toHaveBeenCalledWith('Bot A')
     })
 
+    it('shows the selected shared ChatGPT account for the Agent and its chain', async () => {
+      mockResolveAgentId.mockResolvedValueOnce('agt_1')
+      mockGet.mockResolvedValueOnce({
+        data: {
+          id: 'agt_1',
+          name: 'Codex',
+          type: 'cursor',
+          skills: [],
+          authMode: 'oauth',
+          providerOauthAccountId: 'poa_primary',
+          config: {
+            providerChain: [
+              {
+                providerId: 'prv_codex',
+                authMode: 'oauth',
+                providerOauthAccountId: 'poa_secondary',
+              },
+            ],
+          },
+        },
+      })
+      await getSubCommand('get').run({ args: { id: 'agt_1' } })
+      const out = consoleSpy.mock.calls.flat().join('\n')
+      expect(out).toContain('OAuth Account: poa_primary')
+      expect(out).toContain('oauthAccount=poa_secondary')
+    })
+
     it('prints expanded run config (provider/workspace/env/gateway)', async () => {
       mockResolveAgentId.mockResolvedValueOnce('agt_1')
       mockGet.mockResolvedValueOnce({
