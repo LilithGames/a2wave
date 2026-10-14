@@ -40,15 +40,15 @@
     },
     {
       "kind": "codex",
-      "version": "0.154.0",
+      "version": "0.162.1",
       "binary": "codex",
       "versionArgs": ["--version"],
-      "expectedVersionOutput": "0.154.0",
+      "expectedVersionOutput": "0.162.1",
       "install": {
         "type": "npm",
         "package": "@openai/codex",
-        "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.154.0.tgz",
-        "integrity": "sha512-FV/x1OHXYv/ifjf3mXj9ThTTAWcUZN6cGIRQRhRxkKNOPuImu1WW0c8ev1vUkE9XGH90dEnYG1tBjIkxRikg0w==",
+        "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.1.tgz",
+        "integrity": "sha512-NWZdi/kxyjv/8EUGFupziGU38YyleugZRM4JXgY5XFH7FUmaFA33NZS2Bmq0HPazf7S3jJQQWsZ/jAK9jsrV3Q==",
         "allowScripts": false
       }
     },
