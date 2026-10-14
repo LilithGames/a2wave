@@ -92,16 +92,23 @@ export async function executeChatRun(
    * fast-moving repository merges well inside that window. Executing anyway
    * costs a full Agent turn to conclude "already merged, nothing to review".
    *
+   * The same check drops a queued `opened` / `updated` run once a newer one for
+   * the same request exists: the newer run reviews the latest head anyway.
+   *
    * Checked here, before the workspace, attachments and Agent config, because
-   * the entire point is to spend one CLI call instead of that turn. Fails open
-   * on any probe error, and never applies to a `closed`-event run.
+   * the entire point is to spend one DB query / CLI call instead of that turn.
+   * Fails open on any probe error, and never applies to a `closed`-event run.
    */
   const gitTriggerOrigin = run.executionMetadata?.gitTriggerOrigin
   // `queued === false` means the manager dispatched this run straight away, so
   // no meaningful time passed between the poll and now. Absent (older rows) is
   // treated as queued: one redundant probe beats missing a stale run.
   if (gitTriggerOrigin && gitTriggerOrigin.queued !== false) {
-    const skipReason = await gitTriggerRunSkipReason(gitTriggerOrigin).catch((err) => {
+    const skipReason = await gitTriggerRunSkipReason(gitTriggerOrigin, {
+      runId,
+      agentId,
+      createdAt: run.createdAt,
+    }).catch((err) => {
       logger.warn({ err, runId, agentId }, 'git-trigger preflight failed; executing anyway')
       return null
     })

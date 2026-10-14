@@ -128,6 +128,25 @@ new failure mode:
   exit, unparsable output, GitLab's transient `locked`. A broken probe must never
   cancel legitimate work.
 
+### Superseded by a newer Run
+
+A busy request fires `opened` and then one `updated` per push, and behind a
+concurrency of 1 they queue together. Each would review the request's head *at
+execution time*, so every one but the newest is a duplicate — measured on a real
+deployment, 2.4 Runs per merge request, with two queued for the same request at
+once.
+
+So before the forge probe, a queued `opened` / `updated` Run looks for a **newer**
+`opened` / `updated` Run of the same Agent for the same request (provider, host,
+project, number) that is `pending` / `queued` / `running` / `completed`, and if
+one exists terminates as **`cancelled`**, naming it. One DB query, no forge call.
+
+- A newer `failed` / `cancelled` Run reviewed nothing, so it does not count.
+- `commented` Runs neither supersede nor get superseded: each comment is its own
+  question, and a comment does not re-review the code.
+- The same queued-only and fail-open rules apply: a lookup error falls through
+  to the forge probe.
+
 The cancellation retries like any other terminal transition: callers invoke
 `executeChatRun` as `void`, so a rejected write is an unhandled rejection that
 would leave the row `running` with its concurrency slot pinned — and the orphan

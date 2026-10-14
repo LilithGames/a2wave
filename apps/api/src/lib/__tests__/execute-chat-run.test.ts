@@ -216,9 +216,11 @@ vi.mock('../pending-job-registry.js', () => ({
   sweepPendingContexts: vi.fn(),
 }))
 
-const mockGitTriggerRunSkipReason = vi.fn<() => Promise<string | null>>(async () => null)
+const mockGitTriggerRunSkipReason = vi.fn<(...args: unknown[]) => Promise<string | null>>(
+  async () => null,
+)
 vi.mock('../git-trigger-run-preflight.js', () => ({
-  gitTriggerRunSkipReason: () => mockGitTriggerRunSkipReason(),
+  gitTriggerRunSkipReason: (...args: unknown[]) => mockGitTriggerRunSkipReason(...args),
 }))
 
 const mockResolveNativeChatAttachments = vi.fn().mockResolvedValue([])
@@ -1653,6 +1655,21 @@ describe('executeChatRun', () => {
       }),
     )
     expect(mockExecuteWithRetry).not.toHaveBeenCalled()
+  })
+
+  it('hands the preflight the run identity so it can find a newer run for the same request', async () => {
+    // Without it the preflight cannot tell a queued duplicate from the newest
+    // run for a busy request, and every queued `updated` would be reviewed.
+    mockGitTriggerRunSkipReason.mockResolvedValue(null)
+    setupSelectSequence(baseAgent, gitTriggerRun, baseScmSource, undefined)
+
+    const { executeChatRun } = await import('../execute-chat-run.js')
+    await executeChatRun('agt_1', 'run_1')
+
+    expect(mockGitTriggerRunSkipReason).toHaveBeenCalledWith(
+      gitTriggerRun.executionMetadata.gitTriggerOrigin,
+      { runId: 'run_1', agentId: 'agt_1', createdAt: baseRun.createdAt },
+    )
   })
 
   it('runs the preflight before resolving a workspace or materializing attachments', async () => {
