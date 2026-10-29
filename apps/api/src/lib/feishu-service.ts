@@ -1834,12 +1834,12 @@ class FeishuConnectionManager {
       )
       return
     }
-    // 立即回执：在消息上添加 emoji，告知「已收到、处理中」。
-    // 卡片续跑同样回执——目标为卡片消息（点击提交后 Agent 要重新生成回复、可能耗时，需要反馈）；
-    // 仅当续跑没有真实卡片消息可贴（hasCardMessage=false，message_id 为合成兜底值）时才跳过。
+    // Acknowledge receipt unless this conversation's reply mode is silent.
+    // Card continuations acknowledge the real card message, but skip synthetic IDs
+    // when no card message is available to react to.
     const reactionMessageId =
       options.cardResume && !options.cardResume.hasCardMessage ? null : message.message_id
-    if (reactionMessageId) {
+    if (reactionMessageId && getEffectiveReplyMode(config, message) !== 'none') {
       client.im.messageReaction
         .create({
           path: { message_id: reactionMessageId },
