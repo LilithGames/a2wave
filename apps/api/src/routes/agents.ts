@@ -351,7 +351,7 @@ app.post('/import-url', async (c) => {
   const body = await c.req.json()
   const schema = z.object({
     url: z.string().url(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   })
   const parsed = schema.safeParse(body)
   if (!parsed.success) {

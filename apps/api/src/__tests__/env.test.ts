@@ -57,6 +57,24 @@ describe('envSchema', () => {
   })
 
   describe('test environment', () => {
+    it.each([
+      ['CURSOR_AGENT_FORCE', false],
+      ['CURSOR_AGENT_APPROVE_MCPS', true],
+      ['CLAUDE_CODE_FORCE', false],
+      ['CLAUDE_CODE_APPROVE_MCPS', true],
+      ['CODEX_FORCE', false],
+      ['CODEX_APPROVE_MCPS', true],
+      ['QODER_FORCE', false],
+      ['QODER_APPROVE_MCPS', true],
+      ['TRAE_FORCE', false],
+      ['TRAE_APPROVE_MCPS', true],
+      ['LOG_ROTATE_ENABLED', true],
+      ['ALLOW_PRIVATE_ROUTE_TARGETS', true],
+      ['TRUSTED_PROXY', false],
+    ] as const)('parses the default %s as boolean %s', (key, expected) => {
+      expect(envSchema.parse({ NODE_ENV: 'test' })[key]).toBe(expected)
+    })
+
     it('accepts default values and injects a usable AUTH_SECRET', async () => {
       const result = envSchema.safeParse({ NODE_ENV: 'test' })
       expect(result.success).toBe(true)
