@@ -56,8 +56,8 @@ export const createKbDocumentInput = z.object({
   feishuAppSecret: z.string().nullable().optional(),
   notionUrl: z.string().nullable().optional(),
   notionToken: z.string().nullable().optional(),
-  autoSync: z.boolean().default(true).optional(),
-  syncIntervalMin: z.number().min(1).default(60).optional(),
+  autoSync: z.boolean().optional(),
+  syncIntervalMin: z.number().min(1).optional(),
 })
 
 export type CreateKbDocumentInput = z.infer<typeof createKbDocumentInput>

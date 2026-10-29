@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-10-12 · `node scripts/gates/check-license-inventory.mjs --write` · 833 packages
+Generated: 2026-10-29 · `node scripts/gates/check-license-inventory.mjs --write` · 833 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -319,7 +319,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | better-sqlite3 | 12.11.1 | MIT |
 | bindings | 1.5.0 | MIT |
 | bl | 4.1.0 | MIT |
-| body-parser | 2.3.0 | MIT |
+| body-parser | 2.4.0 | MIT |
 | brace-expansion | 5.0.12 | MIT |
 | browserslist | 4.29.3 | MIT |
 | buffer | 5.7.1 | MIT |
@@ -689,7 +689,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | proxy-from-env | 2.1.0 | MIT |
 | pump | 3.0.4 | MIT |
 | punycode | 2.3.1 | MIT |
-| qs | 6.16.0 | BSD-3-Clause |
+| qs | 6.16.0, 6.17.1 | BSD-3-Clause |
 | quick-format-unescaped | 4.0.4 | MIT |
 | range-parser | 1.3.0 | MIT |
 | raw-body | 3.0.2 | MIT |
@@ -823,7 +823,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ufo | 1.6.4 | MIT |
 | unbash | 5.0.0 | ISC |
 | underscore | 1.13.8 | MIT |
-| undici | 6.29.0, 7.30.0 | MIT |
+| undici | 6.29.1, 7.30.1 | MIT |
 | undici-types | 6.21.0 | MIT |
 | unicorn-magic | 0.3.0 | MIT |
 | unified | 11.0.5 | MIT |
@@ -867,6 +867,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | yallist | 3.1.1 | ISC |
 | yaml | 2.9.1 | ISC |
 | yoctocolors | 2.2.0 | MIT |
-| zod | 3.25.76, 4.6.6 | MIT |
+| zod | 4.6.7 | MIT |
 | zod-to-json-schema | 3.25.2 | ISC |
 | zwitch | 2.0.4 | MIT |

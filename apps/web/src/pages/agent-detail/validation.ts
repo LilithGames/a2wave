@@ -3,13 +3,11 @@ import i18n from '@/i18n'
 
 // Resolved on every validation so the message follows the active language,
 // instead of being frozen at module-evaluation time.
-const nameErrorMap: z.ZodErrorMap = (issue, ctx) =>
-  issue.code === z.ZodIssueCode.too_small
-    ? { message: i18n.t('agentDetail.nameRequired') }
-    : { message: ctx.defaultError }
+const nameErrorMap: z.core.$ZodErrorMap = (issue) =>
+  issue.code === 'too_small' ? i18n.t('agentDetail.nameRequired') : undefined
 
 export const agentFormSchema = z.object({
-  name: z.string({ errorMap: nameErrorMap }).min(1).max(100),
+  name: z.string({ error: nameErrorMap }).min(1).max(100),
   description: z.string(),
   systemPrompt: z.string(),
   icon: z.string().min(1),

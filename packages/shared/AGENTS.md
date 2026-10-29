@@ -2,7 +2,7 @@
 
 Global conventions live in the root [AGENTS.md](../../AGENTS.md).
 
-The **single contract layer** across `apps/api` / `apps/web` / `apps/cli`: Zod schemas + inferred types define the data shapes and validation rules for the whole repo. Built with tsup into ESM + `.d.ts`. Dependencies are only `zod` (v3) and `croner`; consumed one-way by the apps, never depends on any app in reverse.
+The **single contract layer** across `apps/api` / `apps/web` / `apps/cli`: Zod schemas + inferred types define the data shapes and validation rules for the whole repo. Built with tsup into ESM + `.d.ts`. Dependencies are only `zod` (v4) and `croner`; consumed one-way by the apps, never depends on any app in reverse.
 
 ## Directory Structure
 
@@ -21,7 +21,7 @@ src/
 Every `schemas/*.ts` follows the same pattern; understand it before changing any schema:
 
 - Entity schema (`z.object`) + `export type X = z.infer<typeof xSchema>` — **types are always inferred from schemas, never handwritten**.
-- CRUD inputs: `createXInput` lists fields explicitly with `.default(...)`; `updateXInput = createXInput.partial()`.
+- CRUD inputs: `createXInput` lists fields explicitly with `.default(...)`; when composing `updateXInput`, unwrap create-only defaults before `.partial()`. Zod 4 otherwise populates omitted PATCH fields with those defaults, which can silently overwrite existing data. Keep empty-patch and omitted-field regression coverage.
 - Enums are exported separately as `z.enum([...])` (e.g. `runStatusEnum`, `publishChannelEnum`); the DB and frontend share the same set of values.
 - `*_DEFAULTS` constants (e.g. `AGENT_DEFAULTS`, `MCP_SERVER_DEFAULTS`) are the **single source of default values for both the DB and Zod**; change defaults here.
 - Date fields use `z.coerce.date()`; masking of sensitive fields is the responsibility of the api read paths (schemas do not mask).

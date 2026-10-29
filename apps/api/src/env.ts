@@ -64,7 +64,7 @@ function hasValidExactHostnameAllowlist(raw: string): boolean {
  * this — an empty string should fail loudly so operators immediately see the misconfiguration,
  * mirroring how AUTH_COOKIE_SECURE handles empty strings.
  */
-function numberEnv<T extends z.ZodTypeAny>(schema: T) {
+function numberEnv<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => (v === '' ? undefined : v), schema)
 }
 
@@ -77,7 +77,7 @@ function numberEnv<T extends z.ZodTypeAny>(schema: T) {
  * also dodged the "still using default secret" startup warning) and
  * cors({origin: ''}) rejected every browser origin with no boot-time error.
  */
-function stringEnv<T extends z.ZodTypeAny>(schema: T) {
+function stringEnv<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => (v === '' ? undefined : v), schema)
 }
 
@@ -208,12 +208,12 @@ export const envSchema = z
     CURSOR_AGENT_FORCE: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** 是否自动批准 MCP 工具调用 */
     CURSOR_AGENT_APPROVE_MCPS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** Agent 默认工作目录 */
     CURSOR_AGENT_WORK_DIR: z.string().default('./data/workspaces'),
 
@@ -230,12 +230,12 @@ export const envSchema = z
     CLAUDE_CODE_FORCE: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** 是否自动批准 MCP 工具调用（通过 allowedTools 放行 mcp__*） */
     CLAUDE_CODE_APPROVE_MCPS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** Agent 默认工作目录 */
     CLAUDE_CODE_WORK_DIR: z.string().default('./data/workspaces'),
 
@@ -252,12 +252,12 @@ export const envSchema = z
     CODEX_FORCE: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** 是否自动批准 MCP 工具调用（通过 --ask-for-approval never 放行） */
     CODEX_APPROVE_MCPS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** Agent 默认工作目录 */
     CODEX_WORK_DIR: z.string().default('./data/workspaces'),
 
@@ -272,12 +272,12 @@ export const envSchema = z
     QODER_FORCE: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** Whether to auto-approve MCP tool calls (via --allowed-tools mcp__*) */
     QODER_APPROVE_MCPS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** Default agent work directory */
     QODER_WORK_DIR: z.string().default('./data/workspaces'),
 
@@ -294,12 +294,12 @@ export const envSchema = z
     TRAE_FORCE: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** Whether to auto-approve MCP tool calls (via --allowed-tool mcp__*) */
     TRAE_APPROVE_MCPS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** Default agent work directory */
     TRAE_WORK_DIR: z.string().default('./data/workspaces'),
 
@@ -369,7 +369,7 @@ export const envSchema = z
     LOG_ROTATE_ENABLED: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
 
     // --- SSRF allowlists ---
     /** Exact import-source DNS hostnames allowed to resolve to controlled private addresses. */
@@ -396,12 +396,12 @@ export const envSchema = z
     ALLOW_PRIVATE_ROUTE_TARGETS: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('true'),
+      .prefault('true'),
     /** 是否信任白名单反代传入的 X-Forwarded-For，用于认证限流分桶。 */
     TRUSTED_PROXY: z
       .string()
       .transform((v) => v === 'true' || v === '1')
-      .default('false'),
+      .prefault('false'),
     /** 逗号分隔的可信反代 TCP remoteAddress/IP CIDR。TRUSTED_PROXY=true 时才生效。 */
     TRUSTED_PROXY_ADDRESSES: z.string().default('').refine(hasValidTrustedProxyAddresses, {
       message:

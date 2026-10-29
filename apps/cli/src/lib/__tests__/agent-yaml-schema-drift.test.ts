@@ -25,7 +25,7 @@ import {
   PUBLISH_CHANNELS,
 } from '../agent-yaml.js'
 
-/** Unwrap whichever envelope zod-to-json-schema produced for a named object. */
+/** Unwrap the named JSON Schema envelope generated from shared schemas. */
 function properties(name: 'feishuConfig' | 'artifactPolicy'): Record<string, unknown> {
   const doc = generated.objects[name] as Record<string, unknown>
   const definitions = doc.definitions as Record<string, { properties?: Record<string, unknown> }>
@@ -56,9 +56,13 @@ describe('agent-yaml mirrors match the generated shared schemas', () => {
   it('a2aRouteTarget mirrors the shared discriminated union', () => {
     const doc = generated.objects.a2aRouteTarget as Record<string, unknown>
     const definitions = doc.definitions as
-      | Record<string, { anyOf?: Array<Record<string, unknown>> }>
+      | Record<
+          string,
+          { anyOf?: Array<Record<string, unknown>>; oneOf?: Array<Record<string, unknown>> }
+        >
       | undefined
-    const variants = (definitions?.a2aRouteTarget?.anyOf ??
+    const variants = (definitions?.a2aRouteTarget?.oneOf ??
+      definitions?.a2aRouteTarget?.anyOf ??
       (doc.anyOf as Array<Record<string, unknown>>)) as Array<{
       properties: Record<string, { const?: string; enum?: string[] }>
     }>
