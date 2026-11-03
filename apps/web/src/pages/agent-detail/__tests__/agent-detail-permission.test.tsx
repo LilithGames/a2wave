@@ -11,11 +11,10 @@
  * the returned `permission` without standing up the full agent fixture +
  * mutation graph.
  */
-
+import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 import type { AgentPermission } from '@a2wave/shared'
 import { Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 
 const baseAgent = {
   id: 'agt_test1',

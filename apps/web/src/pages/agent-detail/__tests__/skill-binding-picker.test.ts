@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildSkillBindingPickerState,
   type SkillPickerGroup,
   type SkillPickerSkill,
+  buildSkillBindingPickerState,
 } from '../config-tab'
 
 const skills: SkillPickerSkill[] = [

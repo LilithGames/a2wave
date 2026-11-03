@@ -1,3 +1,4 @@
+import i18n from '@/i18n'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 /**
  * Regression test for the deferred-detail-query bug.
@@ -10,7 +11,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import i18n from '@/i18n'
 
 const mutationStub = () => ({
   mutateAsync: vi.fn().mockResolvedValue({ data: { id: 'skl_new' } }),

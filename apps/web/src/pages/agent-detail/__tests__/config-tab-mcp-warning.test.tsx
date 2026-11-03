@@ -9,11 +9,10 @@
  * in: hardcoding `routeEnabled = false` keeps every helper test green while
  * silently dropping the warning for a route-only agent.
  */
-
+import { renderWithProviders, screen } from '@/test/render'
 import type { ProviderCapabilities, ProviderDto } from '@a2wave/shared'
 import { useForm } from 'react-hook-form'
 import { describe, expect, it, vi } from 'vitest'
-import { renderWithProviders, screen } from '@/test/render'
 import { ConfigTab } from '../config-tab'
 import type { AgentFormMethods, ProviderChainEntry, RemoteEntry } from '../types'
 
