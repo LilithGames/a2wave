@@ -1,4 +1,3 @@
-import i18n from '@/i18n'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 /**
  * Smoke test for the plain MCP server form modal (create mode).
@@ -12,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '@/i18n'
 
 // ---------------------------------------------------------------------------
 // Hook mocks
@@ -55,10 +55,11 @@ function renderCreateModal() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   })
-  function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-  }
-  return render(<McpServerFormModal open onOpenChange={() => {}} />, { wrapper: Wrapper })
+  return render(<McpServerFormModal open onOpenChange={() => {}} />, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    ),
+  })
 }
 
 // ---------------------------------------------------------------------------

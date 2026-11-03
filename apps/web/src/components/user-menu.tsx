@@ -11,12 +11,12 @@ import {
   Palette,
   ShieldCheck,
   Terminal,
-  X,
 } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { AboutDialog } from '@/components/about-dialog'
+import { PasswordPolicyItem } from '@/components/password-policy-item'
 import { ThemePickerDialog } from '@/components/theme-picker-dialog'
 import {
   Dialog,
@@ -448,17 +448,6 @@ function ChangePasswordDialog({
     }
   }
 
-  const PolicyItem = ({ ok, label }: { ok: boolean; label: string }) => (
-    <div className="flex items-center gap-1.5 text-xs">
-      {ok ? (
-        <Check className="h-3.5 w-3.5 text-success" />
-      ) : (
-        <X className="h-3.5 w-3.5 text-muted-foreground/40" />
-      )}
-      <span className={ok ? 'text-success' : 'text-muted-foreground'}>{label}</span>
-    </div>
-  )
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -507,10 +496,10 @@ function ChangePasswordDialog({
 
           {newPassword.length > 0 && (
             <div className="info-panel px-3 py-2.5 space-y-1">
-              <PolicyItem ok={policy.minLength} label={t('auth.policyMinLength')} />
-              <PolicyItem ok={policy.hasUpper} label={t('auth.policyUppercase')} />
-              <PolicyItem ok={policy.hasLower} label={t('auth.policyLowercase')} />
-              <PolicyItem ok={policy.hasDigit} label={t('auth.policyDigit')} />
+              <PasswordPolicyItem ok={policy.minLength} label={t('auth.policyMinLength')} />
+              <PasswordPolicyItem ok={policy.hasUpper} label={t('auth.policyUppercase')} />
+              <PasswordPolicyItem ok={policy.hasLower} label={t('auth.policyLowercase')} />
+              <PasswordPolicyItem ok={policy.hasDigit} label={t('auth.policyDigit')} />
             </div>
           )}
 

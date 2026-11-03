@@ -1,6 +1,6 @@
-import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 
 vi.mock('@/lib/api', () => ({
   api: {

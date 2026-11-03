@@ -268,20 +268,20 @@ describe('RouteSection', () => {
   })
 })
 
-describe('EnvSection', () => {
-  function Harness({ initial }: { initial: EnvEntry[] }) {
-    const [entries, setEntries] = useState(initial)
-    const [visible, setVisible] = useState(new Set<string>())
-    return (
-      <EnvSection
-        envEntries={entries}
-        setEnvEntries={setEntries}
-        visibleEnvIds={visible}
-        setVisibleEnvIds={setVisible}
-      />
-    )
-  }
+function Harness({ initial }: { initial: EnvEntry[] }) {
+  const [entries, setEntries] = useState(initial)
+  const [visible, setVisible] = useState(new Set<string>())
+  return (
+    <EnvSection
+      envEntries={entries}
+      setEnvEntries={setEntries}
+      visibleEnvIds={visible}
+      setVisibleEnvIds={setVisible}
+    />
+  )
+}
 
+describe('EnvSection', () => {
   it('shows variable names as chips without exposing their values', () => {
     renderWithProviders(
       <Harness initial={[envEntry({ key: 'API_BASE', value: 'https://secret.internal' })]} />,

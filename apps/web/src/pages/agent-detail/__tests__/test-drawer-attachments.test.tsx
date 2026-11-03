@@ -1,8 +1,8 @@
-import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 /**
  * 测试抽屉附件上传 UI：回形针按钮渲染、选文件后出现 chip 并调用 /attachments 上传。
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen, userEvent, waitFor } from '@/test/render'
 
 const uploadMock = vi.fn()
 vi.mock('@/lib/api', () => ({

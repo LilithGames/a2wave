@@ -1,7 +1,7 @@
-import { renderWithProviders, screen } from '@/test/render'
 import { fireEvent } from '@testing-library/react'
 import dayjs from 'dayjs'
 import { describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen } from '@/test/render'
 import {
   OverviewTimeRange,
   type RangePreset,

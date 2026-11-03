@@ -1,6 +1,6 @@
-import { renderWithProviders, screen, userEvent, within } from '@/test/render'
 import { DEFAULT_MEMORY_INSIGHT_PROMPT, DEFAULT_MEMORY_WORKLOG_PROMPT } from '@a2wave/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderWithProviders, screen, userEvent, within } from '@/test/render'
 
 const mocks = vi.hoisted(() => ({
   useMemoryTopics: vi.fn(),

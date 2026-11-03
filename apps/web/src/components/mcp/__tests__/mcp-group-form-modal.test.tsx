@@ -1,4 +1,3 @@
-import i18n from '@/i18n'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 /**
  * Smoke test for the MCP Group form modal (create mode).
@@ -10,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '@/i18n'
 
 const mutationStub = () => ({
   mutateAsync: vi.fn().mockResolvedValue({ data: { id: 'mcp_new' } }),
@@ -47,10 +47,11 @@ function renderCreateModal() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   })
-  function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-  }
-  return render(<McpGroupFormModal open onOpenChange={() => {}} />, { wrapper: Wrapper })
+  return render(<McpGroupFormModal open onOpenChange={() => {}} />, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    ),
+  })
 }
 
 describe('McpGroupFormModal — create mode', () => {

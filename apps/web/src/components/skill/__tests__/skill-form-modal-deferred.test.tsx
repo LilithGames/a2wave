@@ -1,4 +1,3 @@
-import i18n from '@/i18n'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 /**
  * Regression test for the deferred-detail-query bug.
@@ -11,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '@/i18n'
 
 const mutationStub = () => ({
   mutateAsync: vi.fn().mockResolvedValue({ data: { id: 'skl_new' } }),
@@ -47,11 +47,10 @@ function renderModal(skillId?: string) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   })
-  function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-  }
   return render(<SkillFormModal open onOpenChange={() => {}} skillId={skillId} />, {
-    wrapper: Wrapper,
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    ),
   })
 }
 
