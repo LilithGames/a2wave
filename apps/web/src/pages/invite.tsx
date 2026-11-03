@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Input } from 'antd'
-import { Check, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BrandMarkFallback } from '@/components/brand-mark'
+import { PasswordPolicyItem } from '@/components/password-policy-item'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { formatApiError } from '@/lib/api-error'
@@ -112,17 +112,6 @@ export function InvitePage() {
       setError(formatApiError(err, t))
     }
   }
-
-  const PolicyItem = ({ ok, label }: { ok: boolean; label: string }) => (
-    <div className="flex items-center gap-1.5 text-xs">
-      {ok ? (
-        <Check className="h-3.5 w-3.5 text-success" />
-      ) : (
-        <X className="h-3.5 w-3.5 text-muted-foreground/40" />
-      )}
-      <span className={ok ? 'text-success' : 'text-muted-foreground'}>{label}</span>
-    </div>
-  )
 
   const unusableReason = resolveUnusableReason(invitation?.status, !!checkError)
 
@@ -283,10 +272,10 @@ export function InvitePage() {
                     feedback on, and the action for, the whole form rather than one field. */}
                 {password.length > 0 && (
                   <div className="info-panel px-3 py-2.5 space-y-1 sm:col-span-2">
-                    <PolicyItem ok={policy.minLength} label={t('auth.policyMinLength')} />
-                    <PolicyItem ok={policy.hasUpper} label={t('auth.policyUppercase')} />
-                    <PolicyItem ok={policy.hasLower} label={t('auth.policyLowercase')} />
-                    <PolicyItem ok={policy.hasDigit} label={t('auth.policyDigit')} />
+                    <PasswordPolicyItem ok={policy.minLength} label={t('auth.policyMinLength')} />
+                    <PasswordPolicyItem ok={policy.hasUpper} label={t('auth.policyUppercase')} />
+                    <PasswordPolicyItem ok={policy.hasLower} label={t('auth.policyLowercase')} />
+                    <PasswordPolicyItem ok={policy.hasDigit} label={t('auth.policyDigit')} />
                   </div>
                 )}
 

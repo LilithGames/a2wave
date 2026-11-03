@@ -46,11 +46,10 @@ function renderModal(skillId?: string) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   })
-  function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-  }
   return render(<SkillFormModal open onOpenChange={() => {}} skillId={skillId} />, {
-    wrapper: Wrapper,
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    ),
   })
 }
 

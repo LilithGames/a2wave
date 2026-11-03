@@ -62,11 +62,11 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/helper-plugin-utils | 7.29.7 | MIT |
 | @babel/helper-replace-supers | 7.29.7 | MIT |
 | @babel/helper-skip-transparent-expression-wrappers | 7.29.7 | MIT |
-| @babel/helper-string-parser | 7.29.7 | MIT |
+| @babel/helper-string-parser | 7.29.7, 7.29.11 | MIT |
 | @babel/helper-validator-identifier | 7.29.7 | MIT |
 | @babel/helper-validator-option | 7.29.7 | MIT |
 | @babel/helpers | 7.29.10 | MIT |
-| @babel/parser | 7.29.9 | MIT |
+| @babel/parser | 7.29.9, 7.29.12 | MIT |
 | @babel/plugin-proposal-decorators | 7.29.7 | MIT |
 | @babel/plugin-syntax-decorators | 7.29.7 | MIT |
 | @babel/plugin-syntax-jsx | 7.29.7 | MIT |
@@ -81,9 +81,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/runtime | 7.29.10, 8.1.0 | MIT |
 | @babel/template | 7.29.7 | MIT |
 | @babel/traverse | 7.29.10 | MIT |
-| @babel/types | 7.29.8 | MIT |
+| @babel/types | 7.29.8, 7.29.11 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
-| @biomejs/biome | 2.5.15 | MIT OR Apache-2.0 |
+| @biomejs/biome | 2.6.4 | MIT OR Apache-2.0 |
 | @codemirror/autocomplete | 6.20.4 | MIT |
 | @codemirror/commands | 6.11.1 | MIT |
 | @codemirror/language | 6.13.1 | MIT |
@@ -158,10 +158,10 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @opentelemetry/sdk-trace | 2.12.0, 3.0.0 | Apache-2.0 |
 | @opentelemetry/sdk-trace-base | 2.12.0 | Apache-2.0 |
 | @opentelemetry/semantic-conventions | 1.43.0, 1.44.0 | Apache-2.0 |
-| @oxc-project/types | 0.153.0 | MIT |
+| @oxc-project/types | 0.155.0, 0.156.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
-| @playwright/test | 1.64.0 | Apache-2.0 |
+| @playwright/test | 1.64.1 | Apache-2.0 |
 | @protobufjs/aspromise | 1.1.2 | BSD-3-Clause |
 | @protobufjs/base64 | 1.1.2 | BSD-3-Clause |
 | @protobufjs/codegen | 2.0.5 | BSD-3-Clause |
@@ -240,8 +240,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.3 | MIT |
-| @testing-library/user-event | 14.6.7 | MIT |
-| @types/adm-zip | 0.5.8 | MIT |
+| @testing-library/user-event | 14.6.8 | MIT |
+| @types/adm-zip | 0.6.0 | MIT |
 | @types/aria-query | 5.0.4 | MIT |
 | @types/babel__core | 7.20.5 | MIT |
 | @types/babel__generator | 7.27.0 | MIT |
@@ -261,7 +261,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/d3-timer | 3.0.2 | MIT |
 | @types/debug | 4.1.13 | MIT |
 | @types/deep-eql | 4.0.2 | MIT |
-| @types/estree | 1.0.9 | MIT |
+| @types/estree | 1.0.9, 1.0.10 | MIT |
 | @types/estree-jsx | 1.0.5 | MIT |
 | @types/hast | 3.0.5 | MIT |
 | @types/mdast | 4.0.4 | MIT |
@@ -281,14 +281,14 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @types/xml2js | 0.4.14 | MIT |
 | @ungap/structured-clone | 1.4.0 | ISC |
 | @vitejs/plugin-react | 4.7.0 | MIT |
-| @vitest/coverage-v8 | 4.1.11 | MIT |
-| @vitest/expect | 4.1.11 | MIT |
-| @vitest/mocker | 4.1.11 | MIT |
-| @vitest/pretty-format | 4.1.11 | MIT |
-| @vitest/runner | 4.1.11 | MIT |
-| @vitest/snapshot | 4.1.11 | MIT |
-| @vitest/spy | 4.1.11 | MIT |
-| @vitest/utils | 4.1.11 | MIT |
+| @vitest/coverage-v8 | 4.1.12 | MIT |
+| @vitest/expect | 4.1.12 | MIT |
+| @vitest/mocker | 4.1.12 | MIT |
+| @vitest/pretty-format | 4.1.12 | MIT |
+| @vitest/runner | 4.1.12 | MIT |
+| @vitest/snapshot | 4.1.12 | MIT |
+| @vitest/spy | 4.1.12 | MIT |
+| @vitest/utils | 4.1.12 | MIT |
 | @vladfrangu/async_event_emitter | 2.4.7 | MIT |
 | @xmldom/is-dom-node | 1.0.1 | MIT |
 | @xmldom/xmldom | 0.8.15 | MIT |
@@ -528,7 +528,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | json2mq | 0.2.0 | MIT |
 | json5 | 2.2.3 | MIT |
 | kind-of | 6.0.3 | MIT |
-| knip | 6.41.0 | ISC |
+| knip | 6.44.0 | ISC |
 | launder | 1.7.2 | MIT |
 | lightningcss | 1.32.0, 1.33.0 | MPL-2.0 |
 | lilconfig | 3.1.3 | MIT |
@@ -635,7 +635,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | once | 1.4.0 | ISC |
 | onetime | 7.0.0 | MIT |
 | openid-client | 6.8.8 | MIT |
-| oxc-parser | 0.153.0 | MIT |
+| oxc-parser | 0.155.0 | MIT |
 | oxc-resolver | 11.24.2 | MIT |
 | p-finally | 1.0.0 | MIT |
 | p-queue | 6.6.2 | MIT |
@@ -668,9 +668,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | pirates | 4.0.7 | MIT |
 | pkce-challenge | 5.0.1 | MIT |
 | pkg-types | 1.3.1 | MIT |
-| playwright | 1.64.0 | Apache-2.0 |
-| playwright-core | 1.64.0 | Apache-2.0 |
-| postcss | 8.5.29, 8.5.32 | MIT |
+| playwright | 1.64.1 | Apache-2.0 |
+| playwright-core | 1.64.1 | Apache-2.0 |
+| postcss | 8.5.32 | MIT |
 | postcss-load-config | 6.0.1 | MIT |
 | postgres-array | 2.0.0 | MIT |
 | postgres-bytea | 1.0.1 | MIT |
@@ -722,7 +722,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | restore-cursor | 5.1.0 | MIT |
 | retry | 0.13.1 | MIT |
 | rfdc | 1.4.1 | MIT |
-| rolldown | 1.2.13 | MIT |
+| rolldown | 1.2.16 | MIT |
 | rollup | 4.64.5 | MIT |
 | router | 2.2.0 | MIT |
 | rrweb-cssom | 0.7.1, 0.8.0 | MIT |
@@ -739,7 +739,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | scrollparent | 2.1.0 | ISC |
 | section-matter | 1.0.0 | MIT |
 | secure-json-parse | 4.1.1 | BSD-3-Clause |
-| semver | 6.3.1, 7.7.4, 7.8.5, 7.8.6 | ISC |
+| semver | 6.3.1, 6.3.2, 7.7.4, 7.8.5, 7.8.6 | ISC |
 | send | 1.2.1 | MIT |
 | serve-static | 2.2.1 | MIT |
 | set-cookie-parser | 2.7.3 | MIT |
@@ -819,7 +819,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | typed-rest-client | 2.3.1 | MIT |
 | typescript | 5.9.3 | Apache-2.0 |
 | ufo | 1.6.4 | MIT |
-| unbash | 5.0.0 | ISC |
+| unbash | 6.0.3 | ISC |
 | underscore | 1.13.8 | MIT |
 | undici | 6.29.1, 7.30.1 | MIT |
 | undici-types | 6.21.0 | MIT |
@@ -838,8 +838,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | vfile | 6.0.3 | MIT |
 | vfile-message | 4.0.3 | MIT |
 | victory-vendor | 37.3.6 | MIT AND ISC |
-| vite | 8.3.4 | MIT |
-| vitest | 4.1.11 | MIT |
+| vite | 8.3.5 | MIT |
+| vitest | 4.1.12 | MIT |
 | void-elements | 3.1.0 | MIT |
 | w3c-keyname | 2.2.8 | MIT |
 | w3c-xmlserializer | 5.0.0 | MIT |
