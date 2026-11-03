@@ -1,6 +1,6 @@
 # Dependency License Inventory
 
-Generated: 2026-10-29 · `node scripts/gates/check-license-inventory.mjs --write` · 833 packages
+Generated: 2026-11-03 · `node scripts/gates/check-license-inventory.mjs --write` · 831 packages
 
 Regenerate with `pnpm licenses:write`; `pnpm licenses:check` verifies this file still matches
 the installed dependency tree and is enforced in CI.
@@ -14,8 +14,8 @@ checked for forbidden licenses, and each carries the same license as its parent 
 
 | License | Packages |
 |---|---|
-| MIT | 699 |
-| Apache-2.0 | 50 |
+| MIT | 698 |
+| Apache-2.0 | 49 |
 | ISC | 41 |
 | BSD-3-Clause | 23 |
 | BSD-2-Clause | 7 |
@@ -78,24 +78,24 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @babel/plugin-transform-react-jsx-source | 7.29.7 | MIT |
 | @babel/plugin-transform-typescript | 7.29.9 | MIT |
 | @babel/preset-typescript | 7.28.5 | MIT |
-| @babel/runtime | 7.29.10, 8.0.7 | MIT |
+| @babel/runtime | 7.29.10, 8.1.0 | MIT |
 | @babel/template | 7.29.7 | MIT |
 | @babel/traverse | 7.29.10 | MIT |
 | @babel/types | 7.29.8 | MIT |
 | @bcoe/v8-coverage | 1.0.2 | MIT |
 | @biomejs/biome | 2.5.15 | MIT OR Apache-2.0 |
-| @codemirror/autocomplete | 6.20.3 | MIT |
+| @codemirror/autocomplete | 6.20.4 | MIT |
 | @codemirror/commands | 6.11.1 | MIT |
 | @codemirror/language | 6.13.1 | MIT |
 | @codemirror/state | 6.7.6 | MIT |
 | @codemirror/streamparser | 6.0.0 | MIT |
-| @codemirror/view | 6.43.14 | MIT |
+| @codemirror/view | 6.43.15 | MIT |
 | @csstools/color-helpers | 5.1.0 | MIT-0 |
 | @csstools/css-calc | 2.1.4 | MIT |
 | @csstools/css-color-parser | 3.1.0 | MIT |
 | @csstools/css-parser-algorithms | 3.0.5 | MIT |
 | @csstools/css-tokenizer | 3.0.4 | MIT |
-| @discordjs/builders | 1.14.1 | Apache-2.0 |
+| @discordjs/builders | 1.15.0 | Apache-2.0 |
 | @discordjs/collection | 1.5.3, 2.1.1 | Apache-2.0 |
 | @discordjs/formatters | 0.6.2 | Apache-2.0 |
 | @discordjs/rest | 2.6.3 | Apache-2.0 |
@@ -115,9 +115,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @gilbarbara/deep-equal | 0.4.1 | MIT |
 | @gilbarbara/hooks | 0.11.0 | MIT |
 | @gilbarbara/types | 0.2.2 | MIT |
-| @hono/node-server | 2.1.4 | MIT |
-| @hono/swagger-ui | 0.6.1 | MIT |
-| @hookform/resolvers | 5.9.1 | MIT |
+| @hono/node-server | 2.1.5 | MIT |
+| @hono/swagger-ui | 0.6.2 | MIT |
+| @hookform/resolvers | 5.9.2 | MIT |
 | @inquirer/ansi | 2.0.9 | MIT |
 | @inquirer/checkbox | 5.2.6 | MIT |
 | @inquirer/confirm | 6.3.3 | MIT |
@@ -139,26 +139,25 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @jridgewell/resolve-uri | 3.1.2 | MIT |
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT |
 | @jridgewell/trace-mapping | 0.3.31 | MIT |
-| @larksuiteoapi/node-sdk | 1.75.0 | MIT |
-| @lezer/common | 1.5.3 | MIT |
+| @larksuiteoapi/node-sdk | 1.76.0 | MIT |
+| @lezer/common | 1.5.3, 1.5.5 | MIT |
 | @lezer/highlight | 1.2.5 | MIT |
-| @lezer/lr | 1.4.11 | MIT |
+| @lezer/lr | 1.4.12 | MIT |
 | @marijn/find-cluster-break | 1.0.4 | MIT |
-| @modelcontextprotocol/sdk | 1.32.1 | MIT |
+| @modelcontextprotocol/sdk | 1.32.2 | MIT |
 | @node-rs/argon2 | 2.2.2 | MIT |
-| @node-saml/node-saml | 5.1.0 | MIT |
-| @opentelemetry/api | 1.9.1 | Apache-2.0 |
-| @opentelemetry/api-logs | 0.223.0 | Apache-2.0 |
-| @opentelemetry/core | 2.12.0 | Apache-2.0 |
-| @opentelemetry/exporter-trace-otlp-proto | 0.223.0 | Apache-2.0 |
-| @opentelemetry/otlp-exporter-base | 0.223.0 | Apache-2.0 |
-| @opentelemetry/otlp-transformer | 0.223.0 | Apache-2.0 |
-| @opentelemetry/resources | 2.12.0 | Apache-2.0 |
-| @opentelemetry/sdk-logs | 0.223.0 | Apache-2.0 |
-| @opentelemetry/sdk-metrics | 2.12.0 | Apache-2.0 |
-| @opentelemetry/sdk-trace | 2.12.0 | Apache-2.0 |
+| @node-saml/node-saml | 5.2.0 | MIT |
+| @opentelemetry/api | 1.10.0 | Apache-2.0 |
+| @opentelemetry/core | 2.12.0, 3.0.0 | Apache-2.0 |
+| @opentelemetry/exporter-trace-otlp-proto | 0.300.0 | Apache-2.0 |
+| @opentelemetry/otlp-exporter-base | 0.300.0 | Apache-2.0 |
+| @opentelemetry/otlp-transformer | 0.300.0 | Apache-2.0 |
+| @opentelemetry/resources | 2.12.0, 3.0.0 | Apache-2.0 |
+| @opentelemetry/sdk-logs | 3.0.0 | Apache-2.0 |
+| @opentelemetry/sdk-metrics | 3.0.0 | Apache-2.0 |
+| @opentelemetry/sdk-trace | 2.12.0, 3.0.0 | Apache-2.0 |
 | @opentelemetry/sdk-trace-base | 2.12.0 | Apache-2.0 |
-| @opentelemetry/semantic-conventions | 1.43.0 | Apache-2.0 |
+| @opentelemetry/semantic-conventions | 1.43.0, 1.44.0 | Apache-2.0 |
 | @oxc-project/types | 0.153.0 | MIT |
 | @petamoriken/float16 | 3.9.3 | MIT |
 | @pinojs/redact | 0.4.0 | MIT |
@@ -213,8 +212,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @rc-component/tree-select | 1.16.1 | MIT |
 | @rc-component/trigger | 3.10.1 | MIT |
 | @rc-component/upload | 1.1.1 | MIT |
-| @rc-component/util | 1.13.0 | MIT |
-| @rc-component/virtual-list | 1.5.2 | MIT |
+| @rc-component/util | 1.13.0, 1.14.0 | MIT |
+| @rc-component/virtual-list | 1.6.0 | MIT |
 | @reduxjs/toolkit | 2.13.0 | MIT |
 | @rolldown/pluginutils | 1.0.0-beta.27, 1.0.1 | MIT |
 | @sapphire/async-queue | 1.5.5 | MIT |
@@ -223,9 +222,9 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @sec-ant/readable-stream | 0.4.1 | MIT |
 | @sindresorhus/merge-streams | 4.0.0 | MIT |
 | @slack/logger | 5.0.0 | MIT |
-| @slack/socket-mode | 3.1.0 | MIT |
-| @slack/types | 3.2.0 | MIT |
-| @slack/web-api | 8.2.0 | MIT |
+| @slack/socket-mode | 3.1.1 | MIT |
+| @slack/types | 3.3.0 | MIT |
+| @slack/web-api | 8.3.0 | MIT |
 | @standard-schema/spec | 1.1.0 | MIT |
 | @standard-schema/utils | 0.3.0 | MIT |
 | @stryker-mutator/api | 9.6.1 | Apache-2.0 |
@@ -236,8 +235,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | @tailwindcss/node | 4.3.3 | MIT |
 | @tailwindcss/oxide | 4.3.3 | MIT |
 | @tailwindcss/vite | 4.3.3 | MIT |
-| @tanstack/query-core | 5.104.2 | MIT |
-| @tanstack/react-query | 5.104.2 | MIT |
+| @tanstack/query-core | 5.105.0 | MIT |
+| @tanstack/react-query | 5.105.0 | MIT |
 | @testing-library/dom | 10.4.1 | MIT |
 | @testing-library/jest-dom | 6.9.1 | MIT |
 | @testing-library/react | 16.3.3 | MIT |
@@ -303,7 +302,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ansi-escapes | 7.3.0 | MIT |
 | ansi-regex | 5.0.1, 6.4.0 | MIT |
 | ansi-styles | 5.2.0, 6.2.3 | MIT |
-| antd | 6.6.6 | MIT |
+| antd | 6.6.8 | MIT |
 | any-promise | 1.3.0 | MIT |
 | argparse | 1.0.10 | MIT |
 | aria-query | 5.3.0, 5.3.2 | Apache-2.0 |
@@ -311,7 +310,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ast-v8-to-istanbul | 1.0.7 | MIT |
 | asynckit | 0.4.0 | MIT |
 | atomic-sleep | 1.0.0 | MIT |
-| axios | 1.20.0 | MIT |
+| axios | 1.21.0 | MIT |
 | bail | 2.0.2 | MIT |
 | balanced-match | 4.0.4 | MIT |
 | base64-js | 1.5.1 | MIT |
@@ -386,7 +385,6 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | decode-named-character-reference | 1.3.0 | MIT |
 | decompress-response | 6.0.0 | MIT |
 | deep-extend | 0.6.0 | MIT |
-| deepmerge | 4.3.1 | MIT |
 | delayed-stream | 1.0.0 | MIT |
 | depd | 2.0.0 | MIT |
 | dequal | 2.0.3 | MIT |
@@ -394,8 +392,8 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | detect-libc | 2.1.2 | Apache-2.0 |
 | devlop | 1.1.0 | MIT |
 | diff-match-patch | 1.0.5 | Apache-2.0 |
-| discord-api-types | 0.38.56 | MIT |
-| discord.js | 14.27.0 | Apache-2.0 |
+| discord-api-types | 0.38.57 | MIT |
+| discord.js | 14.28.0 | Apache-2.0 |
 | dom-accessibility-api | 0.5.16, 0.6.3 | MIT |
 | dom-serializer | 3.1.1 | MIT |
 | domelementtype | 3.0.0 | BSD-2-Clause |
@@ -407,7 +405,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | ee-first | 1.1.1 | MIT |
 | electron-to-chromium | 1.5.452 | ISC |
 | emoji-regex | 10.6.0 | MIT |
-| encodeurl | 2.0.0 | MIT |
+| encodeurl | 2.0.1 | MIT |
 | end-of-stream | 1.4.5 | MIT |
 | enhanced-resolve | 5.26.0 | MIT |
 | entities | 6.0.1, 8.1.0 | BSD-2-Clause |
@@ -434,7 +432,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | expand-template | 2.0.3 | (MIT OR WTFPL) |
 | expect-type | 1.4.0 | Apache-2.0 |
 | express | 5.3.0 | MIT |
-| express-rate-limit | 8.7.1 | MIT |
+| express-rate-limit | 8.7.3 | MIT |
 | extend | 3.0.2 | MIT |
 | extend-shallow | 2.0.1 | MIT |
 | fast-copy | 4.1.2 | MIT |
@@ -442,7 +440,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | fast-safe-stringify | 2.1.1 | MIT |
 | fast-string-truncated-width | 3.0.3 | MIT |
 | fast-string-width | 3.0.2 | MIT |
-| fast-uri | 3.1.8 | BSD-3-Clause |
+| fast-uri | 3.1.8, 3.1.9 | BSD-3-Clause |
 | fast-wrap-ansi | 0.2.2 | MIT |
 | fd-package-json | 2.0.0 | MIT |
 | fdir | 6.5.0 | MIT |
@@ -450,7 +448,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | file-uri-to-path | 1.0.0 | MIT |
 | finalhandler | 2.1.1 | MIT |
 | fix-dts-default-cjs-exports | 1.0.1 | MIT |
-| follow-redirects | 1.16.1 | MIT |
+| follow-redirects | 1.16.2 | MIT |
 | form-data | 4.0.6 | MIT |
 | formatly | 0.11.4 | MIT |
 | forwarded | 0.2.0 | MIT |
@@ -475,7 +473,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | hast-util-to-jsx-runtime | 2.3.6 | MIT |
 | hast-util-whitespace | 3.0.0 | MIT |
 | help-me | 5.0.0 | MIT |
-| hono | 4.13.13 | MIT |
+| hono | 4.13.14 | MIT |
 | html-encoding-sniffer | 4.0.0 | MIT |
 | html-escaper | 2.0.2 | MIT |
 | html-parse-stringify | 3.1.0 | MIT |
@@ -517,7 +515,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | istanbul-lib-report | 3.0.1 | BSD-3-Clause |
 | istanbul-reports | 3.2.0 | BSD-3-Clause |
 | jiti | 2.7.0 | MIT |
-| jose | 5.10.0, 6.2.12 | MIT |
+| jose | 5.10.0, 6.2.12, 6.2.15 | MIT |
 | joycon | 3.1.1 | MIT |
 | js-md4 | 0.3.2 | MIT |
 | js-tokens | 4.0.0, 10.0.0 | MIT |
@@ -555,7 +553,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | magicast | 0.5.5 | MIT |
 | make-dir | 4.0.0 | MIT |
 | markdown-table | 3.0.4 | MIT |
-| marked | 18.1.0 | MIT |
+| marked | 18.1.2 | MIT |
 | math-intrinsics | 1.1.0 | MIT |
 | mdast-util-find-and-replace | 3.0.3 | MIT |
 | mdast-util-from-markdown | 2.1.0 | MIT |
@@ -633,7 +631,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | object-inspect | 1.13.4 | MIT |
 | obug | 2.2.1 | MIT |
 | on-exit-leak-free | 2.1.2 | MIT |
-| on-finished | 2.4.1 | MIT |
+| on-finished | 2.4.2 | MIT |
 | once | 1.4.0 | ISC |
 | onetime | 7.0.0 | MIT |
 | openid-client | 6.8.8 | MIT |
@@ -650,7 +648,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | parse5 | 7.3.0 | MIT |
 | parseurl | 1.3.3 | MIT |
 | path-key | 3.1.1, 4.0.0 | MIT |
-| path-to-regexp | 8.4.2 | MIT |
+| path-to-regexp | 9.0.0 | MIT |
 | pathe | 2.0.3 | MIT |
 | pg | 8.23.1 | MIT |
 | pg-cloudflare | 1.4.1 | MIT |
@@ -672,7 +670,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | pkg-types | 1.3.1 | MIT |
 | playwright | 1.64.0 | Apache-2.0 |
 | playwright-core | 1.64.0 | Apache-2.0 |
-| postcss | 8.5.29 | MIT |
+| postcss | 8.5.29, 8.5.32 | MIT |
 | postcss-load-config | 6.0.1 | MIT |
 | postgres-array | 2.0.0 | MIT |
 | postgres-bytea | 1.0.1 | MIT |
@@ -689,23 +687,23 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | proxy-from-env | 2.1.0 | MIT |
 | pump | 3.0.4 | MIT |
 | punycode | 2.3.1 | MIT |
-| qs | 6.16.0, 6.17.1 | BSD-3-Clause |
+| qs | 6.17.1 | BSD-3-Clause |
 | quick-format-unescaped | 4.0.4 | MIT |
 | range-parser | 1.3.0 | MIT |
 | raw-body | 3.0.2 | MIT |
 | rc | 1.2.8 | (BSD-2-Clause OR MIT OR Apache-2.0) |
-| react | 19.3.0 | MIT |
-| react-dom | 19.3.0 | MIT |
-| react-hook-form | 7.90.0 | MIT |
+| react | 19.3.1 | MIT |
+| react-dom | 19.3.1 | MIT |
+| react-hook-form | 7.91.0 | MIT |
 | react-i18next | 16.6.6 | MIT |
 | react-innertext | 1.1.5 | MIT |
-| react-is | 17.0.2, 19.3.0 | MIT |
+| react-is | 17.0.2, 19.3.0, 19.3.1 | MIT |
 | react-joyride | 3.2.0 | MIT |
 | react-markdown | 10.1.0 | MIT |
 | react-redux | 9.3.0 | MIT |
 | react-refresh | 0.17.0 | MIT |
-| react-router | 7.18.4 | MIT |
-| react-router-dom | 7.18.4 | MIT |
+| react-router | 7.18.5 | MIT |
+| react-router-dom | 7.18.5 | MIT |
 | readable-stream | 3.6.2 | MIT |
 | readdirp | 4.1.2 | MIT |
 | real-require | 1.0.0 | MIT |
@@ -732,7 +730,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | safe-buffer | 5.2.1 | MIT |
 | safe-stable-stringify | 2.5.0 | MIT |
 | safer-buffer | 2.1.2 | MIT |
-| sanitize-html | 2.18.0 | MIT |
+| sanitize-html | 2.18.1 | MIT |
 | sax | 1.6.1 | BlueOak-1.0.0 |
 | saxes | 6.0.0 | ISC |
 | scheduler | 0.28.0 | MIT |
@@ -741,10 +739,10 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | scrollparent | 2.1.0 | ISC |
 | section-matter | 1.0.0 | MIT |
 | secure-json-parse | 4.1.1 | BSD-3-Clause |
-| semver | 6.3.1, 7.7.4, 7.8.5 | ISC |
+| semver | 6.3.1, 7.7.4, 7.8.5, 7.8.6 | ISC |
 | send | 1.2.1 | MIT |
 | serve-static | 2.2.1 | MIT |
-| set-cookie-parser | 2.7.2 | MIT |
+| set-cookie-parser | 2.7.3 | MIT |
 | setprototypeof | 1.2.0 | ISC |
 | shebang-command | 2.0.0 | MIT |
 | shebang-regex | 3.0.0 | MIT |
@@ -810,7 +808,7 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | trough | 2.2.0 | MIT |
 | ts-interface-checker | 0.1.13 | Apache-2.0 |
 | ts-mixer | 6.0.4 | MIT |
-| tslib | 2.8.1 | 0BSD |
+| tslib | 2.8.1, 2.9.1 | 0BSD |
 | tsup | 8.5.1 | MIT |
 | tsx | 4.23.15 | MIT |
 | tunnel | 0.0.6 | MIT |
@@ -856,13 +854,13 @@ Result: **no GPL/AGPL/LGPL/SSPL dependencies and no unknown licenses.** The inve
 | wrap-ansi | 9.0.2 | MIT |
 | wrappy | 1.0.2 | ISC |
 | ws | 8.22.0 | MIT |
-| xml-crypto | 6.3.3 | MIT |
+| xml-crypto | 6.4.0 | MIT |
 | xml-encryption | 3.1.0 | MIT |
 | xml-name-validator | 5.0.0 | Apache-2.0 |
 | xml2js | 0.6.2 | MIT |
 | xmlbuilder | 11.0.1, 15.1.1 | MIT |
 | xmlchars | 2.2.0 | MIT |
-| xpath | 0.0.32, 0.0.33, 0.0.34 | MIT |
+| xpath | 0.0.32, 0.0.33, 0.0.35 | MIT |
 | xtend | 4.0.2 | MIT |
 | yallist | 3.1.1 | ISC |
 | yaml | 2.9.1 | ISC |
