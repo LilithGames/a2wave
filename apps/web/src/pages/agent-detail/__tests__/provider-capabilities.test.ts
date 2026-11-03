@@ -41,6 +41,33 @@ const provider = {
   capabilities,
 } as Pick<ProviderDto, 'kind' | 'capabilities'>
 
+describe('Codex shared OAuth account model discovery', () => {
+  it('sends the selected account reference without forwarding a stale token', () => {
+    expect(
+      buildProbeModelsRequest(
+        { ...provider, kind: 'codex' },
+        {
+          authMode: 'oauth',
+          providerOauthAccountId: 'poa_selected',
+          providerOauthToken: 'stale',
+        },
+      ),
+    ).toEqual({
+      request: { kind: 'codex', authMode: 'oauth', oauthAccountId: 'poa_selected' },
+      missingFields: [],
+    })
+  })
+
+  it('requires an account selection before probing Codex OAuth models', () => {
+    expect(
+      buildProbeModelsRequest(
+        { ...provider, kind: 'codex' },
+        { authMode: 'oauth', providerOauthToken: 'stale' },
+      ),
+    ).toEqual({ missingFields: [], missingOauthAccount: true })
+  })
+})
+
 describe('hasConfiguredRouteTargets', () => {
   // A2A routing has no on/off switch: it is enabled exactly when targets exist.
   // `ConfigTab` derives `routeEnabled` from this helper to feed the Provider/MCP

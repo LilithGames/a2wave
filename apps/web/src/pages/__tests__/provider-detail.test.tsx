@@ -100,6 +100,12 @@ describe('ProviderDetailPage — Agent CLI card', () => {
     expect(screen.queryByTestId('codex-quota')).not.toBeInTheDocument()
   })
 
+  it('limits the preset read-only notice to Provider basic information', () => {
+    renderWithProviders(<ProviderDetailPage />)
+    expect(screen.getByText(/Provider 基础信息只读/)).toBeInTheDocument()
+    expect(screen.queryByText(/全部配置只读/)).not.toBeInTheDocument()
+  })
+
   it('does not query Codex quota for other providers', () => {
     useProviderMock.mockReturnValue({
       data: { id: 'prv_claude', kind: 'claude-code', name: 'Claude Code' },

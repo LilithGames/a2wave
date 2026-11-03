@@ -338,6 +338,7 @@ export interface AgentConfig {
   providerApiKey?: string
   providerBaseUrl?: string
   providerOauthToken?: string
+  providerOauthAccountId?: string
   authMode?: 'apiKey' | 'oauth' | 'localSession'
   authHeaderStyle?: AuthHeaderStyle
   readOnly?: boolean
@@ -373,6 +374,7 @@ export interface ResolvedProviderBinding {
   providerApiKey?: string
   providerBaseUrl?: string
   providerOauthToken?: string
+  providerOauthAccountId?: string
   authMode: 'apiKey' | 'oauth' | 'localSession'
   authHeaderStyle?: AuthHeaderStyle
 }
@@ -492,6 +494,28 @@ async function resolveProviderBinding(
     if (apiKey) resolved.providerApiKey = apiKey
     if (baseUrl) resolved.providerBaseUrl = baseUrl
     if (oauthToken) resolved.providerOauthToken = oauthToken
+    const oauthAccountId =
+      binding.providerOauthAccountId ??
+      (options.allowLegacySecrets ? agent.providerOauthAccountId : undefined)
+    if (providerKind === 'codex' && authMode === 'oauth') {
+      try {
+        if (!oauthAccountId) throw new Error('Select a ChatGPT account for the Codex OAuth binding')
+        const { validateProviderOauthAccountBinding } = await import('./provider-oauth-accounts.js')
+        await validateProviderOauthAccountBinding(oauthAccountId, provider.id)
+        resolved.providerOauthAccountId = oauthAccountId
+      } catch (error) {
+        throw new ProviderBindingInvalidError(
+          agent.id,
+          resolved.id,
+          provider.id,
+          providerKind,
+          provider.name || provider.id,
+          'invalid_input',
+          oauthAccountId ? [] : ['oauthAccountId'],
+          error instanceof Error ? error.message : 'ChatGPT account is unavailable',
+        )
+      }
+    }
   }
 
   // Most legacy engines deliberately allow an Agent binding to fall back to a
@@ -543,6 +567,7 @@ export function clearProviderBinding(agentConfig: AgentConfig): void {
   agentConfig.providerApiKey = undefined
   agentConfig.providerBaseUrl = undefined
   agentConfig.providerOauthToken = undefined
+  agentConfig.providerOauthAccountId = undefined
   agentConfig.authHeaderStyle = undefined
 }
 
@@ -569,6 +594,8 @@ export function applyProviderBinding(
     if (binding.providerApiKey) agentConfig.providerApiKey = binding.providerApiKey
     if (binding.providerBaseUrl) agentConfig.providerBaseUrl = binding.providerBaseUrl
     if (binding.providerOauthToken) agentConfig.providerOauthToken = binding.providerOauthToken
+    if (binding.providerOauthAccountId)
+      agentConfig.providerOauthAccountId = binding.providerOauthAccountId
   }
 }
 
@@ -793,6 +820,7 @@ async function resolveAgentProviderConfiguration(
         providerApiKey: agent.providerApiKey,
         providerBaseUrl: agent.providerBaseUrl,
         providerOauthToken: agent.providerOauthToken,
+        providerOauthAccountId: agent.providerOauthAccountId,
         enabled: true,
       },
       0,
@@ -1037,6 +1065,8 @@ export async function buildAgentConfig(
     if (agent.providerApiKey) agentConfig.providerApiKey = agent.providerApiKey
     if (agent.providerBaseUrl) agentConfig.providerBaseUrl = agent.providerBaseUrl
     if (agent.providerOauthToken) agentConfig.providerOauthToken = agent.providerOauthToken
+    if (agent.providerOauthAccountId)
+      agentConfig.providerOauthAccountId = agent.providerOauthAccountId
   }
 
   // 4c. Resolve A2A available agents summary for prompt hints

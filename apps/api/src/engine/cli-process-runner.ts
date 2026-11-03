@@ -49,6 +49,8 @@ export interface CliProcessRunOptions {
   label: string
   /** Complete UTF-8 input written after spawn, then stdin is closed. */
   stdin?: string
+  /** Bidirectional protocol input; stays open until the adapter calls end(). */
+  onStdinReady?: (stdin: NodeJS.WritableStream) => void
   onStdoutLine: (line: string) => void
   parseStderrLines?: boolean
   onSpawned?: () => void
@@ -184,6 +186,7 @@ function runCleanup(options: CliProcessRunOptions): void {
  */
 export class CliProcessRunner {
   private readonly activeProcesses = new Map<string, ActiveProcess>()
+  private readonly preparationCancellation = new Map<string, () => void>()
   private readonly spawnProcess: SpawnProcess
   private readonly stderrLimitBytes: number
   private readonly now: () => number
@@ -209,6 +212,17 @@ export class CliProcessRunner {
 
   get activeCount(): number {
     return this.activeProcesses.size
+  }
+
+  /** Cover asynchronous credential preparation before or between child processes. */
+  registerPreparationCancellation(taskId: string, cancel: () => void): () => void {
+    if (this.preparationCancellation.has(taskId))
+      throw new Error(`Task "${taskId}" already has an execution preparing`)
+    this.preparationCancellation.set(taskId, cancel)
+    return () => {
+      if (this.preparationCancellation.get(taskId) === cancel)
+        this.preparationCancellation.delete(taskId)
+    }
   }
 
   run(options: CliProcessRunOptions): Promise<CliProcessRunResult> {
@@ -250,7 +264,11 @@ export class CliProcessRunner {
       child = this.spawnProcess(options.command, options.args, {
         cwd: options.cwd,
         env: options.env,
-        stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+        stdio: [
+          options.stdin === undefined && !options.onStdinReady ? 'ignore' : 'pipe',
+          'pipe',
+          'pipe',
+        ],
         detached: this.useProcessGroups,
       })
     } catch (error) {
@@ -371,8 +389,13 @@ export class CliProcessRunner {
       })
 
       child.once('spawn', () => {
-        options.onSpawned?.()
-        if (options.stdin !== undefined) child.stdin?.end(options.stdin)
+        try {
+          options.onSpawned?.()
+          if (options.onStdinReady && child.stdin) options.onStdinReady(child.stdin)
+          if (options.stdin !== undefined) child.stdin?.end(options.stdin)
+        } catch (error) {
+          failOnDecodeError(error)
+        }
       })
 
       child.stdout?.on('data', (value: Buffer | string) => {
@@ -442,19 +465,23 @@ export class CliProcessRunner {
   }
 
   cancel(taskId: string): boolean {
-    return this.terminate(taskId, 'cancelled')
+    const cancelPreparation = this.preparationCancellation.get(taskId)
+    cancelPreparation?.()
+    const terminated = this.terminate(taskId, 'cancelled')
+    return !!cancelPreparation || terminated
   }
 
   async cancelAndWait(taskId: string): Promise<boolean> {
     const active = this.activeProcesses.get(taskId)
-    if (!active) return false
-    this.terminate(taskId, 'cancelled')
-    await active.completion
-    return true
+    const cancelled = this.cancel(taskId)
+    if (active) await active.completion
+    return cancelled
   }
 
   async shutdown(): Promise<void> {
-    const taskIds = [...this.activeProcesses.keys()]
+    const taskIds = [
+      ...new Set([...this.activeProcesses.keys(), ...this.preparationCancellation.keys()]),
+    ]
     await Promise.all(taskIds.map((taskId) => this.cancelAndWait(taskId)))
   }
 

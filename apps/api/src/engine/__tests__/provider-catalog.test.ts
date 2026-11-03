@@ -2,9 +2,9 @@ import { PRESET_PROVIDERS, type ProviderManifest } from '@a2wave/shared'
 import { describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_PROVIDER_MANIFESTS,
-  ProviderCatalog,
   createProviderAdapter,
   evaluateProviderVersion,
+  ProviderCatalog,
 } from '../provider-catalog.js'
 import type { AgentEngine } from '../types.js'
 
@@ -20,6 +20,14 @@ function fakeEngine(overrides: Partial<AgentEngine> = {}): AgentEngine {
 const cursorManifest = BUILTIN_PROVIDER_MANIFESTS.cursor
 
 describe('ProviderCatalog', () => {
+  it('supports selected Codex OAuth accounts as an automatically discovered credential', () => {
+    expect(BUILTIN_PROVIDER_MANIFESTS.codex.capabilities.authModes).toContain('oauth')
+    expect(BUILTIN_PROVIDER_MANIFESTS.codex.capabilities.modelDiscovery.oauth).toBe('automatic')
+    expect(BUILTIN_PROVIDER_MANIFESTS.codex.capabilities.credentialFields.oauth).toEqual([
+      { field: 'oauthAccountId', required: true },
+    ])
+  })
+
   it('defines one manifest for every supported Provider kind', async () => {
     expect(Object.keys(BUILTIN_PROVIDER_MANIFESTS)).toEqual([
       'cursor',

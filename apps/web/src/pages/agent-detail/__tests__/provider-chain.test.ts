@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyProviderEntryPatch,
+  applyProviderProbeResult,
   buildProviderChainSubmission,
   serializeProviderChainEntries,
   validateProviderChain,
@@ -47,6 +48,66 @@ function chainEntry(overrides: Partial<ProviderChainEntry> = {}): ProviderChainE
 }
 
 describe('provider-chain submission helpers', () => {
+  it('saves a shared OAuth account reference on both the chain and primary binding', () => {
+    const submission = buildProviderChainSubmission(
+      [
+        chainEntry({
+          authMode: 'oauth',
+          providerOauthAccountId: 'poa_shared',
+          providerOauthToken: 'stale-token',
+        }),
+      ],
+      baseFormData,
+    )
+    expect(submission.providerOauthAccountId).toBe('poa_shared')
+    expect(submission.providerChain[0]?.providerOauthAccountId).toBe('poa_shared')
+    expect(submission.providerOauthToken).toBeNull()
+    expect(submission.providerChain[0]?.providerOauthToken).toBeNull()
+    expect(validateProviderChainSubmission(submission)).toBeNull()
+  })
+
+  it('invalidates model discovery when switching the shared OAuth account', () => {
+    const next = applyProviderEntryPatch(
+      chainEntry({
+        providerOauthAccountId: 'poa_old',
+        dynamicModels: ['model-a'],
+        reasoningEffort: 'high',
+        fastMode: true,
+      }),
+      { providerOauthAccountId: 'poa_new' },
+    )
+    expect(next.dynamicModels).toBeUndefined()
+    expect(next.reasoningEffort).toBeUndefined()
+    expect(next.fastMode).toBeUndefined()
+  })
+
+  it('discards in-flight discovery from an account that is no longer selected', () => {
+    const original = chainEntry({ providerOauthAccountId: 'poa_old', probing: true })
+    const current = applyProviderEntryPatch(original, { providerOauthAccountId: 'poa_new' })
+    expect(current.probing).toBeUndefined()
+    expect(
+      applyProviderProbeResult(current, original, {
+        dynamicModels: ['old-private-model'],
+        probing: false,
+      }),
+    ).toBe(current)
+    expect(
+      applyProviderProbeResult(current, current, { dynamicModels: ['new-model'], probing: false })
+        .dynamicModels,
+    ).toEqual(['new-model'])
+  })
+
+  it('requires an account for Codex even when an old OAuth token is still present', () => {
+    const submission = buildProviderChainSubmission(
+      [chainEntry({ authMode: 'oauth', providerOauthToken: 'old-token' })],
+      baseFormData,
+    )
+    expect(validateProviderChainSubmission(submission, new Set(['prv_1']))).toEqual({
+      code: 'oauthAccountRequired',
+      index: 0,
+    })
+  })
+
   it('serializes provider chain entries as the source of truth for top-level compatibility fields', () => {
     const submission = buildProviderChainSubmission(
       [

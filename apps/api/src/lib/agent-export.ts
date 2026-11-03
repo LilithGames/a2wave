@@ -58,6 +58,7 @@ export interface ExportedAgent {
   showLocalChildOutput: boolean | null
   showRemoteChildOutput: boolean | null
   providerRef: string | null
+  authMode?: 'apiKey' | 'oauth' | 'localSession'
   scmSourceRef: string | null
   kbDocumentRefs: string[]
   mcpServerRefs: string[]
@@ -198,6 +199,7 @@ function sanitizeProviderChainConfig(
     ...config,
     providerChain: (config.providerChain as Array<Record<string, unknown>>).map((item) => ({
       ...item,
+      ...(item.providerOauthAccountId ? { providerOauthAccountId: null } : {}),
       ...(item.providerApiKey ? { providerApiKey: '********' } : {}),
       ...(item.providerBaseUrl ? { providerBaseUrl: '********' } : {}),
       ...(item.providerOauthToken ? { providerOauthToken: '********' } : {}),
@@ -300,6 +302,7 @@ export function sanitizeAgent(agent: AgentRow): ExportedAgent {
     showRemoteChildOutput: agent.showRemoteChildOutput ?? null,
     // References by name (resolved during import)
     providerRef: null, // filled below
+    authMode: agent.authMode ?? undefined,
     scmSourceRef: null,
     kbDocumentRefs: [],
     mcpServerRefs: [],

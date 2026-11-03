@@ -20,7 +20,7 @@ The platform ships with eight non-deletable presets. Each preset has a stable ki
 | **Kimi Code CLI** | `kimi` | `.kimi-code/skills` | `.kimi-code/mcp.json` | `kimi-code/k3`, `kimi-code/k3-256k`, `kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed` (the account's actual catalog can be fetched online) |
 | **Pi CLI** | `pi` | `.pi/skills` (passed explicitly per run) | Not supported by Pi's built-in runtime | localSession uses the providers configured for Pi; apiKey enumerates Pi's built-in `openai/*` models |
 
-> Preset Providers are **entirely read-only**: names, scripts and paths are defined by the platform, capabilities by code, and the model catalog is fetched live on the Agent configuration page using that Agent's credentials. The Provider detail page keeps a single action — installing or updating the CLI behind it.
+> Preset Providers are **entirely read-only**: names, scripts and paths are defined by the platform, capabilities by code, and the model catalog is fetched live on the Agent configuration page using that Agent's credentials. The Provider detail page lets administrators install or update its CLI, and lets signed-in users manage shared ChatGPT account connections for Codex.
 
 > [!NOTE]
 > **Copilot CLI has been retired.** The GitHub Copilot CLI has no programmatic model-listing command, so it cannot meet the hard requirement above and could only be kept alive with a hardcoded catalog. On upgrade, Agents previously bound to it are unbound and their credentials cleared. If such an Agent has no other usable Provider left (none in its fallback chain either) and was **published**, it is automatically **stopped** — so it cannot keep receiving calls with no execution engine behind it. Pick another Provider, configure its model, and publish again to restore it.
@@ -68,7 +68,7 @@ To reclaim disk space for a CLI you no longer need, use Uninstall on that Provid
 Choose the credential injection method on the Agent that references the Provider:
 
 - **apiKey**: injects an API Key (e.g. `ANTHROPIC_API_KEY` or the equivalent for each CLI; for Qoder this is a Personal Access Token, for Trae a CLI login token generated in the enterprise console). Codex and Pi also accept an optional per-Agent Base URL for an OpenAI-compatible proxy.
-- **oauth**: injects `CLAUDE_CODE_OAUTH_TOKEN` (only effective for Claude Code).
+- **oauth**: Claude Code uses an OAuth Token. Codex uses an authorized account from the shared **ChatGPT Accounts** pool; select an account instead of pasting a token.
 - **localSession**: uses the deployment-level shared CLI session in the **server or container running a2wave** (**not the computer where your browser is open**) and injects no credentials. All Agents selecting localSession for the same Provider share this identity. The "i" icon next to the option explains how to establish that session on the server — and, if you hold no server access yourself, those steps can simply be handed to an Agent that has a shell on that machine.
 
 Expanding a localSession Provider in the Agent config **probes the server session once** and reports "Logged in / Session expired / Not logged in / CLI not installed / Check failed" together with the installed CLI version; after logging in on the server, click "Re-check" next to it to confirm on the spot. The session is shared by the whole deployment, so when it expires every Agent depending on it starts failing at once — a page full of failed Runs usually points here first.
@@ -161,9 +161,24 @@ OpenCode is an open-source multi-provider aggregation CLI — you configure the 
 > [!NOTE]
 > Each Pi assistant event reports usage for one provider call, while automatic compaction reports a separate summarization call. a2wave accumulates those official input/output/reasoning/cache fields and separates reasoning from output to avoid counting Pi's reasoning subset twice. See [Run Records](/wiki/runs).
 
+## Connect ChatGPT accounts for Codex
+
+Open **Providers → Codex CLI → ChatGPT Accounts**, or select **Codex CLI → OAuth** in an Agent’s Provider entry. Both places use the same **Continue with ChatGPT** flow:
+
+1. Optionally name the connection, then choose **Generate connection code**.
+2. Run the displayed a2wave CLI command on the computer where your browser is open. Install or update the a2wave CLI first if the command is unavailable.
+3. Choose **Copy connection code** and paste it only when the CLI prompts. The CLI opens ChatGPT; select the account and workspace, then authorize plan usage. Keep the a2wave dialog open until it finishes. The connection code expires and must not be added to command arguments or shared with others.
+4. The page updates after authorization. In an Agent, the new account is selected automatically; fetch models and **Save** to apply the binding. Connecting an account alone does not change a saved Agent.
+
+Accounts are shared across this Provider: any signed-in user can add a connection, and anyone who can edit an Agent can bind an existing account. **Running that Agent consumes the selected account’s authorized ChatGPT allowance.** The account’s creator and administrators can rename, reconnect, or remove it. Remove all Agent bindings before deleting an account.
+
+The account label, email, registration ID, and status distinguish connections. Connections remain separate even when their email addresses match. Reconnect with the same ChatGPT account and workspace; use **Continue with ChatGPT** to add a different connection. Changing a selected account clears its fetched model choices, so fetch them again before saving.
+
+This flow uses the browser computer’s local callback. Opening the remote Web page alone cannot complete it: run the displayed command locally, not inside a remote server shell. Existing **localSession** mode continues to use the shared Codex login on the a2wave server. The quota card in the Agent CLI section refers to that server login, not to a selected shared ChatGPT account.
+
 ## Configuring a Provider
 
-Credentials and models are configured on the **Agent**, not on the Provider — one Provider can be used by many Agents under different accounts, and the available models differ per account.
+Models and credential bindings are configured on the **Agent**. Codex ChatGPT accounts are connected once in the Provider’s shared account pool, then selected by each Agent. API Keys and other Provider tokens remain on the Agent binding. Available models depend on the selected credentials.
 
 1. Open the Agent you want to configure and go to the Provider block on its "Configuration" tab.
 2. Pick a Provider and enter credentials (API Key / OAuth), or confirm using the server login session.
@@ -212,7 +227,7 @@ Claude Code OAuth and server-session model discovery always connects to the fixe
 | Status reads "Older than pinned" | The CLI is older than the pin but still meets this Provider's minimum version requirement | Nothing to do — it runs normally; use "Update" only if you want the build the platform verified |
 | Agent model dropdown is empty | Models not fetched yet, or the credentials are invalid | Enter credentials on the Agent configuration page, then click "Fetch models" |
 | Authentication failure on execution | API Key/Token expired or left blank | Re-enter credentials; or switch to localSession |
-| OAuth not taking effect | oauth used on a non-Claude Code | oauth is only supported by Claude Code |
+| Codex OAuth requires an account | No ChatGPT account is selected, or it needs sign-in | Connect or reconnect an account, select it on the Agent, fetch models, and save |
 | Model fetch for a custom Base URL reports `private or reserved address` and suggests `TRUSTED_PROVIDER_HOSTS` | The Provider hostname resolves to an ordinary private address from the a2wave server | After confirming the endpoint is trusted, have the deployment administrator add the exact hostname to `TRUSTED_PROVIDER_HOSTS` and restart the service |
 | Claude Code OAuth model fetch reports `private or reserved address` | Server DNS maps the fixed `api.anthropic.com` upstream to a forbidden loopback, link-local/metadata, multicast, or reserved range | Correct the server DNS or outbound proxy; the fixed OAuth discovery request already permits ordinary private DNS answers, and `TRUSTED_PROVIDER_HOSTS` cannot bypass forbidden ranges |
 | OpenCode model dropdown is empty | OpenCode providers not configured or not logged in on the server | Have the administrator run `opencode auth login` on the server and configure providers |

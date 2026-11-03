@@ -78,6 +78,7 @@ interface AgentDetail extends Agent {
   providerId?: string | null
   providerApiKey?: string | null
   providerOauthToken?: string | null
+  providerOauthAccountId?: string | null
   embeddingApiKey?: string | null
   showLocalChildOutput?: boolean
   showRemoteChildOutput?: boolean
@@ -113,6 +114,7 @@ interface ProviderChainEntryView {
   authMode?: string | null
   providerApiKey?: string | null
   providerOauthToken?: string | null
+  providerOauthAccountId?: string | null
 }
 
 /**
@@ -147,6 +149,7 @@ function formatProviderChainEntry(entry: ProviderChainEntryView, index: number):
     'providerOauthToken' in entry
       ? `oauthToken=${describeCredential(entry.providerOauthToken)}`
       : null,
+    entry.providerOauthAccountId ? `oauthAccount=${entry.providerOauthAccountId}` : null,
     entry.enabled === false ? '[disabled]' : null,
   ].filter(Boolean)
   return parts.join('  ')
@@ -442,6 +445,7 @@ export const agentsCommand = defineCommand({
         console.log(`Auth Mode:     ${a.authMode ?? 'apiKey'}`)
         console.log(`API Key:       ${describeCredential(a.providerApiKey)}`)
         console.log(`OAuth Token:   ${describeCredential(a.providerOauthToken)}`)
+        if (a.providerOauthAccountId) console.log(`OAuth Account: ${a.providerOauthAccountId}`)
         console.log(`Embedding Key: ${describeCredential(a.embeddingApiKey)}`)
         const workspace =
           a.workspaceType === 'scm'

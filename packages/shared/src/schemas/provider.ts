@@ -40,7 +40,12 @@ export type ProviderKind = z.infer<typeof providerKindSchema>
 export const providerModelDiscoverySchema = z.enum(['automatic', 'manual'])
 export type ProviderModelDiscovery = z.infer<typeof providerModelDiscoverySchema>
 
-export const providerCredentialFieldSchema = z.enum(['apiKey', 'baseUrl', 'oauthToken'])
+export const providerCredentialFieldSchema = z.enum([
+  'apiKey',
+  'baseUrl',
+  'oauthToken',
+  'oauthAccountId',
+])
 export type ProviderCredentialField = z.infer<typeof providerCredentialFieldSchema>
 
 export const providerExecutionOptionSchema = z.enum([

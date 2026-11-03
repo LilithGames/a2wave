@@ -20,12 +20,20 @@ import type { ModelCapabilities } from '@a2wave/shared'
 import { unsetEnv } from '../lib/env-utils.js'
 import { logger } from '../lib/logger.js'
 import { BaseCliAgentEngine, type CliEngineBaseConfig } from './cli-engine-base.js'
+import { cliProcessRunner } from './cli-process-runner.js'
+import { CodexAppServerSession } from './codex-app-server.js'
+import {
+  decodeCodexOAuthChatId,
+  encodeCodexOAuthChatId,
+  isCodexOAuthChatId,
+} from './codex-oauth-session.js'
 import {
   composeCodexAssistantOutput,
   parseCodexStreamLine,
   statKeyFor,
 } from './codex-stream-parser.js'
 import { toDisplayExecParams } from './exec-params.js'
+import { getExecutionAbortSignal } from './execution-lease-registry.js'
 import { createHeartbeatTracker } from './heartbeat.js'
 import { runStatusProbe, truncateForRaw } from './login-status-helper.js'
 import type { ResolvedMcpServer } from './mcp-sync.js'
@@ -51,7 +59,12 @@ import type {
   StreamExecuteRequest,
   TokenUsage,
 } from './types.js'
-import { mapCodexUsage } from './usage.js'
+import {
+  accumulateUsage,
+  attachUsageToError,
+  extractUsageFromError,
+  mapCodexUsage,
+} from './usage.js'
 
 /**
  * One entry of `codex debug models`. Only the fields a2wave reads are typed;
@@ -106,6 +119,8 @@ const PROTECTED_CODEX_ENV_NAMES = new Set([
   'OPENAI_BASE_URL',
   'OPENAI_API_BASE',
   'CODEX_API_KEY',
+  'ACCESS_TOKEN',
+  'CODEX_ACCESS_TOKEN',
   'CODEX_HOME',
   'HOME',
   'PATH',
@@ -117,6 +132,25 @@ const PROTECTED_CODEX_ENV_NAMES = new Set([
 
 function truncate(s: string, maxLen = 200): string {
   return s.length <= maxLen ? s : `${s.slice(0, maxLen)}...`
+}
+
+/** A cancelled wait never starts a child when the shared refresh eventually finishes. */
+function waitForOAuthCredentials<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+    void pending.then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
 }
 
 export function buildCodexPromptTransport(
@@ -455,8 +489,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
    * - The Codex catalog is hardcoded JSON inside the CLI binary, fully
    *   independent of authMode / credentials
    * - apiKey and localSession take the same path (neither needs env injection)
-   * - oauth mode: no such credential form at the Codex product layer →
-   *   unsupported_mode (the UI already hides the radio)
+   * - oauth mode: account-scoped models from the SIWC /v1/models endpoint
    *
    * Output: `codex debug models` returns JSON with
    * `{ models: [{ slug, visibility, ... }] }`; keep `visibility === 'list'`
@@ -464,11 +497,7 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
    */
   async listAvailableModels(options: ListModelsOptions): Promise<ModelListResult> {
     if (options.authMode === 'oauth') {
-      return {
-        models: [],
-        error: 'Codex does not support oauth mode',
-        code: 'unsupported_mode',
-      }
+      return this.listOAuthModels(options)
     }
 
     logger.info({ authMode: options.authMode }, '[codex] listAvailableModels probing')
@@ -554,21 +583,20 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
       taskId,
       workDir,
       prompt,
-      chatId: inputChatId,
+      chatId: requestedChatId,
       onUpdate,
       onLogEntry,
       agentConfig,
     } = request
+    const inputChatId = isCodexOAuthChatId(requestedChatId) ? undefined : requestedChatId
     const perAgentApiKey = agentConfig?.providerApiKey as string | undefined
     const perAgentBaseUrl = agentConfig?.providerBaseUrl as string | undefined
     const agentEnv = agentConfig?.agentEnv as Record<string, string> | undefined
     const runtimeEnv = request.runtimeContext?.env
-    // 'oauth' is a Claude-Code-only credential mode; Codex doesn't support it,
-    // so fall back to 'apiKey'
     const rawAuthMode =
       (agentConfig?.authMode as 'apiKey' | 'oauth' | 'localSession' | undefined) ?? 'apiKey'
-    const authMode: 'apiKey' | 'localSession' =
-      rawAuthMode === 'localSession' ? 'localSession' : 'apiKey'
+    if (rawAuthMode === 'oauth') return this.executeOAuthStream(request, model)
+    const authMode = rawAuthMode
     if (authMode === 'apiKey' && perAgentBaseUrl?.trim() && !perAgentApiKey?.trim()) {
       throw new Error(
         'Codex Agent Base URL requires providerApiKey in the same binding; refusing to send a deployment credential to an Agent-controlled proxy',
@@ -836,6 +864,320 @@ export class CodexAgentEngine extends BaseCliAgentEngine {
         }
       },
     })
+  }
+
+  private async listOAuthModels(options: ListModelsOptions): Promise<ModelListResult> {
+    if (!options.oauthAccountId?.trim()) {
+      return { models: [], error: 'Select a ChatGPT account first', code: 'invalid_input' }
+    }
+    try {
+      const { resolveProviderOauthAccountCredentials } = await import(
+        '../lib/provider-oauth-accounts.js'
+      )
+      const { accessToken } = await resolveProviderOauthAccountCredentials(options.oauthAccountId)
+      const response = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+        redirect: 'error',
+      })
+      if (!response.ok) {
+        return {
+          models: [],
+          error: `ChatGPT model discovery failed (HTTP ${response.status})`,
+          code: 'http_error',
+          details: { status: response.status },
+        }
+      }
+      let body: { models?: CodexCatalogEntry[] }
+      try {
+        body = (await response.json()) as typeof body
+      } catch {
+        return {
+          models: [],
+          error: 'ChatGPT model discovery returned invalid JSON',
+          code: 'parse_failed',
+        }
+      }
+      const visible = Array.isArray(body?.models)
+        ? body.models.filter(
+            (entry): entry is CodexCatalogEntry & { slug: string } =>
+              entry?.visibility === 'list' && typeof entry.slug === 'string' && !!entry.slug,
+          )
+        : []
+      const models = visible.map((entry) => entry.slug)
+      if (!models.length)
+        return {
+          models: [],
+          error: 'No models are available for this ChatGPT account',
+          code: 'no_account_models',
+        }
+      const modelCapabilities = finalizeModelCapabilities(
+        new Map(visible.map((entry) => [entry.slug, readReasoningCapability(entry)])),
+      )
+      return modelCapabilities ? { models, modelCapabilities } : { models }
+    } catch (error) {
+      const timeout =
+        error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+      return {
+        models: [],
+        error: timeout
+          ? 'ChatGPT model discovery timed out'
+          : 'Unable to use this ChatGPT account; check its connection status',
+        code: timeout ? 'timeout' : 'oauth_account_unavailable',
+      }
+    }
+  }
+
+  private buildOAuthArgs(mcpConfigOverride?: string): string[] {
+    const args = ['app-server', '--listen', 'stdio://']
+    for (const override of [
+      'model_provider="openai_chatgpt_plan"',
+      'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
+      'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
+      'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
+      'model_providers.openai_chatgpt_plan.wire_api="responses"',
+      'model_providers.openai_chatgpt_plan.requires_openai_auth=false',
+      'model_providers.openai_chatgpt_plan.supports_websockets=false',
+      ...(mcpConfigOverride ? [mcpConfigOverride] : []),
+    ])
+      args.push('-c', override)
+    return args
+  }
+
+  private async executeOAuthStream(
+    request: StreamExecuteRequest,
+    model: string,
+  ): Promise<ExecuteResult> {
+    const accountId = request.agentConfig?.providerOauthAccountId
+    if (typeof accountId !== 'string' || !accountId.trim())
+      throw new Error('Select a ChatGPT account before running this Agent')
+    const controller = new AbortController()
+    const startedAt = Date.now()
+    const timeoutMs = (request.agentConfig?.timeoutMinutes ?? this.config.timeoutMinutes) * 60_000
+    const cancel = () => controller.abort(new Error('Codex stream execution cancelled'))
+    const unregister = cliProcessRunner.registerPreparationCancellation(request.taskId, cancel)
+    const executionSignal = getExecutionAbortSignal(request.taskId)
+    executionSignal?.addEventListener('abort', cancel, { once: true })
+    if (executionSignal?.aborted) cancel()
+    const timer = setTimeout(() => {
+      controller.abort(new Error('Codex stream execution timed out during credential renewal'))
+    }, timeoutMs)
+    try {
+      return await this.executeOAuthWithCredentials(
+        { ...request, chatId: decodeCodexOAuthChatId(request.chatId, accountId) },
+        model,
+        accountId,
+        controller.signal,
+        startedAt,
+        timeoutMs,
+      )
+    } finally {
+      clearTimeout(timer)
+      executionSignal?.removeEventListener('abort', cancel)
+      unregister()
+    }
+  }
+
+  private async executeOAuthWithCredentials(
+    request: StreamExecuteRequest,
+    model: string,
+    accountId: string,
+    signal: AbortSignal,
+    startedAt: number,
+    timeoutMs: number,
+  ): Promise<ExecuteResult> {
+    const { resolveProviderOauthAccountCredentials } = await import(
+      '../lib/provider-oauth-accounts.js'
+    )
+    let currentRequest = request
+    let accumulatedUsage: TokenUsage | undefined
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        signal.throwIfAborted()
+        const { accessToken } = await waitForOAuthCredentials(
+          resolveProviderOauthAccountCredentials(
+            accountId,
+            request.agentConfig?.providerId ?? undefined,
+            attempt === 0
+              ? { minimumValidityMs: Math.min(timeoutMs + 60_000, 55 * 60_000) }
+              : { forceRefresh: true },
+          ),
+          signal,
+        )
+        signal.throwIfAborted()
+        const remainingMs = timeoutMs - (Date.now() - startedAt)
+        if (remainingMs <= 0)
+          throw new Error('Codex stream execution timed out during credential renewal')
+        if (attempt > 0)
+          request.onLogEntry?.({
+            type: 'system',
+            subtype: 'oauth_token_refreshed',
+            metadata: { accountId, resumed: true },
+            ts: Date.now(),
+          })
+        const { result, authenticationFailed } = await this.executeOAuthAttempt(
+          currentRequest,
+          model,
+          accessToken,
+          remainingMs,
+        )
+        if (result.usage) accumulatedUsage = accumulateUsage(accumulatedUsage, result.usage)
+        if (result.success)
+          return {
+            ...result,
+            chatId: result.chatId ? encodeCodexOAuthChatId(accountId, result.chatId) : undefined,
+            ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
+            durationMs: Date.now() - startedAt,
+          }
+        if (!authenticationFailed || attempt > 0 || !result.chatId) {
+          throw attachUsageToError(
+            new Error(
+              authenticationFailed
+                ? `Codex OAuth unauthorized after renewal: ${result.error ?? 'HTTP 401'}`
+                : (result.error ?? 'Codex OAuth execution failed'),
+            ),
+            accumulatedUsage,
+          )
+        }
+        // The failed turn has already persisted tool calls and their results.
+        // Resume that history with an explicit continuation, never replay the
+        // original user instruction (which could repeat completed side effects).
+        currentRequest = {
+          ...request,
+          chatId: result.chatId,
+          prompt:
+            'Continue the preceding task from its saved state after authentication was renewed. Use the existing tool results and do not repeat actions that already completed. Finish the original task.',
+        }
+      } catch (error) {
+        const prior = extractUsageFromError(error)
+        const usage =
+          prior && prior !== accumulatedUsage
+            ? accumulateUsage(accumulatedUsage, prior)
+            : (prior ?? accumulatedUsage)
+        const failure = error instanceof Error ? error : new Error('Codex OAuth execution failed')
+        // After a failed authenticated turn, outer generic retry must not replay
+        // the original instruction if renewal or continuation itself failed.
+        const terminal =
+          attempt > 0
+            ? new Error(`Codex OAuth unauthorized recovery failed: ${failure.message}`)
+            : failure
+        throw attachUsageToError(terminal, usage)
+      }
+    }
+    throw new Error('Codex OAuth renewal limit reached')
+  }
+
+  private async executeOAuthAttempt(
+    request: StreamExecuteRequest,
+    model: string,
+    accessToken: string,
+    remainingMs: number,
+  ): Promise<{ result: ExecuteResult; authenticationFailed: boolean }> {
+    const { taskId, agentConfig, onLogEntry } = request
+    const accountId = agentConfig?.providerOauthAccountId
+    const cwd = request.workDir || this.config.defaultWorkDir
+    const timeoutMinutes = agentConfig?.timeoutMinutes ?? this.config.timeoutMinutes
+    const mcpInjection =
+      agentConfig?.resolvedMcpServers !== undefined
+        ? buildCodexMcpInjection(agentConfig.resolvedMcpServers as ResolvedMcpServer[], {
+            a2aRouterToolTimeoutSec: Math.max(
+              CODEX_MCP_TOOL_TIMEOUT_SEC,
+              Math.ceil(timeoutMinutes * 60) + A2A_ROUTER_CLEANUP_HEADROOM_SEC,
+            ),
+          })
+        : undefined
+    if (mcpInjection?.skipped.length)
+      logger.warn(
+        { taskId, skippedMcpServers: mcpInjection.skipped },
+        '[codex] skipped unsupported MCP servers',
+      )
+    const args = this.buildOAuthArgs(mcpInjection?.configOverride)
+    const env = this.buildCredentialEnv({
+      protectedNames: [
+        'ACCESS_TOKEN',
+        'CODEX_ACCESS_TOKEN',
+        'OPENAI_API_KEY',
+        'CODEX_API_KEY',
+        'OPENAI_BASE_URL',
+        'OPENAI_API_BASE',
+      ],
+      agentEnv: {
+        ...withoutProtectedCodexEnv(sanitizeAgentRuntimeEnv(agentConfig?.agentEnv)),
+        ...mcpInjection?.env,
+      },
+      runtimeEnv: request.runtimeContext?.env,
+      inject: { ACCESS_TOKEN: accessToken },
+    })
+    const heartbeat = createHeartbeatTracker({
+      intervalMs: TOOL_HEARTBEAT_INTERVAL_MS,
+      emit: (entry) => onLogEntry?.(entry),
+    })
+    const force = agentConfig?.force ?? this.config.force
+    const session = new CodexAppServerSession({
+      model,
+      prompt: request.prompt,
+      cwd,
+      version: process.env.APP_VERSION || 'dev',
+      sandbox: agentConfig?.readOnly
+        ? 'read-only'
+        : force
+          ? 'danger-full-access'
+          : 'workspace-write',
+      chatId: request.chatId,
+      reasoningEffort: agentConfig?.reasoningEffort,
+      fastMode: agentConfig?.fastMode === true,
+      cleanResult: Boolean(agentConfig?.cleanResult),
+      onUpdate: request.onUpdate,
+      onLogEntry,
+      onToolStarted: (id, name) => heartbeat.onStarted(id, name),
+      onToolSettled: (id) => heartbeat.onSettled(id),
+    })
+    onLogEntry?.({
+      type: 'exec_params',
+      engine: 'codex',
+      params: toDisplayExecParams({
+        cmd: this.config.path,
+        args: redactCodexArgs(args),
+        cwd,
+        authMode: 'oauth',
+        oauthAccountId: accountId,
+        mcpCount: agentConfig?.resolvedMcpServers?.length ?? 0,
+        reasoningEffort: agentConfig?.reasoningEffort,
+        fastMode: agentConfig?.fastMode,
+        timeout: timeoutMinutes * 60_000,
+      }),
+      ts: Date.now(),
+    })
+    onLogEntry?.({ type: 'system', subtype: 'preparing', ts: Date.now() })
+    const result = await this.runCliStream({
+      taskId,
+      args,
+      env,
+      cwd,
+      timeoutMs: remainingMs,
+      onStdinReady: (stdin) => session.start(stdin),
+      onStdoutLine: (line) => session.receive(line),
+      mapSessionId: (id) => encodeCodexOAuthChatId(String(accountId), id),
+      onSpawned: () => onLogEntry?.({ type: 'system', subtype: 'spawned', ts: Date.now() }),
+      getUsage: () => session.usage,
+      cleanup: () => heartbeat.stop(),
+      settle: ({ exitCode }) => ({
+        ok: true,
+        result:
+          session.result && exitCode === 0
+            ? session.result
+            : {
+                success: false,
+                output: session.result?.output ?? '',
+                chatId: session.result?.chatId,
+                error:
+                  session.result?.error ??
+                  'Codex app-server exited without a successful completed turn',
+                usage: session.usage,
+              },
+      }),
+    })
+    return { result, authenticationFailed: session.authenticationFailed }
   }
 
   /**

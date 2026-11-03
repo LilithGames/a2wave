@@ -1,11 +1,11 @@
 import {
   type AuthMode,
+  isVersionAtLeast,
   PRESET_PROVIDERS,
   type ProviderCapabilities,
   type ProviderCredentialField,
   type ProviderKind,
   type ProviderManifest,
-  isVersionAtLeast,
   providerKindSchema,
   providerManifestSchema,
 } from '@a2wave/shared'
@@ -250,10 +250,13 @@ export const BUILTIN_PROVIDER_MANIFESTS = {
     apiKeyEnvVar: 'ANTHROPIC_API_KEY',
   }),
   codex: manifest('codex', {
-    authModes: ['apiKey', 'localSession'],
+    authModes: ['apiKey', 'oauth', 'localSession'],
     defaultAuthMode: 'apiKey',
-    modelDiscovery: { apiKey: 'automatic', localSession: 'automatic' },
-    credentialFields: { apiKey: [required('apiKey'), optional('baseUrl')] },
+    modelDiscovery: { apiKey: 'automatic', oauth: 'automatic', localSession: 'automatic' },
+    credentialFields: {
+      apiKey: [required('apiKey'), optional('baseUrl')],
+      oauth: [required('oauthAccountId')],
+    },
     mcpDelivery: { mode: 'runtime-injection' },
     executionOptions: ['readOnly', 'force', 'cleanResult'],
     // `-c model_reasoning_effort=<level>`; the levels come from `codex debug

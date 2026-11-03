@@ -1,0 +1,1 @@
+ALTER TABLE "provider_oauth_logins" ADD COLUMN "user_token_version" integer DEFAULT 0 NOT NULL;

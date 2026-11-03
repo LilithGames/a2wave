@@ -20,7 +20,7 @@ Provider 是 Agent 背后的底层执行引擎及其凭证。a2wave 本身不做
 | **Kimi Code CLI** | `kimi` | `.kimi-code/skills` | `.kimi-code/mcp.json` | `kimi-code/k3`、`kimi-code/k3-256k`、`kimi-code/kimi-for-coding`、`kimi-code/kimi-for-coding-highspeed`（可在线拉取账号实际可用清单） |
 | **Pi CLI** | `pi` | `.pi/skills`（每次运行显式传入） | Pi 内置运行时不支持 | localSession 使用 Pi 已配置的供应商；apiKey 枚举 Pi 内置的 `openai/*` 模型 |
 
-> 预设 Provider **全部字段只读**：名称、脚本、路径由平台定义，能力由代码决定，模型清单则在 Agent 配置页按凭证实时拉取。Provider 详情页只保留一个操作——安装/更新它背后的 CLI。
+> 预设 Provider **全部字段只读**：名称、脚本、路径由平台定义，能力由代码决定，模型清单则在 Agent 配置页按凭证实时拉取。管理员可在 Provider 详情页安装或更新 CLI；已登录用户还可在 Codex 详情页连接共享 ChatGPT 账号。
 
 > [!NOTE]
 > **Copilot CLI 已下线。** GitHub Copilot CLI 没有任何可编程的列举模型命令，无法满足上面的硬性条件，只能靠写死清单维持，因此不再作为 Provider 提供。升级时原先绑定它的 Agent 会被解绑并清除其凭据；如果该 Agent 没有其它可用的 Provider（fallback 链里也没有），且此前处于**已发布**状态，会被自动**停用**——避免它在没有执行引擎的情况下继续接收调用。改选其它 Provider、重新配置模型后，重新发布即可恢复。
@@ -68,7 +68,7 @@ Provider 只是「配置」，真正干活的是它背后的 CLI。**镜像不�
 在引用 Provider 的 Agent 上选择凭证注入方式：
 
 - **apiKey**：注入 API Key（如 `ANTHROPIC_API_KEY` 或各 CLI 等价物；Qoder 为 Personal Access Token，Trae 为企业控制台生成的 CLI 登录令牌）。Codex 与 Pi 还可为每个 Agent 配置可选的 Base URL，以连接 OpenAI 兼容代理。
-- **oauth**：注入 `CLAUDE_CODE_OAUTH_TOKEN`（仅 Claude Code 生效）。
+- **oauth**：Claude Code 使用 OAuth Token；Codex 从共享的「ChatGPT 账号」池中选择已授权账号，无需粘贴 Token。
 - **localSession**：使用「运行 a2wave 的服务器或容器」中 CLI 的部署级共享登录态（**非你当前浏览器所在的电脑**），不注入任何凭证。所有选择同一 Provider localSession 的 Agent 共用这套身份。选项后的「i」图标会说明如何在服务器上建立这套登录态——没有服务器权限时，也可以把这几步交给一个拥有该服务器 Shell 权限的 Agent 去执行。
 
 在 Agent 配置里展开一个使用 localSession 的 Provider 时，界面会**自动检测一次**服务器上的登录态，并给出「已登录 / 登录态已失效 / 未登录 / CLI 未安装 / 检测失败」以及已安装的 CLI 版本；在服务器上补登录之后，点旁边的「重新检测」即可当场确认。整个部署共用一套登录态，它一旦过期，所有依赖它的 Agent 会同时开始失败——运行记录里成片的失败通常先到这里检查。
@@ -161,12 +161,27 @@ OpenCode 是开源的多供应商聚合 CLI——你在服务器上自行配置�
 > [!NOTE]
 > Pi 的每个 assistant 事件记录一次供应商调用的用量，自动 compaction 事件记录独立的摘要调用用量。a2wave 会累加这些官方输入、输出、推理与缓存字段，并把 Pi 已包含在 output 中的 reasoning 拆开，避免重复计数。详见[运行记录](/wiki/runs)。
 
+## 为 Codex 连接 ChatGPT 账号
+
+打开 **Providers → Codex CLI → ChatGPT 账号**，或在 Agent 的 Provider 条目中选择 **Codex CLI → OAuth**。两处都使用同一个 **Continue with ChatGPT** 登录流程：
+
+1. 可填写账号名称，然后点击「生成连接码」。
+2. 在打开浏览器的这台电脑上运行页面显示的 a2wave CLI 命令。如果没有该命令，请先安装或更新 a2wave CLI。
+3. 点击「复制连接码」，仅在 CLI 提示时粘贴。CLI 会打开 ChatGPT，选择账号和工作区并授权使用套餐额度。保持 a2wave 弹窗打开直至完成；连接码有时限，请不要把它放进命令参数或分享给其他人。
+4. 授权完成后页面会自动更新。若从 Agent 配置进入，新账号会自动选中；拉取模型并**保存**后才会应用绑定。仅连接账号不会修改已保存的 Agent。
+
+账号由此 Provider 共享：所有已登录用户都可以新增连接，有 Agent 编辑权限的人可以绑定现有账号。**运行该 Agent 将消耗所选账号授权的 ChatGPT 额度。** 账号创建者和管理员可以重命名、重新登录或移除账号；删除前必须先解除所有 Agent 绑定。
+
+列表显示账号名称、邮箱、注册记录 ID 和状态。即使邮箱相同，也保留为不同连接。重新登录时请选择相同的 ChatGPT 账号和工作区；如果要增加另一份连接，请使用「Continue with ChatGPT」。切换所选账号后，需要重新拉取模型再保存。
+
+授权回调发生在浏览器所在的电脑上，因此仅打开远端 Web 页面不能完成登录；请在本机运行页面命令，而不是在远端服务器 Shell 中运行。已有的 **localSession** 模式仍使用 a2wave 服务器上的共享 Codex 登录态；「Agent CLI」区域的额度卡片对应这份服务器登录态，不是账号池中选中的 ChatGPT 账号。
+
 ## 配置 Provider
 
-凭证与模型都配置在 **Agent** 上，而不是 Provider 上——同一个 Provider 可以被多个 Agent 用不同账号使用，可用模型也随账号不同而不同。
+模型与凭证绑定配置在 **Agent** 上。Codex 的 ChatGPT 账号先连接到 Provider 的共享账号池，再由各个 Agent 选择；API Key 和其他 Provider Token 仍配置在 Agent 绑定中，可用模型随所选凭证不同而不同。
 
 1. 打开要配置的 Agent，进入「配置」页的 Provider 区块。
-2. 选择 Provider，填入凭证（API Key / OAuth）或确认走服务器登录态。
+2. 选择 Provider，填入相应凭证、为 Codex OAuth 选择共享 ChatGPT 账号，或确认走服务器登录态。
 3. 点「拉取模型」（部分 Provider 在凭证就绪后自动拉取），从返回的清单里选模型。
 4. 保存。
 
@@ -212,7 +227,7 @@ Claude Code 的 OAuth 与服务器登录态模型探测始终连接固定端点 
 | 状态显示「低于锁定版本」 | CLI 版本低于平台锁定版本，但仍满足该 Provider 的最低版本要求 | 不影响运行，无需处理；想与平台验证过的构建一致再点「更新」 |
 | Agent 模型下拉为空 | 还没拉取模型，或凭证无效 | 在 Agent 配置页填好凭证后点「拉取模型」 |
 | 执行报鉴权失败 | API Key/Token 失效或留空 | 重填凭证；或改用 localSession |
-| OAuth 不生效 | 在非 Claude Code 上用了 oauth | oauth 仅 Claude Code 支持 |
+| Codex OAuth 提示需要账号 | 未选择 ChatGPT 账号，或账号需要重新登录 | 连接或重新登录账号，在 Agent 中选中、拉取模型并保存 |
 | 自定义 Base URL 拉取模型提示 `private or reserved address`，并建议配置 `TRUSTED_PROVIDER_HOSTS` | Provider 域名在 a2wave 服务器内解析到常规私网地址 | 确认该端点可信后，由部署管理员将精确主机名加入 `TRUSTED_PROVIDER_HOSTS` 并重启服务 |
 | Claude Code OAuth 拉取模型提示 `private or reserved address` | 服务器 DNS 将固定上游 `api.anthropic.com` 映射到了 loopback、link-local/云元数据、multicast 或其它禁止的保留地址 | 修正服务器 DNS 或出口代理；固定 OAuth 探测请求已允许常规私网 DNS 结果，加入 `TRUSTED_PROVIDER_HOSTS` 也不会绕过危险地址段限制 |
 | OpenCode 模型下拉为空 | 服务器上未配置 OpenCode 供应商或未登录 | 由管理员在服务器执行 `opencode auth login` 并配置供应商 |

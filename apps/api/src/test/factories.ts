@@ -41,6 +41,7 @@ export interface TestAgent {
   providerApiKey: string | null
   providerBaseUrl: string | null
   providerOauthToken: string | null
+  providerOauthAccountId: string | null
   authMode: 'apiKey' | 'oauth' | 'localSession'
   endpointApiKey: string | null
   publishAuthType: string | null
@@ -94,6 +95,7 @@ export function createTestAgent(overrides: Partial<TestAgent> = {}): TestAgent {
     providerApiKey: null,
     providerBaseUrl: null,
     providerOauthToken: null,
+    providerOauthAccountId: null,
     authMode: 'apiKey',
     endpointApiKey: null,
     publishAuthType: 'api_key',

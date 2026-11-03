@@ -6,6 +6,7 @@
  * once — and cannot be forgotten by the next engine added.
  */
 import { describe, expect, it, vi } from 'vitest'
+import { encodeCodexOAuthChatId } from '../codex-oauth-session.js'
 
 // Resolves true — "the row was found and updated" — so a test that asserts the
 // tap stopped querying is proving a latch, not riding on a falsy default.
@@ -22,6 +23,28 @@ vi.mock('../../lib/persist-live-session-id.js', () => ({
 const { tapLiveSessionId } = await import('../live-session-tap.js')
 
 describe('tapLiveSessionId', () => {
+  it('persists the account-scoped primary thread while leaving protocol lines untouched', async () => {
+    const lines: string[] = []
+    const tapped = tapLiveSessionId(
+      'run_oauth',
+      (line) => lines.push(line),
+      (id) => encodeCodexOAuthChatId('poa_a', id),
+    )
+    const primary = JSON.stringify({ id: 2, result: { thread: { id: 'thread-a' } } })
+    tapped(primary)
+    tapped(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'child-thread' } } }))
+    await vi.waitFor(() =>
+      expect(persistLiveSessionId).toHaveBeenCalledWith(
+        'run_oauth',
+        encodeCodexOAuthChatId('poa_a', 'thread-a'),
+      ),
+    )
+    expect(lines[0]).toBe(primary)
+    expect(persistLiveSessionId.mock.calls.filter(([runId]) => runId === 'run_oauth')).toHaveLength(
+      1,
+    )
+  })
+
   // Recovery needs to tell "died during setup" apart from "ran and may have
   // committed side effects". The first line of CLI output is the earliest proof
   // of the latter, and marking it here covers every engine at once.

@@ -80,6 +80,50 @@ describe('executeWithRetry', () => {
     expect(mockExecuteInWorker).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['HTTP 429 rate limit', 'insufficient_quota'])(
+    'never replays a task after Codex OAuth recovery fails with %s',
+    async (reason) => {
+      const error = `Codex OAuth unauthorized recovery failed: ${reason}`
+      mockExecuteInWorker
+        .mockReset()
+        .mockResolvedValueOnce({
+          success: false,
+          output: 'A tool action already completed.',
+          error,
+          durationMs: 100,
+        })
+        .mockResolvedValue({ success: true, output: 'Replayed on fallback', durationMs: 100 })
+      const payload: WorkerTaskPayload = {
+        ...basePayload,
+        agentConfig: {
+          ...basePayload.agentConfig,
+          maxRetries: 2,
+          providerChain: [
+            {
+              id: 'primary',
+              providerId: 'prv_codex',
+              providerName: 'Codex',
+              engineType: 'codex',
+              authMode: 'oauth',
+              providerOauthAccountId: 'poa_account',
+            },
+            {
+              id: 'backup',
+              providerId: 'prv_cursor',
+              providerName: 'Cursor',
+              engineType: 'cursor',
+              authMode: 'apiKey',
+            },
+          ],
+        },
+      }
+      const { result } = await executeWithRetry('task_1', payload)
+      expect(result.success).toBe(false)
+      expect(result.error).toBe(error)
+      expect(mockExecuteInWorker).toHaveBeenCalledTimes(1)
+    },
+  )
+
   it('injects channel context into a2wave-agent-router MCP env for A2A forwarding', async () => {
     mockExecuteInWorker.mockResolvedValue({
       success: true,

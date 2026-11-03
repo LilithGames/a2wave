@@ -13,6 +13,7 @@ export const probeModelsRequestSchema = z
     authHeaderStyle: authHeaderStyleEnum.optional(),
     apiKey: z.string().min(1, 'apiKey cannot be empty').optional(),
     oauthToken: z.string().min(1, 'oauthToken cannot be empty').optional(),
+    oauthAccountId: z.string().min(1).optional(),
     baseUrl: z.string().url('baseUrl must be a valid URL').optional(),
   })
   .superRefine((request, ctx) => {
@@ -37,6 +38,7 @@ export const probeModelsRequestSchema = z
     ...(request.authHeaderStyle ? { authHeaderStyle: request.authHeaderStyle } : {}),
     ...(request.apiKey ? { apiKey: request.apiKey } : {}),
     ...(request.oauthToken ? { oauthToken: request.oauthToken } : {}),
+    ...(request.oauthAccountId ? { oauthAccountId: request.oauthAccountId } : {}),
     ...(request.baseUrl ? { baseUrl: request.baseUrl } : {}),
   }))
 

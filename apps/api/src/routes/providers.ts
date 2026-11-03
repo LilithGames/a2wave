@@ -102,8 +102,8 @@ app.get('/login-status/:engineType', async (c) => {
 /**
  * POST /probe-models - discover model IDs for the current kind, auth mode, and credentials.
  *
- * The endpoint is stateless: credentials come from the body and are not read from the database,
- * so new or unsaved Agents can probe. The route only performs generic Zod validation and
+ * Credential inputs come from the body so new or unsaved Agents can probe.
+ * OAuth account IDs resolve the selected stored registration in the engine. The route only performs generic Zod validation and
  * ProviderAdapter dispatch; ProviderCatalog and the engine own capability, credential, and
  * protocol rules.
  *
@@ -154,6 +154,7 @@ app.post('/probe-models', probeModelsRateLimit, async (c) => {
     [
       ['apiKey', req.apiKey],
       ['oauthToken', req.oauthToken],
+      ['oauthAccountId', req.oauthAccountId],
       ['baseUrl', req.baseUrl],
     ] as const
   )
@@ -189,6 +190,7 @@ app.post('/probe-models', probeModelsRateLimit, async (c) => {
       ...(req.authHeaderStyle ? { authHeaderStyle: req.authHeaderStyle } : {}),
       ...(req.apiKey ? { apiKey: req.apiKey } : {}),
       ...(req.oauthToken ? { oauthToken: req.oauthToken } : {}),
+      ...(req.oauthAccountId ? { oauthAccountId: req.oauthAccountId } : {}),
       ...(req.baseUrl ? { baseUrl: req.baseUrl } : {}),
     })
 

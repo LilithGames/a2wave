@@ -107,6 +107,10 @@ import mcpServersRoutes from './routes/mcp-servers.js'
 import memoriesRoutes from './routes/memories.js'
 import oauthGatewayRoutes from './routes/oauth-gateway.js'
 import providerClisRoutes from './routes/provider-clis.js'
+import {
+  providerOauthAccountsRoutes,
+  providerOauthLoginRoutes,
+} from './routes/provider-oauth-accounts.js'
 import providersRoutes, { seedPresetProviders } from './routes/providers.js'
 import publicMetadataRoutes from './routes/public-metadata.js'
 import runsRoutes from './routes/runs.js'
@@ -222,6 +226,8 @@ app.route('/api/uploads', uploadsRoutes)
 app.route('/api/attachments', attachmentsRoutes)
 app.route('/api/agents/shared', agentSharedRoutes)
 app.route('/api/public', publicMetadataRoutes)
+// These endpoints authenticate the one-use login capability, not a browser session.
+app.route('/api/provider-oauth-logins', providerOauthLoginRoutes)
 
 // --- Auth routes (status/setup/login are public; me/change-password need auth) ---
 const authRateLimit = rateLimit({
@@ -312,6 +318,7 @@ app.route('/api/agents', agentMembersRoutes)
 app.route('/api/agents', agentApiKeyRoutes)
 app.route('/api/agents', evaluationRoutes)
 app.route('/api/providers', providersRoutes)
+app.route('/api/providers', providerOauthAccountsRoutes)
 app.route('/api/mcp-servers', mcpServersRoutes)
 app.route('/api/skills', skillsRoutes)
 app.route('/api/skill-groups', skillGroupsRoutes)

@@ -133,3 +133,7 @@ a hard onboarding condition, so `modelDiscovery` is `automatic` or `manual` with
 editable field**: the list is probed from the CLI per Agent credential and cannot
 drift from what the account really has. (`copilot` was retired under this rule —
 its CLI has no model-list command.)
+
+Codex also supports shared ChatGPT subscription registrations. Their login,
+account references, refresh lifecycle, and app-server execution contract are
+documented in [provider-oauth-accounts.md](provider-oauth-accounts.md).

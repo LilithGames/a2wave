@@ -156,4 +156,11 @@ describe('Provider activation credential validation', () => {
 
     await expect(validateAgentProviderConfiguration(agent('codex', {}))).resolves.toBeUndefined()
   })
+
+  it('rejects a Codex OAuth binding without a selected account instead of using a deployment key', async () => {
+    mockDbFrom.mockReturnValueOnce(chainResult(provider('codex')))
+    await expect(
+      validateAgentProviderConfiguration(agent('codex', { authMode: 'oauth' })),
+    ).rejects.toThrow()
+  })
 })

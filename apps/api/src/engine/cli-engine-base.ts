@@ -66,8 +66,12 @@ export interface RunCliStreamOptions {
   timeoutMs: number
   /** Complete input to write to the child process stdin after spawn. */
   stdin?: string
+  /** Bidirectional protocol input; stays open until the adapter calls end(). */
+  onStdinReady?: (stdin: NodeJS.WritableStream) => void
   /** Called for each complete stdout line (line-buffered; remainder flushed on close) */
   onStdoutLine: (line: string) => void
+  /** Encode provider-local session IDs before durable crash-recovery capture. */
+  mapSessionId?: (sessionId: string) => string
   /** Also feed stderr lines to onStdoutLine (some CLIs emit events on stderr) */
   parseStderrLines?: boolean
   /** Fired once the child process has spawned */
@@ -136,7 +140,7 @@ export abstract class BaseCliAgentEngine extends BaseAgentEngine {
         // Record the provider session id as the CLI announces it. Engines only
         // report it in their success result, so a run killed mid-flight — the
         // one case that needs to resume — was the one case that lost it.
-        onStdoutLine: tapLiveSessionId(options.taskId, options.onStdoutLine),
+        onStdoutLine: tapLiveSessionId(options.taskId, options.onStdoutLine, options.mapSessionId),
       })
       .then((processResult) => {
         if (processResult.reason === 'timeout') {

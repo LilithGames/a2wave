@@ -560,6 +560,51 @@ describe('useAgentForm — initialization (edit mode)', () => {
     expect(mutateAsyncStub.mock.calls[0][0].providerOauthToken).toBe('fresh-oauth-token')
   })
 
+  it('hydrates shared account bindings and saves a changed selection only on submit', async () => {
+    vi.mocked(useAgent).mockReturnValueOnce({
+      data: {
+        data: {
+          ...agentFixture,
+          authMode: 'oauth',
+          providerOauthAccountId: 'poa_old',
+          config: {
+            ...agentFixture.config,
+            providerChain: [
+              {
+                id: 'chain_1',
+                providerId: 'prv_default',
+                authMode: 'oauth',
+                providerOauthAccountId: 'poa_old',
+                enabled: true,
+              },
+            ],
+          },
+        },
+        permission: 'owner',
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useAgent>)
+    const { result } = renderForm()
+    await waitFor(() =>
+      expect(result.current.providerChainEntries[0]?.providerOauthAccountId).toBe('poa_old'),
+    )
+    act(() =>
+      result.current.setProviderChainEntries((entries) =>
+        entries.map((entry) => ({ ...entry, providerOauthAccountId: 'poa_new' })),
+      ),
+    )
+    expect(mutateAsyncStub).not.toHaveBeenCalled()
+    expect(result.current.hasSelectionChanges).toBe(true)
+    await act(async () => {
+      await result.current.form.handleSubmit(result.current.onSubmit)()
+    })
+    expect(mutateAsyncStub.mock.calls[0]?.[0]).toMatchObject({
+      providerOauthAccountId: 'poa_new',
+      providerOauthToken: null,
+      config: { providerChain: [expect.objectContaining({ providerOauthAccountId: 'poa_new' })] },
+    })
+  })
+
   it('creates agents with provider chain credentials from the same submission helper', async () => {
     const { result } = renderForm({ createMode: true })
 

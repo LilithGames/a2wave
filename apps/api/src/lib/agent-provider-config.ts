@@ -46,6 +46,9 @@ export function maskProviderChainConfig(
   const raw = config as Record<string, unknown>
   const providerChain = (raw.providerChain as Array<Record<string, unknown>>).map((item) => ({
     ...item,
+    ...(replacement === null && item.providerOauthAccountId
+      ? { providerOauthAccountId: null }
+      : {}),
     ...(item.providerApiKey ? { providerApiKey: replacement } : {}),
     ...(item.providerBaseUrl ? { providerBaseUrl: replacement } : {}),
     // OAuth tokens remain revealable only on the dedicated Agent detail path.

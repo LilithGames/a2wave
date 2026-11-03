@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, scmSources } from '../db/schema.js'
-import { runExclusive, type TransactionHandle } from '../db/transaction.js'
+import { runExclusive, type TransactionHandle, withTransaction } from '../db/transaction.js'
 import { withScmPathMutation } from './scm-path-plan.js'
 import { type ActiveAgentScmWorkload, findActiveAgentScmWorkload } from './scm-workload-guard.js'
 import { withAgentScmWorkloadLock } from './scm-workload-lock.js'
@@ -28,6 +28,7 @@ export interface AgentBindingMutationInput<T> {
   agentId: string
   requestedWorkspaceType?: 'temp' | 'scm'
   requestedScmSourceId?: string | null
+  transactional?: boolean
   mutate: (executor: typeof db) => Promise<T>
 }
 
@@ -37,7 +38,13 @@ export async function mutateAgentBinding<T>(
   deps: BindingMutationDeps = defaultDeps,
 ): Promise<AgentBindingMutationResult<T>> {
   if (input.requestedWorkspaceType === undefined && input.requestedScmSourceId === undefined) {
-    return { allowed: true, value: await deps.runSerialized(() => input.mutate(db)) }
+    // OAuth account bindings require one transaction for the account row lock
+    // and the Agent write. Enter it before runExclusive to avoid reacquiring
+    // SQLite's non-reentrant serialization lock from inside that lock.
+    const value = input.transactional
+      ? await withTransaction((tx) => input.mutate(tx))
+      : await deps.runSerialized(() => input.mutate(db))
+    return { allowed: true, value }
   }
 
   return deps.withAgentLock(input.agentId, () =>

@@ -1,4 +1,5 @@
 import { GatewayErrorCode } from '@a2wave/shared'
+import { providerOauthPaths } from './openapi-provider-oauth.js'
 import type { OpenAPIV3 } from './types/openapi.js'
 
 const gatewayErrorProperties: NonNullable<OpenAPIV3.SchemaObject['properties']> = {
@@ -135,6 +136,12 @@ export const openApiSpec: OpenAPIV3.Document = {
   servers: [{ url: '/api', description: 'a2wave API base path' }],
   components: {
     securitySchemes: {
+      providerOauthLogin: {
+        type: 'http',
+        scheme: 'bearer',
+        description:
+          'Short-lived one-use Provider OAuth login capability; distinct from a2wave sessions.',
+      },
       sessionCookie: {
         type: 'apiKey',
         in: 'cookie',
@@ -686,6 +693,7 @@ export const openApiSpec: OpenAPIV3.Document = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    ...providerOauthPaths,
     '/runs/sessions': {
       get: {
         operationId: 'listRunSessions',

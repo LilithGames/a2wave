@@ -201,19 +201,25 @@ a2wave kb content <kb-id-or-name>                 # Print the cached body (troub
 
 ## Provider Management
 
-Providers are preset entities (cannot be created or deleted) and are entirely read-only:
+Providers are preset entities (cannot be created or deleted). Codex shared ChatGPT accounts are managed separately:
 
 ```bash
 a2wave providers list
 a2wave providers get <provider-id-or-name>
 a2wave providers login-status pi                  # Kind: claude-code | codex | cursor | opencode | qoder | trae | kimi | pi
 a2wave providers dependents <provider-id-or-name>  # Agents that depend on this Provider
+a2wave providers accounts list --provider "Codex CLI"
+a2wave providers accounts login --provider "Codex CLI" --label "Team account"
+a2wave providers accounts rename <account-id> --label "New label"
+a2wave providers accounts delete <account-id> --yes
 ```
 
 > There is no `set-models`: Providers store no model catalog. The list of models
 > an Agent may pick is probed from the CLI against that Agent's own credentials,
 > so it always matches what the account can actually run. `PATCH /api/providers/:id`
 > answers 403.
+
+For a pending Web login, run its `providers accounts login --server <url> --login-id <id>` command on the computer with the browser, then paste the one-time connection code into the hidden prompt. `--code-stdin` accepts piped input. Never put connection codes in arguments or logs. Tokens are stored by the server; an Agent selects the account using `authMode: oauth` and `providerOauthAccountId` at the Agent or provider-chain entry. Creator/admin can manage accounts; all authenticated users can select shared accounts. Deleting a referenced account is rejected.
 
 ## Run
 

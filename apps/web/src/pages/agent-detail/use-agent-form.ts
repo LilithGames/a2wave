@@ -226,6 +226,7 @@ export function useAgentForm(
           entry.providerApiKey === other.providerApiKey &&
           entry.providerBaseUrl === other.providerBaseUrl &&
           entry.providerOauthToken === other.providerOauthToken &&
+          entry.providerOauthAccountId === other.providerOauthAccountId &&
           entry.enabled === other.enabled
         )
       })
@@ -541,6 +542,8 @@ export function useAgentForm(
             providerBaseUrl: typeof item.providerBaseUrl === 'string' ? item.providerBaseUrl : '',
             providerOauthToken:
               typeof item.providerOauthToken === 'string' ? item.providerOauthToken : '',
+            providerOauthAccountId:
+              typeof item.providerOauthAccountId === 'string' ? item.providerOauthAccountId : '',
             enabled: item.enabled !== false,
             expanded: false,
           }
@@ -557,6 +560,8 @@ export function useAgentForm(
           providerBaseUrl: ((agent as Record<string, unknown>).providerBaseUrl as string) || '',
           providerOauthToken:
             ((agent as Record<string, unknown>).providerOauthToken as string) || '',
+          providerOauthAccountId:
+            ((agent as Record<string, unknown>).providerOauthAccountId as string) || '',
           enabled: true,
           expanded: true,
         },
@@ -570,6 +575,8 @@ export function useAgentForm(
       providerApiKey: ((agent as Record<string, unknown>).providerApiKey as string) || '',
       providerBaseUrl: ((agent as Record<string, unknown>).providerBaseUrl as string) || '',
       providerOauthToken: ((agent as Record<string, unknown>).providerOauthToken as string) || '',
+      providerOauthAccountId:
+        ((agent as Record<string, unknown>).providerOauthAccountId as string) || '',
       authMode: legacyAuthMode,
       providerId: legacyProviderId,
       model: typeof modelFromConfig === 'string' ? modelFromConfig : '',
@@ -712,13 +719,25 @@ export function useAgentForm(
         : {}
 
     const providerSubmission = buildProviderChainSubmission(providerChainEntries, data)
-    const providerValidationIssue = validateProviderChainSubmission(providerSubmission)
-    if (providerValidationIssue?.code === 'oauthTokenRequired') {
+    const providerValidationIssue = validateProviderChainSubmission(
+      providerSubmission,
+      new Set(
+        providersList
+          ?.filter((provider) => provider.kind === 'codex')
+          .map((provider) => provider.id),
+      ),
+    )
+    if (providerValidationIssue) {
       modal.error({
         title: t('agentDetail.providerChainInvalidTitle'),
-        content: t('agentDetail.providerChainOauthRequired', {
-          index: providerValidationIssue.index + 1,
-        }),
+        content: t(
+          providerValidationIssue.code === 'oauthAccountRequired'
+            ? 'chatgptAccounts.chainAccountRequired'
+            : 'agentDetail.providerChainOauthRequired',
+          {
+            index: providerValidationIssue.index + 1,
+          },
+        ),
       })
       return
     }
@@ -744,6 +763,7 @@ export function useAgentForm(
         providerApiKey: providerSubmission.providerApiKey || undefined,
         providerBaseUrl: providerSubmission.providerBaseUrl || undefined,
         providerOauthToken: providerSubmission.providerOauthToken || undefined,
+        providerOauthAccountId: providerSubmission.providerOauthAccountId || undefined,
         authMode: providerSubmission.authMode,
         providerId: providerSubmission.providerId || undefined,
         config: {
@@ -850,6 +870,7 @@ export function useAgentForm(
       providerApiKey: providerSubmission.providerApiKey,
       providerBaseUrl: providerSubmission.providerBaseUrl,
       providerOauthToken: providerSubmission.providerOauthToken,
+      providerOauthAccountId: providerSubmission.providerOauthAccountId,
       authMode: providerSubmission.authMode,
       providerId: providerSubmission.providerId,
       a2aRouteTargets,
