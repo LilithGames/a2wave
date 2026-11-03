@@ -45,8 +45,8 @@ const inlineBackendSchema = z.object({
   args: z.array(z.string()).optional(),
   cwd: z.string().nullable().optional(),
   url: z.string().nullable().optional(),
-  headers: z.record(z.string()).nullable().optional(),
-  env: z.record(z.string()).nullable().optional(),
+  headers: z.record(z.string(), z.string()).nullable().optional(),
+  env: z.record(z.string(), z.string()).nullable().optional(),
 })
 
 /** Reference to an existing MCP Server */
@@ -62,7 +62,7 @@ export const groupBackendSchema = z.discriminatedUnion('mode', [
 
 export const groupConfigSchema = z.object({
   backends: z
-    .record(z.array(groupBackendSchema).min(1).max(20))
+    .record(z.string(), z.array(groupBackendSchema).min(1).max(20))
     .refine((obj) => Object.keys(obj).length >= 1 && Object.keys(obj).length <= 20, {
       message: 'Must have 1-20 group keys',
     })
@@ -100,9 +100,9 @@ export const mcpServerSchema = z.object({
   /** sse/http: remote server URL */
   url: z.string().nullable().optional(),
   /** sse/http: custom request headers */
-  headers: z.record(z.string()).nullable().optional(),
+  headers: z.record(z.string(), z.string()).nullable().optional(),
   /** All transports: environment variables */
-  env: z.record(z.string()).nullable().optional(),
+  env: z.record(z.string(), z.string()).nullable().optional(),
   /** group: multi-environment backend configuration */
   groupConfig: groupConfigSchema.nullable().optional(),
   /** Whether the server is enabled */
@@ -138,8 +138,8 @@ export const createMcpServerInput = z.object({
   args: z.array(z.string()).optional(),
   cwd: z.string().nullable().optional(),
   url: z.string().nullable().optional(),
-  headers: z.record(z.string()).nullable().optional(),
-  env: z.record(z.string()).nullable().optional(),
+  headers: z.record(z.string(), z.string()).nullable().optional(),
+  env: z.record(z.string(), z.string()).nullable().optional(),
   groupConfig: groupConfigSchema.nullable().optional(),
   isEnabled: z.boolean().optional(),
   /** Admin-settable usage scope. Ignored for non-admins; forced 'admin-only' for
@@ -149,7 +149,11 @@ export const createMcpServerInput = z.object({
 
 export type CreateMcpServerInput = z.infer<typeof createMcpServerInput>
 
-export const updateMcpServerInput = createMcpServerInput.partial()
+export const updateMcpServerInput = createMcpServerInput
+  .extend({
+    type: createMcpServerInput.shape.type.unwrap(),
+  })
+  .partial()
 export type UpdateMcpServerInput = z.infer<typeof updateMcpServerInput>
 
 // ============================================================

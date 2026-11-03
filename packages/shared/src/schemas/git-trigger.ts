@@ -278,12 +278,8 @@ export const glabTriggerConfigSchema = gitTriggerConfigSchema.extend({
 /**
  * GitHub additionally rejects the wide scopes; see `refineProviderScopes`.
  *
- * The rule lives on the `repos` field rather than wrapping the config, because
- * both `.refine()` and `.superRefine()` turn a `ZodObject` into a `ZodEffects` —
- * silently losing `.extend()`, `.pick()`, `.omit()` and `.shape`, so this
- * variant would stop composing the way `glabTriggerConfigSchema` still does.
- * Constraining the field keeps the config object a plain object, and the rule
- * applies at exactly the place the offending value is written.
+ * Keeping the rule on `repos` associates each failure with the offending scope
+ * while provider variants retain the same object-level composition pattern.
  */
 export const ghTriggerConfigSchema = gitTriggerConfigSchema.extend({
   provider: z.literal('gh'),
@@ -359,7 +355,7 @@ export type GitTriggerRequestState = z.infer<typeof gitTriggerRequestStateSchema
 
 /** Per-repository poll state, keyed by `host/project` in the parent record. */
 export const gitTriggerRepoStateSchema = z.object({
-  requests: z.record(gitTriggerRequestStateSchema),
+  requests: z.record(z.string(), gitTriggerRequestStateSchema),
   /** ISO timestamp of the last successful poll of this repository. */
   polledAt: z.string().optional(),
 })

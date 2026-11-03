@@ -73,7 +73,11 @@ export const createSkillInput = z.object({
 
 export type CreateSkillInput = z.infer<typeof createSkillInput>
 
-export const updateSkillInput = createSkillInput.partial()
+export const updateSkillInput = createSkillInput
+  .extend({
+    visibility: createSkillInput.shape.visibility.unwrap(),
+  })
+  .partial()
 export type UpdateSkillInput = z.infer<typeof updateSkillInput>
 
 // ============================================================

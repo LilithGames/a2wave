@@ -190,7 +190,7 @@ export const providerSchema = z.object({
   /** MCP configuration path relative to workDir. */
   mcpConfigPath: z.string().nullable().optional(),
   /** Provider-specific extension configuration. */
-  config: z.record(z.unknown()).nullable().optional(),
+  config: z.record(z.string(), z.unknown()).nullable().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 })

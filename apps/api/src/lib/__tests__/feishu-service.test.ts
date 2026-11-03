@@ -1944,42 +1944,58 @@ describe('handleMessage via dispatcher', () => {
     expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
   })
 
-  it('groupTriggerOnNewMessage=true 时群聊任意消息均触发', async () => {
-    feishuConnectionManager.stopAll()
-    vi.clearAllMocks()
-    mockClientRequest.mockResolvedValue({ bot: { open_id: 'ou_bot_test' } })
-    mockExecuteWithRetry.mockResolvedValue({ result: { success: true, output: 'ok' }, retries: [] })
-    mockImMessageReply.mockResolvedValue({})
-    await feishuConnectionManager.start('agt_001', {
-      ...BASE_CONFIG,
-      groupTriggerOnNewMessage: true,
-    })
-    mockDbGet.mockReturnValue(makeAgent())
-    await dispatch(
-      makeData({
-        chat_type: 'group',
-        message_id: 'om_new_msg1',
-        mentions: [],
-        thread_id: undefined,
-      }),
-    )
-    expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
-  })
-
   it('P2P 消息始终触发（无需 @mention）', async () => {
     mockDbGet.mockReturnValue(makeAgent())
     await dispatch(makeData({ chat_type: 'p2p', message_id: 'om_p2p1', mentions: [] }))
     expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
   })
 
-  it('消息触发后立即在用户消息上添加 Get reaction', async () => {
-    mockDbGet.mockReturnValue(makeAgent())
-    await dispatch(makeData({ chat_type: 'p2p', message_id: 'om_react1' }))
-    expect(mockImMessageReactionCreate).toHaveBeenCalledOnce()
-    const call = mockImMessageReactionCreate.mock.calls[0][0]
-    expect(call.path.message_id).toBe('om_react1')
-    expect(call.data.reaction_type.emoji_type).toBe('Get')
-  })
+  it.each([
+    ['group', 'none', 'topic_reply', 'quote', false],
+    ['group', 'quote', 'none', 'none', true],
+    ['group', 'new', 'none', 'none', true],
+    ['topic', 'quote', 'none', 'quote', false],
+    ['topic', 'none', 'topic_reply', 'none', true],
+    ['p2p', 'quote', 'topic_reply', 'none', false],
+    ['p2p', 'none', 'none', 'quote', true],
+    ['p2p', 'none', 'none', 'new', true],
+  ] as const)(
+    '%s runs with reply modes %s/%s/%s and reaction=%s',
+    async (scope, groupReplyMode, topicReplyMode, p2pReplyMode, acknowledge) => {
+      const config = {
+        ...BASE_CONFIG,
+        groupTriggerOnNewMessage: true,
+        topicTriggerOnNewTopic: true,
+        groupReplyMode,
+        topicReplyMode,
+        p2pReplyMode,
+      }
+      feishuConnectionManager.stopAll()
+      await feishuConnectionManager.start('agt_001', config)
+      mockDbGet.mockReturnValue(makeAgent({ feishuConfig: config }))
+      const messageId = `om_reaction_${scope}_${groupReplyMode}_${topicReplyMode}_${p2pReplyMode}`
+      await dispatch(
+        makeData({
+          chat_type: scope === 'p2p' ? 'p2p' : 'group',
+          thread_id: scope === 'topic' ? 'omt_reaction' : undefined,
+          message_id: messageId,
+        }),
+      )
+
+      expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+      expect(mockFinishRunSuccess).toHaveBeenCalledOnce()
+      expect(mockImMessageReactionCreate).toHaveBeenCalledTimes(acknowledge ? 1 : 0)
+      if (acknowledge) {
+        expect(mockImMessageReactionCreate).toHaveBeenCalledWith({
+          path: { message_id: messageId },
+          data: { reaction_type: { emoji_type: 'Get' } },
+        })
+      } else {
+        expect(mockImMessageReply).not.toHaveBeenCalled()
+        expect(mockImMessageCreate).not.toHaveBeenCalled()
+      }
+    },
+  )
 
   it('@mention 去除后文本为空时不触发', async () => {
     mockDbGet.mockReturnValue(makeAgent())
@@ -2232,25 +2248,6 @@ describe('handleMessage via dispatcher', () => {
     const fileCall = mockImMessageCreate.mock.calls[0][0]
     expect(fileCall.data.msg_type).toBe('file')
     expect(JSON.parse(fileCall.data.content)).toEqual({ file_key: 'fk_001' })
-  })
-
-  // ── replyMode: none ───────────────────────────────────────────
-
-  it('replyMode=none 时不调用 reply 也不调用 create', async () => {
-    feishuConnectionManager.stopAll()
-    vi.clearAllMocks()
-    mockClientRequest.mockResolvedValue({ bot: { open_id: 'ou_bot_test' } })
-    mockExecuteWithRetry.mockResolvedValue({
-      result: { success: true, output: 'Agent 回复' },
-      retries: [],
-    })
-    await feishuConnectionManager.start('agt_001', { ...BASE_CONFIG, groupReplyMode: 'none' })
-    mockDbGet.mockReturnValue(
-      makeAgent({ feishuConfig: { ...BASE_CONFIG, groupReplyMode: 'none' } }),
-    )
-    await dispatch(makeData({ chat_type: 'p2p' }))
-    expect(mockImMessageReply).not.toHaveBeenCalled()
-    expect(mockImMessageCreate).not.toHaveBeenCalled()
   })
 
   // ── replyContentType ─────────────────────────────────────────

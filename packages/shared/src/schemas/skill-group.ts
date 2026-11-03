@@ -28,5 +28,9 @@ export const createSkillGroupInput = z.object({
 
 export type CreateSkillGroupInput = z.infer<typeof createSkillGroupInput>
 
-export const updateSkillGroupInput = createSkillGroupInput.partial()
+export const updateSkillGroupInput = createSkillGroupInput
+  .extend({
+    skillIds: createSkillGroupInput.shape.skillIds.unwrap(),
+  })
+  .partial()
 export type UpdateSkillGroupInput = z.infer<typeof updateSkillGroupInput>

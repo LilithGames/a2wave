@@ -57,7 +57,7 @@ const injectSchema = z.object({
   threadId: z.string().optional(),
   root: z.object({ messageId: z.string(), text: z.string() }).optional(),
   rootId: z.string().optional(),
-  feishuConfig: z.record(z.unknown()).optional(),
+  feishuConfig: z.record(z.string(), z.unknown()).optional(),
   cardCreateFails: z.boolean().default(false),
   probe: z
     .enum([

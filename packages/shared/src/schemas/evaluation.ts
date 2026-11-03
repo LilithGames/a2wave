@@ -75,7 +75,11 @@ export const createEvaluationCaseInput = z.object({
 
 export type CreateEvaluationCaseInput = z.infer<typeof createEvaluationCaseInput>
 
-export const updateEvaluationCaseInput = createEvaluationCaseInput.partial()
+export const updateEvaluationCaseInput = createEvaluationCaseInput
+  .extend({
+    sortOrder: createEvaluationCaseInput.shape.sortOrder.unwrap(),
+  })
+  .partial()
 export type UpdateEvaluationCaseInput = z.infer<typeof updateEvaluationCaseInput>
 
 // ------------------------------------------------------------

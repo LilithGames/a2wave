@@ -170,7 +170,7 @@ export const providerChainSchema = z
   .max(PROVIDER_CHAIN_MAX, `providerChain supports at most ${PROVIDER_CHAIN_MAX} providers`)
 
 export const agentConfigSchema = z
-  .record(z.unknown())
+  .record(z.string(), z.unknown())
   .and(z.object({ providerChain: providerChainSchema.optional() }))
 
 export const feishuConfigSchema = z
@@ -585,7 +585,16 @@ export const createAgentInput = z.object({
 
 export type CreateAgentInput = z.infer<typeof createAgentInput>
 
-export const updateAgentInput = createAgentInput.partial()
+// Create defaults must never populate fields omitted by a PATCH request.
+export const updateAgentInput = createAgentInput
+  .extend({
+    type: createAgentInput.shape.type.unwrap(),
+    icon: createAgentInput.shape.icon.unwrap(),
+    workspaceType: createAgentInput.shape.workspaceType.unwrap(),
+    maxConcurrency: createAgentInput.shape.maxConcurrency.unwrap(),
+    commandReplyLanguage: createAgentInput.shape.commandReplyLanguage.unwrap(),
+  })
+  .partial()
 export type UpdateAgentInput = z.infer<typeof updateAgentInput>
 
 // ============================================================

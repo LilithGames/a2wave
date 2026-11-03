@@ -570,7 +570,9 @@ export async function startServer(): Promise<void> {
       toolName: z
         .string()
         .describe('Full tool name from list_tools (format: backendName:toolName)'),
-      arguments: z.record(z.unknown()).describe('Tool arguments matching the inputSchema'),
+      arguments: z
+        .record(z.string(), z.unknown())
+        .describe('Tool arguments matching the inputSchema'),
     },
     async ({ groupKey, toolName, arguments: args }) => {
       let gk: string

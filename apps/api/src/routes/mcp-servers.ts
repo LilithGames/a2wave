@@ -2,20 +2,19 @@ import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import {
+  ADMIN_MCP_NAMES,
+  createMcpServerInput,
+  type GroupConfig,
+  INTERNAL_MCP_NAMES,
+  updateMcpServerInput,
+} from '@a2wave/shared'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { type SQL, and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, count, desc, eq, inArray, isNull, or, type SQL, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
-
-import {
-  ADMIN_MCP_NAMES,
-  type GroupConfig,
-  INTERNAL_MCP_NAMES,
-  createMcpServerInput,
-  updateMcpServerInput,
-} from '@a2wave/shared'
 import { z } from 'zod'
 import { db } from '../db/client.js'
 import { mcpServers, users } from '../db/schema.js'
@@ -488,8 +487,8 @@ const probeToolsInput = z.object({
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   url: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
-  env: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
 })
 
 app.post('/probe-tools', async (c) => {

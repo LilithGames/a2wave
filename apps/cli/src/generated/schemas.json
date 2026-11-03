@@ -71,69 +71,70 @@
               "type": "string"
             },
             "groupTriggerOnAt": {
-              "type": "boolean",
-              "default": true
+              "default": true,
+              "type": "boolean"
             },
             "groupTriggerOnNewMessage": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "groupReplyMode": {
+              "default": "quote",
               "type": "string",
               "enum": [
                 "quote",
                 "new",
                 "none"
-              ],
-              "default": "quote"
+              ]
             },
             "groupInjectReferencedMessage": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "topicTriggerOnAt": {
-              "type": "boolean",
-              "default": true
+              "default": true,
+              "type": "boolean"
             },
             "topicTriggerOnNewTopic": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "topicTriggerOnNewComment": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "topicReplyMode": {
+              "default": "topic_reply",
               "type": "string",
               "enum": [
                 "topic_reply",
                 "none"
-              ],
-              "default": "topic_reply"
+              ]
             },
             "topicReplyMentionTarget": {
+              "default": "trigger_sender",
               "type": "string",
               "enum": [
                 "trigger_sender",
                 "topic_creator",
                 "none"
-              ],
-              "default": "trigger_sender"
+              ]
             },
             "topicInjectRootMessage": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "p2pReplyMode": {
+              "default": "quote",
               "type": "string",
               "enum": [
                 "quote",
                 "new",
                 "none"
-              ],
-              "default": "quote"
+              ]
             },
             "replyContentType": {
+              "default": "text",
               "type": "string",
               "enum": [
                 "text",
@@ -141,55 +142,55 @@
                 "interactive",
                 "interactive_card",
                 "streaming_card"
-              ],
-              "default": "text"
+              ]
             },
             "cardTemplateId": {
               "type": "string"
             },
             "debugShowSessionId": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "debugShowProvider": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "debugShowModel": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "sendArtifactsAsFile": {
-              "type": "boolean",
-              "default": true
+              "default": true,
+              "type": "boolean"
             },
             "fetchUserInfo": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "welcomeMessage": {
               "type": "string",
               "maxLength": 5000
             },
             "welcomeOnP2pEnabled": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "welcomeP2pIdleDays": {
+              "default": 7,
               "type": "integer",
               "minimum": 0,
-              "default": 7
+              "maximum": 9007199254740991
             },
             "welcomeOnGroupAddedEnabled": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             }
           },
           "required": [
             "appId",
             "appSecret"
           ],
-          "additionalProperties": true
+          "additionalProperties": {}
         }
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
@@ -201,29 +202,28 @@
           "type": "object",
           "properties": {
             "autoShare": {
+              "default": "off",
               "type": "string",
               "enum": [
                 "off",
                 "on"
-              ],
-              "default": "off"
+              ]
             },
             "shareAccessLevel": {
+              "default": "authenticated",
               "type": "string",
               "enum": [
                 "authenticated",
                 "public"
-              ],
-              "default": "authenticated"
+              ]
             },
             "shareExpiryDays": {
+              "default": 7,
               "type": "integer",
               "minimum": 1,
-              "maximum": 365,
-              "default": 7
+              "maximum": 365
             }
-          },
-          "additionalProperties": false
+          }
         }
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
@@ -232,7 +232,7 @@
       "$ref": "#/definitions/a2aRouteTarget",
       "definitions": {
         "a2aRouteTarget": {
-          "anyOf": [
+          "oneOf": [
             {
               "type": "object",
               "properties": {
@@ -247,8 +247,7 @@
               "required": [
                 "type",
                 "agentId"
-              ],
-              "additionalProperties": false
+              ]
             },
             {
               "type": "object",
@@ -296,8 +295,7 @@
                 "type",
                 "name",
                 "url"
-              ],
-              "additionalProperties": false
+              ]
             }
           ]
         }
@@ -320,19 +318,18 @@
               "type": "string"
             },
             "tags": {
+              "default": [],
               "type": "array",
               "items": {
                 "type": "string"
-              },
-              "default": []
+              }
             }
           },
           "required": [
             "id",
             "name",
             "description"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
@@ -358,17 +355,17 @@
                   "minLength": 1
                 },
                 "timezone": {
-                  "type": "string",
-                  "default": "Asia/Shanghai"
+                  "default": "Asia/Shanghai",
+                  "type": "string"
                 }
               },
               "required": [
                 "cron",
                 "intent"
-              ],
-              "additionalProperties": false
+              ]
             },
             {
+              "minItems": 1,
               "type": "array",
               "items": {
                 "type": "object",
@@ -386,17 +383,15 @@
                     "minLength": 1
                   },
                   "timezone": {
-                    "type": "string",
-                    "default": "Asia/Shanghai"
+                    "default": "Asia/Shanghai",
+                    "type": "string"
                   }
                 },
                 "required": [
                   "cron",
                   "intent"
-                ],
-                "additionalProperties": false
-              },
-              "minItems": 1
+                ]
+              }
             }
           ]
         }

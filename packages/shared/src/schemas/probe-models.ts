@@ -124,10 +124,10 @@ export const probeModelsResponseSchema = z.object({
    * for whichever model is selected without re-deriving an index. Absent
    * entirely when the source reported nothing usable.
    */
-  modelCapabilities: z.record(modelCapabilitiesSchema).optional(),
+  modelCapabilities: z.record(z.string(), modelCapabilitiesSchema).optional(),
   error: z.string().optional(),
   code: z.string().optional(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 })
 
 export type ProbeModelsResponse = z.infer<typeof probeModelsResponseSchema>

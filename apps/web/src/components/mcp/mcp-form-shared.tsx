@@ -1,7 +1,7 @@
-import i18n from '@/i18n'
 import { Tooltip } from 'antd'
 import { AlertTriangle } from 'lucide-react'
 import { z } from 'zod'
+import i18n from '@/i18n'
 
 export const namePattern = /^[a-zA-Z0-9_-]+$/
 
@@ -42,8 +42,8 @@ const formGroupBackendSchema = z.discriminatedUnion('mode', [
     args: z.array(z.string()).optional(),
     cwd: z.string().nullable().optional(),
     url: z.string().nullable().optional(),
-    headers: z.record(z.string()).nullable().optional(),
-    env: z.record(z.string()).nullable().optional(),
+    headers: z.record(z.string(), z.string()).nullable().optional(),
+    env: z.record(z.string(), z.string()).nullable().optional(),
   }),
   z.object({
     mode: z.literal('ref'),
@@ -52,7 +52,7 @@ const formGroupBackendSchema = z.discriminatedUnion('mode', [
 ])
 
 const formGroupConfigSchema = z.object({
-  backends: z.record(z.array(formGroupBackendSchema)),
+  backends: z.record(z.string(), z.array(formGroupBackendSchema)),
 })
 
 /** Built per language so eagerly-evaluated zod messages follow the active locale. */
@@ -66,8 +66,8 @@ export const createMcpServerFormSchema = (lng: string) =>
       args: z.array(z.string()),
       cwd: z.string(),
       url: z.string(),
-      headers: z.record(z.string()),
-      env: z.record(z.string()),
+      headers: z.record(z.string(), z.string()),
+      env: z.record(z.string(), z.string()),
       groupConfig: formGroupConfigSchema.optional(),
       isEnabled: z.boolean(),
       usageScope: z.enum(['private', 'admin-only', 'all-users']),
