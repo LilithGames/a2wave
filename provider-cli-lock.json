@@ -26,15 +26,15 @@
     },
     {
       "kind": "claude-code",
-      "version": "2.1.270",
+      "version": "2.1.318",
       "binary": "claude",
       "versionArgs": ["--version"],
-      "expectedVersionOutput": "2.1.270",
+      "expectedVersionOutput": "2.1.318",
       "install": {
         "type": "npm",
         "package": "@anthropic-ai/claude-code",
-        "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.270.tgz",
-        "integrity": "sha512-0zMkfIWQu7/SG56VP8r780HZWvrNShzK28AbAnhKRK0ns+ToGXPT0W8UqyZmZCUKAkJDd5//TrwSOhk1+hysiw==",
+        "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.318.tgz",
+        "integrity": "sha512-OTJgLxcvWefv8IdTsq5n90Z2IxEhLwKqHUBhwZYE4odXzKA/Tb6p2Zb5Iy9Vq7JIVcNZzn9cPxW5sb42wLF95Q==",
         "allowScripts": true
       }
     },
