@@ -225,7 +225,7 @@ If your Agent is still using the flat fields, please migrate before v2.
 
 ## Other known limitations
 
-- **Topic-thread rerun reply location**: if the original Feishu message is in a topic thread (has `thread_id`), the reply produced after clicking "Rerun" lands in the chat root, not in the original topic thread. `sendFeishuMessageByContext` does not currently support in-thread replies; the product decision is pending.
+- **Topic-thread rerun reply location**: with ordinary-group topic replies enabled, rerunning a native Feishu group message sends the result back to the topic under that message. Other reply modes continue to send rerun results to the chat root.
 
 ## Related documents
 

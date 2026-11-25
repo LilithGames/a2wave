@@ -3,6 +3,7 @@ import type {
   AgentPermission,
   CreateAgentInput,
   FastModeState,
+  FeishuConfig,
   GitTriggerCliStatus,
   GitTriggerConfig,
   GitTriggerProvider,
@@ -239,7 +240,7 @@ export type FeishuPublishConfig = {
   // 普通群
   groupTriggerOnAt: boolean
   groupTriggerOnNewMessage: boolean
-  groupReplyMode: 'quote' | 'new' | 'none'
+  groupReplyMode: NonNullable<FeishuConfig['groupReplyMode']>
   groupInjectReferencedMessage: boolean
   // 话题群
   topicTriggerOnAt: boolean

@@ -49,8 +49,12 @@ vi.mock('../../db/client.js', async () => {
 const { sqliteDatabase } = (await import('../../db/client.js')) as unknown as {
   sqliteDatabase: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown } }
 }
-const { lookupPreviousChatId, lookupPreviousFeishuSession, resolveFeishuConversationId } =
-  await import('../feishu-session-lookup.js')
+const {
+  lookupPreviousChatId,
+  lookupPreviousFeishuSession,
+  resolveFeishuConversationId,
+  resolveFeishuTriggerSessionId,
+} = await import('../feishu-session-lookup.js')
 
 const AGENT = 'agt_001'
 const SESSION = 'oc_92a7d70d'
@@ -89,6 +93,96 @@ function insertRun(run: {
 
 beforeEach(() => {
   sqliteDatabase.prepare('DELETE FROM runs').run()
+})
+
+describe('ordinary group topic sessions', () => {
+  const group = { chat_type: 'group', chat_id: 'oc_group' }
+
+  it('continues the opening turn when Feishu starts supplying a thread id', async () => {
+    const opener = { ...group, message_id: 'om_question', root_id: 'om_earlier_quote' }
+    const sessionId = await resolveFeishuTriggerSessionId(AGENT, opener, 'thread')
+    expect.assert(sessionId)
+    const otherSession = await resolveFeishuTriggerSessionId(
+      AGENT,
+      { ...opener, message_id: 'om_another_question' },
+      'thread',
+    )
+    expect(otherSession).not.toBe(sessionId)
+    insertRun({
+      id: 'run_opening',
+      chatId: 'chat_opening',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      sessionId,
+    })
+    const comment = {
+      ...group,
+      message_id: 'om_comment',
+      thread_id: 'omt_topic',
+      root_id: 'om_question',
+    }
+    // A reply-mode change after opening the topic must not split its history.
+    expect(await resolveFeishuTriggerSessionId(AGENT, comment, 'quote')).toBe(sessionId)
+    expect(await resolveFeishuTriggerSessionId('agt_other', comment, 'thread')).toBe('omt_topic')
+    expect(
+      await resolveFeishuTriggerSessionId(
+        AGENT,
+        { ...comment, root_id: 'om_other', thread_id: 'omt_other' },
+        'thread',
+      ),
+    ).toBe('omt_other')
+  })
+
+  it('resumes the last completed topic turn when queue admission differs from arrival order', async () => {
+    const sessionId = await resolveFeishuTriggerSessionId(
+      AGENT,
+      { ...group, message_id: 'om_topic' },
+      'thread',
+    )
+    expect.assert(sessionId)
+    for (const [id, created, finished] of [
+      ['earlier', 15, 2],
+      ['later', 11, 5],
+    ] as const) {
+      insertRun({
+        id,
+        chatId: `chat_${id}`,
+        createdAt: ago(created * 60_000),
+        updatedAt: ago(finished * 60_000),
+        sessionId,
+      })
+    }
+    expect(await lookupPreviousChatId(AGENT, sessionId, Number.POSITIVE_INFINITY)).toBe(
+      'chat_earlier',
+    )
+  })
+
+  it('preserves native topic history when a legacy reply chain has the same root', async () => {
+    insertRun({
+      id: 'run_legacy_quote',
+      chatId: 'chat_legacy',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      sessionId: 'om_root',
+    })
+    const comment = {
+      ...group,
+      message_id: 'om_comment',
+      thread_id: 'omt_native',
+      root_id: 'om_root',
+    }
+    expect(await resolveFeishuTriggerSessionId(AGENT, comment, 'thread')).toBe('omt_native')
+    expect(
+      await resolveFeishuTriggerSessionId(AGENT, { ...comment, thread_id: undefined }, 'quote'),
+    ).toBe('om_root')
+    expect(
+      await resolveFeishuTriggerSessionId(
+        AGENT,
+        { ...comment, thread_id: undefined, chat_type: 'p2p' },
+        'thread',
+      ),
+    ).toBe('oc_group')
+  })
 })
 
 describe('lookupPreviousChatId', () => {

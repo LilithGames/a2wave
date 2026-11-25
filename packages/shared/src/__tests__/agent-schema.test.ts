@@ -446,6 +446,17 @@ describe('native chat channel schemas', () => {
 })
 
 describe('feishuConfigSchema topic settings', () => {
+  it('accepts thread replies only for ordinary groups and keeps quote as the default', () => {
+    const credentials = { appId: 'cli_x', appSecret: 's' }
+    expect(feishuConfigSchema.parse(credentials).groupReplyMode).toBe('quote')
+    expect(
+      feishuConfigSchema.parse({ ...credentials, groupReplyMode: 'thread' }).groupReplyMode,
+    ).toBe('thread')
+    expect(feishuConfigSchema.safeParse({ ...credentials, p2pReplyMode: 'thread' }).success).toBe(
+      false,
+    )
+  })
+
   it('disables regular-group reference and topic-root injection by default', () => {
     const parsed = feishuConfigSchema.parse({ appId: 'cli_x', appSecret: 's' })
     expect(parsed.groupInjectReferencedMessage).toBe(false)

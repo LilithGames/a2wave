@@ -788,7 +788,7 @@ env:
 #   appSecret: \${FEISHU_APP_SECRET}
 #   groupTriggerOnAt: true
 #   groupTriggerOnNewMessage: false
-#   groupReplyMode: quote                  # quote | new | none
+#   groupReplyMode: quote                  # quote | thread | new | none
 #   groupInjectReferencedMessage: false    # include the replied-to message as context
 #   topicTriggerOnAt: true
 #   topicReplyMode: topic_reply            # topic_reply | none

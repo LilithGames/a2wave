@@ -1,7 +1,8 @@
-import { and, asc, count, desc, eq, exists, isNotNull, lt, notExists } from 'drizzle-orm'
+import { and, asc, count, desc, eq, exists, isNotNull, lt, not, notExists, sql } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { agents, runSteps, runs, scmWorkloadLeases } from '../db/schema.js'
 import { type TransactionHandle, withTransaction } from '../db/transaction.js'
+import { FEISHU_GROUP_TOPIC_PREFIX } from '../lib/feishu-message-context.js'
 import { processInstanceId } from '../lib/process-instance.js'
 import { FAILURE_REASONS, type FailureReason } from '../lib/run-failure-reasons.js'
 import { withScmPathMutation } from '../lib/scm-path-plan.js'
@@ -29,6 +30,19 @@ type RunStatus = (typeof VALID_RUN_STATUSES)[number]
 const FEISHU_RECEIVE_ID_TYPES = new Set(['open_id', 'user_id', 'union_id', 'email', 'chat_id'])
 
 class RunQueueFullError extends Error {}
+
+/** A topic has a single provider session. Another turn can resume it once the active run finishes. */
+function hasRunningTopicTurn(agentId: string) {
+  return sql`exists (
+    select 1 from ${runs} as active_topic
+    where active_topic.initiator_agent_id = ${agentId}
+      and active_topic.status = 'running'
+      and active_topic.trigger_source = 'feishu'
+      and substr(${runs.triggerSessionId}, 1, ${FEISHU_GROUP_TOPIC_PREFIX.length}) = ${FEISHU_GROUP_TOPIC_PREFIX}
+      and active_topic.trigger_session_id = ${runs.triggerSessionId}
+      and ${runs.triggerSource} = 'feishu'
+  )`
+}
 
 function parseRunStatus(s: string): RunStatus | null {
   if (VALID_RUN_STATUSES.includes(s as RunStatus)) return s as RunStatus
@@ -332,7 +346,17 @@ export const taskQueueDb: TaskQueueDb = {
           }
           const running = await countOccupiedRunSlots(executor, agentId)
           let slot: 'acquired' | 'queued' = 'acquired'
-          if (running >= maxConcurrency) {
+          const topicBusy =
+            running > 0 &&
+            running < maxConcurrency &&
+            (
+              await executor
+                .select({ id: runs.id })
+                .from(runs)
+                .where(and(eq(runs.id, runId), hasRunningTopicTurn(agentId)))
+                .limit(1)
+            ).length > 0
+          if (running >= maxConcurrency || topicBusy) {
             const queued =
               (
                 await executor
@@ -423,7 +447,9 @@ export const taskQueueDb: TaskQueueDb = {
         // executing it — and the only way the reaper can tell a crashed
         // owner's row from a healthy peer's.
         .set({ status: 'running', ownerInstanceId: processInstanceId, updatedAt: new Date() })
-        .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
+        .where(
+          and(eq(runs.id, runId), eq(runs.status, 'queued'), not(hasRunningTopicTurn(agentId))),
+        )
         .returning({ id: runs.id })
       if (changed.length === 0) return false
       const activated = await activateScmWorkloadInMutation(tx, {
@@ -505,7 +531,13 @@ export const taskQueueDb: TaskQueueDb = {
     const [run] = await db
       .select({ id: runs.id, initiatorAgentId: runs.initiatorAgentId })
       .from(runs)
-      .where(and(eq(runs.initiatorAgentId, agentId), eq(runs.status, 'queued')))
+      .where(
+        and(
+          eq(runs.initiatorAgentId, agentId),
+          eq(runs.status, 'queued'),
+          not(hasRunningTopicTurn(agentId)),
+        ),
+      )
       .orderBy(asc(runs.createdAt))
       .limit(1)
     if (!run?.initiatorAgentId) return undefined

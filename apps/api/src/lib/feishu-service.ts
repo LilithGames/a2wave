@@ -4,13 +4,13 @@ import { createWriteStream, promises as fs, readFileSync, statSync } from 'node:
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { finished } from 'node:stream/promises'
-import type { FeishuConfig } from '@a2wave/shared'
+import type { FeishuConfig, RunChannelContext } from '@a2wave/shared'
 import * as lark from '@larksuiteoapi/node-sdk'
 import { and, eq, isNull, lt, or } from 'drizzle-orm'
 import WebSocket from 'ws'
 import { db } from '../db/client.js'
 import { agents, feishuCardCallbacks, feishuPendingMessages, runSteps, runs } from '../db/schema.js'
-import { withTransaction } from '../db/transaction.js'
+import { runExclusive, withTransaction } from '../db/transaction.js'
 import { resolveAgentRuntimeTmpDir } from '../engine/runtime-context.js'
 import { buildTaskId } from '../engine/task-id.js'
 import { tryAcquireSlot } from '../engine/task-queue.js'
@@ -44,7 +44,7 @@ import {
   summarizeCardAction,
 } from './feishu-interactive-card.js'
 import {
-  buildTriggerSessionId,
+  isFeishuGroupTopicSession,
   quoteAnchorId,
   resolveSessionTimeoutMs,
 } from './feishu-message-context.js'
@@ -62,6 +62,7 @@ import {
   toFeishuReferencedMessageContext,
   toFeishuReferencedPromptContext,
 } from './feishu-referenced-message.js'
+import { deliverFeishuReply, type FeishuReplyMode } from './feishu-reply-delivery.js'
 import {
   resolveFeishuFailureReplyMentionOpenId,
   resolveFeishuMentionRootId,
@@ -71,6 +72,7 @@ import {
 import {
   lookupPreviousFeishuSession,
   resolveFeishuConversationId,
+  resolveFeishuTriggerSessionId,
 } from './feishu-session-lookup.js'
 import {
   buildFeishuFileHint,
@@ -80,7 +82,7 @@ import {
 } from './feishu-topic-root.js'
 import { createId } from './id.js'
 import { logger } from './logger.js'
-import { registerPendingJob } from './pending-job-registry.js'
+import { registerPendingJob, takePendingJob } from './pending-job-registry.js'
 import { buildDefaultPlugins, emit } from './pipeline/index.js'
 import type {
   AuthenticatedCtx,
@@ -188,16 +190,9 @@ export { buildFeishuFallbackText }
 // ── Pure helpers (exported for testing) ──────────────────────────
 
 /**
- * 判断消息是否满足触发条件。
- *
- * 话题群识别假设：群聊消息中 `thread_id` 存在即视为话题群消息。
- * - 新话题：有 thread_id，无 root_id
- * - 话题内评论/回复：有 thread_id，且有 root_id
- * 该行为依赖飞书 im.message.receive_v1 事件 payload 的实际字段；
- * 若飞书在特殊场景下对普通群消息也携带 thread_id，可能误走话题逻辑。
- *
- * NOTE: 旧版 DB 行可能缺失部分字段（zod default 不会在读取时补齐），
- * 调用方应先经过 normalizeFeishuConfig() 填充默认值后再传入。
+ * Messages with a thread_id use topic triggers in both ordinary and topic-mode
+ * groups. A root_id distinguishes a comment from the opening topic event.
+ * Callers normalize persisted settings before evaluating the triggers.
  */
 export function shouldTrigger(
   config: Pick<
@@ -246,20 +241,17 @@ export function shouldTrigger(
   return (config.groupTriggerOnAt && isMentioned) || config.groupTriggerOnNewMessage
 }
 
-/**
- * 根据消息上下文返回实际的回复模式。
- * P2P 使用 p2pReplyMode，话题群使用 topicReplyMode，普通群使用 groupReplyMode。
- * topic_reply 在 API 层等价于 quote（调用 message.reply()），飞书自动将回复放入话题线程。
- */
+/** Existing topics honor their own reply setting; thread mode keeps the delivery inside the topic. */
 export function getEffectiveReplyMode(
   config: Pick<NormalizedFeishuConfig, 'groupReplyMode' | 'topicReplyMode' | 'p2pReplyMode'>,
   message: { chat_type?: string; thread_id?: string },
-): 'quote' | 'new' | 'none' {
+): FeishuReplyMode {
   // P2P 单聊：独立配置，避免被 groupReplyMode='none' 静默
   if (message.chat_type === 'p2p') return config.p2pReplyMode
   // 话题群：群聊消息带有 thread_id
   if (message.thread_id) {
-    return config.topicReplyMode === 'topic_reply' ? 'quote' : 'none'
+    if (config.topicReplyMode !== 'topic_reply') return 'none'
+    return config.groupReplyMode === 'thread' ? 'thread' : 'quote'
   }
   return config.groupReplyMode
 }
@@ -645,17 +637,10 @@ async function sendFeishuFailureReply(
     replyContent = prependAtMention(msgType, replyContent, senderOpenId)
   }
   try {
-    if (replyMode === 'quote') {
-      await client.im.message.reply({
-        path: { message_id: quoteAnchorId(message) },
-        data: { content: replyContent, msg_type: msgType },
-      })
-    } else {
-      await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: { receive_id: message.chat_id, content: replyContent, msg_type: msgType },
-      })
-    }
+    await deliverFeishuReply(client, message, replyMode, {
+      content: replyContent,
+      msg_type: msgType,
+    })
   } catch (err) {
     logger.warn({ err }, 'Feishu: failure reply send failed')
   }
@@ -702,7 +687,7 @@ async function sendInteractiveCardReply(opts: {
   resumeChatId: string | null | undefined
   spec: InteractiveCardSpec
   surroundingText?: string
-  replyMode: 'quote' | 'new' | 'none'
+  replyMode: FeishuReplyMode
   /** 机器人名，作为卡片默认标题栏文字（Agent 自带 spec.title 时优先用 spec.title）。 */
   agentName?: string
   /** 调试信息文本后缀（按运营勾选）；渲染到卡片底部，并持久化供就地更新卡片复用。 */
@@ -744,18 +729,8 @@ async function sendInteractiveCardReply(opts: {
   const card = buildInteractiveCardJson(cardSpec, cbId, undefined, style, debugSuffix)
   const content = JSON.stringify(card)
   try {
-    let resp: { message_id?: string; data?: { message_id?: string } } | undefined
-    if (replyMode === 'quote') {
-      resp = await client.im.message.reply({
-        path: { message_id: quoteAnchorId(message) },
-        data: { content, msg_type: 'interactive' },
-      })
-    } else {
-      resp = await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: { receive_id: message.chat_id, content, msg_type: 'interactive' },
-      })
-    }
+    const resp: { message_id?: string; data?: { message_id?: string } } | undefined =
+      await deliverFeishuReply(client, message, replyMode, { content, msg_type: 'interactive' })
     const sentMessageId = resp?.data?.message_id ?? resp?.message_id ?? null
     if (sentMessageId) {
       await db
@@ -815,21 +790,10 @@ async function sendFeishuUserNotification(
   const rawMode = getEffectiveReplyMode(config, message)
   const effectiveMode = rawMode === 'none' ? 'new' : rawMode
   try {
-    if (effectiveMode === 'quote') {
-      await client.im.message.reply({
-        path: { message_id: quoteAnchorId(message) },
-        data: { content: replyContent, msg_type: msgType },
-      })
-    } else {
-      await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: message.chat_id,
-          content: replyContent,
-          msg_type: msgType,
-        },
-      })
-    }
+    await deliverFeishuReply(client, message, effectiveMode, {
+      content: replyContent,
+      msg_type: msgType,
+    })
   } catch (err) {
     logger.warn({ err }, 'Failed to send Feishu user notification')
   }
@@ -1058,6 +1022,7 @@ export async function sendArtifactFiles(
   client: lark.Client,
   artifacts: { id: string; filename: string; storagePath: string; kind?: 'file' | 'directory' }[],
   chatId: string,
+  threadAnchorId?: string,
 ): Promise<void> {
   for (const artifact of artifacts) {
     try {
@@ -1105,14 +1070,15 @@ export async function sendArtifactFiles(
         continue
       }
 
-      await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
+      await deliverFeishuReply(
+        client,
+        { chat_id: chatId, message_id: threadAnchorId },
+        threadAnchorId ? 'thread' : 'new',
+        {
           content: JSON.stringify({ file_key: fileKey }),
           msg_type: 'file',
         },
-      })
+      )
       logger.info({ filename: artifact.filename, fileKey }, 'Artifact sent as Feishu file')
     } catch (err) {
       logger.error({ err, filename: artifact.filename }, 'Failed to send artifact as Feishu file')
@@ -1125,11 +1091,6 @@ export async function sendArtifactFiles(
  * 当 context 包含 receive_id_type、receive_id 时，使用 agent 的 feishuConfig 创建客户端并发送。
  * 回复格式遵循 feishuConfig.replyContentType 和 cardTemplateId，与飞书 WebSocket 渠道一致。
  * 用于 API 触发场景（如 Gateway invoke），调用方手工拼写 context 指定回复目标。
- *
- * KNOWN LIMITATION: thread-scoped replies are not supported. Even if context
- * carries a thread_id (e.g. from a rerun of a topic-thread message), the
- * reply lands at the chat root. Tracked alongside the rerun thread_id TODO
- * in `routes/runs.ts:enrichRerunContext`.
  *
  * @returns true 若成功发送，false 若 context 不满足条件或发送失败
  */
@@ -1182,14 +1143,28 @@ export async function sendFeishuMessageByContext(
       logger: larkSdkLogger,
     })
 
-    await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        content: replyContent,
-        msg_type: msgType,
-      },
-    })
+    const channel = context.channel as RunChannelContext | undefined
+    const info = channel?.channel_type === 'feishu' ? channel.channel_info : undefined
+    const data = { content: replyContent, msg_type: msgType }
+    if (
+      feishuConfig.groupReplyMode === 'thread' &&
+      info?.chat_type === 'group' &&
+      receiveIdType === 'chat_id' &&
+      receiveId === info.chat_id &&
+      typeof info.message_id === 'string'
+    ) {
+      await deliverFeishuReply(
+        client,
+        { chat_id: receiveId, message_id: info.message_id },
+        'thread',
+        data,
+      )
+    } else {
+      await client.im.message.create({
+        params: { receive_id_type: receiveIdType },
+        data: { ...data, receive_id: receiveId },
+      })
+    }
     logger.info({ agentId, receiveIdType, receiveId, msgType }, 'Feishu message sent by context')
     return true
   } catch (err) {
@@ -1863,7 +1838,7 @@ class FeishuConnectionManager {
     // 普通消息按 message 推导 triggerSessionId，再查上一次 chatId 实现多轮续接。
     const triggerSessionId = options.cardResume
       ? options.cardResume.sessionId
-      : buildTriggerSessionId(message)
+      : await resolveFeishuTriggerSessionId(agentId, message, config.groupReplyMode)
     const previousSession = triggerSessionId
       ? await lookupPreviousFeishuSession(
           agentId,
@@ -1874,7 +1849,7 @@ class FeishuConnectionManager {
             : undefined,
         )
       : null
-    const previousChatId: string | null | undefined = options.cardResume
+    let previousChatId: string | null | undefined = options.cardResume
       ? // 优先用发卡时快照的 chatId；缺失（极端：发卡那轮无 chatId）再按 sessionId 兜底查最近一轮，
         // 避免续跑时新开一个引擎会话、丢掉发卡那轮上下文。
         (options.cardResume.previousChatId ?? previousSession?.chatId)
@@ -2041,24 +2016,6 @@ class FeishuConnectionManager {
 
     const runId = reservation.runId
 
-    const slotResult = await tryAcquireSlot(taskQueueDb, agentId, runId, agent.maxConcurrency ?? 1)
-    if (slotResult === 'queue_full') {
-      await db.delete(runs).where(eq(runs.id, runId))
-      await removePending()
-      logger.warn({ agentId }, 'Feishu: agent queue full, dropping message')
-      // The "Get" reaction is already on the message, so silence would read as
-      // "received, working on it" and the user would wait forever. Every other
-      // channel (Slack / Discord / Telegram / QQ) answers here; Feishu must too.
-      await sendFeishuUserNotification(
-        client,
-        data.sender,
-        message,
-        config,
-        'Agent 队列已满，请稍后再试。',
-      )
-      return
-    }
-
     /** Fail the run and release the concurrency slot so queued runs can proceed. */
     const failRunAndReleaseSlot = async (error: string) => {
       await recoverRunStartup({
@@ -2075,51 +2032,68 @@ class FeishuConnectionManager {
     // ── Streaming card: create before queue decision so queued jobs show "排队中..." ──
     const replyContentType = config.replyContentType ?? 'text'
     const replyMode = getEffectiveReplyMode(config, message)
+    const threadAnchorId = replyMode === 'thread' ? quoteAnchorId(message) : undefined
     let card: FeishuStreamingCard | undefined
-    if (replyContentType === 'streaming_card' && replyMode !== 'none') {
-      try {
-        card = await FeishuStreamingCard.create(client)
-        await card.send(
-          message.chat_id,
-          replyMode === 'quote' ? quoteAnchorId(message) : undefined,
-          replyMode,
-        )
-        if (slotResult === 'queued') {
-          card.updateContent('⏳ 排队中...')
-        }
-      } catch (err) {
-        logger.error({ err, agentId, runId }, 'Failed to create/send streaming card')
-        card = undefined
-        const errMsg = err instanceof Error ? err.message : String(err)
-        const hint = '流式卡片创建失败，请检查飞书应用是否已开通 cardkit:card:write 权限。'
-        const errContent = JSON.stringify({
-          zh_cn: {
-            title: '⚠️ 流式卡片错误',
-            content: [[{ tag: 'text', text: `${hint}\n\n错误详情: ${errMsg}` }]],
-          },
-        })
-        try {
-          if (replyMode === 'quote') {
-            await client.im.message.reply({
-              path: { message_id: quoteAnchorId(message) },
-              data: { content: errContent, msg_type: 'post' },
-            })
-          } else {
-            await client.im.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: { receive_id: message.chat_id, content: errContent, msg_type: 'post' },
-            })
-          }
-        } catch (replyErr) {
-          logger.error(
-            { err: replyErr, agentId, runId },
-            'Failed to send streaming card error notification',
-          )
-        }
-        await failRunAndReleaseSlot('Streaming card creation failed')
+    const prepareJob = async () => {
+      const slotResult = await tryAcquireSlot(
+        taskQueueDb,
+        agentId,
+        runId,
+        agent.maxConcurrency ?? 1,
+      )
+      if (slotResult === 'queue_full') {
+        await db.delete(runs).where(eq(runs.id, runId))
         await removePending()
-        return
+        logger.warn({ agentId }, 'Feishu: agent queue full, dropping message')
+        // The "Get" reaction is already on the message, so silence would read as
+        // "received, working on it" and the user would wait forever. Every other
+        // channel (Slack / Discord / Telegram / QQ) answers here; Feishu must too.
+        await sendFeishuUserNotification(
+          client,
+          data.sender,
+          message,
+          config,
+          'Agent 队列已满，请稍后再试。',
+        )
+        return null
       }
+
+      if (replyContentType === 'streaming_card' && replyMode !== 'none') {
+        try {
+          card = await FeishuStreamingCard.create(client)
+          await card.send(message.chat_id, quoteAnchorId(message), replyMode)
+          if (slotResult === 'queued') {
+            card.updateContent('⏳ 排队中...')
+          }
+        } catch (err) {
+          logger.error({ err, agentId, runId }, 'Failed to create/send streaming card')
+          card = undefined
+          const errMsg = err instanceof Error ? err.message : String(err)
+          const hint = '流式卡片创建失败，请检查飞书应用是否已开通 cardkit:card:write 权限。'
+          const errContent = JSON.stringify({
+            zh_cn: {
+              title: '⚠️ 流式卡片错误',
+              content: [[{ tag: 'text', text: `${hint}\n\n错误详情: ${errMsg}` }]],
+            },
+          })
+          try {
+            await deliverFeishuReply(client, message, replyMode, {
+              content: errContent,
+              msg_type: 'post',
+            })
+          } catch (replyErr) {
+            logger.error(
+              { err: replyErr, agentId, runId },
+              'Failed to send streaming card error notification',
+            )
+          }
+          await failRunAndReleaseSlot('Streaming card creation failed')
+          await removePending()
+          return null
+        }
+      }
+
+      return slotResult
     }
 
     // ── Snapshot values for closure (lightweight, immutable) ──
@@ -2129,7 +2103,7 @@ class FeishuConnectionManager {
     const wantSendFiles = config.sendArtifactsAsFile !== false
 
     // ── Execute job: all heavy IO (downloads, CC execution) ──
-    const executeJob = async () => {
+    const executeJob = async (queued: boolean) => {
       let imageTempDir: string | undefined
       let fileTempDir: string | undefined
       // Tracked separately for the same reason imageTempDir/fileTempDir are: a
@@ -2171,6 +2145,27 @@ class FeishuConnectionManager {
           await db.select().from(agents).where(eq(agents.id, agentId)).limit(1)
         )[0]
         if (!currentAgent) throw new Error(`Agent '${agentId}' not found after workload admission`)
+        // A topic comment may arrive while the opener is still running. Once
+        // admitted, resume the completed turn and keep the UI on its conversation.
+        if (
+          message.thread_id &&
+          isFeishuGroupTopicSession(triggerSessionId) &&
+          !options.cardResume &&
+          matchedCommand !== 'new'
+        ) {
+          const latest = await lookupPreviousFeishuSession(
+            agentId,
+            triggerSessionId,
+            Number.POSITIVE_INFINITY,
+          )
+          previousChatId = latest?.chatId
+          const conversationId = latest?.conversationId ?? runId
+          if (conversationId !== (previousSession?.conversationId ?? runId)) {
+            await runExclusive(async () => {
+              await db.update(runs).set({ conversationId }).where(eq(runs.id, runId))
+            })
+          }
+        }
         // Resolve from the binding re-read above, once the slot is held. agentEnv
         // in: resolveWorkDir owns A2WAVE_WORKSPACE_BRANCH.
         const env = agentConfig.agentEnv
@@ -2561,7 +2556,7 @@ class FeishuConnectionManager {
 
           try {
             // 排队后开始执行时，将卡片从"排队中..."更新为"思考中..."
-            if (card && slotResult === 'queued') card.updateContent('思考中...')
+            if (card && queued) card.updateContent('思考中...')
 
             // runWithLifecycle owns collector + finishRunSuccess + onAfterRun /
             // onRunSucceeded / onRunFailed emit. Feishu just adapts the result.
@@ -2628,7 +2623,7 @@ class FeishuConnectionManager {
             }
 
             if (wantSendFiles && artifacts.length > 0) {
-              await sendArtifactFiles(freshClient, artifacts, message.chat_id)
+              await sendArtifactFiles(freshClient, artifacts, message.chat_id, threadAnchorId)
             }
           } finally {
             if (cardId) unregisterStreamingCard(cardId)
@@ -2726,7 +2721,7 @@ class FeishuConnectionManager {
               })
               if (sent) {
                 if (wantSendFiles && artifacts.length > 0) {
-                  await sendArtifactFiles(freshClient, artifacts, message.chat_id)
+                  await sendArtifactFiles(freshClient, artifacts, message.chat_id, threadAnchorId)
                 }
                 void emit('onAfterReply', replyCtx, plugins)
                 return
@@ -2756,23 +2751,12 @@ class FeishuConnectionManager {
             replyContent = prependAtMention(msgType, replyContent, replyMentionOpenId)
           }
 
-          if (replyMode === 'quote') {
-            await freshClient.im.message.reply({
-              path: { message_id: quoteAnchorId(message) },
-              data: { content: replyContent, msg_type: msgType },
-            })
-          } else {
-            await freshClient.im.message.create({
-              params: { receive_id_type: 'chat_id' },
-              data: {
-                receive_id: message.chat_id,
-                content: replyContent,
-                msg_type: msgType,
-              },
-            })
-          }
+          await deliverFeishuReply(freshClient, message, replyMode, {
+            content: replyContent,
+            msg_type: msgType,
+          })
           if (wantSendFiles && artifacts.length > 0) {
-            await sendArtifactFiles(freshClient, artifacts, message.chat_id)
+            await sendArtifactFiles(freshClient, artifacts, message.chat_id, threadAnchorId)
           }
           void emit('onAfterReply', replyCtx, plugins)
         }
@@ -2833,14 +2817,19 @@ class FeishuConnectionManager {
       }
     }
 
-    // ── Dispatch: queue or execute immediately ──
-    if (slotResult === 'queued') {
-      logger.info({ agentId, runId }, 'Feishu: message queued, deferring execution')
-      registerPendingJob(runId, executeJob)
-      return
+    // Register before admission can expose a queued row to promotion. A
+    // promoted job waits for its streaming card to finish being sent.
+    const prepared = Promise.resolve().then(prepareJob)
+    registerPendingJob(runId, async () => {
+      if ((await prepared) === 'queued') await executeJob(true)
+    })
+    let slot: Awaited<typeof prepared> = null
+    try {
+      slot = await prepared
+    } finally {
+      if (slot !== 'queued') takePendingJob(runId)
     }
-
-    await executeJob()
+    if (slot === 'acquired') await executeJob(false)
   }
 
   /**

@@ -426,7 +426,8 @@ export function PublishTab({
   // 普通群
   const [groupTriggerOnAt, setGroupTriggerOnAt] = useState(true)
   const [groupTriggerOnNewMessage, setGroupTriggerOnNewMessage] = useState(false)
-  const [groupReplyMode, setGroupReplyMode] = useState<'quote' | 'new' | 'none'>('quote')
+  const [groupReplyMode, setGroupReplyMode] =
+    useState<FeishuPublishConfig['groupReplyMode']>('quote')
   const [groupInjectReferencedMessage, setGroupInjectReferencedMessage] = useState(false)
   // 话题群
   const [topicTriggerOnAt, setTopicTriggerOnAt] = useState(true)
@@ -960,7 +961,7 @@ export function PublishTab({
     feishuAppId: (v) => setFeishuAppId(v as string),
     groupTriggerOnAt: (v) => setGroupTriggerOnAt(v as boolean),
     groupTriggerOnNewMessage: (v) => setGroupTriggerOnNewMessage(v as boolean),
-    groupReplyMode: (v) => setGroupReplyMode(v as 'quote' | 'new' | 'none'),
+    groupReplyMode: (v) => setGroupReplyMode(v as FeishuPublishConfig['groupReplyMode']),
     groupInjectReferencedMessage: (v) => setGroupInjectReferencedMessage(v as boolean),
     topicTriggerOnAt: (v) => setTopicTriggerOnAt(v as boolean),
     topicTriggerOnNewTopic: (v) => setTopicTriggerOnNewTopic(v as boolean),

@@ -120,7 +120,6 @@ test.describe('Feishu publish tab', () => {
 
     await enableFeishuChannel(page)
 
-    // 现在分两个 section：普通群 / 话题群。Scope 到普通群 section 验证三个 radio
     await expect(page.getByText('普通群回复配置')).toBeVisible()
     await expect(page.getByText('话题群回复配置')).toBeVisible()
     const normalSection = page
@@ -128,6 +127,9 @@ test.describe('Feishu publish tab', () => {
       .filter({ has: page.getByText('普通群回复配置', { exact: true }) })
       .last()
     await expect(normalSection.getByRole('radio', { name: '引用原消息回复' })).toBeVisible()
+    await expect(
+      normalSection.getByRole('radio', { name: '在原消息下创建话题并回复' }),
+    ).toBeVisible()
     await expect(normalSection.getByRole('radio', { name: '新增消息回复' })).toBeVisible()
     await expect(normalSection.getByRole('radio', { name: /无需回复/ })).toBeVisible()
   })

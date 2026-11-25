@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import type { FeishuPublishConfig } from '@/hooks/use-agents'
 import { message } from '@/lib/antd-static'
 import { copyText } from '@/lib/clipboard'
 import { CopyButton } from '@/pages/agent-detail/copy-button'
@@ -37,7 +38,7 @@ export type FeishuReplyContentType =
 export interface FeishuGroupSettings {
   triggerOnAt: boolean
   triggerOnNewMessage: boolean
-  replyMode: FeishuReplyMode
+  replyMode: FeishuPublishConfig['groupReplyMode']
   injectReferencedMessage: boolean
 }
 
@@ -150,7 +151,7 @@ export function FeishuChannelSection({
 
   const setGroupTriggerOnAt = (v: boolean) => onGroupChange({ triggerOnAt: v })
   const setGroupTriggerOnNewMessage = (v: boolean) => onGroupChange({ triggerOnNewMessage: v })
-  const setGroupReplyMode = (v: FeishuReplyMode) => onGroupChange({ replyMode: v })
+  const setGroupReplyMode = (v: FeishuGroupSettings['replyMode']) => onGroupChange({ replyMode: v })
   const setGroupInjectReferencedMessage = (v: boolean) =>
     onGroupChange({ injectReferencedMessage: v })
   const setTopicTriggerOnAt = (v: boolean) => onTopicChange({ triggerOnAt: v })
@@ -398,6 +399,7 @@ export function FeishuChannelSection({
             className="flex flex-col gap-1.5"
           >
             <Radio value="quote">{t('agentPublish.feishuReplyQuote')}</Radio>
+            <Radio value="thread">{t('agentPublish.feishuGroupReplyThread')}</Radio>
             <Radio value="new">{t('agentPublish.feishuReplyNew')}</Radio>
             <Radio value="none">{t('agentPublish.feishuReplyNone')}</Radio>
           </Radio.Group>

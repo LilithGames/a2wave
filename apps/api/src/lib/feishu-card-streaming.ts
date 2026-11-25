@@ -1,4 +1,5 @@
 import type * as lark from '@larksuiteoapi/node-sdk'
+import { deliverFeishuReply, type FeishuReplyMode } from './feishu-reply-delivery.js'
 import { logger } from './logger.js'
 
 const MAIN_ELEMENT_ID = 'main'
@@ -96,22 +97,17 @@ export class FeishuStreamingCard {
   async send(
     chatId: string,
     replyToMessageId?: string,
-    replyMode?: 'quote' | 'new' | 'none',
+    replyMode: Exclude<FeishuReplyMode, 'none'> = 'new',
   ): Promise<void> {
     const content = JSON.stringify({ type: 'card', data: { card_id: this.cardId } })
 
-    let resp: { message_id?: string; data?: { message_id?: string } } | undefined
-    if (replyMode === 'quote' && replyToMessageId) {
-      resp = await this.client.im.message.reply({
-        path: { message_id: replyToMessageId },
-        data: { content, msg_type: 'interactive' },
-      })
-    } else {
-      resp = await this.client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: { receive_id: chatId, content, msg_type: 'interactive' },
-      })
-    }
+    const resp: { message_id?: string; data?: { message_id?: string } } | undefined =
+      await deliverFeishuReply(
+        this.client,
+        { chat_id: chatId, message_id: replyToMessageId },
+        replyMode,
+        { content, msg_type: 'interactive' },
+      )
 
     this.messageId = resp?.data?.message_id ?? resp?.message_id ?? null
     if (!this.messageId) {

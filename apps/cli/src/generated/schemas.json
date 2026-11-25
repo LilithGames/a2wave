@@ -83,6 +83,7 @@
               "type": "string",
               "enum": [
                 "quote",
+                "thread",
                 "new",
                 "none"
               ]
