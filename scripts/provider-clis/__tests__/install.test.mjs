@@ -319,7 +319,7 @@ test('Dockerfile retries the pinned Perforce download on transient network failu
 
   assert.match(
     dockerfile,
-    /curl -fsSL --retry 5 --retry-all-errors --retry-delay 2\s+\\\s+"https:\/\/filehost\.perforce\.com\/perforce\/r24\.2/,
+    /curl -fsSL --retry 5 --retry-all-errors --retry-delay 2\s+\\\s+"https:\/\/ftp\.perforce\.com\/perforce\/r24\.2/,
   )
 })
 
