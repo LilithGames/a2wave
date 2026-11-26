@@ -28,6 +28,7 @@ import {
 import { ProviderConfigurationError } from './errors.js'
 import { createBotIdentityResolver } from './feishu-bot-identity.js'
 import { FeishuStreamingCard } from './feishu-card-streaming.js'
+import { fetchFeishuChatName } from './feishu-chat-name.js'
 import { type NormalizedFeishuConfig, normalizeFeishuConfig } from './feishu-config.js'
 import { larkSdkLogger, summarizeFeishuError } from './feishu-error-log.js'
 import {
@@ -852,6 +853,7 @@ export function buildFeishuContext(
   message: FeishuMessagePayload,
   userInfo?: Record<string, unknown> | null,
   appId?: string,
+  chatName?: string,
 ): { context: Record<string, unknown>; displayName: string | null } {
   if (!appId) {
     // Production call sites always pass config.appId; missing here would mean
@@ -868,6 +870,7 @@ export function buildFeishuContext(
     message: {
       message_id: message.message_id,
       chat_id: message.chat_id,
+      chat_name: chatName,
       // The channel schema requires a non-empty chat_type; every non-p2p chat is
       // treated as a group elsewhere, so use that when the event omits it.
       chat_type: message.chat_type ?? 'group',
@@ -2368,20 +2371,22 @@ class FeishuConnectionManager {
           ? replyText
           : mainText || (imagePaths.length > 0 ? '[图片]' : '') || intent
 
-        // ── Fetch sender user info (if enabled) ──
-        let senderUserInfo: Record<string, unknown> | null = null
-        if (config.fetchUserInfo) {
-          const senderOpenId = sender?.sender_id?.open_id
-          if (senderOpenId) {
-            senderUserInfo = await fetchFeishuUserInfo(freshClient, senderOpenId, config.appId)
-          }
-        }
+        const senderOpenId = sender?.sender_id?.open_id
+        const [senderUserInfo, chatName] = await Promise.all([
+          config.fetchUserInfo && senderOpenId
+            ? fetchFeishuUserInfo(freshClient, senderOpenId, config.appId)
+            : null,
+          message.chat_type && message.chat_type !== 'p2p'
+            ? fetchFeishuChatName(freshClient, message.chat_id, config.appId)
+            : undefined,
+        ])
         // ── Build context, step, payload ──
         const { context: feishuContext, displayName: feishuDisplayName } = buildFeishuContext(
           sender,
           message,
           senderUserInfo,
           config.appId,
+          chatName,
         )
         if (referencedMessage)
           feishuContext.referenced_message = toFeishuReferencedMessageContext(referencedMessage)

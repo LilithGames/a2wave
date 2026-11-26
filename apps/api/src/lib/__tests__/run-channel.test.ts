@@ -678,6 +678,21 @@ describe('buildGatewayChannel', () => {
 // ── buildFeishuChannel ──────────────────────────────────────────────────────
 
 describe('buildFeishuChannel', () => {
+  it('includes the resolved group name in the channel info', () => {
+    const ctx = buildFeishuChannel({
+      appId: 'cli',
+      sender: {},
+      message: {
+        message_id: 'om',
+        chat_id: 'oc',
+        chat_type: 'group',
+        chat_name: 'Design Review',
+      },
+      fetchedUserInfo: null,
+    })
+    expect(ctx.channel_info).toHaveProperty('chat_name', 'Design Review')
+  })
+
   it('happy path with email-bearing user info', () => {
     const ctx = buildFeishuChannel({
       appId: 'cli_x',

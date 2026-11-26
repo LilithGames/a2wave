@@ -1790,6 +1790,41 @@ describe('handleMessage via dispatcher', () => {
     expect(mockExecuteWithRetry).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { chatId: 'oc_named', chatType: 'group', allowed: true, name: 'Release team' },
+    { chatId: 'oc_topic', chatType: 'topic', allowed: true, name: 'Release team' },
+    { chatId: 'oc_restricted', chatType: 'group', allowed: false, name: undefined },
+    { chatId: 'oc_private', chatType: 'p2p', allowed: true, name: undefined },
+  ])('passes the available group name to the worker for $chatId', async (scenario) => {
+    const { chatId, chatType, allowed, name } = scenario
+    mockDbGet.mockReturnValue(makeAgent())
+    mockClientRequest.mockClear()
+    mockClientRequest.mockImplementation(async () => {
+      if (!allowed) throw new Error('Permission denied')
+      return { code: 0, data: { name: 'Release team' } }
+    })
+    await dispatch(
+      makeData({
+        chat_type: chatType,
+        chat_id: chatId,
+        message_id: `om_${chatId}`,
+        thread_id: undefined,
+        mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_test' } }],
+      }),
+    )
+    expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+    const info = mockExecuteWithRetry.mock.calls[0][1].context.channel.channel_info
+    expect(info.chat_id).toBe(chatId)
+    if (name) expect(info.chat_name).toBe(name)
+    else expect(info).not.toHaveProperty('chat_name')
+    const chatRequest = expect.objectContaining({
+      method: 'GET',
+      url: `/open-apis/im/v1/chats/${chatId}`,
+    })
+    if (chatType === 'p2p') expect(mockClientRequest).not.toHaveBeenCalledWith(chatRequest)
+    else expect(mockClientRequest).toHaveBeenCalledWith(chatRequest)
+  })
+
   it('群聊 @机器人 且 groupTriggerOnAt=true → 触发 agent 执行', async () => {
     mockDbGet.mockReturnValue(makeAgent())
     await dispatch(

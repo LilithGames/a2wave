@@ -754,6 +754,17 @@ describe('PublishTab — 飞书话题提醒对象', () => {
     expect(dialog.getByText(/读取该消息的可解析文本/)).toBeInTheDocument()
   })
 
+  it('lists and copies the tenant permission for reading group names', async () => {
+    const user = userEvent.setup()
+    const dialog = await openFeishuConfig(user, {})
+    expect(dialog.getByText('im:chat:read')).toBeInTheDocument()
+
+    await user.click(dialog.getByRole('button', { name: '复制 JSON' }))
+    const { scopes } = JSON.parse(await navigator.clipboard.readText())
+    expect(scopes.tenant).toContain('im:chat:read')
+    expect(scopes.user).not.toContain('im:chat:read')
+  })
+
   it('includes the message lookup and group-message scopes for referenced-message lookup', async () => {
     const user = userEvent.setup()
     const dialog = await openFeishuConfig(user, {

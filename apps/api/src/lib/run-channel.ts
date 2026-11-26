@@ -389,6 +389,7 @@ export interface BuildFeishuChannelOpts {
   message: {
     message_id: string
     chat_id: string
+    chat_name?: string
     chat_type: string
     parent_id?: string
     root_id?: string
@@ -412,6 +413,7 @@ export function buildFeishuChannel(opts: BuildFeishuChannelOpts): ChannelBuildRe
   const channel_info = {
     app_id: opts.appId,
     chat_id: opts.message.chat_id,
+    ...(opts.message.chat_name ? { chat_name: opts.message.chat_name } : {}),
     chat_type: opts.message.chat_type,
     message_id: opts.message.message_id,
     ...(opts.message.parent_id ? { parent_id: opts.message.parent_id } : {}),
