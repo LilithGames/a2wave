@@ -281,7 +281,6 @@ import {
   buildFeishuContext,
   buildFeishuFallbackText,
   buildFeishuReplyContent,
-  buildTriggerSessionId,
   extractFileMeta,
   extractImageKeys,
   extractText,
@@ -291,9 +290,7 @@ import {
   feishuSafeFileNameForDisk,
   fetchFeishuUserInfo,
   getEffectiveReplyMode,
-  normalizeFeishuConfig,
   prependAtMention,
-  quoteAnchorId,
   sendArtifactFiles,
   sendFeishuMessageByContext,
   shouldTrigger,
@@ -585,117 +582,6 @@ describe('getEffectiveReplyMode', () => {
         { chat_type: 'p2p' },
       ),
     ).toBe('none')
-  })
-})
-
-// ── normalizeFeishuConfig ────────────────────────────────────────
-
-describe('normalizeFeishuConfig', () => {
-  it('旧格式迁移：triggerOnAt / triggerOnNewMessage / replyMode → group* / topic*', () => {
-    const legacy = {
-      appId: 'cli_x',
-      appSecret: 's',
-      triggerOnAt: true,
-      triggerOnNewMessage: true,
-      replyMode: 'new',
-      replyContentType: 'post',
-      sendArtifactsAsFile: false,
-    }
-    const result = normalizeFeishuConfig(legacy)
-    expect(result.groupTriggerOnAt).toBe(true)
-    expect(result.groupTriggerOnNewMessage).toBe(true)
-    expect(result.groupReplyMode).toBe('new')
-    expect(result.topicTriggerOnAt).toBe(true)
-    expect(result.topicTriggerOnNewTopic).toBe(false)
-    expect(result.topicTriggerOnNewComment).toBe(false)
-    expect(result.topicReplyMode).toBe('topic_reply')
-    expect(result.p2pReplyMode).toBe('new') // legacy replyMode → p2pReplyMode
-    expect(result.replyContentType).toBe('post')
-    expect(result.sendArtifactsAsFile).toBe(false)
-  })
-
-  it('旧格式无 replyMode → p2pReplyMode 默认 quote', () => {
-    const result = normalizeFeishuConfig({ appId: 'cli_x', appSecret: 's' })
-    expect(result.p2pReplyMode).toBe('quote')
-    expect(result.groupInjectReferencedMessage).toBe(false)
-  })
-
-  it('preserves an explicitly enabled regular-group referenced-message setting', () => {
-    const result = normalizeFeishuConfig({
-      appId: 'cli_x',
-      appSecret: 's',
-      groupInjectReferencedMessage: true,
-    })
-    expect(result.groupInjectReferencedMessage).toBe(true)
-  })
-
-  it('新格式显式 p2pReplyMode 不被 legacy 覆盖', () => {
-    const result = normalizeFeishuConfig({
-      appId: 'cli_x',
-      appSecret: 's',
-      replyMode: 'new', // legacy
-      p2pReplyMode: 'none', // explicit
-    })
-    expect(result.p2pReplyMode).toBe('none')
-  })
-
-  it('新格式原样返回', () => {
-    const config = { ...BASE_CONFIG }
-    const result = normalizeFeishuConfig(config)
-    expect(result).toMatchObject(config)
-    expect(result.replyContentType).toBe('text')
-    expect(result.sendArtifactsAsFile).toBe(true)
-    expect(result.fetchUserInfo).toBe(false)
-  })
-
-  it('开场白字段归一化：负数/非数字 idleDays、非字符串 message、非布尔开关都被规整', () => {
-    const result = normalizeFeishuConfig({
-      appId: 'cli_x',
-      appSecret: 's',
-      welcomeMessage: 123 as unknown as string, // 非字符串 → undefined（防 .trim() 抛错）
-      welcomeOnP2pEnabled: 'false' as unknown as boolean, // 字符串 truthy → 规整为 false
-      welcomeP2pIdleDays: -5, // 负数 → 丢弃（避免关掉空闲门），由 handler 兜底默认
-      welcomeOnGroupAddedEnabled: true,
-    })
-    expect(result.welcomeMessage).toBeUndefined()
-    expect(result.welcomeOnP2pEnabled).toBe(false)
-    expect(result.welcomeP2pIdleDays).toBeUndefined()
-    expect(result.welcomeOnGroupAddedEnabled).toBe(true)
-  })
-
-  it('开场白字段：合法值原样保留，idleDays=0（每次都发）不被丢弃', () => {
-    const result = normalizeFeishuConfig({
-      appId: 'cli_x',
-      appSecret: 's',
-      welcomeMessage: 'hi',
-      welcomeOnP2pEnabled: true,
-      welcomeP2pIdleDays: 0,
-      welcomeOnGroupAddedEnabled: false,
-    })
-    expect(result.welcomeMessage).toBe('hi')
-    expect(result.welcomeOnP2pEnabled).toBe(true)
-    expect(result.welcomeP2pIdleDays).toBe(0)
-    expect(result.welcomeOnGroupAddedEnabled).toBe(false)
-  })
-
-  it('旧格式缺失字段使用默认值', () => {
-    const minimal = { appId: 'cli_x', appSecret: 's' }
-    const result = normalizeFeishuConfig(minimal)
-    expect(result.groupTriggerOnAt).toBe(true)
-    expect(result.groupTriggerOnNewMessage).toBe(false)
-    expect(result.groupReplyMode).toBe('quote')
-  })
-
-  it('新格式不完整 payload 补齐默认值', () => {
-    const partial = { appId: 'cli_x', appSecret: 's', groupTriggerOnAt: false }
-    const result = normalizeFeishuConfig(partial)
-    expect(result.groupTriggerOnAt).toBe(false)
-    expect(result.groupTriggerOnNewMessage).toBe(false)
-    expect(result.groupReplyMode).toBe('quote')
-    expect(result.topicTriggerOnAt).toBe(true)
-    expect(result.topicTriggerOnNewTopic).toBe(false)
-    expect(result.topicTriggerOnNewComment).toBe(false)
-    expect(result.topicReplyMode).toBe('topic_reply')
   })
 })
 
@@ -1035,81 +921,6 @@ describe('prependAtMention', () => {
     expect(result.zh_cn.content[0][0]).toEqual({ tag: 'at', user_id: 'ou_abc' })
   })
 })
-
-// ── buildTriggerSessionId ────────────────────────────────────────
-
-describe('buildTriggerSessionId', () => {
-  it('thread_id 存在时优先返回 thread_id', () => {
-    expect(
-      buildTriggerSessionId({
-        thread_id: 'th_001',
-        chat_type: 'p2p',
-        chat_id: 'oc_chat_001',
-      }),
-    ).toBe('th_001')
-  })
-
-  it('p2p 且无 thread_id 时返回 chat_id', () => {
-    expect(
-      buildTriggerSessionId({
-        chat_type: 'p2p',
-        chat_id: 'oc_chat_001',
-      }),
-    ).toBe('oc_chat_001')
-  })
-
-  it('群聊且无 thread_id 和 root_id 时返回 message_id（作为回复链的锚点）', () => {
-    expect(
-      buildTriggerSessionId({
-        chat_type: 'group',
-        chat_id: 'oc_group_001',
-        message_id: 'om_msg_001',
-      }),
-    ).toBe('om_msg_001')
-  })
-
-  it('群聊有 root_id 时返回 root_id', () => {
-    expect(
-      buildTriggerSessionId({
-        chat_type: 'group',
-        chat_id: 'oc_group_001',
-        root_id: 'om_root_001',
-      }),
-    ).toBe('om_root_001')
-  })
-
-  it('同时有 thread_id 和 root_id 时优先返回 thread_id', () => {
-    expect(
-      buildTriggerSessionId({
-        chat_type: 'group',
-        chat_id: 'oc_group_001',
-        thread_id: 'th_001',
-        root_id: 'om_root_001',
-      }),
-    ).toBe('th_001')
-  })
-})
-
-// ── quoteAnchorId ────────────────────────────────────────────────
-
-describe('quoteAnchorId', () => {
-  it('普通消息回退到自身 message_id', () => {
-    expect(quoteAnchorId({ message_id: 'om_msg_001' })).toBe('om_msg_001')
-  })
-
-  it('交互卡片续跑：有 quote_message_id 时锚定最初提问而非卡片消息', () => {
-    expect(
-      quoteAnchorId({
-        message_id: 'om_card_msg_002', // 卡片消息（去重/回执锚点）
-        quote_message_id: 'om_original_001', // 最初提问（回复锚点）
-      }),
-    ).toBe('om_original_001')
-  })
-})
-
-// lookupPreviousChatId is covered in feishu-session-lookup.test.ts, against a real
-// in-memory SQLite: its behaviour is an ordering decision, which a mocked query builder
-// cannot express.
 
 // ── buildFeishuContext ───────────────────────────────────────────
 
@@ -1465,6 +1276,33 @@ describe('sendFeishuMessageByContext', () => {
     expect(content.data.template_variable.content).toBe('hello')
   })
 
+  it('sends a rerun of a native group message back into its topic', async () => {
+    mockDbGet.mockReturnValue(
+      makeAgent({
+        publishChannels: ['feishu'],
+        feishuConfig: { ...BASE_CONFIG, groupReplyMode: 'thread' },
+      }),
+    )
+    const result = await sendFeishuMessageByContext(
+      'agt_001',
+      {
+        receive_id_type: 'chat_id',
+        receive_id: 'oc_group',
+        channel: {
+          channel_type: 'feishu',
+          channel_info: { chat_type: 'group', chat_id: 'oc_group', message_id: 'om_rerun' },
+        },
+      },
+      'hello',
+    )
+    expect(result).toBe(true)
+    expect(mockImMessageReply).toHaveBeenCalledWith({
+      path: { message_id: 'om_rerun' },
+      data: { content: JSON.stringify({ text: 'hello' }), msg_type: 'text', reply_in_thread: true },
+    })
+    expect(mockImMessageCreate).not.toHaveBeenCalled()
+  })
+
   it('replyContentType=streaming_card 时回退为 post', async () => {
     mockDbGet.mockReturnValue(
       makeAgent({
@@ -1677,6 +1515,28 @@ describe('sendArtifactFiles', () => {
       expect(call[0].data.msg_type).toBe('file')
       expect(call[0].data.receive_id).toBe('oc_chat_001')
     }
+  })
+
+  it('delivers attachments inside the same topic as the answer', async () => {
+    const client = new (await import('@larksuiteoapi/node-sdk')).Client({
+      appId: 'a',
+      appSecret: 'b',
+    })
+    await sendArtifactFiles(
+      client,
+      [{ id: 'art_1', filename: 'doc.pdf', storagePath: '/tmp/doc.pdf' }],
+      'oc_chat',
+      'om_topic',
+    )
+    expect(mockImMessageReply).toHaveBeenCalledWith({
+      path: { message_id: 'om_topic' },
+      data: {
+        content: JSON.stringify({ file_key: 'fk_test' }),
+        msg_type: 'file',
+        reply_in_thread: true,
+      },
+    })
+    expect(mockImMessageCreate).not.toHaveBeenCalled()
   })
 
   it('skips file larger than 30MB', async () => {
@@ -2097,6 +1957,32 @@ describe('handleMessage via dispatcher', () => {
     expect(call.path.message_id).toBe('om_q1')
     expect(call.data.msg_type).toBe('text')
     expect(JSON.parse(call.data.content)).toEqual({ text: 'Agent 回复' })
+  })
+
+  it.each([
+    ['opener', undefined, 'Agent reply'],
+    ['comment', 'omt_topic', 'Agent reply'],
+    ['empty output fallback', undefined, ''],
+  ])('delivers the %s inside the triggering message topic', async (kind, thread_id, output) => {
+    const config = {
+      ...BASE_CONFIG,
+      groupReplyMode: 'thread' as const,
+      groupTriggerOnNewMessage: true,
+      topicTriggerOnNewComment: true,
+    }
+    feishuConnectionManager.stopAll()
+    await feishuConnectionManager.start('agt_001', config)
+    mockDbGet.mockReturnValue(makeAgent({ feishuConfig: config }))
+    mockExecuteWithRetry.mockResolvedValue({ result: { success: true, output }, retries: [] })
+    const messageId = `om_thread_${kind}`
+    await dispatch(
+      makeData({ chat_type: 'group', message_id: messageId, thread_id, root_id: 'om_parent' }),
+    )
+    expect(mockImMessageReply).toHaveBeenCalledWith({
+      path: { message_id: messageId },
+      data: { content: expect.any(String), msg_type: 'text', reply_in_thread: true },
+    })
+    expect(mockImMessageCreate).not.toHaveBeenCalled()
   })
 
   it('replyMode=new 时调用 message.create 并带正确参数', async () => {
@@ -3250,6 +3136,56 @@ describe('handleMessage via dispatcher', () => {
         }),
       )
       expect(resumedChatId()).toBe('chat_old')
+    })
+
+    it('resumes the opener that finished while its topic comment waited in the queue', async () => {
+      const { takePendingJob } = await import('../pending-job-registry.js')
+      const config = {
+        ...BASE_CONFIG,
+        groupReplyMode: 'thread',
+        topicTriggerOnNewComment: true,
+      } as const
+      feishuConnectionManager.stopAll()
+      await feishuConnectionManager.start('agt_001', config)
+      mockDbGet.mockReturnValue(makeAgent())
+      mockTryAcquireSlot.mockReturnValue('queued')
+      await dispatch(makeData({ message_id: 'om_queued_comment', root_id: 'om_topic_opener' }))
+      expect(mockExecuteWithRetry).not.toHaveBeenCalled()
+      const execute = takePendingJob('run_test')
+      expect.assert(execute)
+      mockDbGet.mockReturnValue({ ...agentWithLastRun(FRESH_MS), conversationId: 'run_opener' })
+      await execute()
+      expect(resumedChatId()).toBe('chat_old')
+    })
+
+    it('keeps native topic delivery when promotion starts before the queued card is ready', async () => {
+      const { takePendingJob } = await import('../pending-job-registry.js')
+      const config = {
+        ...BASE_CONFIG,
+        groupReplyMode: 'thread',
+        topicTriggerOnNewComment: true,
+        replyContentType: 'streaming_card',
+      } as const
+      feishuConnectionManager.stopAll()
+      await feishuConnectionManager.start('agt_001', config)
+      mockDbGet.mockReturnValue(makeAgent())
+      let finishCard!: () => void
+      mockStreamingCardSend.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finishCard = resolve
+        }),
+      )
+      let promotedJob: Promise<void> | undefined
+      mockTryAcquireSlot.mockImplementationOnce(() => {
+        promotedJob = takePendingJob('run_test')?.()
+        return 'queued'
+      })
+      await dispatch(makeData({ message_id: 'om_early_promotion', root_id: 'om_topic_opener' }))
+      expect(mockExecuteWithRetry).not.toHaveBeenCalled()
+      finishCard()
+      await promotedJob
+      expect(mockExecuteWithRetry).toHaveBeenCalledOnce()
+      expect(mockStreamingCardFinish).toHaveBeenCalledOnce()
     })
 
     it('opens a new session for a plain direct message past the timeout', async () => {

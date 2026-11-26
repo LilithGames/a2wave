@@ -1,6 +1,13 @@
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { runs } from '../db/schema.js'
+import type { NormalizedFeishuConfig } from './feishu-config.js'
+import {
+  buildTriggerSessionId,
+  FEISHU_GROUP_TOPIC_PREFIX,
+  type FeishuMessageContext,
+  isFeishuGroupTopicSession,
+} from './feishu-message-context.js'
 import { jsonExtractText } from './json-sql.js'
 import { logger } from './logger.js'
 
@@ -11,6 +18,40 @@ import { logger } from './logger.js'
  * which in practice is two.
  */
 const SESSION_TIE_BREAK_SCAN = 4
+
+/**
+ * Feishu assigns a thread id after we open a topic under an ordinary
+ * message. Its comments carry the opener's message id as their root_id.
+ * A distinct key keeps a quoted opener independent of its old reply chain
+ * and lets existing native topics keep their original thread-id sessions.
+ */
+export async function resolveFeishuTriggerSessionId(
+  agentId: string,
+  message: FeishuMessageContext,
+  groupReplyMode: NormalizedFeishuConfig['groupReplyMode'],
+): Promise<string | null> {
+  if (message.chat_type === 'group') {
+    if (!message.thread_id && groupReplyMode === 'thread' && message.message_id) {
+      return `${FEISHU_GROUP_TOPIC_PREFIX}${message.message_id}`
+    }
+    if (message.thread_id && message.root_id) {
+      const openerKey = `${FEISHU_GROUP_TOPIC_PREFIX}${message.root_id}`
+      const [opener] = await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.initiatorAgentId, agentId),
+            eq(runs.triggerSource, 'feishu'),
+            eq(runs.triggerSessionId, openerKey),
+          ),
+        )
+        .limit(1)
+      if (opener) return openerKey
+    }
+  }
+  return buildTriggerSessionId(message)
+}
 
 /**
  * Resolve the chatId of the session's most recent completed run, so the engine can be
@@ -37,11 +78,11 @@ export async function lookupPreviousFeishuSession(
   sessionTimeoutMs: number,
   opts: { chatId?: string } = {},
 ): Promise<PreviousFeishuSession | null> {
-  // Ordering on created_at alone keeps the entire ORDER BY servable by
-  // (initiator_agent_id, trigger_session_id, status, created_at), so the scan stops after
-  // a few rows. Adding updatedAt as a second sort key would forfeit that: PostgreSQL only
-  // gained incremental sort in 13 and the supported floor is 9.6, where the planner would
-  // instead sort every completed run of the session on every incoming message.
+  // An ordinary-group topic executes one turn at a time, so the last
+  // completion has the current chat id even if admission reordered arrivals.
+  // Other sessions keep the index-backed created_at scan and tie-break below.
+  const groupTopic = isFeishuGroupTopicSession(triggerSessionId)
+  const order = groupTopic ? [desc(runs.updatedAt), desc(runs.createdAt)] : [desc(runs.createdAt)]
   const rows = await db
     .select({
       id: runs.id,
@@ -60,8 +101,8 @@ export async function lookupPreviousFeishuSession(
         opts.chatId ? eq(jsonExtractText(runs.result, ['chatId']), opts.chatId) : undefined,
       ),
     )
-    .orderBy(desc(runs.createdAt))
-    .limit(SESSION_TIE_BREAK_SCAN)
+    .orderBy(...order)
+    .limit(groupTopic ? 1 : SESSION_TIE_BREAK_SCAN)
 
   const newest = rows[0]
   if (!newest?.createdAt) return null

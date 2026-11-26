@@ -738,6 +738,11 @@ describe('PublishTab — 飞书话题提醒对象', () => {
     return within(await screen.findByRole('dialog'))
   }
 
+  it('shows the saved thread reply mode for ordinary groups only', async () => {
+    const dialog = await openFeishuConfig(userEvent.setup(), { groupReplyMode: 'thread' })
+    expect(dialog.getByRole('radio', { name: '在原消息下创建话题并回复' })).toBeChecked()
+  })
+
   it('enables referenced-message content injection for ordinary groups', async () => {
     const user = userEvent.setup()
     const dialog = await openFeishuConfig(user, {

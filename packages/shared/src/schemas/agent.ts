@@ -180,7 +180,7 @@ export const feishuConfigSchema = z
     // Regular group settings
     groupTriggerOnAt: z.boolean().default(true),
     groupTriggerOnNewMessage: z.boolean().default(false),
-    groupReplyMode: z.enum(['quote', 'new', 'none']).default('quote'),
+    groupReplyMode: z.enum(['quote', 'thread', 'new', 'none']).default('quote'),
     // Optionally fetch the message quoted by an ordinary group reply and inject
     // its normalized text into the current Agent turn.
     groupInjectReferencedMessage: z.boolean().default(false),

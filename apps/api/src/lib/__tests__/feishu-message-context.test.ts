@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTriggerSessionId,
   P2P_SESSION_TIMEOUT_MS,
+  quoteAnchorId,
   resolveSessionTimeoutMs,
 } from '../feishu-message-context.js'
 
@@ -59,5 +60,72 @@ describe('resolveSessionTimeoutMs', () => {
 
   it('is two hours', () => {
     expect(P2P_SESSION_TIMEOUT_MS).toBe(2 * 60 * 60 * 1000)
+  })
+})
+
+describe('buildTriggerSessionId', () => {
+  it('prefers the thread id in a threaded direct message', () => {
+    expect(
+      buildTriggerSessionId({
+        thread_id: 'th_001',
+        chat_type: 'p2p',
+        chat_id: 'oc_chat_001',
+      }),
+    ).toBe('th_001')
+  })
+
+  it('uses the chat id for a direct message without a thread', () => {
+    expect(
+      buildTriggerSessionId({
+        chat_type: 'p2p',
+        chat_id: 'oc_chat_001',
+      }),
+    ).toBe('oc_chat_001')
+  })
+
+  it('anchors a standalone group message to its own id', () => {
+    expect(
+      buildTriggerSessionId({
+        chat_type: 'group',
+        chat_id: 'oc_group_001',
+        message_id: 'om_msg_001',
+      }),
+    ).toBe('om_msg_001')
+  })
+
+  it('anchors a group reply chain to the root', () => {
+    expect(
+      buildTriggerSessionId({
+        chat_type: 'group',
+        chat_id: 'oc_group_001',
+        root_id: 'om_root_001',
+      }),
+    ).toBe('om_root_001')
+  })
+
+  it('prefers the thread id over the root id in a native topic', () => {
+    expect(
+      buildTriggerSessionId({
+        chat_type: 'group',
+        chat_id: 'oc_group_001',
+        thread_id: 'th_001',
+        root_id: 'om_root_001',
+      }),
+    ).toBe('th_001')
+  })
+})
+
+describe('quoteAnchorId', () => {
+  it('anchors an ordinary reply to the current message', () => {
+    expect(quoteAnchorId({ message_id: 'om_msg_001' })).toBe('om_msg_001')
+  })
+
+  it('anchors an interactive card continuation to the original question', () => {
+    expect(
+      quoteAnchorId({
+        message_id: 'om_card_msg_002',
+        quote_message_id: 'om_original_001',
+      }),
+    ).toBe('om_original_001')
   })
 })

@@ -228,11 +228,13 @@ function replyCalls() {
   return [...mockImMessageReply.mock.calls, ...mockImMessageCreate.mock.calls]
 }
 
-async function startAndDispatch(replyMode: 'quote' | 'new', body?: string) {
+async function startAndDispatch(replyMode: 'quote' | 'new' | 'thread', body?: string) {
   const config: FeishuConfig = {
     appId: 'cli_card_test',
     appSecret: 'secret_test',
-    p2pReplyMode: replyMode,
+    p2pReplyMode: replyMode === 'thread' ? 'quote' : replyMode,
+    groupReplyMode: replyMode,
+    groupTriggerOnNewMessage: true,
     replyContentType: 'interactive_card',
     debugShowSessionId: true,
   }
@@ -260,7 +262,7 @@ async function startAndDispatch(replyMode: 'quote' | 'new', body?: string) {
       message_type: 'text',
       message_id: messageId,
       chat_id: 'oc_card_chat',
-      chat_type: 'p2p',
+      chat_type: replyMode === 'thread' ? 'group' : 'p2p',
       content: JSON.stringify({ text: 'Review this migration' }),
       mentions: [],
     },
@@ -298,6 +300,7 @@ describe('Feishu interactive card output delivery', () => {
   it.each([
     { replyMode: 'quote' as const, body: CARD_BODY },
     { replyMode: 'new' as const, body: CARD_BODY },
+    { replyMode: 'thread' as const, body: CARD_BODY },
     { replyMode: 'quote' as const, body: undefined },
     { replyMode: 'new' as const, body: '' },
     { replyMode: 'quote' as const, body: '   ' },
@@ -307,7 +310,8 @@ describe('Feishu interactive card output delivery', () => {
       const messageId = await startAndDispatch(replyMode, body)
       const call = replyCalls()[0][0]
       expect(call.data.msg_type).toBe('interactive')
-      if (replyMode === 'quote') {
+      if (replyMode !== 'new') {
+        expect(call.data.reply_in_thread).toBe(replyMode === 'thread' ? true : undefined)
         expect(mockImMessageReply).toHaveBeenCalledOnce()
         expect(call.path.message_id).toBe(messageId)
       } else {

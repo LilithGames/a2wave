@@ -479,7 +479,7 @@ feishuConfig:
   appId: ${FEISHU_APP_ID}
   appSecret: ${FEISHU_APP_SECRET}
   groupTriggerOnAt: true
-  groupReplyMode: quote               # quote | new | none
+  groupReplyMode: quote               # quote | thread | new | none
   replyContentType: text              # text | post | interactive | streaming_card
   # ... 8 more fields
 

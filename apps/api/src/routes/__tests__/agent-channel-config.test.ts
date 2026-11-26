@@ -247,6 +247,20 @@ describe('PATCH /agents/:id/channels/:channel', () => {
     expect(captured.set.updatedAt).toBeInstanceOf(Date)
   })
 
+  it('saves topic replies for ordinary Feishu groups', async () => {
+    mockDb.select.mockReturnValue(makeSelectChain(DRAFT_AGENT))
+    const captured = mockUpdateCapturing(DRAFT_AGENT)
+
+    const res = await app.request('/agents/agt_1/channels/feishu', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: { ...FEISHU_BODY.config, groupReplyMode: 'thread' } }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(captured.set.feishuConfig).toMatchObject({ groupReplyMode: 'thread' })
+  })
+
   it('keeps a draft agent in draft', async () => {
     mockDb.select.mockReturnValue(makeSelectChain(DRAFT_AGENT))
     const captured = mockUpdateCapturing(DRAFT_AGENT)

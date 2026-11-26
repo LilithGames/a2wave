@@ -91,6 +91,28 @@ describe('FeishuStreamingCard', () => {
       expect(card.getMessageId()).toBe('om_card1')
     })
 
+    it('sends the streaming card inside the triggering message topic', async () => {
+      const client = makeFakeClient()
+      mockCardCreate.mockResolvedValue({ data: { card_id: 'card_topic' } })
+      mockImMessageReply.mockResolvedValue({ data: { message_id: 'om_card' } })
+      const card = await FeishuStreamingCard.create(client)
+      await card.send('oc_group', 'om_root', 'thread')
+      expect(mockImMessageReply).toHaveBeenCalledWith({
+        path: { message_id: 'om_root' },
+        data: { content: expect.any(String), msg_type: 'interactive', reply_in_thread: true },
+      })
+      expect(mockImMessageCreate).not.toHaveBeenCalled()
+    })
+
+    it('requires an anchor to send in thread mode', async () => {
+      const client = makeFakeClient()
+      mockCardCreate.mockResolvedValue({ data: { card_id: 'card_topic' } })
+      const card = await FeishuStreamingCard.create(client)
+      await expect(card.send('oc_group', undefined, 'thread')).rejects.toThrow('message anchor')
+      expect(mockImMessageReply).not.toHaveBeenCalled()
+      expect(mockImMessageCreate).not.toHaveBeenCalled()
+    })
+
     it('replyMode=new 时调用 create', async () => {
       const client = makeFakeClient()
       mockCardCreate.mockResolvedValue({ data: { card_id: 'card_2' } })

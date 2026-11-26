@@ -1713,6 +1713,7 @@
     "feishuTopicTriggerOnNewComment": "话题内新增评论时触发",
     "feishuReplyMode": "回复方式",
     "feishuReplyQuote": "引用原消息回复",
+    "feishuGroupReplyThread": "在原消息下创建话题并回复",
     "feishuReplyNew": "新增消息回复",
     "feishuReplyNone": "无需回复（由 Agent/MCP 自行处理）",
     "feishuTopicReply": "在话题消息中回复",

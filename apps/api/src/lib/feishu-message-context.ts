@@ -1,10 +1,18 @@
-type FeishuMessageContext = {
+export type FeishuMessageContext = {
   chat_type?: string
   chat_id?: string
   thread_id?: string
   root_id?: string
   message_id?: string
   quote_message_id?: string
+}
+
+export const FEISHU_GROUP_TOPIC_PREFIX = 'group-topic:'
+
+export function isFeishuGroupTopicSession(
+  sessionId: string | null | undefined,
+): sessionId is `${typeof FEISHU_GROUP_TOPIC_PREFIX}${string}` {
+  return sessionId?.startsWith(FEISHU_GROUP_TOPIC_PREFIX) === true
 }
 
 /**

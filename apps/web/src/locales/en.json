@@ -1713,6 +1713,7 @@
     "feishuTopicTriggerOnNewComment": "Trigger on new comment in topic",
     "feishuReplyMode": "Reply Mode",
     "feishuReplyQuote": "Quote reply",
+    "feishuGroupReplyThread": "Start a thread under the original message and reply",
     "feishuReplyNew": "New message",
     "feishuReplyNone": "No reply (handled by Agent/MCP)",
     "feishuTopicReply": "Reply in topic thread",

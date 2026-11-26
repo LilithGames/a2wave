@@ -3,7 +3,7 @@ import type { FeishuConfig } from '@a2wave/shared'
 export type NormalizedFeishuConfig = FeishuConfig & {
   groupTriggerOnAt: boolean
   groupTriggerOnNewMessage: boolean
-  groupReplyMode: 'quote' | 'new' | 'none'
+  groupReplyMode: NonNullable<FeishuConfig['groupReplyMode']>
   groupInjectReferencedMessage: boolean
   topicTriggerOnAt: boolean
   topicTriggerOnNewTopic: boolean
