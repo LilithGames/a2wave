@@ -261,6 +261,7 @@ const FEISHU_LAUNCHER_URL = 'https://open.feishu.cn/page/launcher'
  * 并让平台继续持有不再需要的通讯录查询权。
  */
 const FEISHU_BASE_SCOPES = [
+  'im:chat:read',
   'im:message:send_as_bot',
   'im:message',
   'im:message.p2p_msg:readonly',

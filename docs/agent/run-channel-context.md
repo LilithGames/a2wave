@@ -51,6 +51,7 @@ interface GatewayChannelInfo {                        // shared by api and a2a
 interface FeishuChannelInfo {
   app_id: string
   chat_id: string
+  chat_name?: string
   chat_type: string                  // 'p2p' | 'group' | 'topic' | ...
   message_id: string
   thread_id?: string
@@ -83,9 +84,11 @@ Field naming is uniformly **snake_case**, aligned with Feishu's existing convent
 |---|---|---|---|
 | `api` | `auth`, `oauth?`, `client_ip` | OAuth claims | `auth ∈ {'oauth','api_key','none'}`; for OAuth, fills `oauth.issuer/sub` |
 | `a2a` | `auth`, `oauth?`, `caller_agent?` | OAuth claims (passed through) | `caller_agent` identifies the internal agent-to-agent call chain |
-| `feishu` | `app_id`, `chat_id`, `chat_type`, `message_id`, `sender_open_id` | Feishu contact API | `fetchUserInfo` must be enabled to get `user_info` |
+| `feishu` | `app_id`, `chat_id`, `chat_name?`, `chat_type`, `message_id`, `sender_open_id` | Feishu contact API | `fetchUserInfo` must be enabled to get `user_info` |
 | `schedule` | `schedule_id?`, `cron?` | — | Triggered by no one; `user_info` is always `null` |
 | `debug` | `triggered_by_user_id` | a2wave user table | Web debug entry; resolves email from the logged-in user |
+
+For Feishu group messages, a2wave looks up the group name using the bot's credentials. Agents can read it from `context.channel.channel_info.chat_name`, independently of the `fetchUserInfo` setting. Direct messages and runs where the lookup fails or returns no name omit this field. Use `chat_id` as the stable identifier when a group changes its name.
 
 For Feishu, `parent_id` and `root_id` preserve the event's native reply relationship. When the Agent enables `groupInjectReferencedMessage`, an ordinary-group reply can additionally populate top-level `context.referenced_message` with the referenced message's readable text. The complete field remains available in the persisted step input and runtime context for audit and replay. At the common engine boundary, the body and unknown reference fields are removed from the view rendered through `{{context}}`; the current question alone is rendered through `{{message}}` and `<user_query>`. The body is rendered once in a separate, XML-escaped `<referenced_context>` section, and reruns rebuild that section from the persisted context. Missing permissions, lookup failures, unsupported card forms, and bodies with no readable text leave the field absent and do not block the current run.
 

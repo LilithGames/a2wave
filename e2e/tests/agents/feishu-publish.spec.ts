@@ -78,6 +78,7 @@ test.describe('Feishu publish tab', () => {
     await expect(page.getByText('所需权限')).toBeVisible()
     await expect(page.getByText('事件与回调')).toBeVisible()
     await expect(page.getByText('im:message:send_as_bot')).toBeVisible()
+    await expect(page.getByText('im:chat:read', { exact: true })).toBeVisible()
     await expect(page.getByText('im:resource')).toBeVisible()
     await expect(page.getByText('cardkit:card:write')).toBeVisible()
     await expect(page.getByRole('button', { name: '复制 JSON' })).toBeVisible()

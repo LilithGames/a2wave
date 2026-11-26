@@ -95,6 +95,7 @@ export const feishuChannelInfoSchema = z.object({
   // catches test/fixture regressions that forget to pass it.
   app_id: z.string().min(1),
   chat_id: z.string(),
+  chat_name: z.string().min(1).optional(),
   chat_type: z.string(), // 'p2p' | 'group' | 'topic' | ... (kept open: feishu may add more)
   message_id: z.string(),
   parent_id: z.string().optional(),
