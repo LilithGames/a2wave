@@ -13,7 +13,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { Modal, Radio } from 'antd'
 import { Globe, Info, Loader2, Play, StopCircle, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -773,9 +773,11 @@ export function PublishTab({
   const a2aCardUrl = agentId ? `${baseUrl}/api/a2a/${agentId}/.well-known/agent-card.json` : ''
   const a2aRpcUrl = agentId ? `${baseUrl}/api/a2a/${agentId}` : ''
 
+  const [hydratedAgent, setHydratedAgent] = useState<Agent>()
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload persisted publish config only when the agent changes; loadScheduleIntoEditor is a setter bundle.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (agent) {
+      setHydratedAgent(agent)
       setIpWhitelistStr((agent.publishIpWhitelist ?? []).join('\n'))
       setDescription(agent.publishDescription ?? '')
       // agent 真正重载（如发布后 invalidate）时复位本地 key 标记，回到服务端真值。
@@ -812,86 +814,72 @@ export function PublishTab({
       )
       setOauthAllowedEmails(persisted.oauthAllowedEmails ?? [])
 
-      const raw: PersistedFeishuConfig | null | undefined = agent.feishuConfig
-      setGroupInjectReferencedMessage(raw?.groupInjectReferencedMessage ?? false)
-      if (raw) {
-        // 兼容旧配置：旧字段 triggerOnAt / triggerOnNewMessage / replyMode → 新 group* / topic* 结构
-        const isLegacy = !('groupTriggerOnAt' in raw) && !('groupReplyMode' in raw)
-        setFeishuAppId(raw.appId ?? '')
-        // 不把脱敏掩码灌进输入框（否则点"显示"看到的只是星号）。已配置时输入框留空，
-        // 用 placeholder 提示；提交时为空则回传 '********' 让后端保持原值不变。
-        const savedSecret = raw.appSecret ?? ''
-        setFeishuSecretExists(savedSecret.length > 0)
-        // 详情接口回传明文 App Secret：加载真实值，默认以 8 个圆点遮罩，点眼睛查看。
-        setFeishuAppSecret(savedSecret)
-        const gTriggerOnAt = isLegacy ? (raw.triggerOnAt ?? true) : (raw.groupTriggerOnAt ?? true)
-        const gTriggerOnNewMsg = isLegacy
-          ? (raw.triggerOnNewMessage ?? false)
-          : (raw.groupTriggerOnNewMessage ?? false)
-        const gReplyMode = isLegacy ? (raw.replyMode ?? 'quote') : (raw.groupReplyMode ?? 'quote')
+      const raw: PersistedFeishuConfig = agent.feishuConfig ?? {}
+      setGroupInjectReferencedMessage(raw.groupInjectReferencedMessage ?? false)
+      // Legacy Feishu records share one trigger and reply mode across chat types.
+      const isLegacy = !('groupTriggerOnAt' in raw) && !('groupReplyMode' in raw)
+      setFeishuAppId(raw.appId ?? '')
+      const savedSecret = raw.appSecret ?? ''
+      setFeishuSecretExists(savedSecret.length > 0)
+      setFeishuAppSecret(savedSecret)
+      const gTriggerOnAt = isLegacy ? (raw.triggerOnAt ?? true) : (raw.groupTriggerOnAt ?? true)
+      const gTriggerOnNewMsg = isLegacy
+        ? (raw.triggerOnNewMessage ?? false)
+        : (raw.groupTriggerOnNewMessage ?? false)
+      const gReplyMode = isLegacy ? (raw.replyMode ?? 'quote') : (raw.groupReplyMode ?? 'quote')
 
-        setGroupTriggerOnAt(gTriggerOnAt)
-        setGroupTriggerOnNewMessage(gTriggerOnNewMsg)
-        setGroupReplyMode(gReplyMode)
+      setGroupTriggerOnAt(gTriggerOnAt)
+      setGroupTriggerOnNewMessage(gTriggerOnNewMsg)
+      setGroupReplyMode(gReplyMode)
 
-        // 对齐：触发时机——普通群「群内新增消息」↔ 话题群「新增话题」
-        setTopicTriggerOnAt(
-          isLegacy ? (raw.triggerOnAt ?? true) : (raw.topicTriggerOnAt ?? gTriggerOnAt),
-        )
-        setTopicTriggerOnNewTopic(raw.topicTriggerOnNewTopic ?? gTriggerOnNewMsg)
-        setTopicTriggerOnNewComment(raw.topicTriggerOnNewComment ?? false)
-        // 对齐：回复方式——普通群有回复则话题群默认回复，普通群 none 则话题群也 none
-        setTopicReplyMode(raw.topicReplyMode ?? (gReplyMode === 'none' ? 'none' : 'topic_reply'))
-        setTopicReplyMentionTarget(raw.topicReplyMentionTarget ?? 'trigger_sender')
-        setTopicInjectRootMessage(raw.topicInjectRootMessage ?? false)
-        // P2P：与后端 normalizeFeishuConfig 对齐——只要 raw.replyMode 存在即作 legacy fallback，
-        // 不区分 isLegacy。否则前端会显示 'quote' 而后端 normalize 出 'new'，保存时静默覆盖。
-        setP2pReplyMode(raw.p2pReplyMode ?? raw.replyMode ?? 'quote')
-        setFeishuReplyContentType(raw.replyContentType ?? 'text')
-        setFeishuCardTemplateId(raw.cardTemplateId ?? '')
-        setFeishuDebugShowSessionId(raw.debugShowSessionId ?? false)
-        setFeishuDebugShowProvider(raw.debugShowProvider ?? false)
-        setFeishuDebugShowModel(raw.debugShowModel ?? false)
-        setFeishuSendArtifactsAsFile(raw.sendArtifactsAsFile ?? true)
-        setFeishuFetchUserInfo(raw.fetchUserInfo ?? false)
-        setFeishuWelcomeMessage(raw.welcomeMessage ?? '')
-        setFeishuWelcomeOnP2pEnabled(raw.welcomeOnP2pEnabled ?? false)
-        setFeishuWelcomeP2pIdleDays(raw.welcomeP2pIdleDays ?? 7)
-        setFeishuWelcomeOnGroupAddedEnabled(raw.welcomeOnGroupAddedEnabled ?? false)
-      }
+      setTopicTriggerOnAt(
+        isLegacy ? (raw.triggerOnAt ?? true) : (raw.topicTriggerOnAt ?? gTriggerOnAt),
+      )
+      setTopicTriggerOnNewTopic(raw.topicTriggerOnNewTopic ?? gTriggerOnNewMsg)
+      setTopicTriggerOnNewComment(raw.topicTriggerOnNewComment ?? false)
+      setTopicReplyMode(raw.topicReplyMode ?? (gReplyMode === 'none' ? 'none' : 'topic_reply'))
+      setTopicReplyMentionTarget(raw.topicReplyMentionTarget ?? 'trigger_sender')
+      setTopicInjectRootMessage(raw.topicInjectRootMessage ?? false)
+      // Match normalizeFeishuConfig for partially migrated direct-message settings.
+      setP2pReplyMode(raw.p2pReplyMode ?? raw.replyMode ?? 'quote')
+      setFeishuReplyContentType(raw.replyContentType ?? 'text')
+      setFeishuCardTemplateId(raw.cardTemplateId ?? '')
+      setFeishuDebugShowSessionId(raw.debugShowSessionId ?? false)
+      setFeishuDebugShowProvider(raw.debugShowProvider ?? false)
+      setFeishuDebugShowModel(raw.debugShowModel ?? false)
+      setFeishuSendArtifactsAsFile(raw.sendArtifactsAsFile ?? true)
+      setFeishuFetchUserInfo(raw.fetchUserInfo ?? false)
+      setFeishuWelcomeMessage(raw.welcomeMessage ?? '')
+      setFeishuWelcomeOnP2pEnabled(raw.welcomeOnP2pEnabled ?? false)
+      setFeishuWelcomeP2pIdleDays(raw.welcomeP2pIdleDays ?? 7)
+      setFeishuWelcomeOnGroupAddedEnabled(raw.welcomeOnGroupAddedEnabled ?? false)
 
       const savedSlack = agent.slackConfig
-      if (savedSlack) {
-        setSlackAppId(savedSlack.appId)
-        setSlackAppToken(savedSlack.appToken)
-        setSlackBotToken(savedSlack.botToken)
-        setSlackGroupTriggerOnAt(savedSlack.groupTriggerOnAt)
-        setSlackGroupTriggerOnNewMessage(savedSlack.groupTriggerOnNewMessage)
-        setSlackGroupReplyMode(savedSlack.groupReplyMode)
-        setSlackP2pReplyMode(savedSlack.p2pReplyMode)
-        setSlackSendArtifactsAsFile(savedSlack.sendArtifactsAsFile ?? true)
-      }
+      setSlackAppId(savedSlack?.appId ?? '')
+      setSlackAppToken(savedSlack?.appToken ?? '')
+      setSlackBotToken(savedSlack?.botToken ?? '')
+      setSlackGroupTriggerOnAt(savedSlack?.groupTriggerOnAt ?? true)
+      setSlackGroupTriggerOnNewMessage(savedSlack?.groupTriggerOnNewMessage ?? false)
+      setSlackGroupReplyMode(savedSlack?.groupReplyMode ?? 'thread')
+      setSlackP2pReplyMode(savedSlack?.p2pReplyMode ?? 'new')
+      setSlackSendArtifactsAsFile(savedSlack?.sendArtifactsAsFile ?? true)
 
       const savedDiscord = agent.discordConfig
-      if (savedDiscord) {
-        setDiscordApplicationId(savedDiscord.applicationId)
-        setDiscordBotToken(savedDiscord.botToken)
-        setDiscordGuildTriggerOnMention(savedDiscord.guildTriggerOnMention)
-        setDiscordGuildTriggerOnNewMessage(savedDiscord.guildTriggerOnNewMessage)
-        setDiscordGuildReplyMode(savedDiscord.guildReplyMode)
-        setDiscordDmReplyMode(savedDiscord.dmReplyMode)
-        setDiscordSendArtifactsAsFile(savedDiscord.sendArtifactsAsFile ?? true)
-      }
+      setDiscordApplicationId(savedDiscord?.applicationId ?? '')
+      setDiscordBotToken(savedDiscord?.botToken ?? '')
+      setDiscordGuildTriggerOnMention(savedDiscord?.guildTriggerOnMention ?? true)
+      setDiscordGuildTriggerOnNewMessage(savedDiscord?.guildTriggerOnNewMessage ?? false)
+      setDiscordGuildReplyMode(savedDiscord?.guildReplyMode ?? 'reply')
+      setDiscordDmReplyMode(savedDiscord?.dmReplyMode ?? 'reply')
+      setDiscordSendArtifactsAsFile(savedDiscord?.sendArtifactsAsFile ?? true)
 
       const savedTelegram = agent.telegramConfig
-      if (savedTelegram) {
-        setTelegramBotToken(savedTelegram.botToken)
-        setTelegramGroupTriggerOnMention(savedTelegram.groupTriggerOnMention)
-        setTelegramGroupTriggerOnNewMessage(savedTelegram.groupTriggerOnNewMessage)
-        setTelegramGroupReplyMode(savedTelegram.groupReplyMode)
-        setTelegramPrivateReplyMode(savedTelegram.privateReplyMode)
-        setTelegramSendArtifactsAsFile(savedTelegram.sendArtifactsAsFile ?? true)
-      }
+      setTelegramBotToken(savedTelegram?.botToken ?? '')
+      setTelegramGroupTriggerOnMention(savedTelegram?.groupTriggerOnMention ?? true)
+      setTelegramGroupTriggerOnNewMessage(savedTelegram?.groupTriggerOnNewMessage ?? false)
+      setTelegramGroupReplyMode(savedTelegram?.groupReplyMode ?? 'reply')
+      setTelegramPrivateReplyMode(savedTelegram?.privateReplyMode ?? 'reply')
+      setTelegramSendArtifactsAsFile(savedTelegram?.sendArtifactsAsFile ?? true)
 
       const savedQQOfficial = agent.qqOfficialConfig
       setQQOfficialAppId(savedQQOfficial?.appId ?? '')
@@ -935,6 +923,12 @@ export function PublishTab({
   const publishDraftKey = agentId ? `draft-publish:${agentId}` : null
   // key → setter 映射：序列化与恢复同源，避免漏字段。
   const draftSetters: Record<string, (v: unknown) => void> = {
+    glabEnabled: (v) => setGlabEnabled(v as boolean),
+    ghEnabled: (v) => setGhEnabled(v as boolean),
+    glabDraft: (v) => patchGitTrigger('glab', v as GitTriggerDraft),
+    ghDraft: (v) => patchGitTrigger('gh', v as GitTriggerDraft),
+    slackSendArtifactsAsFile: (v) => setSlackSendArtifactsAsFile(v as boolean),
+    discordSendArtifactsAsFile: (v) => setDiscordSendArtifactsAsFile(v as boolean),
     ipWhitelistStr: (v) => setIpWhitelistStr(v as string),
     description: (v) => setDescription(v as string),
     authType: (v) => setAuthType(v as 'none' | 'api_key'),
@@ -1028,8 +1022,94 @@ export function PublishTab({
     scheduleMonthDay: (v) => setScheduleMonthDay(v as number),
     scheduleRunAsOwner: (v) => setScheduleRunAsOwner(v as boolean),
   }
-  const publishDraftRef = useRef<Record<string, unknown>>({})
-  publishDraftRef.current = {
+  // Keep the flat storage keys for existing drafts. Group config fields by the
+  // endpoint that saves them, so a dialog save can acknowledge only its part.
+  const configDrafts = {
+    feishu: {
+      feishuAppId,
+      groupTriggerOnAt,
+      groupTriggerOnNewMessage,
+      groupReplyMode,
+      groupInjectReferencedMessage,
+      topicTriggerOnAt,
+      topicTriggerOnNewTopic,
+      topicTriggerOnNewComment,
+      topicReplyMode,
+      topicReplyMentionTarget,
+      topicInjectRootMessage,
+      p2pReplyMode,
+      feishuReplyContentType,
+      feishuCardTemplateId,
+      feishuDebugShowSessionId,
+      feishuDebugShowProvider,
+      feishuDebugShowModel,
+      feishuSendArtifactsAsFile,
+      feishuFetchUserInfo,
+      feishuWelcomeMessage,
+      feishuWelcomeOnP2pEnabled,
+      feishuWelcomeP2pIdleDays,
+      feishuWelcomeOnGroupAddedEnabled,
+    },
+    slack: {
+      slackSendArtifactsAsFile,
+      slackAppId,
+      slackGroupTriggerOnAt,
+      slackGroupTriggerOnNewMessage,
+      slackGroupReplyMode,
+      slackP2pReplyMode,
+    },
+    discord: {
+      discordSendArtifactsAsFile,
+      discordApplicationId,
+      discordGuildTriggerOnMention,
+      discordGuildTriggerOnNewMessage,
+      discordGuildReplyMode,
+      discordDmReplyMode,
+    },
+    telegram: {
+      telegramGroupTriggerOnMention,
+      telegramGroupTriggerOnNewMessage,
+      telegramGroupReplyMode,
+      telegramPrivateReplyMode,
+      telegramSendArtifactsAsFile,
+    },
+    qq_official: {
+      qqOfficialAppId,
+      qqGroupTriggerOnAt,
+      qqGroupReplyMode,
+      qqC2cReplyMode,
+      qqSendArtifactsAsFile,
+    },
+    chat_app: {
+      chatAppDisplayName,
+      chatAppWelcomeMessage,
+      chatAppSuggestedQuestions,
+      chatAppShowCreator,
+      chatAppAllowAttachments,
+      chatAppShowThinking,
+    },
+    glab: {
+      glabDraft: gitTriggerState.glab,
+    },
+    gh: {
+      ghDraft: gitTriggerState.gh,
+    },
+    schedule: {
+      scheduleConfigs,
+      activeScheduleIndex,
+      scheduleMode,
+      scheduleCron,
+      scheduleIntent,
+      scheduleTimezone,
+      schedulePreset,
+      scheduleTime,
+      scheduleWeekday,
+      scheduleMonthDay,
+    },
+  } satisfies Record<ConfigurableChannel, Record<string, unknown>>
+  const draftValues: Record<string, unknown> = {
+    glabEnabled,
+    ghEnabled,
     ipWhitelistStr,
     description,
     authType,
@@ -1042,118 +1122,34 @@ export function PublishTab({
     telegramEnabled,
     qqOfficialEnabled,
     chatAppEnabled,
-    chatAppDisplayName,
-    chatAppWelcomeMessage,
-    chatAppSuggestedQuestions,
-    chatAppShowCreator,
-    chatAppAllowAttachments,
-    chatAppShowThinking,
     oauthEnabled,
     oauthAccessMode,
-    // Must be in the snapshot, not just in draftSetters: without it a refresh restores the
-    // mode but resets the list to the server value. Migrated Agents start on an empty list, so
-    // that asymmetry silently discards exactly the roster the owner came here to enter.
     oauthAllowedEmails,
     scheduleEnabled,
-    feishuAppId,
-    groupTriggerOnAt,
-    groupTriggerOnNewMessage,
-    groupReplyMode,
-    groupInjectReferencedMessage,
-    topicTriggerOnAt,
-    topicTriggerOnNewTopic,
-    topicTriggerOnNewComment,
-    topicReplyMode,
-    topicReplyMentionTarget,
-    topicInjectRootMessage,
-    p2pReplyMode,
-    feishuReplyContentType,
-    feishuCardTemplateId,
-    feishuDebugShowSessionId,
-    feishuDebugShowProvider,
-    feishuDebugShowModel,
-    feishuSendArtifactsAsFile,
-    feishuFetchUserInfo,
-    feishuWelcomeMessage,
-    feishuWelcomeOnP2pEnabled,
-    feishuWelcomeP2pIdleDays,
-    feishuWelcomeOnGroupAddedEnabled,
-    slackAppId,
-    slackGroupTriggerOnAt,
-    slackGroupTriggerOnNewMessage,
-    slackGroupReplyMode,
-    slackP2pReplyMode,
-    discordApplicationId,
-    discordGuildTriggerOnMention,
-    discordGuildTriggerOnNewMessage,
-    discordGuildReplyMode,
-    discordDmReplyMode,
-    telegramGroupTriggerOnMention,
-    telegramGroupTriggerOnNewMessage,
-    telegramGroupReplyMode,
-    telegramPrivateReplyMode,
-    telegramSendArtifactsAsFile,
-    qqOfficialAppId,
-    qqGroupTriggerOnAt,
-    qqGroupReplyMode,
-    qqC2cReplyMode,
-    qqSendArtifactsAsFile,
-    scheduleConfigs,
-    activeScheduleIndex,
-    scheduleMode,
-    scheduleCron,
-    scheduleIntent,
-    scheduleTimezone,
-    schedulePreset,
-    scheduleTime,
-    scheduleWeekday,
-    scheduleMonthDay,
     scheduleRunAsOwner,
+    ...Object.assign({}, ...Object.values(configDrafts)),
   }
 
-  const serializedPublishDraft = JSON.stringify(publishDraftRef.current)
-  // 基线 = 「后端配置 + 已恢复草稿」稳定后的快照；只有用户在此之后的真实改动才写草稿，
-  // 避免把加载/恢复阶段的 setState 误当成改动而覆盖。
-  const publishBaselineRef = useRef<string | null>(null)
-
-  const clearPublishDraft = () => {
-    if (publishDraftKey) localStorage.removeItem(publishDraftKey)
-    // 重置基线为当前快照，避免清理后 save-on-change 立刻把旧值再写回。
-    publishBaselineRef.current = serializedPublishDraft
+  // Credential edits survive a query refresh in memory only.
+  const channelCredentials: Partial<Record<ConfigurableChannel, Record<string, string>>> = {
+    feishu: { feishuAppSecret },
+    slack: { slackAppToken, slackBotToken },
+    discord: { discordBotToken },
+    telegram: { telegramBotToken },
+    qq_official: { qqOfficialAppSecret },
   }
-
-  // 草稿覆盖在「后端配置」之上。声明在 config-load effect 之后 → 每次 agent 变化都在加载后
-  // 重新覆盖，避免 StrictMode 双调用或 agent 重取时 load 把恢复结果冲掉（故意不加一次性守卫）。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: draftSetters 为稳定 setter 组合，仅以 agent/key 为触发
-  useEffect(() => {
-    if (!agent || !publishDraftKey) return
-    const saved = localStorage.getItem(publishDraftKey)
-    if (saved) {
-      try {
-        const data = JSON.parse(saved) as Record<string, unknown>
-        for (const [k, set] of Object.entries(draftSetters)) {
-          if (data[k] !== undefined) set(data[k])
-        }
-      } catch {
-        localStorage.removeItem(publishDraftKey)
-      }
-    }
-    // 等加载+恢复的 setState 落定后再设基线（下一拍），此后才把改动写入草稿。只设一次。
-    if (publishBaselineRef.current === null) {
-      window.setTimeout(() => {
-        publishBaselineRef.current = JSON.stringify(publishDraftRef.current)
-      }, 0)
-    }
-  }, [agent, publishDraftKey])
-
-  // save-on-change：基线设定后，用户每次改动即时写本地草稿（凭证已排除在快照外）。
-  // 不用 unmount/beforeunload 保存——它们在 StrictMode/编程式跳转下会用过期空值覆盖草稿。
-  useEffect(() => {
-    if (!publishDraftKey || publishBaselineRef.current === null) return
-    if (serializedPublishDraft !== publishBaselineRef.current) {
-      safeSetItem(publishDraftKey, serializedPublishDraft)
-    }
-  }, [publishDraftKey, serializedPublishDraft])
+  const credentials: Record<string, string> = Object.assign(
+    {},
+    ...Object.values(channelCredentials),
+  )
+  const credentialSetters = new Map<string, (value: string) => void>([
+    ['feishuAppSecret', setFeishuAppSecret],
+    ['slackAppToken', setSlackAppToken],
+    ['slackBotToken', setSlackBotToken],
+    ['discordBotToken', setDiscordBotToken],
+    ['telegramBotToken', setTelegramBotToken],
+    ['qqOfficialAppSecret', setQQOfficialAppSecret],
+  ])
 
   const buildChannels = () => {
     const channels: string[] = ['api']
@@ -1329,6 +1325,173 @@ export function PublishTab({
     gh: ghEnabled,
   }
 
+  const channelSettings = (channel: ChannelKey) => {
+    switch (channel) {
+      case 'api':
+        return [
+          authType,
+          ipWhitelistStr
+            .split('\n')
+            .map((ip) => ip.trim())
+            .filter(Boolean),
+          description,
+        ]
+      case 'a2a':
+        return [a2aAuthType, a2aAuthType === 'api_key' && trustForwardedIdentity]
+      case 'oauth':
+        return [
+          oauthAccessMode,
+          oauthAccessMode === 'specified_users' ? [...oauthAllowedEmails].sort() : [],
+        ]
+      case 'glab':
+      case 'gh': {
+        const config = buildGitTriggerConfig(channel)
+        return {
+          ...config,
+          events: [...config.events].sort(),
+          incompleteRepos: gitTriggerState[channel].repos
+            .filter((repo) => !repo.project)
+            .map((repo) => [repo.scope, repo.url.trim()]),
+        }
+      }
+      case 'schedule':
+        // Legacy schedules and the blank row receive temporary IDs on load.
+        return buildScheduleConfigsForPublish().map(({ cron, intent, timezone }) => [
+          cron.trim(),
+          intent,
+          timezone,
+        ])
+      default:
+        return buildChannelConfig(channel)
+    }
+  }
+  const channelConfigs = Object.fromEntries(
+    CHANNEL_REGISTRY.map(({ key }) => [key, JSON.stringify(channelSettings(key))]),
+  ) as Record<ChannelKey, string>
+  const snapshot = {
+    agent,
+    channelConfigs,
+    enabled: channelEnabledMap,
+    scheduleRunAsOwner,
+    draftValues,
+    credentials,
+  }
+  const [saved, setSaved] = useState<typeof snapshot>()
+  const latestForm = useRef({ snapshot, saved })
+  useLayoutEffect(() => {
+    latestForm.current = { snapshot, saved }
+  })
+
+  const acknowledgeSave = (channel?: ConfigurableChannel) => {
+    const latest = latestForm.current
+    if (!latest.saved || latest.saved.agent?.id !== agent?.id) return
+    const submittedFields = channel ? configDrafts[channel] : draftValues
+    const submittedSecrets = channel ? (channelCredentials[channel] ?? {}) : credentials
+
+    if (latest.saved.agent !== agent) {
+      // The mutation can finish after its query refresh. Accept the server's
+      // normalized values (including masked credentials), preserving newer edits.
+      for (const [key, submitted] of Object.entries(submittedFields)) {
+        const current = JSON.stringify(latest.snapshot.draftValues[key])
+        const persisted = latest.saved.draftValues[key]
+        if (current === JSON.stringify(submitted) && current !== JSON.stringify(persisted)) {
+          draftSetters[key](persisted)
+        }
+      }
+      for (const [key, submitted] of Object.entries(submittedSecrets)) {
+        if (latest.snapshot.credentials[key] === submitted) {
+          credentialSetters.get(key)?.(latest.saved.credentials[key])
+        }
+      }
+      return
+    }
+    setSaved((previous) => {
+      if (!previous || previous.agent !== agent) return previous
+      if (!channel) return snapshot
+      return {
+        ...previous,
+        channelConfigs: { ...previous.channelConfigs, [channel]: channelConfigs[channel] },
+        draftValues: { ...previous.draftValues, ...submittedFields },
+        credentials: { ...previous.credentials, ...submittedSecrets },
+      }
+    })
+  }
+
+  const pendingChannels = CHANNEL_REGISTRY.filter(
+    ({ key }) =>
+      saved &&
+      saved.agent === agent &&
+      (channelConfigs[key] !== saved.channelConfigs[key] ||
+        channelEnabledMap[key] !== saved.enabled[key] ||
+        (key === 'schedule' && scheduleRunAsOwner !== saved.scheduleRunAsOwner)),
+  )
+  const inMemoryDraft = useRef<{
+    key: string
+    fields: Record<string, unknown>
+    credentials: Record<string, string>
+  } | null>(null)
+
+  // Capture the hydrated server form before overlaying local edits. Both sides of
+  // the comparison then use the same defaults, legacy conversions and submit builders.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: capture once per server revision, before restoring edits
+  useLayoutEffect(() => {
+    if (!agent || !publishDraftKey || hydratedAgent !== agent) return
+    setSaved(snapshot)
+    let fields: Record<string, unknown> = {}
+    if (inMemoryDraft.current?.key === publishDraftKey) {
+      fields = inMemoryDraft.current.fields
+      for (const [key, value] of Object.entries(inMemoryDraft.current.credentials))
+        credentialSetters.get(key)?.(value)
+    } else {
+      try {
+        fields = JSON.parse(localStorage.getItem(publishDraftKey) ?? '{}') ?? {}
+      } catch {
+        localStorage.removeItem(publishDraftKey)
+      }
+    }
+    for (const [key, restore] of Object.entries(draftSetters)) {
+      if (fields[key] !== undefined) restore(fields[key])
+    }
+  }, [agent, hydratedAgent, publishDraftKey])
+
+  // Persist only edits. A later query refresh can then load fresh server values
+  // for untouched fields without resurrecting a reverted setting from localStorage.
+  const changedFields = Object.fromEntries(
+    Object.entries(draftValues).filter(
+      ([key, value]) => saved && JSON.stringify(value) !== JSON.stringify(saved.draftValues[key]),
+    ),
+  )
+  const changedCredentials = Object.fromEntries(
+    Object.entries(credentials).filter(([key, value]) => saved && value !== saved.credentials[key]),
+  )
+  const persistableFields = { ...changedFields }
+  for (const provider of ['glab', 'gh'] as const) {
+    const key = `${provider}Draft`
+    if (key in persistableFields) {
+      // A pasted URL can contain userinfo or a token in its query. Only the
+      // parsed repository location belongs in a durable draft.
+      const draft = gitTriggerState[provider]
+      persistableFields[key] = {
+        ...draft,
+        repos: draft.repos.map((repo) => ({ ...repo, url: formatGitRepoUrl(repo) })),
+      }
+    }
+  }
+  const storedDraft = JSON.stringify(persistableFields)
+  useLayoutEffect(() => {
+    if (!agent || saved?.agent !== agent || !publishDraftKey) return
+    inMemoryDraft.current = {
+      key: publishDraftKey,
+      fields: changedFields,
+      credentials: changedCredentials,
+    }
+  })
+  useEffect(() => {
+    if (!agent || saved?.agent !== agent || !publishDraftKey) return
+    if (storedDraft === '{}') localStorage.removeItem(publishDraftKey)
+    else safeSetItem(publishDraftKey, storedDraft)
+  }, [agent, saved, publishDraftKey, storedDraft])
+
   const readinessInput: ChannelReadinessInput = {
     feishuAppId,
     feishuAppSecret,
@@ -1403,6 +1566,7 @@ export function PublishTab({
         channel: openChannel,
         config,
       } as SaveChannelConfigVars)
+      acknowledgeSave(openChannel)
       message.success(t('agentPublish.channelConfigSaved'))
       closeChannelModal()
     } catch {
@@ -1514,9 +1678,12 @@ export function PublishTab({
     }
 
     // API Key 与发布解耦：发布只保存配置，密钥由独立的「生成/重置」按钮管理。
-    await onPublishConfirm(config)
-    // 发布/更新成功后清理本地草稿（已落库，避免下次用旧草稿覆盖服务端真值）。
-    clearPublishDraft()
+    try {
+      await onPublishConfirm(config)
+      acknowledgeSave()
+    } catch {
+      // The publisher reports the error. Keep the form and its pending changes.
+    }
   }
 
   // 飞书开关：未配置过 appId 时，先弹「已有 / 创建」二选一；已配置或关闭则直接生效。
@@ -2128,7 +2295,17 @@ export function PublishTab({
           </Modal>
 
           {/* Actions */}
-          <div className="mt-5 flex items-center justify-end gap-2 pt-4 border-t border-border">
+          <div className="mt-5 flex flex-wrap items-center justify-end gap-2 pt-4 border-t border-border">
+            {pendingChannels.length > 0 && (
+              <p role="status" className="mr-auto flex items-center gap-2 text-sm text-warning">
+                <Info className="size-4 shrink-0" aria-hidden="true" />
+                {t('agentPublish.unsubmittedChanges', {
+                  channels: pendingChannels
+                    .map(({ titleKey }) => t(titleKey))
+                    .join(t('agentPublish.channelSeparator')),
+                })}
+              </p>
+            )}
             {isPublished && (
               <Button
                 type="button"

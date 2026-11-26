@@ -8,7 +8,15 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { renderWithProviders, screen, userEvent, waitFor, within } from '@/test/render'
+import {
+  act,
+  fireEvent,
+  renderWithProviders,
+  screen,
+  userEvent,
+  waitFor,
+  within,
+} from '@/test/render'
 
 vi.mock('@/hooks/use-agents', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/use-agents')>('@/hooks/use-agents')
@@ -422,5 +430,207 @@ describe('PublishTab — 渠道卡片网格', () => {
       expect(toggle).not.toBeChecked()
       expect(toggle).toBeDisabled()
     })
+  })
+})
+
+describe('PublishTab pending channel changes', () => {
+  const pending = /当前有未提交的变更/
+  const agent = {
+    id: 'agt_pending',
+    publishStatus: 'published',
+    publishChannels: ['api', 'chat_app'],
+  }
+
+  function propsForAgent() {
+    return { ...baseProps(), agentId: agent.id, agent: agent as never }
+  }
+
+  it('lists each changed channel and removes it when the toggle is reverted', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderWithProviders(<PublishTab {...propsForAgent()} />)
+    const a2a = within(card('a2a')).getByRole('switch')
+    const chat = within(card('chat_app')).getByRole('switch')
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+    await user.click(a2a)
+    await user.click(chat)
+    expect(screen.getByText(pending)).toHaveTextContent('A2A 协议')
+    expect(screen.getByText(pending)).toHaveTextContent('对话网页')
+
+    await user.click(a2a)
+    expect(screen.getByText(pending)).not.toHaveTextContent('A2A 协议')
+    expect(screen.getByText(pending)).toHaveTextContent('对话网页')
+    await user.click(chat)
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+
+    unmount()
+    renderWithProviders(<PublishTab {...propsForAgent()} />)
+    expect(within(card('chat_app')).getByRole('switch')).toBeChecked()
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+  })
+
+  it('keeps restored changes pending until a successful update', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem(`draft-publish:${agent.id}`, JSON.stringify({ a2aEnabled: true }))
+    const props = propsForAgent()
+    renderWithProviders(<PublishTab {...props} />)
+    expect(await screen.findByText(pending)).toHaveTextContent('A2A 协议')
+    await user.click(screen.getByRole('button', { name: '更新渠道' }))
+    expect(props.onPublishConfirm).toHaveBeenCalledOnce()
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+  })
+
+  it('clears only the saved channel while another channel switch is pending', async () => {
+    const user = userEvent.setup()
+    const props = propsForAgent()
+    const { rerender } = renderWithProviders(<PublishTab {...props} />)
+    await user.click(within(card('a2a')).getByRole('switch'))
+    await openConfig(user, 'chat_app')
+    fireEvent.change(screen.getByPlaceholderText('留空则使用 Agent 名称'), {
+      target: { value: 'Support' },
+    })
+    expect(screen.getByText(pending)).toHaveTextContent('对话网页')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    // The channel mutation invalidates the Agent query with the newly saved config.
+    const saved = { ...agent, chatAppConfig: { displayName: 'Support' } }
+    rerender(<PublishTab {...props} agent={saved as never} />)
+    await waitFor(() => {
+      expect(screen.getByText(pending)).toHaveTextContent('A2A 协议')
+      expect(screen.getByText(pending)).not.toHaveTextContent('对话网页')
+    })
+    expect(within(card('a2a')).getByRole('switch')).toBeChecked()
+  })
+
+  it('keeps edits to an unconfigured channel pending after a background refetch', async () => {
+    const user = userEvent.setup()
+    const props = propsForAgent()
+    const { rerender } = renderWithProviders(<PublishTab {...props} />)
+    await openConfig(user, 'feishu')
+    const appId = screen.getByPlaceholderText('cli_xxx')
+    fireEvent.change(appId, { target: { value: 'cli_pending' } })
+    expect(screen.getByText(pending)).toHaveTextContent('飞书机器人')
+    rerender(<PublishTab {...props} agent={{ ...agent, feishuConfig: null } as never} />)
+    expect(appId).toHaveValue('cli_pending')
+    expect(screen.getByText(pending)).toHaveTextContent('飞书机器人')
+  })
+
+  it('clears a saved secret when the API returns the masked value again', async () => {
+    const user = userEvent.setup()
+    const props = propsForAgent()
+    const qqAgent = {
+      ...agent,
+      publishChannels: ['api', 'qq_official'],
+      qqOfficialConfig: { appId: '123456', appSecret: '********' },
+    }
+    const { rerender } = renderWithProviders(<PublishTab {...props} agent={qqAgent as never} />)
+    await openConfig(user, 'qq_official')
+    const secret = screen.getByLabelText('App Secret')
+    fireEvent.change(secret, { target: { value: 'replacement-secret' } })
+    expect(screen.getByText(pending)).toHaveTextContent('QQ 官方机器人')
+    expect(localStorage.getItem(`draft-publish:${agent.id}`) ?? '').not.toContain(
+      'replacement-secret',
+    )
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    rerender(<PublishTab {...props} agent={{ ...qqAgent } as never} />)
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+  })
+
+  it('tracks later edits when a masked server refetch arrives before publish resolves', async () => {
+    const user = userEvent.setup()
+    const props = propsForAgent()
+    let acknowledge!: () => void
+    props.onPublishConfirm.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve
+        }),
+    )
+    const qqAgent = {
+      ...agent,
+      publishChannels: ['api', 'qq_official'],
+      qqOfficialConfig: { appId: '123456', appSecret: '********' },
+    }
+    const { rerender } = renderWithProviders(<PublishTab {...props} agent={qqAgent as never} />)
+    await openConfig(user, 'qq_official')
+    fireEvent.change(screen.getByLabelText('App Secret'), {
+      target: { value: 'replacement-secret' },
+    })
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    await user.click(screen.getByRole('button', { name: '更新渠道' }))
+    expect(props.onPublishConfirm).toHaveBeenCalledOnce()
+    rerender(<PublishTab {...props} agent={{ ...qqAgent, updatedAt: Date.now() } as never} />)
+    await act(async () => acknowledge())
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+    await user.click(within(card('a2a')).getByRole('switch'))
+    expect(screen.getByText(pending)).toHaveTextContent('A2A 协议')
+    expect(screen.getByText(pending)).not.toHaveTextContent('QQ 官方机器人')
+  })
+
+  it('keeps changes visible when updating fails', async () => {
+    const user = userEvent.setup()
+    const props = propsForAgent()
+    props.onPublishConfirm.mockRejectedValueOnce(new Error('Unable to update channels'))
+    renderWithProviders(<PublishTab {...props} />)
+    await user.click(within(card('a2a')).getByRole('switch'))
+    expect(screen.getByText(pending)).toHaveTextContent('A2A 协议')
+    await user.click(screen.getByRole('button', { name: '更新渠道' }))
+    expect(props.onPublishConfirm).toHaveBeenCalledOnce()
+    expect(screen.getByText(pending)).toHaveTextContent('A2A 协议')
+  })
+
+  it('ignores switching schedule editors until a schedule setting changes', async () => {
+    const user = userEvent.setup()
+    const scheduledAgent = {
+      ...agent,
+      publishChannels: ['api', 'schedule'],
+      scheduleConfig: [
+        { id: 'sch_first', cron: '0 9 * * *', intent: 'Morning', timezone: 'UTC' },
+        { id: 'sch_second', cron: '0 18 * * *', intent: 'Evening', timezone: 'UTC' },
+      ],
+    }
+    renderWithProviders(<PublishTab {...propsForAgent()} agent={scheduledAgent as never} />)
+    await openConfig(user, 'schedule')
+    await user.click(screen.getByRole('button', { name: /Evening/ }))
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByDisplayValue('Evening'), { target: { value: 'Evening update' } })
+    expect(screen.getByText(pending)).toHaveTextContent('定时触发')
+  })
+
+  it('shows a new GitHub draft while its repository URL is incomplete', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<PublishTab {...propsForAgent()} />)
+    await openConfig(user, 'gh')
+    const repository = screen.getByPlaceholderText('https://github.com/owner/repo')
+    fireEvent.change(repository, { target: { value: 'owner' } })
+    expect(screen.getByText(pending)).toHaveTextContent('GitHub 触发')
+    fireEvent.change(repository, { target: { value: '' } })
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+  })
+
+  it('attributes repository changes to the individual Git channel', async () => {
+    const user = userEvent.setup()
+    const githubAgent = {
+      ...agent,
+      publishChannels: ['api', 'gh'],
+      ghConfig: {
+        provider: 'gh',
+        repos: [{ project: 'owner/repo', host: 'github.com', scope: 'project' }],
+        events: ['opened'],
+        intervalSeconds: 60,
+        intent: 'Review {{url}}',
+      },
+    }
+    renderWithProviders(<PublishTab {...propsForAgent()} agent={githubAgent as never} />)
+    await openConfig(user, 'gh')
+    expect(screen.queryByText(pending)).not.toBeInTheDocument()
+    const repository = screen.getByPlaceholderText('https://github.com/owner/repo')
+    fireEvent.change(repository, { target: { value: 'https://github.com/owner/repo-new' } })
+    expect(screen.getByText(pending)).toHaveTextContent('GitHub 触发')
+    expect(screen.getByText(pending)).not.toHaveTextContent('GitLab 触发')
+    fireEvent.change(repository, {
+      target: { value: 'https://github.com/owner/new-repo?token=private-query' },
+    })
+    const draft = localStorage.getItem(`draft-publish:${agent.id}`)
+    expect(draft).toContain('owner/new-repo')
+    expect(draft).not.toContain('private-query')
   })
 })

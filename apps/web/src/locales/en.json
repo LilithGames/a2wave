@@ -1617,6 +1617,8 @@
     "authTypeOauthHelp": "Callers authenticate with your enterprise OIDC provider and present the resulting JWT (typically an access token). Access can be opened to all enterprise users or limited to specific ones.",
     "publishing": "Publishing…",
     "update": "Update Channels",
+    "unsubmittedChanges": "Unsubmitted changes: {{channels}}",
+    "channelSeparator": ", ",
     "channels": "Publish Channels",
     "channelApi": "REST API",
     "channelA2a": "A2A Protocol",

@@ -31,6 +31,9 @@ export const AGENT_ROUTES = {
   publishTab: (agentId: string, tab: string) => `/agents/${agentId}?tab=publish&publishTab=${tab}`,
 } as const
 
+/** Localized prefix of the channel footer summary; the channel names follow it. */
+export const PUBLISH_PENDING_CHANGES = '当前有未提交的变更'
+
 /** 导航项名称，与 zh locale (apps/web/src/locales/zh.json nav) 一致 */
 export const NAV_ITEMS = [
   { name: '仪表盘', path: ROUTES.dashboard },
