@@ -1617,6 +1617,8 @@
     "authTypeOauthHelp": "调用方先在企业 OIDC 身份提供商完成认证，拿到该 IdP 签发的 JWT（通常是 access token），再用它调用本 Agent。访问范围可选择全体企业用户或指定企业用户。",
     "publishing": "发布中…",
     "update": "更新渠道",
+    "unsubmittedChanges": "当前有未提交的变更：{{channels}}",
+    "channelSeparator": "、",
     "channels": "发布渠道",
     "channelApi": "REST API",
     "channelA2a": "A2A 协议",

@@ -9,7 +9,7 @@
 import { expect, test } from '@playwright/test'
 import { createAgent, deleteAgentAs, getAdminToken } from '../../utils/api-helpers'
 import { loginAsAdmin } from '../../utils/auth'
-import { AGENT_ROUTES } from '../../utils/test-constants'
+import { AGENT_ROUTES, PUBLISH_PENDING_CHANGES } from '../../utils/test-constants'
 
 const CHAT_APP_PATH = AGENT_ROUTES.chatApp
 
@@ -46,9 +46,19 @@ test.describe('Chat page channel', () => {
 
     // Enable the channel, then publish so the config is persisted.
     const enableSwitch = page.getByRole('switch', { name: '启用对话网页' })
+    const pending = page.getByText(PUBLISH_PENDING_CHANGES)
     await expect(enableSwitch).toBeVisible({ timeout: 10000 })
+    await expect(pending).toHaveCount(0)
     await enableSwitch.click()
+    await expect(pending).toContainText('对话网页')
 
+    const a2a = page.getByRole('switch', { name: '启用 A2A 协议' })
+    await a2a.click()
+    await expect(pending).toContainText('A2A 协议')
+    await expect(pending).toContainText('对话网页')
+    await a2a.click()
+    await expect(pending).not.toContainText('A2A 协议')
+    await expect(pending).toContainText('对话网页')
     await expect(page.getByText(`/agents/${agentId}/chat_app`)).toBeVisible()
 
     await page
@@ -56,6 +66,7 @@ test.describe('Chat page channel', () => {
       .first()
       .click()
 
+    await expect(pending).toHaveCount(0)
     // The link now resolves to the real page rather than the unavailable state.
     await page.goto(CHAT_APP_PATH(agentId))
     await expect(page.getByText('页面不可用')).toHaveCount(0)

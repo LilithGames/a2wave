@@ -11,14 +11,16 @@ Each card carries two independent actions:
 | Action | What it does |
 |--------|--------------|
 | **Configure** | Opens the channel's dialog to fill in and save its credentials and settings. **Saves config only — it does not put the Agent live.** |
-| **Enable switch** | Controls whether the channel actually serves traffic. |
+| **Enable switch** | Selects whether to enable or disable the channel when you click **Publish** or **Update Channels**. |
 
 > [!NOTE]
 > Configuring and enabling are separate. You can save your Feishu App ID and Secret now and leave the bot switched off until you are ready.
 
 **A channel that is not fully configured cannot be enabled** — its switch is greyed out, with a tooltip explaining why. If Slack is missing its App Token, for example, the switch stays disabled rather than letting you turn on a channel that could never connect. REST API is always on and therefore has no switch.
 
-Once configured, click **Publish / Update Channels** at the bottom of the page to put the Agent live. For an Agent that is already live, saving in a channel's dialog takes effect immediately and only affects that channel — the other channels' connections are left alone.
+At the bottom of the page, a message lists channels with pending changes. If you undo all edits to a channel, its name drops off the list. Click **Publish** to bring the Agent online for the first time, or **Update Channels** to apply pending changes together. The message disappears after a successful submission.
+
+For an Agent that is already live, clicking **Save** in an enabled channel's dialog immediately applies the settings that the dialog can save independently. Any other channels with pending changes stay on the list.
 
 ### Connection status for chat channels
 
